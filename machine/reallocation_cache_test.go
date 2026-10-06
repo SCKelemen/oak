@@ -28,7 +28,7 @@ func TestReallocationCacheColdHitAndNil(t *testing.T) {
 		var cache ReallocationCache
 		for call := 0; call < 3; call++ {
 			got, summary, err := cache.Apply(function, nil)
-			if err != nil || !reflect.DeepEqual(got, want) || summary != (ReallocationSummary{Sites: allocation.Sites(), Promoted: allocation.Promoted}) {
+			if err != nil || !reflect.DeepEqual(got, want) || summary != (ReallocationSummary{Sites: allocation.Sites(), Promoted: allocation.Promoted, LeafEvicted: allocation.LeafEvicted, LeafRetained: allocation.LeafRetained}) {
 				t.Fatalf("rv=%v call=%d: result differs from normal reallocation: %v %+v", rv, call, err, summary)
 			}
 			if got == function || got == want {
@@ -153,7 +153,7 @@ func TestReallocationCacheKeepsCurrentMetadata(t *testing.T) {
 }
 
 func TestReallocationCacheDecisionInputsMiss(t *testing.T) {
-	for _, kind := range []string{"arch", "frame", "items", "line", "call-site", "checked-facts", "clobbers", "objects", "empty-objects"} {
+	for _, kind := range []string{"arch", "frame", "items", "line", "call-site", "checked-facts", "clobbers", "objects", "empty-objects", "options"} {
 		t.Run(kind, func(t *testing.T) {
 			var cache ReallocationCache
 			first := reallocationCacheFixture(false)
@@ -162,6 +162,7 @@ func TestReallocationCacheDecisionInputsMiss(t *testing.T) {
 			}
 			changed := reallocationCacheFixture(false)
 			var objects []FrameObject
+			var options AllocationOptions
 			switch kind {
 			case "arch":
 				changed.Arch = "" // equivalent lane, but distinct exact input
@@ -186,13 +187,15 @@ func TestReallocationCacheDecisionInputsMiss(t *testing.T) {
 				objects = []FrameObject{{Offset: 0, Size: 4, Name: "words", Elem: 4}}
 			case "empty-objects":
 				objects = []FrameObject{}
+			case "options":
+				options.EvictLeafCalleeSaves = true
 			}
-			got, summary, err := cache.Apply(changed, objects)
+			got, summary, err := cache.ApplyWithOptions(changed, objects, options)
 			if err != nil {
 				t.Fatal(err)
 			}
-			want, allocation, err := ReallocateWith(changed, objects)
-			if err != nil || !reflect.DeepEqual(got, want) || summary.Sites != allocation.Sites() || cache.Stats().Hits != 0 || cache.Stats().Entries != 2 {
+			want, allocation, err := ReallocateWithOptions(changed, objects, options)
+			if err != nil || !reflect.DeepEqual(got, want) || summary.Sites != allocation.Sites() || summary.LeafEvicted != allocation.LeafEvicted || summary.LeafRetained != allocation.LeafRetained || cache.Stats().Hits != 0 || cache.Stats().Entries != 2 {
 				t.Fatalf("decision change did not miss cleanly: %v %+v", err, cache.Stats())
 			}
 		})

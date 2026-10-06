@@ -60,6 +60,7 @@ const (
 	TransformMultiplyAdd         = "multiply-add"
 	TransformValueSelect         = "value-select"
 	TransformReallocate          = "reallocate"
+	TransformRetainCalleeSaves   = "retain-callee-save-carriers"
 	TransformTrimCalleeSaves     = "trim-callee-saves"
 	TransformEmptyFrame          = "elide-empty-frame"
 	TransformSchedule            = "schedule"
@@ -498,14 +499,20 @@ func Transforms() []opt.Transform {
 			name: TransformReallocate, phase: opt.PhaseMachine, proof: opt.Mechanical,
 			arches:  bothLanes,
 			applied: func(l Lane) bool { return l.Reallocate },
-			apply:   func(l Lane) Lane { l.Reallocate = true; return l },
-			fired:   Reallocated,
+			apply: func(l Lane) Lane {
+				l.Reallocate = true
+				if l.Arch == asm.ArchArm64 {
+					l.EvictLeafCalleeSaves = true
+				}
+				return l
+			},
+			fired: Reallocated,
 		}, neutral: true},
 		&gatedTransform{laneTransform: laneTransform{
 			// Reallocation can leave a parked parameter dead while the original
-			// callee-save scaffold still saves and restores its register. Trim
-			// only an exactly matched canonical frame, keep every offset fixed,
-			// and let the whole-body verifier authorize the smaller candidate.
+			// callee-save scaffold still saves and restores its register. Trim the
+			// exact matched scaffold before later machine transforms, preserving the
+			// established validation-shape ordering.
 			name: TransformTrimCalleeSaves, phase: opt.PhaseMachine, proof: opt.Mechanical,
 			arches:   arm64Only,
 			applied:  func(l Lane) bool { return l.TrimCalleeSaves },
@@ -515,8 +522,7 @@ func Transforms() []opt.Transform {
 		}},
 		&gatedTransform{laneTransform: laneTransform{
 			// Callee-save trimming can expose a frame with no remaining stack
-			// observer. Remove only its exact adjustment pair and preserve the
-			// trimmed-but-framed candidate until this smaller body proves.
+			// observer. Remove only its exact adjustment pair in a separate child.
 			name: TransformEmptyFrame, phase: opt.PhaseMachine, proof: opt.Mechanical,
 			arches:   arm64Only,
 			applied:  func(l Lane) bool { return l.ElideEmptyFrame },
@@ -561,6 +567,30 @@ func Transforms() []opt.Transform {
 			apply:    func(l Lane) Lane { l.ReuseRemainingRecordBaseDestinations = true; return l },
 			fired:    ReusedRemainingRecordBaseDestinations,
 		}},
+		&gatedTransform{laneTransform: laneTransform{
+			// Give aggressive coloring its ordinary closure opportunity first. Only
+			// when that did not fire may stable coloring retry the closure atomically;
+			// requiring both effects keeps it away from already-closed aggressive
+			// winners and from bodies where stability creates no carrier reuse.
+			name: TransformRetainCalleeSaves, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:  arm64Only,
+			applied: func(l Lane) bool { return l.RetainCalleeSaveCarriers },
+			eligible: func(l Lane) bool {
+				return l.Reallocate && l.EvictLeafCalleeSaves && l.ReuseRecordBaseDestinations && !l.ReuseRemainingRecordBaseDestinations
+			},
+			apply: func(l Lane) Lane {
+				l.EvictLeafCalleeSaves = false
+				l.RetainCalleeSaveCarriers = true
+				l.ReuseRemainingRecordBaseDestinations = true
+				return l
+			},
+			fired: func(fn *asm.Function) int {
+				if RetainedCalleeSaveCarriers(fn) == 0 {
+					return 0
+				}
+				return ReusedRemainingRecordBaseDestinations(fn)
+			},
+		}, neutral: true},
 		&gatedTransform{laneTransform: laneTransform{
 			name: TransformRecordBaseSchedule, phase: opt.PhaseMachine, proof: opt.Mechanical,
 			arches:   arm64Only,
@@ -720,6 +750,8 @@ func PlainLane(lane Lane) Lane {
 	lane.MultiplyAdd = false
 	lane.ValueSelect = false
 	lane.Reallocate = false
+	lane.EvictLeafCalleeSaves = false
+	lane.RetainCalleeSaveCarriers = false
 	lane.TrimCalleeSaves = false
 	lane.ElideEmptyFrame = false
 	lane.Schedule = false

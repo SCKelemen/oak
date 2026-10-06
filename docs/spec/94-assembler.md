@@ -6808,14 +6808,31 @@ when one member of a pair remains, `stp`/`ldp` become `str`/`ldr` at that
 member's original slot. The frame size and every other offset remain fixed.
 Unknown, unmatched, and multi-return shapes do not transform.
 
-Reallocation now makes the producer side of this cleanup cost-aware for
-AArch64 leaf GPRs: after the allocator's copy-partner hint, a web which
-lowering parked in x19–x28, but which crosses no call, tries an otherwise-free
-x9–x17 before retaining its original register. Register pressure falls back
-to the original coloring, and call-crossing values retain the
-callee-saved-only rule. This allows trimming, and then empty-frame elision, to
-remove complete leaf frames rather than only homes made dead by copy
-propagation.
+On AArch64, the ordinary `reallocate` search path also applies one cost hint:
+a web which lowering parked in x19–x28, but which crosses no call, tries an
+otherwise-free x9–x17 after copy-partner coalescing and before retaining its
+original register. Register pressure falls back to the original coloring, and
+call-crossing values retain the callee-saved-only rule. Keeping the aggressive
+coloring on the main search path lets fusion, address sharing, and cleanup
+compose with it before the bounded beam prunes intermediate candidates. Where
+it wins, trimming and then empty-frame elision can remove complete leaf frames
+rather than only homes made dead by copy propagation.
+
+The `retain-callee-save-carriers` child preserves the other side of the choice
+without widening that beam. The ordinary fixed-point carrier closure runs
+first. Only a first-carrier candidate on which aggressive closure did not fire
+may atomically retry stable coloring and closure; branching at the end would be
+too late because coloring itself can expose the remaining-carrier and
+rescheduling opportunities. The candidate counts as fired only when the
+allocator retained an admissible caller-saved alternative *and* stable coloring
+enabled at least one remaining-carrier rewrite. This keeps it out of unrelated
+bodies and lets an already-closed aggressive winner enter the beam first. An
+identical coloring cannot masquerade as a transform. `trim-callee-saves` and
+`elide-empty-frame` remain separate children immediately after reallocation;
+their lane flags are preserved when the later stable branch recompiles the
+body. This topology keeps carrier-heavy stable forms reachable while preserving
+the aggressive path's downstream optimization opportunities and established
+validation-shape ordering.
 
 Fresh uncached OS-pilot revalidation at `da898fa2` proves every selected body
 (stage2 20/20, addr_space 29/29; zero verdict-cache hits). Stage2 `translate`
@@ -6826,10 +6843,26 @@ smaller. Stage2 Mach-O `__text` falls 3536→3436 bytes. On addr_space,
 claimed. Artifact hashes and the complete delta table are recorded in
 `benchmarks/native/results/os-leaf-callee-save-eviction-2026-10-06.json`.
 
-This is a non-neutral, **verdict-gated** candidate. The untrimmed reallocated
-body remains selectable, and the unchanged seam checker and whole-body
-verifier authorize the edited ABI scaffold. Materialization v27 keys the lane
-flag; `OAK_OPT_SKIP=trim-callee-saves` retains the conservative traffic.
+The carrier-aware fallback follow-up at `ac493e3b` recovers the stable
+`walk_leaf` without surrendering any of those aggressive wins. Fresh uncached
+verification selects all 20 stage2 symbols as proven with 22 verdicts and all
+29 addr_space symbols as proven with 31 verdicts. `walk_leaf` falls 121→118;
+stage2 Mach-O `__text` falls another 12 bytes to 3424 and the object 16 bytes to
+4944. Stage2 keeps `reset` 121, `alloc_table` 122, `map_page` 129,
+`unmap_page` 160, and `translate` 54 instructions. Addr_space is byte-identical
+to the aggressive baseline: `map_page` remains 262, `translate` 70, `__text`
+3896 bytes, and the object 6080 bytes. Exact hashes and recipes are in
+`benchmarks/native/results/os-stable-carrier-fallback-2026-10-06.json`.
+
+Reallocation, stable retention, trimming, and empty-frame elision remain
+**verdict-gated** candidates. Reallocation and stable retention are
+shape-neutral for evaluation budgeting; the unchanged seam checker and
+whole-body verifier still authorize every recoloring and edited ABI scaffold.
+Materialization v33 keys both the eviction execution flag and the retention
+recipe marker, while the exact machine reallocation cache also keys the
+allocation options. `OAK_OPT_SKIP=retain-callee-save-carriers` keeps only the
+aggressive coloring; `OAK_OPT_SKIP=trim-callee-saves` retains conservative ABI
+traffic.
 
 On the stage-2 pilot, the same-compiler disabled control establishes 28 fewer
 selected instructions and 112 fewer bytes in both Mach-O `__text` and the

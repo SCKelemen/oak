@@ -12,7 +12,7 @@ import (
 )
 
 // ReallocationSummary retains reporting counts, never allocation webs.
-type ReallocationSummary struct{ Sites, Promoted int }
+type ReallocationSummary struct{ Sites, Promoted, LeafEvicted, LeafRetained int }
 
 // ReallocationCacheStats counts requests, successful lookups and retained
 // entries. PayloadBytes is canonical input plus output size, not Go heap size.
@@ -40,6 +40,7 @@ type reallocationDecision struct {
 	Items    []asm.Item
 	Clobbers []asm.Register
 	Objects  []FrameObject
+	Options  AllocationOptions
 }
 
 type reallocationPayload struct {
@@ -63,6 +64,13 @@ func (c *ReallocationCache) Stats() ReallocationCacheStats {
 // errors are returned unchanged and are never cached. A nil receiver is
 // an explicit uncached path.
 func (c *ReallocationCache) Apply(fn *asm.Function, objects []FrameObject) (*asm.Function, ReallocationSummary, error) {
+	return c.ApplyWithOptions(fn, objects, AllocationOptions{})
+}
+
+// ApplyWithOptions is Apply with optional coloring hints. Options are part of
+// the exact canonical decision key, so one coloring can never reuse another's
+// payload or reporting summary.
+func (c *ReallocationCache) ApplyWithOptions(fn *asm.Function, objects []FrameObject, options AllocationOptions) (*asm.Function, ReallocationSummary, error) {
 	if c != nil {
 		c.mu.Lock()
 		c.stats.Requests++
@@ -72,13 +80,13 @@ func (c *ReallocationCache) Apply(fn *asm.Function, objects []FrameObject) (*asm
 		return nil, ReallocationSummary{}, fmt.Errorf("machine: no function")
 	}
 	if c == nil || os.Getenv("OAK_MACHINE_TRACE_SLOTS") != "" {
-		return reallocateSummary(fn, objects)
+		return reallocateSummary(fn, objects, options)
 	}
 	input, encodable := encodeReallocation(reallocationDecision{
-		Arch: fn.Arch, Frame: fn.Frame, Items: fn.Items, Clobbers: fn.Clobbers, Objects: objects,
+		Arch: fn.Arch, Frame: fn.Frame, Items: fn.Items, Clobbers: fn.Clobbers, Objects: objects, Options: options,
 	}, reallocationCacheBytes)
 	if !encodable {
-		return reallocateSummary(fn, objects)
+		return reallocateSummary(fn, objects, options)
 	}
 	// The entire canonical string is the key: no digest collision can
 	// authorize reusing a different machine body.
@@ -93,7 +101,7 @@ func (c *ReallocationCache) Apply(fn *asm.Function, objects []FrameObject) (*asm
 	}
 	room := c.stats.Entries < reallocationCacheEntries && len(key) < reallocationCacheBytes-c.stats.PayloadBytes
 	c.mu.Unlock()
-	out, summary, err := reallocateSummary(fn, objects)
+	out, summary, err := reallocateSummary(fn, objects, options)
 	if err != nil || !room {
 		return out, summary, err
 	}
@@ -117,12 +125,12 @@ func (c *ReallocationCache) Apply(fn *asm.Function, objects []FrameObject) (*asm
 	return out, summary, nil
 }
 
-func reallocateSummary(fn *asm.Function, objects []FrameObject) (*asm.Function, ReallocationSummary, error) {
-	out, allocation, err := ReallocateWith(fn, objects)
+func reallocateSummary(fn *asm.Function, objects []FrameObject, options AllocationOptions) (*asm.Function, ReallocationSummary, error) {
+	out, allocation, err := ReallocateWithOptions(fn, objects, options)
 	if err != nil {
 		return out, ReallocationSummary{}, err
 	}
-	return out, ReallocationSummary{Sites: allocation.Sites(), Promoted: allocation.Promoted}, nil
+	return out, ReallocationSummary{Sites: allocation.Sites(), Promoted: allocation.Promoted, LeafEvicted: allocation.LeafEvicted, LeafRetained: allocation.LeafRetained}, nil
 }
 
 // This copies every mutable descendant of the closed assembly payload.
@@ -179,7 +187,7 @@ func cloneReallocationRegisters(registers []asm.Register) []asm.Register {
 // the complete asm.Function (and therefore frontend syntax) is excluded.
 var reallocationEncodingTypes = func() map[reflect.Type]uint64 {
 	types := []reflect.Type{
-		reflect.TypeOf(reallocationDecision{}), reflect.TypeOf(reallocationPayload{}), reflect.TypeOf(ReallocationSummary{}),
+		reflect.TypeOf(reallocationDecision{}), reflect.TypeOf(reallocationPayload{}), reflect.TypeOf(ReallocationSummary{}), reflect.TypeOf(AllocationOptions{}),
 		reflect.TypeOf(asm.Instruction{}), reflect.TypeOf(asm.Label{}), reflect.TypeOf(asm.Align{}),
 		reflect.TypeOf(asm.Register{}), reflect.TypeOf(asm.Memory{}), reflect.TypeOf(asm.RegisterList{}),
 		reflect.TypeOf(asm.Immediate{}), reflect.TypeOf(asm.FloatImmediate{}), reflect.TypeOf(asm.Symbol{}),
@@ -205,7 +213,7 @@ var reallocationEncodingTypes = func() map[reflect.Type]uint64 {
 // Reject struct extensions until the key and payload copier are reviewed
 // together, even if a new field happens to use an already allowed type.
 var reallocationEncodingFields = map[reflect.Type]int{
-	reflect.TypeOf(reallocationDecision{}): 5, reflect.TypeOf(reallocationPayload{}): 3, reflect.TypeOf(ReallocationSummary{}): 2,
+	reflect.TypeOf(reallocationDecision{}): 6, reflect.TypeOf(reallocationPayload{}): 3, reflect.TypeOf(ReallocationSummary{}): 4, reflect.TypeOf(AllocationOptions{}): 1,
 	reflect.TypeOf(asm.Instruction{}): 6, reflect.TypeOf(asm.Label{}): 2, reflect.TypeOf(asm.Align{}): 2,
 	reflect.TypeOf(asm.Register{}): 6, reflect.TypeOf(asm.Memory{}): 7, reflect.TypeOf(asm.RegisterList{}): 1,
 	reflect.TypeOf(asm.Immediate{}): 3, reflect.TypeOf(asm.FloatImmediate{}): 1, reflect.TypeOf(asm.Symbol{}): 2,

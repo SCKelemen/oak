@@ -17,6 +17,15 @@ type Allocation struct {
 	// the webs that changed register; Coalesced the copies removed because
 	// their source and destination share a register.
 	Promoted, Propagated, Eliminated, Hoisted, Renamed, Coalesced int
+	// LeafEvicted counts callee-saved GPR webs moved by the optional
+	// non-call-crossing eviction hint. Renamed already includes these webs;
+	// this separate count lets candidate search tell whether the hint fired.
+	LeafEvicted int
+	// LeafRetained counts webs for which stable coloring kept the original
+	// callee-saved register even though the optional hint had a free
+	// caller-saved alternative. It makes the stable fallback a counted
+	// candidate without treating identical colorings as transformations.
+	LeafRetained int
 	// DeadStores counts the stores to qualified frame slots no load
 	// reached, removed with the promotion (Promote).
 	DeadStores int
@@ -26,16 +35,24 @@ type Allocation struct {
 	Pool map[Reg]bool
 }
 
+// AllocationOptions selects optional coloring hints. The zero value is the
+// stable allocator: it retains a web's own register after copy coalescing.
+type AllocationOptions struct {
+	// EvictLeafCalleeSaves lets an AArch64 GPR web originally parked in a
+	// callee-saved register, but live across no call, try a free caller-saved
+	// register before retaining its own. Candidate search enables it on the
+	// ordinary AArch64 path and can retry stable coloring explicitly.
+	EvictLeafCalleeSaves bool
+}
+
 // Reallocate lifts an AArch64 body, builds its webs, and recolors the
 // webs nothing pins with a linear scan over their live ranges: a web
 // takes the register a copy partner already holds when that register is
 // free over its range (so the copy becomes a no-op and is removed), else
-// its own, else the lowest free register of the pool. On AArch64, a
-// call-free GPR web in a callee-saved register tries a caller-saved
-// register before keeping its own, so later trimming can remove an
-// otherwise needless save and restore. Ranges crossing a call take
-// callee-saved registers only, and a wide vector web never v8–v15 across
-// a call. The pool is the registers
+// its own, else the lowest free register of the pool. Optional coloring hints
+// are available through ReallocateWithOptions; the stable entry points do not
+// enable them. Ranges crossing a call take callee-saved registers only, and a
+// wide vector web never v8–v15 across a call. The pool is the registers
 // the lowering wrote, so the frame, the prologue, and the epilogue stand
 // as emitted. A body the lift refuses, or a web that finds no register,
 // is an error: the caller keeps the body it had.
@@ -47,6 +64,13 @@ func Reallocate(fn *asm.Function) (*asm.Function, *Allocation, error) { return R
 // ReallocateWith is Reallocate with the lowering's frame layout, when
 // known (PromoteWith).
 func ReallocateWith(fn *asm.Function, objects []FrameObject) (*asm.Function, *Allocation, error) {
+	return ReallocateWithOptions(fn, objects, AllocationOptions{})
+}
+
+// ReallocateWithOptions is ReallocateWith plus optional coloring hints. The
+// options are machine-decision inputs and must be included in any result cache
+// or candidate materialization key.
+func ReallocateWithOptions(fn *asm.Function, objects []FrameObject, options AllocationOptions) (*asm.Function, *Allocation, error) {
 	promotedFn, promoted, deadStores, err := PromoteWith(fn, objects)
 	if err != nil {
 		return nil, nil, err
@@ -93,7 +117,8 @@ func ReallocateWith(fn *asm.Function, objects []FrameObject) (*asm.Function, *Al
 	// A web that finds no register keeps its own — pinned — and allocation
 	// starts over, so at worst every web keeps the lowering's coloring.
 	for {
-		err := allocate(lifted, webs, alloc)
+		alloc.LeafEvicted, alloc.LeafRetained = 0, 0
+		err := allocate(lifted, webs, alloc, options)
 		if err == nil {
 			break
 		}
@@ -189,7 +214,7 @@ func copySafe(ins *Instr, dst, src *Web) bool {
 }
 
 // allocate colors the webs.
-func allocate(f *Function, webs []*Web, alloc *Allocation) error {
+func allocate(f *Function, webs []*Web, alloc *Allocation, options AllocationOptions) error {
 	// Calls, for the crossing test.
 	var calls []int
 	for _, ins := range f.Instrs {
@@ -301,15 +326,20 @@ func allocate(f *Function, webs []*Web, alloc *Allocation) error {
 				break
 			}
 		}
-		// Lowering favors callee-saved homes even in leaf code. When no
-		// copy can be coalesced, moving such a GPR web to an otherwise-free
-		// caller-saved register lets the following trim and empty-frame
-		// passes remove the ABI scaffold. If pressure leaves none free, the
-		// original coloring below remains the fallback.
-		if !ok && t.arch == asm.ArchArm64 && w.Reg.Class == GPR && t.calleeSaved(w.Reg) && !crossing {
+		// Lowering favors callee-saved homes even in leaf code. When no copy
+		// can be coalesced and a caller-saved alternative exists, either take
+		// it under the optional eviction hint or count the stable choice that
+		// retains the web's own register. The latter count makes a late stable
+		// fallback observable to candidate search without changing allocation.
+		if !ok && t.arch == asm.ArchArm64 && w.Reg.Class == GPR && t.calleeSaved(w.Reg) && !crossing && admissible(w.Reg, w) {
 			for _, r := range pool {
 				if callerSaved[r] && admissible(r, w) {
-					chosen, ok = r, true
+					if options.EvictLeafCalleeSaves {
+						chosen, ok = r, true
+						alloc.LeafEvicted++
+					} else {
+						alloc.LeafRetained++
+					}
 					break
 				}
 			}

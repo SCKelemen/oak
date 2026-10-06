@@ -28,9 +28,10 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 	digest := sha256.New()
 	// v32 admits adjacent alias labels in final cleanup and makes that
 	// post-schedule child reachable after ordinary cleanup; v31 added fixed-point
-	// carrier reuse. Preserve every recipe input to avoid reusing another
+	// carrier reuse; v33 added the leaf-coloring execution choice and stable
+	// fallback marker. Preserve every recipe input to avoid reusing another
 	// candidate's body.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v32")
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v33")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
@@ -95,6 +96,8 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 		{"post-schedule-cleanup", lane.PostScheduleCleanup},
 		{"vector", lane.Vector},
 		{"reallocate", lane.Reallocate},
+		{"evict-leaf-callee-saves", lane.EvictLeafCalleeSaves},
+		{"retain-callee-save-carriers", lane.RetainCalleeSaveCarriers},
 		{"trim-callee-saves", lane.TrimCalleeSaves},
 		{"elide-empty-frame", lane.ElideEmptyFrame},
 		{"schedule", lane.Schedule},

@@ -100,6 +100,10 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 	changedGlobalMaskElision.ElideGlobalLoadMasks = true
 	changedPostScheduleCleanup := lane(false)
 	changedPostScheduleCleanup.PostScheduleCleanup = true
+	changedLeafCalleeSaves := lane(false)
+	changedLeafCalleeSaves.EvictLeafCalleeSaves = true
+	changedLeafRetention := lane(false)
+	changedLeafRetention.RetainCalleeSaveCarriers = true
 	changedCalleeSaveTrim := lane(false)
 	changedCalleeSaveTrim.TrimCalleeSaves = true
 	changedEmptyFrame := lane(false)
@@ -171,6 +175,8 @@ func TestNativeMaterializationKeyIsOrderIndependentAndComplete(t *testing.T) {
 		{"global-load-forwarding", driver(false), opt.Identity(changedGlobalForwarding)},
 		{"global-load-mask-elision", driver(false), opt.Identity(changedGlobalMaskElision)},
 		{"post-schedule-cleanup", driver(false), opt.Identity(changedPostScheduleCleanup)},
+		{"leaf-callee-save-eviction", driver(false), opt.Identity(changedLeafCalleeSaves)},
+		{"leaf-callee-save-retention", driver(false), opt.Identity(changedLeafRetention)},
 		{"callee-save-trim", driver(false), opt.Identity(changedCalleeSaveTrim)},
 		{"empty-frame", driver(false), opt.Identity(changedEmptyFrame)},
 		{"record-base-carriers", driver(false), opt.Identity(changedRecordBaseCarriers)},

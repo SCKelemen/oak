@@ -1794,6 +1794,15 @@ type Lane struct {
 	// emitted. A body the lift refuses does not lower under the flag, so
 	// the candidate search keeps the body as emitted.
 	Reallocate bool
+	// EvictLeafCalleeSaves lets non-call-crossing AArch64 GPR webs parked in
+	// x19–x28 try free caller-saved registers. Candidate search enables this
+	// on its ordinary AArch64 reallocation path.
+	EvictLeafCalleeSaves bool
+	// RetainCalleeSaveCarriers marks the carrier-aware stable-coloring fallback.
+	// It has no independent machine effect: the fallback recompiles with
+	// EvictLeafCalleeSaves disabled, while this marker keeps its recipe and
+	// transform accounting distinct from the aggressive parent.
+	RetainCalleeSaveCarriers bool
 	// TrimCalleeSaves removes callee-saved general-register homes left dead
 	// by reallocation, together with their matched prologue/epilogue traffic.
 	// It keeps the frame layout fixed and is independently verifier-gated.
@@ -1998,10 +2007,15 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 		// Global register reallocation (machine.Reallocate): the body's
 		// webs recolored and its copies coalesced; a lift the package
 		// refuses leaves this configuration without a lowering.
+		if lane.RetainCalleeSaveCarriers && lane.EvictLeafCalleeSaves {
+			return nil, unsupported("callee-save carrier retention with leaf eviction")
+		}
 		if lane.Reallocate {
-			if err := session.reallocate(out); err != nil {
+			if err := session.reallocate(out, lane.EvictLeafCalleeSaves); err != nil {
 				return nil, err
 			}
+		} else if lane.EvictLeafCalleeSaves || lane.RetainCalleeSaveCarriers {
+			return nil, unsupported("callee-save coloring choice without reallocation")
 		}
 		if lane.TrimCalleeSaves {
 			if !lane.Reallocate {
@@ -2033,7 +2047,7 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 		}
 		return scheduleLane(lane, out)
 	case asm.ArchRV64:
-		if lane.TrimCalleeSaves || lane.ElideEmptyFrame {
+		if lane.EvictLeafCalleeSaves || lane.RetainCalleeSaveCarriers || lane.TrimCalleeSaves || lane.ElideEmptyFrame {
 			return nil, unsupported("callee-save and empty-frame trimming are not implemented on the RV64 lane")
 		}
 		var out *asm.Function
@@ -2084,7 +2098,7 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 		if !lane.Reallocate {
 			return scheduleLane(lane, out)
 		}
-		if err := session.reallocate(out); err != nil {
+		if err := session.reallocate(out, false); err != nil {
 			return nil, err
 		}
 		return scheduleLane(lane, out)
@@ -2264,6 +2278,20 @@ var fusedExitsOf = map[*asm.Function]int{}
 // Reallocated reports how many webs a lowering recolored and copies it
 // coalesced under Lane.Reallocate.
 func Reallocated(fn *asm.Function) int { return reallocated[fn] }
+
+// EvictedLeafCalleeSaves reports how many non-call-crossing AArch64 GPR webs
+// moved from callee-saved to caller-saved registers under the optional
+// allocation hint.
+func EvictedLeafCalleeSaves(fn *asm.Function) int { return evictedLeafCalleeSaves[fn] }
+
+var evictedLeafCalleeSaves = map[*asm.Function]int{}
+
+// RetainedCalleeSaveCarriers reports how many non-call-crossing AArch64 GPR
+// webs had a free caller-saved alternative but kept their stable callee-saved
+// color in the carrier-aware fallback candidate.
+func RetainedCalleeSaveCarriers(fn *asm.Function) int { return retainedCalleeSaveCarriers[fn] }
+
+var retainedCalleeSaveCarriers = map[*asm.Function]int{}
 
 // TrimmedCalleeSaves reports the dead callee homes and saved registers removed
 // under Lane.TrimCalleeSaves.

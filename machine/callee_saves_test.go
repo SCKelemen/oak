@@ -2,6 +2,7 @@ package machine
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/SCKelemen/oak/asm"
@@ -30,12 +31,19 @@ func TestLeafReallocationEnablesEmptyFrame(t *testing.T) {
 		ins("lsl", w(20), w(19), imm(2)),
 		ins("sub", w(0), w(20), w(19)),
 	)
-	reallocated, allocation, err := Reallocate(input)
+	stable, stableAllocation, err := Reallocate(input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if allocation.Renamed != 2 {
-		t.Fatalf("renamed = %d, want 2\n%s", allocation.Renamed, text(reallocated.Items))
+	if stableAllocation.LeafEvicted != 0 || stableAllocation.LeafRetained != 2 || !strings.Contains(text(stable.Items), "add w19, w0, w1") {
+		t.Fatalf("default reallocation changed the stable coloring:\n%s", text(stable.Items))
+	}
+	reallocated, allocation, err := ReallocateWithOptions(input, nil, AllocationOptions{EvictLeafCalleeSaves: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allocation.Renamed != 2 || allocation.LeafEvicted != 2 {
+		t.Fatalf("renamed/evicted = %d/%d, want 2/2\n%s", allocation.Renamed, allocation.LeafEvicted, text(reallocated.Items))
 	}
 	trimmed, sites, err := TrimCalleeSaves(reallocated)
 	if err != nil {
@@ -65,12 +73,15 @@ func TestLeafReallocationPrefersCopyCoalescing(t *testing.T) {
 		ins("mov", w(19), w(0)),
 		ins("add", w(0), w(19), w(1)),
 	)
-	reallocated, allocation, err := Reallocate(input)
+	reallocated, allocation, err := ReallocateWithOptions(input, nil, AllocationOptions{EvictLeafCalleeSaves: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if allocation.Coalesced != 1 {
 		t.Fatalf("coalesced = %d, want parameter copy removed\n%s", allocation.Coalesced, text(reallocated.Items))
+	}
+	if allocation.LeafEvicted != 0 {
+		t.Fatalf("copy coalescing was counted as leaf eviction: %d", allocation.LeafEvicted)
 	}
 	trimmed, sites, err := TrimCalleeSaves(reallocated)
 	if err != nil {

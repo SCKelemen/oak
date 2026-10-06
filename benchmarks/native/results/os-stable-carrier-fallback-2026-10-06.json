@@ -1,0 +1,78 @@
+{
+  "date_local": "2026-10-06",
+  "host": "Apple arm64",
+  "baseline_revision": "ac493e3b188d86311ea474e55a8291144d4e2c44",
+  "candidate": "aggressive AArch64 leaf callee-save eviction on the main reallocation path plus an atomic stable-coloring/remaining-carrier fallback",
+  "os_revision": "5694c1990e7a22f041fe11abef2bb31f0d71bbd6",
+  "toolchain": {
+    "go": "go1.27.1 darwin/arm64"
+  },
+  "build": {
+    "candidate": "oak build -native -verify-fresh -opt-report -o OUT SOURCE",
+    "verify_fresh": true,
+    "verdict_cache_hits": 0
+  },
+  "pilots": {
+    "stage2": {
+      "source": "SCKelemen/os pilots/oak/stage2.oak",
+      "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+      "selected_function_symbols_proven": 20,
+      "verifier_verdicts": 22,
+      "text_bytes": {
+        "baseline": 3436,
+        "candidate": 3424,
+        "delta": -12
+      },
+      "object_bytes": {
+        "baseline": 4960,
+        "candidate": 4944,
+        "delta": -16
+      },
+      "object_sha256": {
+        "baseline": "cbbc29b30901754f732699def54cbf279b56ff69a63fa1b9fdc970c7a6f33a1a",
+        "candidate": "503cdbe006cdab6cddda229f37e092397627f6cb9c375221cd0fdc42743a81c3"
+      },
+      "changed_selected_bodies": {
+        "walk_leaf": { "before": 121, "after": 118, "delta": -3 }
+      },
+      "retained_aggressive_bodies": {
+        "reset": 121,
+        "alloc_table": 122,
+        "map_page": 129,
+        "unmap_page": 160,
+        "translate": 54
+      }
+    },
+    "addr_space": {
+      "source": "SCKelemen/os pilots/oak/addr_space.oak",
+      "source_sha256": "9b3f4a617e213ab90d21bc87f83ec9d1641d0b22f1c5a7c18926314495575aba",
+      "selected_function_symbols_proven": 29,
+      "verifier_verdicts": 31,
+      "text_bytes": {
+        "baseline": 3896,
+        "candidate": 3896,
+        "delta": 0
+      },
+      "object_bytes": {
+        "baseline": 6080,
+        "candidate": 6080,
+        "delta": 0
+      },
+      "object_sha256": {
+        "baseline": "66313834cc39645e98a70fb580b53962c2875fa06861677b835cddf537be5f3a",
+        "candidate": "66313834cc39645e98a70fb580b53962c2875fa06861677b835cddf537be5f3a"
+      },
+      "retained_aggressive_bodies": {
+        "reset": 121,
+        "alloc_table": 122,
+        "map_page": 262,
+        "unmap_page": 160,
+        "translate": 70
+      }
+    }
+  },
+  "runtime": {
+    "reported": false,
+    "reason": "This increment reports verified static code-size results only."
+  }
+}

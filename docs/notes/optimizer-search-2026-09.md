@@ -179,8 +179,14 @@ call take callee-saved registers only, wide vector webs never v8–v15 across a
 call, and a copy narrower than its source's writes or its destination's reads
 is never removed. A web that finds no register is pinned and allocation
 restarts, so at worst every web keeps the lowering's coloring.
-`nativegen`'s `reallocate` transform runs it as a machine-phase candidate;
-on the vector-homes test bodies the verifier proves every reallocated
+`nativegen`'s `reallocate` transform runs the aggressive AArch64 choice as a
+machine-phase candidate so downstream transforms can compose with it. After
+ordinary fixed-point carrier closure gets the aggressive candidate first. If
+that closure did not fire after the first carrier reuse,
+`retain-callee-save-carriers` can rerun stable coloring and closure as one
+atomic candidate. It fires only when the allocator observed a real
+caller-saved alternative and the stable form closes at least one remaining
+carrier. On the vector-homes test bodies the verifier proves every reallocated
 form and the search selects it, two to seventeen copies fewer per body.
 
 Leaf callee-save eviction revalidation (2026-10-06) keeps copy coalescing
@@ -189,6 +195,14 @@ proves every selected body. Stage-2 `translate` falls 63→54 instructions and
 the object's `__text` 3536→3436 bytes; `addr_space.translate` falls 81→70 and
 its `__text` 4016→3896 bytes. Exact per-body deltas and artifact hashes are in
 `benchmarks/native/results/os-leaf-callee-save-eviction-2026-10-06.json`.
+
+The same-day stable-carrier follow-up branches only where stable coloring
+enables a remaining record-base carrier. Stage2 `walk_leaf` returns 121→118
+instructions while every aggressive win remains selected, reducing `__text`
+3436→3424 and the object 4960→4944. Addr_space remains byte-identical at
+`map_page` 262, `__text` 3896, and object 6080. Both fresh runs prove every
+selected symbol with zero verdict-cache hits; exact provenance is in
+`benchmarks/native/results/os-stable-carrier-fallback-2026-10-06.json`.
 
 Second increment: frame-slot promotion (`machine.Promote`), the inverse
 of spilling. A frame slot every access of which is a plain load or store

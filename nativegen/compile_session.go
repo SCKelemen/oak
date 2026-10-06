@@ -22,12 +22,12 @@ func (session *CompileSession) ReallocationStats() machine.ReallocationCacheStat
 	return session.allocations.Stats()
 }
 
-func (session *CompileSession) reallocate(out *asm.Function) error {
+func (session *CompileSession) reallocate(out *asm.Function, evictLeafCalleeSaves bool) error {
 	var cache *machine.ReallocationCache
 	if session != nil {
 		cache = &session.allocations
 	}
-	re, summary, err := cache.Apply(out, FrameObjects(out))
+	re, summary, err := cache.ApplyWithOptions(out, FrameObjects(out), machine.AllocationOptions{EvictLeafCalleeSaves: evictLeafCalleeSaves})
 	if err != nil {
 		return unsupported("%v", err)
 	}
@@ -35,5 +35,7 @@ func (session *CompileSession) reallocate(out *asm.Function) error {
 	// lowering metadata. Only this deterministic stage's payload is reused.
 	out.Items, out.Clobbers = re.Items, re.Clobbers
 	reallocated[out], promotedSlots[out] = summary.Sites, summary.Promoted
+	evictedLeafCalleeSaves[out] = summary.LeafEvicted
+	retainedCalleeSaveCarriers[out] = summary.LeafRetained
 	return nil
 }
