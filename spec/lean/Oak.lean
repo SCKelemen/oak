@@ -221,6 +221,7 @@ import Oak.RupCheck
 import Oak.LRATBounds
 import Oak.LRATRUP
 import Oak.LRATRUPSoundness
+import Oak.LRATCheckerState
 import Oak.LRATFormulaBinding
 import Oak.ClauseAgreement
 import Oak.SATModel

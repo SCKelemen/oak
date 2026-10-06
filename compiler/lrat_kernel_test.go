@@ -150,6 +150,10 @@ func TestLRATKernelRUPExtract(t *testing.T) {
 	lratKernelExtract(t, "LRATRUP", []string{"lrat_rup"})
 }
 
+func TestLRATKernelCheckerExtract(t *testing.T) {
+	lratKernelExtract(t, "LRATChecker", []string{"lrat_check"})
+}
+
 func lratKernelExtract(t *testing.T, module string, roots []string) {
 	t.Helper()
 	extracted, err := New().WithSource("lrat.oak", lratKernelSource(t)).EmitLeanRoots("Oak."+module, roots).Get()
