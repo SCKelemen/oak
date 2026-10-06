@@ -112,7 +112,7 @@ func TestE2ESelfHostedRelocationKernel(t *testing.T) {
 // with an independent ELF reader, and execute both images when QEMU exists.
 func TestE2ESelfHostedELF(t *testing.T) {
 	var core strings.Builder
-	for _, name := range []string{"native.oak", "elf.oak"} {
+	for _, name := range []string{"native.oak", "objects.oak", "elf.oak"} {
 		data, err := os.ReadFile(filepath.Join("..", "asm", "selfhost", name))
 		if err != nil {
 			t.Fatal(err)
@@ -135,19 +135,24 @@ func TestE2ESelfHostedELF(t *testing.T) {
 			var s strings.Builder
 			s.WriteString(core.String())
 			s.WriteString("putchar: (ch: c.Int): c.Int = c.extern(\"putchar\")\nmain: (): i32 {\n")
-			fmt.Fprintf(&s, "  text: [%d]u8\n  image: [%d]u8\n  symbols: [1]u64 = [u64(%d)]\n", len(words)*4, 4096+len(words)*4, 65536+mainAt)
-			fmt.Fprintf(&s, "  plan: [1]NativeRelocation = [NativeRelocation { offset: u32(0), kind: u32(%d), symbol: u32(0) }]\n", kind)
-			s.WriteString("  true ? { dst: [*]u8 = span(&text)\n")
+			fmt.Fprintf(&s, "  source: [%d]u8\n  text: [%d]u8\n  image: [%d]u8\n  layout: [2]u32\n", len(words)*4, len(words)*4, 4096+len(words)*4)
+			s.WriteString("  names: [14]u8 = [u8(95), u8(115), u8(116), u8(97), u8(114), u8(116), u8(111), u8(97), u8(107), u8(95), u8(109), u8(97), u8(105), u8(110)]\n")
+			fmt.Fprintf(&s, "  objects: [2]NativeObject = [NativeObject { source: u32(0), size: u32(%d), alignment: u32(4) }, NativeObject { source: u32(%d), size: u32(8), alignment: u32(4) }]\n", mainAt, mainAt)
+			s.WriteString("  symbols: [2]NativeSymbol = [NativeSymbol { name: u32(0), length: u32(6), object: u32(0), offset: u32(0) }, NativeSymbol { name: u32(6), length: u32(8), object: u32(1), offset: u32(0) }]\n")
+			fmt.Fprintf(&s, "  plan: [1]NativeObjectRelocation = [NativeObjectRelocation { object: u32(0), offset: u32(0), kind: u32(%d), name: u32(6), length: u32(8) }]\n", kind)
+			s.WriteString("  true ? { dst: [*]u8 = span(&source)\n")
 			for i, w := range words {
 				fmt.Fprintf(&s, "    native_write_word(dst, u32(%d), u32(%d))\n", i*4, w)
 			}
-			s.WriteString("    assert(native_link_text(dst, view(&plan), view(&symbols), u64(65536)) == u32(0))\n  }\n")
+			s.WriteString("  }\n  entry: u32 = 0\n  true ? { dst: [*]u8 = span(&text)\n    scratch: [*]u32 = span(&layout)\n")
+			fmt.Fprintf(&s, "    linked: NativeLinkResult = native_link_objects(dst, scratch, view(&source), view(&objects), view(&names), view(&symbols), view(&plan), u32(%d), u64(65536), u32(0), u32(6))\n", archID)
+			fmt.Fprintf(&s, "    assert(linked.status == u32(0) && linked.size == u32(%d))\n    entry = linked.entry\n  }\n", len(words)*4)
 			s.WriteString("  size: u32 = 0\n  true ? { dst: [*]u8 = span(&image)\n")
 			// Every rejection must leave the caller's bytes alone.
 			s.WriteString("    dst[u32(0)] = u8(99)\n")
 			fmt.Fprintf(&s, "    assert(native_elf_image(dst, view(&text), u32(%d), u64(65537), u32(0)) == u32(0))\n", archID)
 			s.WriteString("    assert(dst[u32(0)] == u8(99))\n")
-			fmt.Fprintf(&s, "    size = native_elf_image(dst, view(&text), u32(%d), u64(65536), u32(0))\n  }\n", archID)
+			fmt.Fprintf(&s, "    size = native_elf_image(dst, view(&text), u32(%d), u64(65536), entry)\n  }\n", archID)
 			fmt.Fprintf(&s, "  assert(size == u32(%d))\n", 4096+len(words)*4)
 			s.WriteString("  i: u32 = 0\n  while i < size { putchar(c.Int(i32_bits_u32(u32(image[i]))))\n    i = i + u32(1) }\n  0\n}\n")
 			stdout, code, abnormal := buildAndRunOutput(t, "selfhost_elf", s.String())
