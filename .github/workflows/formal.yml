@@ -49,7 +49,7 @@ jobs:
       # rendered as Lean examples and checked against their models in this
       # Lean-equipped lane. Ordinary Go-only jobs skip these optional oracles.
       - name: Check bounded production correspondence
-        run: go test ./asm -run 'TestAArch64Branch26RelocationMatchesLean|TestAArch64ADRL21PatchBoundaries|TestValidateCNFAllocationMatchesLean|TestValidateCNFTraceMatchesLean|TestNativeCNFReplay(Apply|Term|Word|WordPairs|Header|Finish|Settled|MetadataSettled|Recording)MatchesLean|TestNativeCNFReplayWordProjection' -count=1 -v
+        run: go test ./asm -run 'TestAArch64Branch26RelocationMatchesLean|TestAArch64ADRL21PatchBoundaries|TestRV64PCRelMatchesLean|TestValidateCNFAllocationMatchesLean|TestValidateCNFTraceMatchesLean|TestNativeCNFReplay(Apply|Term|Word|WordPairs|Header|Finish|Settled|MetadataSettled|Recording)MatchesLean|TestNativeCNFReplayWordProjection' -count=1 -v
 
       - name: Check Wasm LEB production decisions against Lean
         env:
@@ -61,8 +61,16 @@ jobs:
           OAK_REQUIRE_RV64_LEAN: '1'
         run: go test ./asm -run '^TestRV64LocalBranchesMatchLean$' -count=1 -v
 
+      - name: Check solver formula binding in Go, Oak, and Lean
+        env:
+          OAK_REQUIRE_LRAT_BINDING_LEAN: '1'
+        run: go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean)$' -count=1 -v
+
       - name: Check extracted standard library against compiled Oak
         run: go test ./compiler -run 'TestLeanStdlibFaithful' -count=1 -v
+
+      - name: Check self-hosted LRAT kernel and bounds extraction
+        run: go test ./compiler -run '^TestLRATKernel' -count=1 -v
 
       # The self-hosted laws (docs/spec/125-verification.md section 7): the
       # decided files everywhere, the Lean-proved file here, where the

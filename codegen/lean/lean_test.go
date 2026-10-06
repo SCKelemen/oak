@@ -545,3 +545,23 @@ total: (h: Handle, g: Handle): u32 = h.merge(g) + size(greet()) + Handle_peek(h)
 		}
 	}
 }
+
+// Calendar fields exercise range-preserving unsigned-to-signed constructors.
+// Lean has no UInt8.toInt64 or UInt32.toInt64; zero extension must precede
+// same-width reinterpretation, including when the source high bit is set.
+func TestExtractionUnsignedSignedWidening(t *testing.T) {
+	out, err := extract(t, `
+ small: (x: u8): i16 = i16(x)
+ medium: (x: u16): i32 = i32(x)
+ wide: (x: u32): i64 = i64(x)
+ calendar: (x: u8): i64 = i64(x)
+ `)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"x.toUInt16.toInt16", "x.toUInt32.toInt32", "x.toUInt64.toInt64"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing unsigned widening %q:\n%s", want, out)
+		}
+	}
+}

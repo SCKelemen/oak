@@ -29,9 +29,35 @@ LRAT_ID_ORDER: u32 = 5
 LRAT_NO_EMPTY: u32 = 6
 LRAT_CAPACITY: u32 = 7
 LRAT_SATISFIED: u32 = 8
+LRAT_FORMULA_MISMATCH: u32 = 9
+
+// Bind a solver-produced record to the independently retained formula before
+// checking its proof. The exact ordered clause words (including counts and
+// duplicates) matter, as hints name clause ids. Capacity hints at 5..7 do not.
+// Subtraction after length guards avoids wrapping attacker-supplied lengths.
+// This is an identity/framing gate, not a clause or proof syntax checker.
+lrat_matches_formula: (formula: []u32, record: []u32): Bool {
+  same: Bool = len(formula) >= LRAT_HEADER_WORDS && len(record) >= LRAT_HEADER_WORDS
+  same = same && formula[u32(0)] == LRAT_MAGIC && record[u32(0)] == LRAT_MAGIC
+  same = same && formula[u32(4)] == u32(0) && formula[u32(3)] == len(formula) - LRAT_HEADER_WORDS
+  same = same && record[u32(3)] <= len(record) - LRAT_HEADER_WORDS
+  same = same && record[u32(4)] == len(record) - LRAT_HEADER_WORDS - record[u32(3)]
+  same = same && formula[u32(1)] == record[u32(1)] && formula[u32(2)] == record[u32(2)] && formula[u32(3)] == record[u32(3)]
+  at: u32 = LRAT_HEADER_WORDS
+  while same && at < len(formula) {
+    same = formula[at] == record[at]
+    at = at + u32(1)
+  }
+  same
+}
 
 // An assignment is 0 unassigned, 1 false, 2 true.
 LRAT_UNASSIGNED: u8 = 0
+
+// Check before adding: input counts are arbitrary u32 words, so at + count
+// can wrap even when both operands fit. The subtraction is reached only
+// when at <= limit. Oak.LRATBounds proves this extracted implementation.
+lrat_fits: (at: u32, count: u32, limit: u32): Bool = at <= limit && count <= limit - at
 
 // lrat_true_value is the assignment under which the literal holds.
 lrat_true_value: (lit: u32): u8 = lit % u32(2) == u32(1) ? u8(2) | u8(1)
@@ -54,10 +80,11 @@ lrat_rup: (words: []u32, target_at: u32, target_n: u32, hints_at: u32, hints_n: 
   settled: Bool = false
   used: u32 = 0
   i: u32 = 0
-  while i < target_n && status == LRAT_ACCEPTED && !settled {
+  while i < target_n && status == LRAT_ACCEPTED {
     lit: u32 = words[target_at + i]
     variable: u32 = lit / u32(2)
-    variable < variables ? {
+    variable >= variables ? { status = LRAT_MALFORMED } | { }
+    status == LRAT_ACCEPTED && !settled ? {
       wanted: u8 = lrat_false_value(lit)
       prior: u8 = assign[variable]
       prior == LRAT_UNASSIGNED ? {
@@ -69,7 +96,7 @@ lrat_rup: (words: []u32, target_at: u32, target_n: u32, hints_at: u32, hints_n: 
         // under every assignment, needs no hints.
         settled = prior != wanted
       }
-    } | { status = LRAT_MALFORMED }
+    } | { }
     i = i + u32(1)
   }
   h: u32 = 0
@@ -117,7 +144,10 @@ lrat_rup: (words: []u32, target_at: u32, target_n: u32, hints_at: u32, hints_n: 
 // lrat_check checks a whole certificate. The caller owns every array:
 // starts, lengths, and alive indexed by clause id up to max_id; store the
 // literal store of store_words; assign and trail of variables entries. The
-// result is written to out as { status, additions, deletions }.
+// result is written to out as { status, additions, deletions }. A short
+// output span returns LRAT_CAPACITY without writing it. Header body counts
+// must describe the entire word view; trailing words are refused. Every
+// literal is validated, including literals after a tautology is detected.
 lrat_check: (words: []u32, starts: [*]u32, lengths: [*]u32, alive: [*]u8, store: [*]u32, assign: [*]u8, trail: [*]u32, out: [*]u32): u32 {
   status: u32 = LRAT_ACCEPTED
   additions: u32 = 0
@@ -129,7 +159,10 @@ lrat_check: (words: []u32, starts: [*]u32, lengths: [*]u32, alive: [*]u8, store:
   step_words: u32 = ok ? { words[u32(4)] } | { u32(0) }
   max_id: u32 = ok ? { words[u32(5)] } | { u32(0) }
   store_words: u32 = ok ? { words[u32(6)] } | { u32(0) }
-  ok = ok && LRAT_HEADER_WORDS + literal_words <= len(words) && LRAT_HEADER_WORDS + literal_words + step_words <= len(words)
+  ok = ok && lrat_fits(LRAT_HEADER_WORDS, literal_words, len(words))
+  literal_end: u32 = ok ? { LRAT_HEADER_WORDS + literal_words } | { u32(0) }
+  ok = ok && lrat_fits(literal_end, step_words, len(words))
+  ok = ok && literal_end + step_words == len(words)
   ok = ok && len(starts) > max_id && len(lengths) > max_id && len(alive) > max_id
   ok = ok && len(store) >= store_words && len(assign) >= variables && len(trail) >= variables
   ok = ok && clause_count <= max_id
@@ -146,13 +179,13 @@ lrat_check: (words: []u32, starts: [*]u32, lengths: [*]u32, alive: [*]u8, store:
   }
   // The initial clauses, ids 1..clause_count, into the store.
   at: u32 = LRAT_HEADER_WORDS
-  end: u32 = LRAT_HEADER_WORDS + literal_words
+  end: u32 = literal_end
   used: u32 = 0
   empty: Bool = false
   c: u32 = 1
   while c <= clause_count && status == LRAT_ACCEPTED {
     n: u32 = at < end ? { words[at] } | { u32(0) }
-    fits: Bool = at < end && at + u32(1) + n <= end && used + n <= store_words
+    fits: Bool = at < end && lrat_fits(at + u32(1), n, end) && lrat_fits(used, n, store_words)
     fits ? {
       starts[c] = used
       lengths[c] = n
@@ -173,15 +206,15 @@ lrat_check: (words: []u32, starts: [*]u32, lengths: [*]u32, alive: [*]u8, store:
   // The steps.
   last: u32 = clause_count
   at = end
-  end = end + step_words
+  end = ok ? { end + step_words } | { u32(0) }
   while at < end && status == LRAT_ACCEPTED {
     kind: u32 = words[at]
     kind == u32(1) ? {
       // Deletion: { 1, id, k, cid... }.
-      at + u32(3) <= end ? {
+      lrat_fits(at, u32(3), end) ? {
         id: u32 = words[at + u32(1)]
         k: u32 = words[at + u32(2)]
-        at + u32(3) + k <= end && id >= last ? {
+        lrat_fits(at + u32(3), k, end) && id > u32(0) && id >= last ? {
           d: u32 = 0
           while d < k && status == LRAT_ACCEPTED {
             cid: u32 = words[at + u32(3) + d]
@@ -195,19 +228,19 @@ lrat_check: (words: []u32, starts: [*]u32, lengths: [*]u32, alive: [*]u8, store:
     } | {
       kind == u32(0) ? {
         // Addition: { 0, id, n, lit..., m, hint... }.
-        at + u32(3) <= end ? {
+        lrat_fits(at, u32(3), end) ? {
           id: u32 = words[at + u32(1)]
           n: u32 = words[at + u32(2)]
           lits_at: u32 = at + u32(3)
-          shape: Bool = lits_at + n + u32(1) <= end
+          shape: Bool = lrat_fits(lits_at, n, end) && lits_at + n < end
           m: u32 = shape ? { words[lits_at + n] } | { u32(0) }
-          hints_at: u32 = lits_at + n + u32(1)
-          shape = shape && hints_at + m <= end
+          hints_at: u32 = shape ? { lits_at + n + u32(1) } | { u32(0) }
+          shape = shape && lrat_fits(hints_at, m, end)
           shape ? {
             id > last && id <= max_id ? {
               status = lrat_rup(words, lits_at, n, hints_at, m, starts, lengths, alive, store, assign, trail, variables, max_id)
               status == LRAT_ACCEPTED ? {
-                used + n <= store_words ? {
+                lrat_fits(used, n, store_words) ? {
                   starts[id] = used
                   lengths[id] = n
                   j: u32 = 0
@@ -230,8 +263,11 @@ lrat_check: (words: []u32, starts: [*]u32, lengths: [*]u32, alive: [*]u8, store:
     }
   }
   status == LRAT_ACCEPTED && !empty ? { status = LRAT_NO_EMPTY } | { }
-  out[u32(0)] = status
-  out[u32(1)] = additions
-  out[u32(2)] = deletions
+  // An undersized output is itself a capacity refusal, not a bounds trap.
+  len(out) >= u32(3) ? {
+    out[u32(0)] = status
+    out[u32(1)] = additions
+    out[u32(2)] = deletions
+  } | { }
   status
 }

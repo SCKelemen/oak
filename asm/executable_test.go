@@ -177,3 +177,52 @@ func TestWriteExecutableArm64(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteExecutableAdmission(t *testing.T) {
+	for _, arch := range []string{ArchArm64, ArchRV64} {
+		ret := uint32(0xd65f03c0)
+		if arch == ArchRV64 {
+			ret = 0x8067
+		}
+		fn := EncodedFunction{Symbol: "main", Arch: arch, Bytes: binary.LittleEndian.AppendUint32(nil, ret)}
+		for _, tc := range []struct {
+			name   string
+			change func(*EncodedFunction, *ExecutableOptions)
+		}{
+			{"data entry", func(f *EncodedFunction, o *ExecutableOptions) {
+				o.Entry = "data"
+				o.Data = []DataSymbol{{Name: "data", Bytes: []byte{0, 0, 0, 0}}}
+			}},
+			{"empty entry", func(f *EncodedFunction, o *ExecutableOptions) { f.Bytes = nil }},
+			{"truncated instruction", func(f *EncodedFunction, o *ExecutableOptions) { f.Bytes = f.Bytes[:3] }},
+			{"small alignment", func(f *EncodedFunction, o *ExecutableOptions) { f.Align = 1 }},
+			{"negative alignment", func(f *EncodedFunction, o *ExecutableOptions) { f.Align = -4 }},
+			{"load address overflow", func(f *EncodedFunction, o *ExecutableOptions) {
+				o.Base = ^uint64(0) - 4095
+				f.Bytes = make([]byte, 4096)
+			}},
+			{"default stack overflow", func(f *EncodedFunction, o *ExecutableOptions) { o.OS = OSFreestanding; o.Base = ^uint64(0) - 4095 }},
+			{"data over page", func(f *EncodedFunction, o *ExecutableOptions) {
+				o.Data = []DataSymbol{{Name: "data", Bytes: []byte{1}, Align: 8192}}
+			}},
+		} {
+			t.Run(arch+"/"+tc.name, func(t *testing.T) {
+				f := fn
+				o := ExecutableOptions{Arch: arch, OS: OSLinux, Entry: "main"}
+				tc.change(&f, &o)
+				if image, err := WriteExecutable([]EncodedFunction{f}, o); err == nil || image != nil {
+					t.Fatalf("accepted: bytes %d, error %v", len(image), err)
+				}
+			})
+		}
+	}
+	// The ELF declaration must retain the input's C extension and float ABI.
+	f := EncodedFunction{Symbol: "main", Arch: ArchRV64, Compressed: true, Bytes: []byte{0x82, 0x80}, Align: 2} // c.jr ra
+	image, err := WriteExecutable([]EncodedFunction{f}, ExecutableOptions{Arch: ArchRV64, OS: OSLinux, Entry: "main", RV64FloatABI: "double"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.LittleEndian.Uint32(image[48:52]); got != 5 {
+		t.Fatalf("e_flags=%#x, want RVC|DOUBLE", got)
+	}
+}

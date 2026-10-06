@@ -30,12 +30,15 @@ type Allocation struct {
 // webs nothing pins with a linear scan over their live ranges: a web
 // takes the register a copy partner already holds when that register is
 // free over its range (so the copy becomes a no-op and is removed), else
-// its own, else the lowest free register of the pool. Ranges crossing a
-// call take callee-saved registers only, and a wide vector web never
-// v8–v15 across a call. The pool is the registers the lowering wrote, so
-// the frame, the prologue, and the epilogue stand as emitted. A body the
-// lift refuses, or a web that finds no register, is an error: the caller
-// keeps the body it had.
+// its own, else the lowest free register of the pool. On AArch64, a
+// call-free GPR web in a callee-saved register tries a caller-saved
+// register before keeping its own, so later trimming can remove an
+// otherwise needless save and restore. Ranges crossing a call take
+// callee-saved registers only, and a wide vector web never v8–v15 across
+// a call. The pool is the registers
+// the lowering wrote, so the frame, the prologue, and the epilogue stand
+// as emitted. A body the lift refuses, or a web that finds no register,
+// is an error: the caller keeps the body it had.
 //
 // The result is a new function value with the rewritten items and the
 // clobbers it needs; the input is not modified.
@@ -269,6 +272,10 @@ func allocate(f *Function, webs []*Web, alloc *Allocation) error {
 		return pool[i].Num < pool[j].Num
 	})
 	t := f.t
+	callerSaved := make(map[Reg]bool, len(t.callerSaved))
+	for _, r := range t.callerSaved {
+		callerSaved[r] = true
+	}
 	admissible := func(r Reg, w *Web) bool {
 		if r.Class != w.Reg.Class || t.reserved(r) {
 			return false
@@ -283,6 +290,7 @@ func allocate(f *Function, webs []*Web, alloc *Allocation) error {
 	}
 	for _, w := range open {
 		chosen, ok := Reg{}, false
+		crossing := crossesCall(w)
 		// A copy partner's register, so the copy goes away.
 		for _, p := range partners[w] {
 			if !p.Colored {
@@ -291,6 +299,19 @@ func allocate(f *Function, webs []*Web, alloc *Allocation) error {
 			if r := p.Assigned; (alloc.Pool[r] || r == w.Reg) && admissible(r, w) {
 				chosen, ok = r, true
 				break
+			}
+		}
+		// Lowering favors callee-saved homes even in leaf code. When no
+		// copy can be coalesced, moving such a GPR web to an otherwise-free
+		// caller-saved register lets the following trim and empty-frame
+		// passes remove the ABI scaffold. If pressure leaves none free, the
+		// original coloring below remains the fallback.
+		if !ok && t.arch == asm.ArchArm64 && w.Reg.Class == GPR && t.calleeSaved(w.Reg) && !crossing {
+			for _, r := range pool {
+				if callerSaved[r] && admissible(r, w) {
+					chosen, ok = r, true
+					break
+				}
 			}
 		}
 		// Its own register.

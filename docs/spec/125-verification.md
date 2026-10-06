@@ -178,7 +178,23 @@ Every theorem is placed on one rung, from the strongest evidence down:
 | `open` | No decider applies (a domain too large, a parameter type that is not finite) and the statement awaits its Lean proof. The reason is reported. |
 
 The Go LRAT acceptance kernel is `internal/lrat/lrat.go`; `prove/lrat.go`
-keeps the public compatibility and word-encoding surface.  At the clause
+keeps the public compatibility and word-encoding surface. The Oak kernel
+`prove/solver/lrat.oak` checks caller-owned word views and scratch arrays.
+Its header must describe the whole view, including the complete step suffix;
+all literal words must name declared variables even after a tautology is
+detected. Input counts are checked with subtraction before endpoint addition,
+and an output span shorter than three words returns `LRAT_CAPACITY` without
+writing it. `TestLRATKernelRawWords` sends raw records directly through the
+compiled Oak implementation, bypassing the Go encoder and allocating driver,
+and compares mutation acceptance with the independent Go checker.
+`Oak.LRATBounds` proves the extracted production `lrat_fits` guard equivalent
+to a mathematical interval bound, with non-wrapping endpoints and in-range
+indices; `TestLRATKernelBoundsExtract` checks the extraction for source drift.
+This is an implementation-linked proof of the guard, not yet a proof of the
+complete word parser, mutable RUP checker, allocating adapters, extraction,
+or compiled ARM64/RV64 executables. Those remain separate kernel obligations.
+
+At the clause
 boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists for raw
 AND, OR, XOR, and ITE gate records characterize those gates. It composes any
 supplied list with a supplied non-settled final clause and proves the same
@@ -298,9 +314,23 @@ conflicts closes in the corpus while the one needing 1.4 million gives up
 cheaply — and `-conflicts N` sets a flat budget instead; a row past the
 budget keeps the ladder's verdict and says the rung gave no verdict. The solver written in Oak hands its certificate over as the word record it
 kept while learning, not as text: the checker written in Oak checks the
-record in the solver's process and the Go checker reads the same words
-(`prove.CheckLRATWords`), so a certificate is neither printed nor parsed
-on the way; an external solver's certificate is text, checked as before.
+record in the solver's process and the Go checker reads the same words.
+Both paths bind the record to the independently retained formula before
+accepting it: `lrat_matches_formula` compares it with the original CNF
+region in Oak, and `prove.CheckLRATWordsAgainst` compares it with the
+emitted DIMACS formula in Go. Variable count, clause count, and every
+ordered clause word must match; allocation hints are not formula identity.
+The framing checks reject truncation, trailing words, and wrapping lengths.
+A proof for a different embedded formula does not count, even when its
+dimensions match. The word certificate is neither printed nor parsed on
+the way; an external solver's certificate is text, checked as before.
+`Oak.LRATFormulaBinding` models this identity gate and transfers abstract
+RUP acceptance to the expected database under an explicit shared decoder.
+The 64-case raw-word corpus runs through the production Go predicate, the
+compiled Oak predicate and acceptance wrapper, and kernel-replayed Lean
+examples in formal CI. This is bounded correspondence; concrete decoding,
+RUP implementation refinement, source-to-CNF correctness, and native
+compilation of the checker remain separate proof obligations.
 `-cnf dir` writes every bit-level
 obligation's clauses as DIMACS (`name.cnf`) for any solver or checker to
 read; the clause engine agrees with the diagram engine input for input over

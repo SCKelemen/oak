@@ -24,6 +24,74 @@ func calleeSaveFixture(body ...asm.Item) *asm.Function {
 	}
 }
 
+func TestLeafReallocationEnablesEmptyFrame(t *testing.T) {
+	input := calleeSaveFixture(
+		ins("add", w(19), w(0), w(1)),
+		ins("lsl", w(20), w(19), imm(2)),
+		ins("sub", w(0), w(20), w(19)),
+	)
+	reallocated, allocation, err := Reallocate(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allocation.Renamed != 2 {
+		t.Fatalf("renamed = %d, want 2\n%s", allocation.Renamed, text(reallocated.Items))
+	}
+	trimmed, sites, err := TrimCalleeSaves(reallocated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sites != 2 {
+		t.Fatalf("trimmed sites = %d, want x19 and x20\n%s", sites, text(trimmed.Items))
+	}
+	elided, frames, err := ElideEmptyFrame(trimmed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frames != 1 || elided.Frame != 0 {
+		t.Fatalf("elided frames = %d, frame = %d", frames, elided.Frame)
+	}
+	want := "add w9, w0, w1\nlsl w10, w9, #2\nsub w0, w10, w9\nret\n"
+	if got := text(elided.Items); got != want {
+		t.Fatalf("leaf frame remained:\n%s\nwant:\n%s", got, want)
+	}
+	if !reflect.DeepEqual(elided.Clobbers, []asm.Register{x(9), x(10), x(0)}) {
+		t.Fatalf("clobbers = %v", elided.Clobbers)
+	}
+}
+
+func TestLeafReallocationPrefersCopyCoalescing(t *testing.T) {
+	input := calleeSaveFixture(
+		ins("mov", w(19), w(0)),
+		ins("add", w(0), w(19), w(1)),
+	)
+	reallocated, allocation, err := Reallocate(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allocation.Coalesced != 1 {
+		t.Fatalf("coalesced = %d, want parameter copy removed\n%s", allocation.Coalesced, text(reallocated.Items))
+	}
+	trimmed, sites, err := TrimCalleeSaves(reallocated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sites != 2 {
+		t.Fatalf("trimmed sites = %d, want x19 and x20\n%s", sites, text(trimmed.Items))
+	}
+	elided, frames, err := ElideEmptyFrame(trimmed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frames != 1 {
+		t.Fatalf("elided frames = %d\n%s", frames, text(elided.Items))
+	}
+	want := "add w0, w0, w1\nret\n"
+	if got := text(elided.Items); got != want {
+		t.Fatalf("copy was not coalesced:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestTrimCalleeSavesRemovesUnusedPairAndDeadHome(t *testing.T) {
 	input := calleeSaveFixture(
 		ins("mov", w(20), w(1)),
