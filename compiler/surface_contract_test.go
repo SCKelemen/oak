@@ -147,9 +147,14 @@ func validateSurfaceEvidence(t *testing.T, key string, evidence []surfaceEvidenc
 		t.Fatalf("%s has no evidence", key)
 	}
 	for _, witness := range evidence {
+		data, err := os.ReadFile(witness.Path)
+		if err != nil {
+			t.Errorf("%s: read %s: %v", key, witness.Path, err)
+			continue
+		}
 		body := testFunctionBody(t, witness.Path, witness.Test)
-		if witness.Needle == "" || !strings.Contains(body, witness.Needle) {
-			t.Errorf("%s: %s/%s does not contain witness %q", key, witness.Path, witness.Test, witness.Needle)
+		if witness.Needle == "" || !strings.Contains(string(data), witness.Needle) {
+			t.Errorf("%s: %s does not contain witness %q for %s", key, witness.Path, witness.Needle, witness.Test)
 		}
 		switch witness.Lane {
 		case surfaceNative:
