@@ -10092,6 +10092,20 @@ so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
 
+**A record copy reads its padding as unknown bytes (2026-10-06).** A
+record element passed by value is copied a word at a time, and a word
+may cover padding: the WM's `Surface { id: u32, tags: u32, alive: u8,
+hue: u32 }` loads `alive`, three padding bytes, and `hue` as the word at
+8. The wide read required its fields to tile the word exactly, so that
+load was "no field" and every accessor taking a `Surface` was trusted.
+A byte no leaf's cell covers is now padding, read as a fresh value per
+load (zero in a witness run), so the proof must hold whatever the bytes
+are; a range that starts or ends inside a field's cell is still
+refused, and wide writes still require an exact tiling. `visible_count`,
+`visible_neighbor`, `focus_next`, and `focus_prev` are proven;
+`switch_workspace` and `move_to_workspace` move from trusted to
+witness-checked.
+
 **A one-bit truncation keeps its operands' sharing (2026-10-06).** The
 canonicalizer reads a wide combination of 1/0 values at one bit as the
 combination of its operands' one-bit truncations, and canonicalizes that.

@@ -440,6 +440,54 @@ func (arg recordSpanArg) tileLeaves(offset, size int64) ([]compositeLeaf, []int6
 	return leaves, cells, true
 }
 
+// leafCovers reports a byte inside some leaf's cell.
+func (arg recordSpanArg) leafCovers(at int64) bool {
+	for place := range arg.leavesByPlace {
+		if place.offset <= at && at < place.offset+place.size {
+			return true
+		}
+	}
+	return false
+}
+
+// tileLeavesOrPadding is tileLeaves for a load that may also cover the
+// element's padding: a whole-record copy reads `alive: u8` at 8 and
+// `hue: u32` at 12 as one word with the three bytes between. A byte no
+// leaf's cell covers is padding, returned as a gap; a byte inside a
+// cell that does not start it still refuses, so a partial or straddling
+// field access is never read as a field.
+func (arg recordSpanArg) tileLeavesOrPadding(offset, size int64) ([]compositeLeaf, []int64, [][2]int64, bool) {
+	if size <= 0 || size > 8 {
+		return nil, nil, nil, false
+	}
+	var leaves []compositeLeaf
+	var cells []int64
+	var gaps [][2]int64
+	for at := offset; at < offset+size; {
+		if leaf, cell, found := arg.leafStartingAt(at); found && cell > 0 && at+cell <= offset+size {
+			leaves = append(leaves, leaf)
+			cells = append(cells, at-offset)
+			at += cell
+			continue
+		}
+		if arg.leafCovers(at) {
+			return nil, nil, nil, false
+		}
+		start := at
+		for at < offset+size && !arg.leafCovers(at) {
+			if _, _, found := arg.leafStartingAt(at); found {
+				break
+			}
+			at++
+		}
+		gaps = append(gaps, [2]int64{start - offset, at - start})
+	}
+	if len(leaves) == 0 || (len(leaves) < 2 && len(gaps) == 0) {
+		return nil, nil, nil, false // one leaf alone is the ordinary case
+	}
+	return leaves, cells, gaps, true
+}
+
 // arrayFieldAt is the array field starting at an offset — its leaf-name
 // prefix (`.entries`), its length, and its element stride — read off the
 // enumerated leaves `.entries[0]`, `.entries[1]`, ….
@@ -845,12 +893,27 @@ func arrayLeafPlacer(arg recordSpanArg, span string, record, elem *term) leafPla
 // it covers, packed in layout order: the little-endian byte order the
 // machine loaded them in.
 func (x *pathExecutor) recordSpanWideValue(arg recordSpanArg, span string, place leafPlacer, offset, size int64, state *symbolicState) (*term, int, bool) {
-	leaves, at, tiled := arg.tileLeaves(offset, size)
+	leaves, at, gaps, tiled := arg.tileLeavesOrPadding(offset, size)
 	if !tiled {
 		return nil, 0, false
 	}
 	width := int(size) * 8
 	var value *term
+	// Padding holds whatever the bytes held: a fresh value per gap, so
+	// the proof holds whatever they are (a witness run reads zeros).
+	for _, gap := range gaps {
+		bits := int(gap[1]) * 8
+		pad := constTerm(0, bits)
+		if !x.concrete {
+			pad = x.freshLane(span+"#pad", bits)
+		}
+		shifted := binaryTerm("shl", zeroExtend(pad, width), constTerm(uint64(gap[0]*8), width))
+		if value == nil {
+			value = shifted
+		} else {
+			value = binaryTerm("or", value, shifted)
+		}
+	}
 	for i, leaf := range leaves {
 		memory, leafName, idx, okPlace := place(leaf)
 		if !okPlace {
