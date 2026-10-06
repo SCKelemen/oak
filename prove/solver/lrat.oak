@@ -29,6 +29,27 @@ LRAT_ID_ORDER: u32 = 5
 LRAT_NO_EMPTY: u32 = 6
 LRAT_CAPACITY: u32 = 7
 LRAT_SATISFIED: u32 = 8
+LRAT_FORMULA_MISMATCH: u32 = 9
+
+// Bind a solver-produced record to the independently retained formula before
+// checking its proof. The exact ordered clause words (including counts and
+// duplicates) matter, as hints name clause ids. Capacity hints at 5..7 do not.
+// Subtraction after length guards avoids wrapping attacker-supplied lengths.
+// This is an identity/framing gate, not a clause or proof syntax checker.
+lrat_matches_formula: (formula: []u32, record: []u32): Bool {
+  same: Bool = len(formula) >= LRAT_HEADER_WORDS && len(record) >= LRAT_HEADER_WORDS
+  same = same && formula[u32(0)] == LRAT_MAGIC && record[u32(0)] == LRAT_MAGIC
+  same = same && formula[u32(4)] == u32(0) && formula[u32(3)] == len(formula) - LRAT_HEADER_WORDS
+  same = same && record[u32(3)] <= len(record) - LRAT_HEADER_WORDS
+  same = same && record[u32(4)] == len(record) - LRAT_HEADER_WORDS - record[u32(3)]
+  same = same && formula[u32(1)] == record[u32(1)] && formula[u32(2)] == record[u32(2)] && formula[u32(3)] == record[u32(3)]
+  at: u32 = LRAT_HEADER_WORDS
+  while same && at < len(formula) {
+    same = formula[at] == record[at]
+    at = at + u32(1)
+  }
+  same
+}
 
 // An assignment is 0 unassigned, 1 false, 2 true.
 LRAT_UNASSIGNED: u8 = 0
