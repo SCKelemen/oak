@@ -1017,10 +1017,13 @@ readings, and the IO port the theorems are about a hand-written model of the
 published rules, and a Go law test or a transliteration relates the Oak code
 to that model on enumerated or random inputs. Everything else — the prelude
 collections, `strings`, `json`, `hash`, `math`, `mx`, `url`, `path`,
-`float`, `time`'s calendar, the simulation packages — is checked by
+`float`, the simulation packages — is checked by
 implementation tests against sequence models, Go's standard library,
 conformance files, or reference implementations; those are not refinement
-proofs.
+proofs. The temporal calendar adds exhaustive native Lean conversion checks,
+checked-arithmetic laws, and a shared compiled/interpreted/Lean corpus; its
+native-evaluator and bit-vector-checker trust boundaries are documented in
+[the temporal specification](../docs/spec/114-temporal.md).
 
 The standard-library workflow (`.github/workflows/stdlib.yml`) runs the
 package tests, the generated-table checks, the extraction drift test, and
