@@ -76,6 +76,7 @@ Use these terms precisely:
 - `92-ffi.md` — the `c` interface library, extern bindings, and the abstract assembly interface
 - `93-simd.md` — portable SIMD vectors and architecture vector instruction functions
 - `94-assembler.md` — typed abstract assembly units and register types (normative design)
+- [94-rv64-compressed-control-proofs.md](94-rv64-compressed-control-proofs.md) — compressed RV64 branch/jump encoding proofs and production evidence
 - `112-protocols.md` — protocol declarations: machines, guards, projections, lowering, typestate, model checking
 - `113-literals.md` — literal sets: the `literals` declaration and the Teddy scanner it projects
 - `STATUS.md` — implementation and proof coverage matrix
