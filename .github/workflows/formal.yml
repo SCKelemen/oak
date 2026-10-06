@@ -31,7 +31,7 @@ jobs:
 
       - name: Check RV64 branch encoding proofs
         working-directory: spec/lean
-        run: lake build Oak.RiscVBranchEncoding Oak.RiscVCompressedBranchEncoding
+        run: lake build Oak.RiscVBranchEncoding Oak.RiscVCompressedBranchEncoding Oak.RiscVRelaxation
 
       - name: Build formal specification
         working-directory: spec/lean
@@ -59,7 +59,7 @@ jobs:
       - name: Check RV64 branch production decisions against Lean
         env:
           OAK_REQUIRE_RV64_LEAN: '1'
-        run: go test ./asm -run '^TestRV64(LocalBranches|CompressedBranches)MatchLean$' -count=1 -v
+        run: go test ./asm -run '^TestRV64((LocalBranches|CompressedBranches)MatchLean|RelaxationMatchesLean)$' -count=1 -v
 
       - name: Check solver formula binding in Go, Oak, and Lean
         env:

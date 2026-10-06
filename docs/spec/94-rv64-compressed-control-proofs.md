@@ -76,6 +76,7 @@ encoding and layout tests still run.
 These are encoding and exact-target proofs. They do not prove branch-condition
 execution, instruction-address validity, an external Sail bridge for these
 compressed rows, linker relocations, or a universal refinement of Go code.
-The mixed-width layout case is regression evidence, not a proof of the whole
-relaxation algorithm. A subsequent increment can formalize why shrinking
-instructions preserves admitted displacements and why relaxation terminates.
+The mixed-width layout case is regression evidence. The companion
+[relaxation proofs](94-rv64-relaxation-proofs.md) now establish range preservation,
+exact-target preservation, and termination for the mathematical shrinking-layout
+driver; universal refinement of the Go implementation remains open.
