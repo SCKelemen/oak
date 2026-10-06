@@ -1,0 +1,24 @@
+theory Oak_Unauthenticated_DH
+begin
+builtins: diffie-hellman, hashing
+
+// Negative control: raw DH does not authenticate the received public key.
+// The adversary can choose Y and calculate the resulting shared key.
+rule Client_start:
+  [ Fr(~x), Fr(~sid) ] -->
+  [ Waiting(~sid, ~x), Out(<~sid, 'g'^~x>) ]
+
+rule Client_accept:
+  [ Waiting(sid, x), In(Y) ]
+  --[ Accepted(sid, h(Y^x)) ]-> [ ]
+
+lemma executable:
+  exists-trace "Ex sid key #i. Accepted(sid,key) @ i"
+
+lemma attacker_knows_session:
+  exists-trace "Ex sid key #i #j. Accepted(sid,key) @ i & K(key) @ j"
+
+// MUST be falsified. A verified result would make the harness fail.
+lemma unauthenticated_secrecy:
+  "All sid key #i. Accepted(sid,key) @ i ==> not (Ex #j. K(key) @ j)"
+end

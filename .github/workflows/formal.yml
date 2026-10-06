@@ -71,6 +71,11 @@ jobs:
           OAK_REQUIRE_WASM_LEAN: '1'
         run: go test ./wasm/check -run '^TestWasmLEBMatchesLean$' -count=1 -v
 
+      - name: Check compiled Oak linker placement against Lean
+        env:
+          OAK_REQUIRE_LINKER_LEAN: '1'
+        run: go test ./compiler -run '^TestE2ESelfHostedPlacement$' -count=1 -v
+
       - name: Check RV64 production decisions against Lean
         env:
           OAK_REQUIRE_RV64_LEAN: '1'

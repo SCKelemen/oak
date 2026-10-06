@@ -1,0 +1,64 @@
+// Experimental HMAC-SHA-256, RFC 2104 / RFC 4231. See CRYPTO.md.
+package hmac
+
+import("hash")
+import("crypto/subtle")
+
+// Authenticate a || b || c without concatenating or allocating. The three
+// u32-length views bound the total SHA input well below its 2^61-byte limit.
+// Writes exactly 32 bytes; short output fails without writing. Inputs and
+// output must have disjoint storage (enforced by ordinary Oak borrowing).
+// Stack copies of keys and intermediate states are not securely erased yet.
+pub sum256_parts: (key: []u8, a: []u8, b: []u8, c: []u8, out: [*]u8): Bool {
+  len(out) < u32(32) ? { false } | {
+    block: [64]u8
+    i: u32 = 0
+    while i < u32(64) {
+      block[i] = u8(0)
+      i = i + u32(1)
+    }
+    len(key) > u32(64) ? {
+      hash.sha256(key, span(&block))
+    } | {
+      i = u32(0)
+      while i < len(key) {
+        block[i] = key[i]
+        i = i + u32(1)
+      }
+    }
+    inner_pad: [64]u8
+    outer_pad: [64]u8
+    i = u32(0)
+    while i < u32(64) {
+      inner_pad[i] = block[i] ^ u8(54)
+      outer_pad[i] = block[i] ^ u8(92)
+      i = i + u32(1)
+    }
+    inner: hash.Sha256State = hash.sha256_init()
+    inner = hash.sha256_update(inner, view(&inner_pad))
+    inner = hash.sha256_update(inner, a)
+    inner = hash.sha256_update(inner, b)
+    inner = hash.sha256_update(inner, c)
+    digest: [32]u8
+    hash.sha256_final(inner, span(&digest))
+    outer: hash.Sha256State = hash.sha256_init()
+    outer = hash.sha256_update(outer, view(&outer_pad))
+    outer = hash.sha256_update(outer, view(&digest))
+    hash.sha256_final(outer, out)
+  }
+}
+
+pub sum256: (key: []u8, message: []u8, out: [*]u8): Bool {
+  empty: []u8 = subslice(message, u32(0), u32(0))
+  sum256_parts(key, message, empty, empty, out)
+}
+
+// Only full 32-byte tags are admitted. Public RFC truncation vectors test
+// output prefixes, not acceptance of truncated authentication tags.
+pub verify256: (key: []u8, message: []u8, tag: []u8): Bool {
+  len(tag) != u32(32) ? { false } | {
+    expected: [32]u8
+    sum256(key, message, span(&expected))
+    subtle.equal(view(&expected), tag)
+  }
+}

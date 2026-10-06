@@ -27,6 +27,8 @@ func TestE2ESelfHostedObjects(t *testing.T) {
 		arch, capacity, scratch       uint32
 		entryName, entryLength, entry uint32
 		base                          uint64
+		dataAddress                   uint64
+		dataSize, bssSize             uint32
 		want                          []byte // nil means refusal
 	}
 	wordBytes := func(words ...uint32) []byte {
@@ -138,6 +140,32 @@ func TestE2ESelfHostedObjects(t *testing.T) {
 	addRV("rv64_wrong_arch", true, func(f *fixture) { f.plan[0].kind = 2 })
 	addRV("rv64_mismatched_registers", true, func(f *fixture) { f.words[1] = 0x8067 })
 	addRV("rv64_truncated_pair", true, func(f *fixture) { f.objects[0].size = 4 })
+	addData := func(name string, reject bool, mutate func(*fixture)) {
+		add(name, reject, func(f *fixture) {
+			f.dataAddress, f.dataSize, f.bssSize = 0x11000, 4, 16
+			f.symbols[1].object, f.symbols[2].object = 0xffffffff, 0xfffffffe
+			f.words[0], f.words[1] = 0x90000009, 0x91000129
+			f.plan = []relocation{{0, 0, 3, 5, 3}}
+			f.want = wordBytes(0xb0000009, 0x91000129, 0xd503201f, 0, 0x14000000, 0xd65f03c0)
+			if mutate != nil {
+				mutate(f)
+			}
+		})
+	}
+	addData("data_symbol", false, nil)
+	addData("bss_symbol", false, func(f *fixture) {
+		f.plan[0].name, f.plan[0].length = 8, 4
+		f.want = wordBytes(0xb0000009, 0x91002129, 0xd503201f, 0, 0x14000000, 0xd65f03c0)
+	})
+	addData("data_entry_rejected", true, func(f *fixture) { f.entryName, f.entryLength = 5, 3 })
+	addData("branch_to_data_rejected", true, func(f *fixture) { f.plan[0].kind, f.words[0] = 2, 0x94000000 })
+	addData("branch_to_bss_rejected", true, func(f *fixture) { f.plan[0] = relocation{0, 0, 2, 8, 4}; f.words[0] = 0x94000000 })
+	addData("data_overlaps_text", true, func(f *fixture) { f.dataAddress = 65552 })
+	addData("data_before_text", true, func(f *fixture) { f.dataAddress = 65532 })
+	addData("data_address_overflow", true, func(f *fixture) { f.dataAddress = ^uint64(0) - 3 })
+	addData("data_symbol_at_end", true, func(f *fixture) { f.symbols[1].offset = 4 })
+	addData("bss_symbol_at_end", true, func(f *fixture) { f.symbols[2].offset = 16 })
+	addData("absent_bss", true, func(f *fixture) { f.bssSize = 0 })
 
 	var s strings.Builder
 	for _, name := range []string{"native.oak", "objects.oak"} {
@@ -179,7 +207,7 @@ main: (): i32 {
 		}
 		s.WriteString("    }\n    i: u32 = 0\n    while i < len(dst) { dst[i] = u8(165)\n      i = i + u32(1) }\n")
 		s.WriteString("    true ? { buffer: [*]u8 = span(&dst)\n      offsets: [*]u32 = span(&scratch)\n")
-		fmt.Fprintf(&s, "      r: NativeLinkResult = native_link_objects(buffer, offsets, view(&source), view(&objects), view(&names), view(&symbols), view(&plan), u32(%d), u64(%d), u32(%d), u32(%d))\n", f.arch, f.base, f.entryName, f.entryLength)
+		fmt.Fprintf(&s, "      r: NativeLinkResult = native_link_objects_data(buffer, offsets, view(&source), view(&objects), view(&names), view(&symbols), view(&plan), u32(%d), u64(%d), u32(%d), u32(%d), u64(%d), u32(%d), u32(%d))\n", f.arch, f.base, f.entryName, f.entryLength, f.dataAddress, f.dataSize, f.bssSize)
 		s.WriteString("      emit(r.status)\n      emit(r.size)\n      emit(r.entry)\n    }\n    i = u32(0)\n    while i < len(dst) { putchar(c.Int(i32_bits_u32(u32(dst[i]))))\n      i = i + u32(1) }\n  }\n")
 	}
 	s.WriteString("  0\n}\n")

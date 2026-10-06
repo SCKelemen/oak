@@ -5,6 +5,25 @@ NativeObject: type = struct { source: u32, size: u32, alignment: u32 }
 NativeSymbol: type = struct { name: u32, length: u32, object: u32, offset: u32 }
 NativeObjectRelocation: type = struct { object: u32, offset: u32, kind: u32, name: u32, length: u32 }
 NativeLinkResult: type = struct { status: u32, size: u32, entry: u32 }
+NativePlacement: type = struct { status: u32, start: u32, end: u32 }
+
+// Pure placement shared by text and data. Capacity/cursor/size are u32;
+// intermediate sums use u64. Align the absolute address without adding base
+// until the end address has been checked. See Oak.LinkerLayout in Lean.
+native_place: (base: u64, cursor: u32, size: u32, alignment: u32, capacity: u32): NativePlacement {
+  result: NativePlacement = NativePlacement { status: u32(1), start: u32(0), end: u32(0) }
+  size > u32(0) && alignment > u32(0) && alignment <= u32(4096) &&
+      (alignment & (alignment - u32(1))) == u32(0) ? {
+    align: u64 = u64(alignment)
+    padding: u64 = (align - ((base % align + u64(cursor) % align) % align)) % align
+    start: u64 = u64(cursor) + padding
+    end: u64 = start + u64(size)
+    end <= u64(capacity) && base <= u64(18446744073709551615) - end ? {
+      result = NativePlacement { status: u32(0), start: u32_trunc_u64(start), end: u32_trunc_u64(end) }
+    }
+  }
+  result
+}
 
 native_name_valid: (names: []u8, at: u32, size: u32): Bool =
   size > u32(0) && at <= len(names) && size <= len(names) - at
@@ -52,9 +71,32 @@ native_symbol_find: (names: []u8, symbols: []NativeSymbol, name: u32, size: u32)
 native_link_objects: (dst: [*]u8, layout: [*]u32, src: []u8, objects: []NativeObject,
     names: []u8, symbols: []NativeSymbol, plan: []NativeObjectRelocation,
     arch: u32, base: u64, entry_name: u32, entry_length: u32): NativeLinkResult {
+  native_link_objects_data(dst, layout, src, objects, names, symbols, plan,
+    arch, base, entry_name, entry_length, u64(0), u32(0), u32(0))
+}
+
+// Admitted symbol only. Reserved object IDs: max-u32 denotes initialized data,
+// max-u32-1 denotes BSS immediately following that data. Other IDs denote text.
+native_symbol_address: (s: NativeSymbol, layout: [*]u32, base: u64,
+    data_address: u64, data_size: u32): u64 {
+  address: u64 = 0
+  s.object == u32(4294967295) ? { address = data_address + u64(s.offset) } | {
+    s.object == u32(4294967294) ? { address = data_address + u64(data_size) + u64(s.offset) } |
+      { address = base + u64(layout[s.object]) + u64(s.offset) }
+  }
+  address
+}
+
+// The data/BSS extension preserves the text-only API above. Data symbols may
+// be addressed by ADRP+ADD or AUIPC+ADDI, but are never branch or entry targets.
+native_link_objects_data: (dst: [*]u8, layout: [*]u32, src: []u8, objects: []NativeObject,
+    names: []u8, symbols: []NativeSymbol, plan: []NativeObjectRelocation,
+    arch: u32, base: u64, entry_name: u32, entry_length: u32,
+    data_address: u64, data_size: u32, bss_size: u32): NativeLinkResult {
   result: NativeLinkResult = NativeLinkResult { status: u32(1), size: u32(0), entry: u32(0) }
   good: Bool = (arch == u32(1) || arch == u32(2)) && base % u64(4) == u64(0) &&
-    len(objects) > u32(0) && len(layout) >= len(objects) && native_name_valid(names, entry_name, entry_length)
+    len(objects) > u32(0) && len(objects) < u32(4294967294) &&
+    len(layout) >= len(objects) && native_name_valid(names, entry_name, entry_length)
   total: u64 = 0
   i: u32 = 0
   while good && i < len(objects) {
@@ -64,22 +106,30 @@ native_link_objects: (dst: [*]u8, layout: [*]u32, src: []u8, objects: []NativeOb
       (o.alignment & (o.alignment - u32(1))) == u32(0) &&
       o.source <= len(src) && o.size <= len(src) - o.source
     good ? {
-      // total is bounded by the u32 destination extent at each iteration.
-      align: u64 = u64(o.alignment)
-      padding: u64 = (align - ((base % align + total % align) % align)) % align
-      start: u64 = total + padding
-      end: u64 = start + u64(o.size)
-      good = end <= u64(len(dst)) && base <= u64(18446744073709551615) - end
-      good ? { layout[i] = u32_trunc_u64(start)
-        total = end }
+      p: NativePlacement = native_place(base, u32_trunc_u64(total), o.size, o.alignment, len(dst))
+      good = p.status == u32(0)
+      good ? { layout[i] = p.start
+        total = u64(p.end) }
     }
     i = i + u32(1)
+  }
+  memory: u64 = u64(data_size) + u64(bss_size)
+  good && memory > u64(0) ? {
+    good = data_address >= base && total <= data_address - base &&
+      data_address <= u64(18446744073709551615) - memory
   }
   i = u32(0)
   while good && i < len(symbols) {
     s: NativeSymbol = symbols[i]
-    good = native_name_valid(names, s.name, s.length) && s.object < len(objects)
-    good ? { good = s.offset < objects[s.object].size && s.offset % u32(4) == u32(0) }
+    good = native_name_valid(names, s.name, s.length)
+    good ? {
+      s.object < len(objects) ? {
+        good = s.offset < objects[s.object].size && s.offset % u32(4) == u32(0)
+      } | {
+        good = (s.object == u32(4294967295) && s.offset < data_size) ||
+          (s.object == u32(4294967294) && s.offset < bss_size)
+      }
+    }
     good && i > u32(0) ? {
       prior: NativeSymbol = symbols[i - u32(1)]
       good = native_name_compare(names, prior.name, prior.length, s.name, s.length) < i32(0)
@@ -91,7 +141,8 @@ native_link_objects: (dst: [*]u8, layout: [*]u32, src: []u8, objects: []NativeOb
     index: u32 = native_symbol_find(names, symbols, entry_name, entry_length)
     good = index < len(symbols)
     good ? { s: NativeSymbol = symbols[index]
-      entry = layout[s.object] + s.offset }
+      good = s.object < len(objects)
+      good ? { entry = layout[s.object] + s.offset } }
   }
   // Validate every relocation against the original source before any writes.
   last_end: u32 = 0
@@ -120,9 +171,12 @@ native_link_objects: (dst: [*]u8, layout: [*]u32, src: []u8, objects: []NativeOb
             second = u32(src[at + u32(4)]) | (u32(src[at + u32(5)]) << u32(8)) |
               (u32(src[at + u32(6)]) << u32(16)) | (u32(src[at + u32(7)]) << u32(24))
           }
-          p: NativePatch = native_relocate(r.kind, first, second, base + u64(place),
-            base + u64(layout[s.object]) + u64(s.offset))
-          good = p.status == u32(0)
+          good = s.object < len(objects) || r.kind == u32(3) || r.kind == u32(5)
+          good ? {
+            p: NativePatch = native_relocate(r.kind, first, second, base + u64(place),
+              native_symbol_address(s, layout, base, data_address, data_size))
+            good = p.status == u32(0)
+          }
           last_end = place + width
         }
       }
@@ -148,7 +202,7 @@ native_link_objects: (dst: [*]u8, layout: [*]u32, src: []u8, objects: []NativeOb
       index: u32 = native_symbol_find(names, symbols, r.name, r.length)
       s: NativeSymbol = symbols[index]
       native_link_patch(dst, layout[r.object] + r.offset, r.kind, base,
-        base + u64(layout[s.object]) + u64(s.offset))
+        native_symbol_address(s, layout, base, data_address, data_size))
       i = i + u32(1)
     }
     result = NativeLinkResult { status: u32(0), size: u32_trunc_u64(total), entry: entry }
