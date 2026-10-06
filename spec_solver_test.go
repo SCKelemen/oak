@@ -41,6 +41,39 @@ func TestOakSolverAgrees(t *testing.T) {
 	}
 }
 
+// theoremConstantsLaws name a package constant and reason about a
+// remainder (prove/theorem_constants_test.go). The Oak lowering does not
+// take them yet, so the Oak solver decides the Go lowering's serialized
+// problem and the Go decider's replay must build the same diagram. Both
+// blasters spell a comparison's eq bit by bit from the most significant
+// bit down (asm/blast.go condition, prove/solver/bdd.oak bit_equality);
+// when the twins drifted, every row here was a disagreement.
+const theoremConstantsLaws = `
+GAP: u32 = 4
+CATALOG: u32 = 5
+
+inset_len: (side: u32, gap: u32): u32 = side > gap * u32(2) ? side - gap * u32(2) | u32(0)
+
+step: (c: u32, n: u32): u32 = n == u32(0) ? u32(0) | (c + u32(1)) % n
+
+inset_fits: theorem (side: u32) { inset_len(side, GAP) <= side }
+
+cursor_in_range: theorem (c: u32) { step(c, CATALOG) < CATALOG }
+
+main: (): i32 = 0
+`
+
+func TestOakSolverAgreesOnSerializedProblems(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "constants.oak")
+	if err := os.WriteFile(file, []byte(theoremConstantsLaws), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out := runCLI(t, func(args []string) int { return proveCommand(args, os.Stdout, os.Stderr) }, []string{"-solver", "oak", "-cross", "go", file})
+	if code != 0 || strings.Contains(out, "disagrees") || strings.Count(out, "the Oak solver); the Go decider agrees") != 2 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+}
+
 // scalarLawFiles are the law files whose bit-level theorems the Oak
 // lowering must all take: every decided file of the corpus (the Lean
 // file's open theorems aside).

@@ -792,6 +792,28 @@ all_ones: (w: u32): Bits {
 condition: (l: Layout, mem: [*]u32, code: u32, left: Bits, right: Bits, w: u32): u32 {
   kind: u32 = code / u32(16)
   bare: u32 = code % u32(16)
+  kind == u32(0) && bare < u32(2) ? { bit_equality(l, mem, bare, left, right, w) } | { flag_condition(l, mem, kind, bare, left, right, w) }
+}
+
+// bit_equality is a comparison's eq or ne bit by bit, as asm/blast.go's
+// condition builds it: the difference's zero test built the subtractor's
+// borrow chain, quadratic in the width, where the conjunction of the bits'
+// agreements, grown from the most significant bit (the deepest literal)
+// down, adds one node a step. The Go decider's cross-check replays the
+// same construction and requires the same node count.
+bit_equality: (l: Layout, mem: [*]u32, bare: u32, left: Bits, right: Bits, w: u32): u32 {
+  eq: u32 = BDD_TRUE
+  i: u32 = w
+  stop: Bool = false
+  while i > u32(0) && !stop {
+    i = i - u32(1)
+    eq = apply(l, mem, OP_AND, eq, bdd_not(l, mem, apply(l, mem, OP_XOR, left.at[i], right.at[i])))
+    stop = exceeded(l, mem)
+  }
+  stop ? { eq } | { bare == u32(1) ? { bdd_not(l, mem, eq) } | { eq } }
+}
+
+flag_condition: (l: Layout, mem: [*]u32, kind: u32, bare: u32, left: Bits, right: Bits, w: u32): u32 {
   msb: u32 = w - u32(1)
   result: Bits
   c: u32 = BDD_FALSE
@@ -813,10 +835,10 @@ condition: (l: Layout, mem: [*]u32, code: u32, left: Bits, right: Bits, w: u32):
   }
   n: u32 = result.at[msb]
   z: u32 = BDD_TRUE
-  i: u32 = 0
-  while i < w {
+  i: u32 = w
+  while i > u32(0) {
+    i = i - u32(1) // deepest literal first, as bit_equality
     z = apply(l, mem, OP_AND, z, bdd_not(l, mem, result.at[i]))
-    i = i + u32(1)
   }
   n_eq_v: u32 = bdd_not(l, mem, apply(l, mem, OP_XOR, n, v))
   bare == u32(0) ? { z } | {
