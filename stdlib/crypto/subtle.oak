@@ -1,0 +1,17 @@
+// Experimental crypto foundation. No machine-level constant-time claim yet.
+package subtle
+
+// Lengths are public. Equal-length inputs visit every byte with no
+// value-dependent branch or address in the Oak source. Compiler preservation
+// of that property on ARM64 and RV64 remains a release gate.
+pub equal: (a: []u8, b: []u8): Bool {
+  len(a) != len(b) ? { false } | {
+    difference: u8 = 0
+    i: u32 = 0
+    while i < len(a) {
+      difference = difference | (a[i] ^ b[i])
+      i = i + u32(1)
+    }
+    difference == u8(0)
+  }
+}
