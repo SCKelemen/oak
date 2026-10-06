@@ -1,4 +1,4 @@
-# Oak-hosted text object linker bootstrap
+# Oak-hosted object linker bootstrap
 
 `asm/selfhost/objects.oak` defines the first named-object linker profile in
 Oak. The Go toolchain remains the production driver and compilation seed;
@@ -60,6 +60,77 @@ These tests establish bounded executable evidence. They do not constitute a
 universal refinement proof of object admission, binary search, layout,
 transactional mutation, or the ELF writer. Arbitrary instruction streams,
 control flow, symbol types, loading and runtime behavior are not verified by
-this admission routine. File readers, data/BSS layout, symbol visibility,
+this admission routine. File readers, general section layout, symbol visibility,
 remaining relocation forms, compressed RV64, Mach-O, and proof refinement
 remain separate M7/M8 obligations.
+
+## Writable data and BSS extension
+
+`native_link_objects_data` extends the API with `data_address`, `data_size`,
+and `bss_size`. Initialized data is followed immediately by zero-initialized
+BSS. The combined extent must follow all text bytes and remain within the
+unsigned 64-bit address space. The text-only entry point delegates with empty
+data/BSS extents, retaining its original acceptance profile.
+
+Two reserved `NativeSymbol.object` values name these sections:
+
+| Object value | Symbol offset relative to | Permitted references |
+| --- | --- | --- |
+| `0xffffffff` | `data_address` | ARM64 ADRP+ADD, RV64 AUIPC+ADDI |
+| `0xfffffffe` | `data_address + data_size` | ARM64 ADRP+ADD, RV64 AUIPC+ADDI |
+
+The text object count is strictly below `0xfffffffe`. A data/BSS definition
+must be strictly inside its nonempty section; arbitrary byte offsets are
+allowed. It is never a valid entry or branch destination. Definitions still
+share one sorted global namespace, so duplicate names across sections are
+refused. Only text is patched; the image writer copies the data payload.
+
+`native_elf_data_layout(text_size, data_size, bss_size, base, capacity)` returns
+the planned file extent and section addresses. The text base is page-aligned,
+and data begins at the first page boundary at or beyond the text end. File
+data begins at `4096 + (data_address - base)`; BSS begins immediately after
+the initialized bytes in memory. At least one RW memory byte is required;
+empty data with nonempty BSS is legal. Total memory offsets and the file size
+must fit `u32`, and absolute addresses must fit `u64` without wrapping.
+
+`native_elf_data_image` uses the same layout and emits ELF64 for ARM64 or
+uncompressed RV64 with two PT_LOAD headers. Text has R/X permissions, data
+and BSS R/W. Their virtual page ranges do not overlap. The RW file size equals
+the initialized data length; its memory size additionally includes BSS.
+Alignment gaps are zeroed in the file, and bytes beyond the returned file
+extent remain unchanged. On any refusal every destination byte is preserved.
+The entry must remain inside aligned text. The caller must use identical
+lengths/base when calculating addresses, linking text, and emitting the image.
+
+`TestE2ESelfHostedELFData` covers both architectures with data+BSS and BSS-only
+images. It independently reads ELF headers and decodes relocated addresses;
+QEMU programs check zero initialization beyond EOF, then store/load and exit
+with 42. The cross-target lane requires these executions. Admission tests
+check image preservation after malformed layout/entry requests and named
+symbol refusals, including branches to data and BSS.
+
+## Placement laws and proof boundary
+
+`native_place` is the pure placement step actually used by text and RW layout.
+Its unsigned machine arithmetic corresponds to `Oak.LinkerLayout.place`,
+which uses unbounded naturals and explicit representation bounds. The Lean
+module proves alignment, minimal padding, monotone placement, positive extent,
+destination/address bounds, disjoint consecutive placements, and in-range
+symbol addresses. An additional bound proves that the widened intermediate
+placement sums fit `u64` for the admitted input domains.
+
+The same module defines a concrete ordered byte-write transaction and proves
+that every rejection preserves the original byte store, any out-of-range
+write (even after valid prefix writes) is rejected, and successful writes
+preserve bytes outside the owned extent. That transaction is a model of the
+validate-then-commit discipline; it is not an extraction or universal proof
+of the mutable Oak object-linker implementation.
+
+`TestE2ESelfHostedPlacement` compares 447 results from compiled Oak with a
+separate big-integer ceiling-division oracle. It then renders those actual
+Oak results as Lean `by decide` examples against the proved placement model.
+Formal CI requires that kernel check. The universal model laws use ordinary
+Lean proof terms; they contain no `sorry`, custom axioms, or native decision
+certificates. Compiled-Oak correspondence remains bounded, and full byte-level
+refinement of admission, symbol resolution, copying, patching, ELF loading,
+and execution is still open.

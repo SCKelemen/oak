@@ -1,0 +1,54 @@
+// Static ELF64 with separate RX text and RW data/BSS. The pure layout helper
+// supplies addresses for text relocations before any image bytes are written.
+// Depends on native.oak, objects.oak (native_place), and elf.oak.
+NativeELFDataLayout: type = struct { status: u32, data_file: u32, size: u32,
+  data_address: u64, bss_address: u64, memory_size: u32 }
+
+native_elf_data_layout: (text_size: u32, data_size: u32, bss_size: u32,
+    base: u64, capacity: u32): NativeELFDataLayout {
+  result: NativeELFDataLayout = NativeELFDataLayout { status: u32(1), data_file: u32(0), size: u32(0),
+    data_address: u64(0), bss_address: u64(0), memory_size: u32(0) }
+  memory: u64 = u64(data_size) + u64(bss_size)
+  base % u64(4096) == u64(0) && text_size > u32(0) && text_size % u32(4) == u32(0) &&
+      memory > u64(0) && memory <= u64(4294967295) ? {
+    p: NativePlacement = native_place(base, text_size, u32_trunc_u64(memory), u32(4096), u32(4294967295))
+    file_end: u64 = u64(4096) + u64(p.start) + u64(data_size)
+    p.status == u32(0) && file_end <= u64(capacity) ? {
+      result = NativeELFDataLayout { status: u32(0), data_file: u32(4096) + p.start,
+        size: u32_trunc_u64(file_end), data_address: base + u64(p.start),
+        bss_address: base + u64(p.start) + u64(data_size), memory_size: u32_trunc_u64(memory) }
+    }
+  }
+  result
+}
+
+// Return file size, or zero with the complete destination unchanged. BSS is
+// represented by p_memsz > p_filesz; no BSS bytes are stored in the file.
+// Source text must already be linked using the addresses from the pure layout.
+native_elf_data_image: (dst: [*]u8, text: []u8, data: []u8, bss_size: u32,
+    arch: u32, base: u64, entry: u32): u32 {
+  written: u32 = 0
+  p: NativeELFDataLayout = native_elf_data_layout(len(text), len(data), bss_size, base, len(dst))
+  p.status == u32(0) && (arch == u32(1) || arch == u32(2)) &&
+      entry < len(text) && entry % u32(4) == u32(0) ? {
+    // The preflight implies every precondition of the existing text writer.
+    native_elf_image(dst, text, arch, base, entry)
+    native_write_half(dst, u32(56), u16(2))
+    native_write_word(dst, u32(120), u32(1))
+    native_write_word(dst, u32(124), u32(6))
+    native_write_quad(dst, u32(128), u64(p.data_file))
+    native_write_quad(dst, u32(136), p.data_address)
+    native_write_quad(dst, u32(144), p.data_address)
+    native_write_quad(dst, u32(152), u64(len(data)))
+    native_write_quad(dst, u32(160), u64(p.memory_size))
+    native_write_quad(dst, u32(168), u64(4096))
+    i: u32 = u32(4096) + len(text)
+    while i < p.data_file { dst[i] = u8(0)
+      i = i + u32(1) }
+    i = u32(0)
+    while i < len(data) { dst[p.data_file + i] = data[i]
+      i = i + u32(1) }
+    written = p.size
+  }
+  written
+}

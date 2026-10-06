@@ -204,26 +204,31 @@ func TestE2ESelfHostedELF(t *testing.T) {
 			if binary.LittleEndian.Uint64(image[24:32]) != ph.Vaddr {
 				t.Fatal("entry not bound to loaded bytes")
 			}
-			emulator, err := toolchain.ResolveEmulator(target.Target{OS: target.OSLinux, Arch: arch}, nil, nil)
-			if err != nil {
-				if os.Getenv("OAK_REQUIRE_SELFHOST_QEMU") == "1" {
-					t.Fatal(err)
-				}
-				t.Logf("ELF byte checks passed; execution unavailable: %v", err)
-				return
-			}
-			path := filepath.Join(t.TempDir(), "selfhost.elf")
-			if err := os.WriteFile(path, image, 0755); err != nil {
-				t.Fatal(err)
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, emulator.Path, append(append([]string{}, emulator.Args...), path)...)
-			out, err := cmd.CombinedOutput()
-			exit, ok := err.(*exec.ExitError)
-			if ctx.Err() != nil || !ok || exit.ExitCode() != 42 {
-				t.Fatalf("Oak ELF execution: %v, %v, output %s", err, ctx.Err(), out)
-			}
+			runSelfhostELF(t, image, arch)
 		})
+	}
+}
+
+func runSelfhostELF(t *testing.T, image []byte, arch string) {
+	t.Helper()
+	emulator, err := toolchain.ResolveEmulator(target.Target{OS: target.OSLinux, Arch: arch}, nil, nil)
+	if err != nil {
+		if os.Getenv("OAK_REQUIRE_SELFHOST_QEMU") == "1" {
+			t.Fatal(err)
+		}
+		t.Logf("ELF byte checks passed; execution unavailable: %v", err)
+		return
+	}
+	path := filepath.Join(t.TempDir(), "selfhost.elf")
+	if err := os.WriteFile(path, image, 0755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, emulator.Path, append(append([]string{}, emulator.Args...), path)...)
+	out, err := cmd.CombinedOutput()
+	exit, ok := err.(*exec.ExitError)
+	if ctx.Err() != nil || !ok || exit.ExitCode() != 42 {
+		t.Fatalf("Oak ELF execution: %v, %v, output %s", err, ctx.Err(), out)
 	}
 }
