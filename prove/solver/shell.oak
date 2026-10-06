@@ -412,8 +412,9 @@ decide_serialized: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw
       verdict == u32(7) ? {
         kind = ROW_REFUTED
         ap_counterexample_word(le, ew)
+        first: u32 = witness[u32(0)] + u32(1)
+        marked: u32 = signed_marks(sx, span(&witness), first)
         bits: []u32 = view(&witness)
-        marked: u32 = signed_marks(sx, span(&witness), witness[u32(0)] + u32(1))
         ap_counterexample_of(le, ew, ser, ser_raw, subslice(bits, u32(1), marked - u32(1)), marked - u32(1), true)
       } | {
         ap_eval_failed(le, ew)
@@ -425,8 +426,8 @@ decide_serialized: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw
     listed: u32 = witness[u32(0)] % u32(65536)
     kind = ROW_REFUTED
     verdict == u32(4) ? { ap_traps(le, ew) } | { ap_counterexample_word(le, ew) }
-    bits: []u32 = view(&witness)
     marked: u32 = signed_marks(sx, span(&witness), listed + u32(1))
+    bits: []u32 = view(&witness)
     ap_counterexample_of(le, ew, ser, ser_raw, subslice(bits, u32(1), marked - u32(1)), marked - u32(1), false)
   } | {
   n0 >= u32(0x80000000) ? {
@@ -461,7 +462,6 @@ decide_serialized: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw
     // diagram exceeded its budget.
     cert: [520]u32
     certify_in_oak(lw, b0, n0, budget, span(&cert))
-    cert_view: []u32 = view(&cert)
     status == STATUS_PROVEN ? {
       kind = ROW_DECIDED
       ap_bit_level(le, ew)
@@ -469,7 +469,7 @@ decide_serialized: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw
       ap_bdd_nodes(le, ew)
       order == u32(1) ? { ap_blocks(le, ew) } | { order == u32(2) ? { ap_control(le, ew) } | { } }
       ap_close(le, ew)
-      ap_certificate_after_proven(le, ew, cert_view) ? { } | { kind = ROW_OPEN }
+      ap_certificate_after_proven(le, ew, view(&cert)) ? { } | { kind = ROW_OPEN }
     } | {
     status == STATUS_REFUTED ? {
       kind = ROW_REFUTED
@@ -478,7 +478,7 @@ decide_serialized: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw
       marked: u32 = signed_marks(sx, span(&out), u32(4) + listed)
       bits: []u32 = view(&out)
       ap_counterexample_of(le, ew, ser, ser_raw, subslice(bits, u32(4), marked - u32(4)), marked - u32(4), false)
-      ap_certificate_after_refuted(le, ew, cert_view) ? { } | { kind = ROW_OPEN }
+      ap_certificate_after_refuted(le, ew, view(&cert)) ? { } | { kind = ROW_OPEN }
     } | {
       cert[u32(0)] == CERT_PROVEN ? {
         kind = ROW_DECIDED
