@@ -52,6 +52,11 @@ jobs:
           OAK_REQUIRE_WASM_LEAN: '1'
         run: go test ./wasm/check -run '^TestWasmLEBMatchesLean$' -count=1 -v
 
+      - name: Check solver formula binding in Go, Oak, and Lean
+        env:
+          OAK_REQUIRE_LRAT_BINDING_LEAN: '1'
+        run: go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean)$' -count=1 -v
+
       - name: Check extracted standard library against compiled Oak
         run: go test ./compiler -run 'TestLeanStdlibFaithful' -count=1 -v
 

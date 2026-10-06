@@ -227,7 +227,7 @@ func oakClauseRung(model *compiler.SemanticModel, r prove.Result, goCNF asm.CNF,
 		var checked prove.LRATResult
 		goErr := fmt.Errorf("the solver wrote no certificate record")
 		if run.Record != nil {
-			checked, goErr = prove.CheckLRATWords(run.Record)
+			checked, goErr = prove.CheckLRATWordsAgainst(run.Formula, run.Record)
 		}
 		oak := run.OakCheck
 		refusal := ""

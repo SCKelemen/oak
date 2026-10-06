@@ -30,14 +30,19 @@ cert_conflicts: (): u32 {
   }
   value
 }
-// lrat_check_record checks a finished record (sat_record_finish) with the
-// checker written in Oak over scratch sized from the record's header, and
-// reports its status; out receives status, additions, deletions.
-lrat_check_record: (record: []u32, variables: u32, out: [*]u32): u32 {
+// lrat_check_record first binds a finished record (sat_record_finish) to the
+// independent CNF region, then checks it over scratch sized from its header.
+// out receives status, additions, deletions, including on binding refusal.
+lrat_check_record: (formula: []u32, record: []u32, out: [*]u32): u32 {
+  accepted: u32 = LRAT_FORMULA_MISMATCH
+  out[u32(0)] = accepted
+  out[u32(1)] = u32(0)
+  out[u32(2)] = u32(0)
+  lrat_matches_formula(formula, record) ? {
   ids: u32 = record[u32(5)] + u32(1)
   store_words: u32 = record[u32(6)] + u32(1)
-  vars: u32 = variables + u32(1)
-  accepted: u32 = LRAT_CAPACITY
+  vars: u32 = formula[u32(1)] + u32(1)
+  accepted = LRAT_CAPACITY
   unsafe {
     starts_raw: c.Ptr = malloc(c.Size(ids * u32(4)))
     lengths_raw: c.Ptr = malloc(c.Size(ids * u32(4)))
@@ -59,6 +64,7 @@ lrat_check_record: (record: []u32, variables: u32, out: [*]u32): u32 {
     free(c.disown(lengths))
     free(c.disown(starts))
   }
+  } | { }
   accepted
 }
 
@@ -141,7 +147,8 @@ certify_over: (whole: []u32, n0: u32, node_budget: u32, out: [*]u32): () {
           sat_view: []u32 = view(&sat_arena)
           record: []u32 = subslice(sat_view, sl.record_at, length)
           checked: [3]u32
-          accepted: u32 = lrat_check_record(record, variables, span(&checked))
+          formula: []u32 = subslice(region_view, clause_layout.clauses_at, LRAT_HEADER_WORDS + literal_words)
+          accepted: u32 = lrat_check_record(formula, record, span(&checked))
           accepted == LRAT_ACCEPTED ? {
             out[u32(0)] = CERT_PROVEN
             out[u32(1)] = checked[u32(1)] + checked[u32(2)]
