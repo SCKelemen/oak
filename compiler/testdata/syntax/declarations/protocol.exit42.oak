@@ -1,0 +1,9 @@
+import(std)
+VirtualIrq: protocol = {
+  initial Idle
+  inject: Idle -> Pending
+}
+main: (): i32 {
+  s: VirtualIrqState = virtual_irq_initial()
+  virtual_irq_legal(s, .Inject) ? 42 | 1
+}

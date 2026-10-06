@@ -1,0 +1,2 @@
+SHARED: u32 (section: ".shared") = 42
+main: (): i32 = i32_bits_u32(SHARED)

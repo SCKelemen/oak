@@ -1,0 +1,1 @@
+operator(+) add: (a: i32, b: i32): i32 laws { associative, commutative } = a + b

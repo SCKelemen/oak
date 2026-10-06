@@ -1,0 +1,1 @@
+reflexive: theorem(x: i32) { x == x }

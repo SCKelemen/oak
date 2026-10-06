@@ -1,0 +1,3 @@
+pub Tokens: literals = { "abc", "defg" }
+main: (): u32 = tokens_count(view(&text))
+text: [8]u8 = [u8(97), u8(98), u8(99), u8(100), u8(101), u8(102), u8(103), u8(0)]

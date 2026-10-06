@@ -1,0 +1,6 @@
+json: tag = { name: string }
+User: type = struct { value(json: "value"): i32 }
+main: (): i32 {
+  u: User = User { value: 42 }
+  u.value
+}

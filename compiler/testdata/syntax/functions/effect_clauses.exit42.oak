@@ -1,0 +1,3 @@
+f: (): i32 effects { } forbids { } = 42
+g: (): i32 forbids { } effects { } = 42
+main: (): i32 = f() == g() ? 42 | 1

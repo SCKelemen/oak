@@ -1,0 +1,1 @@
+use: (f: () -> i32 effects { }): i32 = f()

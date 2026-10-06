@@ -1,0 +1,5 @@
+kernel scratch: (gid: u32): () = {
+  cells: [4]u32 (threadgroup)
+  _ = gid
+}
+main: (): i32 = 42

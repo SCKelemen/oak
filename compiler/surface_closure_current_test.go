@@ -165,3 +165,157 @@ func TestEveryContextualStatementRouteHasCorpusEvidence(t *testing.T) {
 		}
 	}
 }
+
+
+func init() {
+	more := map[string]syntaxContract{
+		"functions/typed_literal.exit42.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §3c"},
+		"declarations/tag.exit42.oak": {Status: syntaxCanonical, Spec: "40-records.md field tags"},
+		"declarations/protocol.exit42.oak": {Status: syntaxCanonical, Spec: "112-protocols.md §1"},
+		"declarations/literals.exit2.oak": {Status: syntaxCanonical, Spec: "113-literals.md §1"},
+		"declarations/theorem.parse.oak": {Status: syntaxCanonical, Spec: "125-verification.md", NoNativeReason: "theorem declarations are verification obligations; parsing/extraction/proof checking is the semantic observation rather than ordinary process execution"},
+		"declarations/measured.exit40.oak": {Status: syntaxCanonical, Spec: "60-effects-allocation.md §10b"},
+		"declarations/section.check.oak": {Status: syntaxCanonical, Spec: "65-machine-memory.md", NoNativeReason: "section placement is an emitted-object/layout property rather than a distinct process behavior"},
+		"declarations/threadgroup.parse.oak": {Status: syntaxCanonical, Spec: "56-kernels.md §2a", NoNativeReason: "threadgroup selects Metal address-space storage; compiler/e2e_kernels_test.go exercises the specialized backend"},
+		"types/refinement.exit24.oak": {Status: syntaxCanonical, Spec: "20-types.md §12"},
+		"functions/effect_clauses.exit42.oak": {Status: syntaxCanonical, Spec: "60-effects-allocation.md §2"},
+		"functions/laws.parse.oak": {Status: syntaxCanonical, Spec: "10-syntax.md §14a", NoNativeReason: "laws are compile-time algebraic claims; ordered/reassociated execution is exercised by compiler/e2e_reduce_order_test.go"},
+		"functions/dispatch.parse.oak": {Status: syntaxCanonical, Spec: "93-simd.md §6", NoNativeReason: "dispatch selects target-feature realizations; target-specific execution is covered by SIMD/backend e2e tests"},
+		"types/function_effect_row.parse.oak": {Status: syntaxCanonical, Spec: "60-effects-allocation.md §2a", NoNativeReason: "a function-type effect row is a static callable contract with no independent runtime representation"},
+	}
+	for rel, contract := range more {
+		syntaxContracts[rel] = contract
+	}
+	syntaxFamilies["function values"] = append(syntaxFamilies["function values"], "functions/typed_literal.exit42.oak")
+	syntaxFamilies["contextual declarations"] = append(syntaxFamilies["contextual declarations"],
+		"declarations/tag.exit42.oak",
+		"declarations/protocol.exit42.oak",
+		"declarations/literals.exit2.oak",
+		"declarations/theorem.parse.oak",
+	)
+	syntaxFamilies["declaration clauses"] = append(syntaxFamilies["declaration clauses"],
+		"declarations/measured.exit40.oak",
+		"declarations/section.check.oak",
+		"declarations/threadgroup.parse.oak",
+	)
+	syntaxFamilies["refinements"] = append(syntaxFamilies["refinements"], "types/refinement.exit24.oak")
+	syntaxFamilies["effect clauses"] = append(syntaxFamilies["effect clauses"], "functions/effect_clauses.exit42.oak", "types/function_effect_row.parse.oak")
+	syntaxFamilies["operator laws"] = append(syntaxFamilies["operator laws"], "functions/laws.parse.oak")
+	syntaxFamilies["target dispatch"] = append(syntaxFamilies["target dispatch"], "functions/dispatch.parse.oak")
+
+	// FN now has a real canonical native witness; keep the old untyped literal
+	// case as an explicit compatibility case rather than the production's best evidence.
+	syntaxProductionWitnesses["prefix:FN"] = "functions/typed_literal.exit42.oak"
+}
+
+var identContextualKeyword = regexp.MustCompile(`p\.currentToken\.Literal == "([^"]+)"`)
+var functionContextualKeyword = regexp.MustCompile(`p\.peekToken\.Literal == "([^"]+)"`)
+var declarationClauseCase = regexp.MustCompile(`case "([^"]+)":`)
+
+var identContextualWitnesses = map[string]string{
+	"tag":      "declarations/tag.exit42.oak",
+	"protocol": "declarations/protocol.exit42.oak",
+	"literals": "declarations/literals.exit2.oak",
+	"theorem":  "declarations/theorem.parse.oak",
+}
+
+var functionClauseWitnesses = map[string]string{
+	"effects":  "functions/effect_clauses.exit42.oak",
+	"forbids":  "functions/effect_clauses.exit42.oak",
+	"laws":     "functions/laws.parse.oak",
+	"dispatch": "functions/dispatch.parse.oak",
+}
+
+var declarationClauseWitnesses = map[string]string{
+	"section":     "declarations/section.check.oak",
+	"threadgroup": "declarations/threadgroup.parse.oak",
+	"measured":    "declarations/measured.exit40.oak",
+}
+
+func parserFunctionBodyForClosure(t *testing.T, name string) string {
+	t.Helper()
+	source, err := os.ReadFile(filepath.Join("..", "parser", "parser.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	startNeedle := "func (p *Parser) " + name
+	start := strings.Index(text, startNeedle)
+	if start < 0 {
+		t.Fatalf("parser function %s not found", name)
+	}
+	rest := text[start:]
+	if end := strings.Index(rest[len(startNeedle):], "\nfunc "); end >= 0 {
+		return rest[:len(startNeedle)+end]
+	}
+	return rest
+}
+
+func requireKeywordClosure(t *testing.T, body string, pattern *regexp.Regexp, witnesses map[string]string, label string) {
+	t.Helper()
+	seen := make(map[string]bool)
+	for _, match := range pattern.FindAllStringSubmatch(body, -1) {
+		word := match[1]
+		seen[word] = true
+		witness, ok := witnesses[word]
+		if !ok {
+			t.Errorf("%s keyword %q has no syntax-corpus witness", label, word)
+			continue
+		}
+		if _, ok := syntaxContracts[witness]; !ok {
+			t.Errorf("%s keyword %q points at uncontracted witness %s", label, word, witness)
+		}
+	}
+	for word, witness := range witnesses {
+		if !seen[word] {
+			t.Errorf("stale %s keyword witness %q -> %s", label, word, witness)
+		}
+	}
+}
+
+func TestIdentifierLedContextualDeclarationsHaveCorpusEvidence(t *testing.T) {
+	requireKeywordClosure(t,
+		parserFunctionBodyForClosure(t, "parseIdentLedStatement"),
+		identContextualKeyword,
+		identContextualWitnesses,
+		"identifier-led declaration",
+	)
+}
+
+func TestFunctionContextualClausesHaveCorpusEvidence(t *testing.T) {
+	requireKeywordClosure(t,
+		parserFunctionBodyForClosure(t, "parseFunctionDefinitionFromName"),
+		functionContextualKeyword,
+		functionClauseWitnesses,
+		"function clause",
+	)
+}
+
+func TestVariableDeclarationClausesHaveCorpusEvidence(t *testing.T) {
+	requireKeywordClosure(t,
+		parserFunctionBodyForClosure(t, "parseVarDeclFromNameAndTypeStart"),
+		declarationClauseCase,
+		declarationClauseWitnesses,
+		"declaration clause",
+	)
+}
+
+func TestFunctionTypeEffectRowHasCorpusEvidence(t *testing.T) {
+	body := parserFunctionBodyForClosure(t, "parseFunctionTypeRow")
+	if !strings.Contains(body, `p.peekToken.Literal == "effects"`) {
+		t.Fatal("function-type effect-row parser no longer exposes the effects contextual route")
+	}
+	if _, ok := syntaxContracts["types/function_effect_row.parse.oak"]; !ok {
+		t.Fatal("function-type effects route has no contracted syntax witness")
+	}
+}
+
+func TestRefinementWhereHasCorpusEvidence(t *testing.T) {
+	body := parserFunctionBodyForClosure(t, "parseADTTypeFromName")
+	if !strings.Contains(body, `p.peekToken.Literal == "where"`) {
+		t.Fatal("refinement parser no longer exposes the where contextual route")
+	}
+	if _, ok := syntaxContracts["types/refinement.exit24.oak"]; !ok {
+		t.Fatal("refinement where route has no contracted syntax witness")
+	}
+}

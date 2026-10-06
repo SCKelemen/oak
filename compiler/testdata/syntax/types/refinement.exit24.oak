@@ -1,0 +1,11 @@
+Slot: type = u16 where value < u16(8)
+TABLE: [8]u8 = [8]u8{ 7, 7, 7, 7, 7, 7, 7, 7 }
+lookup: (i: Slot): u8 = TABLE[i]
+widen: (i: Slot): u32 = u32(i) + u32(1)
+main: (): i32 {
+  first: Slot = Slot(u16(3))
+  n: u16 = first
+  computed: u16 = n * u16(2)
+  last: Slot = Slot(computed)
+  i32_bits_u32(u32(lookup(first)) + u32(lookup(last)) + widen(last) + u32(n))
+}
