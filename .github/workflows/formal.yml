@@ -51,6 +51,21 @@ jobs:
       - name: Check bounded production correspondence
         run: go test ./asm -run 'TestAArch64Branch26RelocationMatchesLean|TestAArch64ADRL21PatchBoundaries|TestRV64PCRelMatchesLean|TestValidateCNFAllocationMatchesLean|TestValidateCNFTraceMatchesLean|TestNativeCNFReplay(Apply|Term|Word|WordPairs|Header|Finish|Settled|MetadataSettled|Recording)MatchesLean|TestNativeCNFReplayWordProjection' -count=1 -v
 
+      - name: Check Wasm assembler production decisions against Lean
+        env:
+          OAK_REQUIRE_WASM_LEAN: '1'
+        run: go test ./wasm/encoding -run '^TestWasmEncodingMatchesLean$' -count=1 -v
+
+      - name: Set up independent Wasm engine
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check Oak Wasm assembler and execute its output
+        env:
+          OAK_REQUIRE_WASM_TESTS: '1'
+        run: go test ./compiler -run '^TestE2ESelfHostedWasm' -count=1 -v
+
       - name: Check Wasm LEB production decisions against Lean
         env:
           OAK_REQUIRE_WASM_LEAN: '1'

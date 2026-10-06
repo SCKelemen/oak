@@ -1,6 +1,6 @@
 # Target support, verification and optimization maturity
 
-Snapshot: 2026-09-18. This is a capability map, not a benchmark ranking or a
+Snapshot: 2026-10-06. This is a capability map, not a benchmark ranking or a
 claim that every program on a target is verified. Supported spellings are
 defined by `target.Supported`; detailed proof coverage is in
 [STATUS](spec/STATUS.md), [native semantics](spec/94-assembler.md), and
@@ -21,7 +21,7 @@ or runtime. Passing QEMU tests is not a hardware performance measurement.
 | `darwin/amd64`, `linux/amd64`, `freestanding/amd64` | C backend/external compiler; platform-dependent execution/cross-build tests | Shared frontend proof work applies where stated. No Oak amd64 native semantic-verification lane or complete C→machine proof | External C compiler performs machine optimization; no Oak-native amd64 optimization claim |
 | `freestanding/arm` | C/external compiler; Cortex-M emulator fixtures (STM32-class direction) | Shared frontend/data-model work, not verified ARM32 instruction lowering or arbitrary STM32 hardware | External C compiler; MCU runtime/code-size/power benchmarking still needed |
 | `freestanding/riscv32` | C/external compiler; RV32 emulator fixtures | Shared frontend/data-model work, not an Oak RV32 native verifier | External C compiler; no mature RV32 hardware performance suite |
-| `core/wasm32` | Experimental direct scalar OptIR→Wasm, including 32/64-bit division/remainder with Oak trap/overflow behavior; exact structured/CFG binding; independent bounded Go byte/type validator and engine execution tests | LEB prefix model theorems and finite production/Lean pins; full decoder/validator and translation refinement open. Verified-only mode refuses | Direct/acyclic/loop paths stackify total pure single-use same-block SSA trees and compact their locals; nested structured source control also lowers without dispatch. Byte/instruction gates and preliminary local V8 timings exist. Raw irreducible CFGs dispatch; no representative browser/native parity claim |
+| `core/wasm32` | Experimental direct scalar OptIR→Wasm, including 32/64-bit division/remainder with Oak trap/overflow behavior; exact structured/CFG binding; independent bounded Go byte/type validator and engine execution tests | LEB and scalar instruction/sequence encode-decode model theorems; bootstrap Oak instruction assembler; finite Go/Oak/Lean correspondence and independent output execution. Full decoder/validator and translation refinement open. Verified-only mode refuses | Direct/acyclic/loop paths stackify total pure single-use same-block SSA trees and compact their locals; nested structured source control also lowers without dispatch. Byte/instruction gates and preliminary local V8 timings exist. Raw irreducible CFGs dispatch; no representative browser/native parity claim |
 
 ## Embeddings and adjacent outputs
 
@@ -35,8 +35,9 @@ or runtime. Passing QEMU tests is not a hardware performance measurement.
 Native equality certificates currently have **audit-only** coverage; formal
 certificate models do not imply that certificates authorize every native verdict.
 The source/checker, encoding, relocation, linking, loaded image and environment
-boundaries must each be accounted for. The existing `Oak.Target` model covers
-C/native targets; adding the experimental Wasm target does not extend its proofs.
+boundaries must each be accounted for. `Oak.Target` now includes Core Wasm registration, data-model metadata, container
+and C-driver refusal. These target-selection results do not imply compiler or
+runtime correctness. See the [Wasm assembler proof boundary](spec/91-wasm-assembler-proofs.md).
 
 For actual performance, use [native measurements](../benchmarks/native/README.md)
 and [kernel results](../benchmarks/kernels/RESULTS.md), including their revisions,

@@ -10,6 +10,7 @@ import (
 
 	"github.com/SCKelemen/oak/optir"
 	"github.com/SCKelemen/oak/wasm/check"
+	"github.com/SCKelemen/oak/wasm/encoding"
 )
 
 const Profile = "oak.wasm.scalar.v1"
@@ -767,34 +768,9 @@ func binaryOpcode(code string, t optir.Type) (byte, bool) {
 
 type binary []byte
 
-func (b *binary) op(v ...byte) { *b = append(*b, v...) }
-func (b *binary) u(v uint64) {
-	for {
-		x := byte(v & 127)
-		v >>= 7
-		if v != 0 {
-			x |= 128
-		}
-		b.op(x)
-		if v == 0 {
-			return
-		}
-	}
-}
-func (b *binary) s(v int64) {
-	for {
-		x := byte(v & 127)
-		v >>= 7
-		end := (v == 0 && x&64 == 0) || (v == -1 && x&64 != 0)
-		if !end {
-			x |= 128
-		}
-		b.op(x)
-		if end {
-			return
-		}
-	}
-}
+func (b *binary) op(v ...byte)                { *b = append(*b, v...) }
+func (b *binary) u(v uint64)                  { *b = encoding.AppendUnsigned(*b, v) }
+func (b *binary) s(v int64)                   { *b = encoding.AppendSigned(*b, v) }
 func (b *binary) i32(v int32)                 { b.op(0x41); b.s(int64(v)) }
 func (b *binary) local(op byte, index uint32) { b.op(op); b.u(uint64(index)) }
 func (b *binary) name(s string)               { b.u(uint64(len(s))); *b = append(*b, []byte(s)...) }

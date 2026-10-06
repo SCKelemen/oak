@@ -95,6 +95,15 @@ not yet prove refinement of the Go or Oak implementation, the ELF writer,
 startup behavior, or the complete source-to-executable pipeline. Tests must
 not be reported as universal implementation proofs.
 
+## Wasm scalar assembler
+
+`wasm.oak` adds caller-owned LEB and scalar instruction/sequence assembly for
+`core/wasm32`. The [Wasm assembler contract](../../docs/spec/91-wasm-assembler-proofs.md)
+lists the exact opcode/immediate domain, unchanged-on-refusal behavior,
+universal Lean encoding laws, production correspondence and independent engine
+tests. The Oak implementation is a bootstrap kernel; module writing, linking,
+implementation refinement and source-to-module verification remain open.
+
 ## Remaining M7/M8 work
 
 Port and prove the remaining emitted instruction forms and their decoders;

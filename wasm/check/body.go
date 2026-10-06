@@ -96,7 +96,11 @@ func validateBody(r *reader, sig signature, functions []signature, totalLocals, 
 			r.fail("instruction limit exceeded")
 			break
 		}
-		op := r.byte()
+		ins := r.instruction()
+		if r.err != nil {
+			break
+		}
+		op := ins.Opcode
 		switch op {
 		case 0x00: // unreachable
 			v.unreachable()
@@ -106,7 +110,7 @@ func validateBody(r *reader, sig signature, functions []signature, totalLocals, 
 				v.pop(I32)
 			}
 			var end ValueType
-			switch r.byte() {
+			switch byte(ins.Immediate) {
 			case 0x40:
 			case 0x7f:
 				end = I32
@@ -136,7 +140,7 @@ func validateBody(r *reader, sig signature, functions []signature, totalLocals, 
 				v.push(f.result)
 			}
 		case 0x0c, 0x0d: // br / br_if
-			depth := r.u32()
+			depth := uint32(ins.Immediate)
 			if uint64(depth) >= uint64(len(v.control)) {
 				r.fail("unknown branch depth %d", depth)
 				break
@@ -159,7 +163,7 @@ func validateBody(r *reader, sig signature, functions []signature, totalLocals, 
 			}
 			v.unreachable()
 		case 0x10: // call, including forward and recursive references
-			idx := r.u32()
+			idx := uint32(ins.Immediate)
 			if uint64(idx) >= uint64(len(functions)) {
 				r.fail("unknown call index %d", idx)
 				break
@@ -174,7 +178,7 @@ func validateBody(r *reader, sig signature, functions []signature, totalLocals, 
 		case 0x1a:
 			v.pop("") // drop
 		case 0x20, 0x21, 0x22: // local.get / set / tee
-			idx := r.u32()
+			idx := uint32(ins.Immediate)
 			if uint64(idx) >= uint64(len(locals)) {
 				r.fail("unknown local index %d", idx)
 				break
@@ -186,10 +190,8 @@ func validateBody(r *reader, sig signature, functions []signature, totalLocals, 
 				v.push(locals[idx])
 			}
 		case 0x41:
-			r.integer(32, true)
 			v.push(I32)
 		case 0x42:
-			r.integer(64, true)
 			v.push(I64)
 		case 0x45: // i32.eqz
 			v.pop(I32)
