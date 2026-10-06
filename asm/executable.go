@@ -443,14 +443,16 @@ func resolveRelocations(l *textLayout, textAddr uint64, symbolAddr map[string]ui
 			}
 			le.PutUint32(l.text[r.offset:], patched)
 		case "condbr19":
-			place := textAddr + uint64(r.offset)
-			delta := int64(target) - int64(place)
-			if delta%4 != 0 || delta < -(1<<20) || delta >= 1<<20 {
-				return fmt.Errorf("executable: %s to %s at %#x is %d bytes away, beyond the 19-bit branch", r.kind, r.symbol, place, delta)
+			if textAddr > ^uint64(0)-uint64(r.offset) {
+				return fmt.Errorf("executable: relocation address %#x + %d overflows", textAddr, r.offset)
 			}
-			word := le.Uint32(l.text[r.offset:])
-			word = word&^(0x7ffff<<5) | (uint32(delta>>2)&0x7ffff)<<5
-			le.PutUint32(l.text[r.offset:], word)
+			place := textAddr + uint64(r.offset)
+			original := le.Uint32(l.text[r.offset:])
+			patched, err := patchAArch64CondBranch19(original, place, target)
+			if err != nil {
+				return fmt.Errorf("executable: %s to %s: %w", r.kind, r.symbol, err)
+			}
+			le.PutUint32(l.text[r.offset:], patched)
 		case "adrl21":
 			offset := uint64(r.offset)
 			if textAddr > ^uint64(0)-offset {

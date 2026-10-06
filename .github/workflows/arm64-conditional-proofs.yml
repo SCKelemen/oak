@@ -1,0 +1,36 @@
+name: ARM64 Conditional Branch Proofs
+
+on:
+  push:
+    branches: [specification]
+  pull_request:
+    branches: [specification]
+
+permissions:
+  contents: read
+
+jobs:
+  conditional-branches:
+    name: ARM64 conditional branch proofs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Install Lean toolchain manager
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Check universal branch model proofs
+        working-directory: spec/lean
+        run: lake build Oak.AArch64ConditionalBranch
+      - name: Check production encoder, relocation, and executable bytes
+        env:
+          OAK_REQUIRE_ARM64_COND19_LEAN: '1'
+        run: go test ./asm -run '^TestAArch64(Conditional|LiteralDoesNotUse)' -count=1 -v

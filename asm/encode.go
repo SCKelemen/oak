@@ -24,7 +24,7 @@ import (
 // Relocation records a reference to a symbol outside the function.
 type Relocation struct {
 	Offset int    // byte offset of the instruction in the function
-	Kind   string // call26 (bl), jump26 (b), condbr19 (b.cond/cbz/ldr literal), tbz14, adr21, adrp21, lo12 (add :lo12:); riscv_call_plt (call, rv64)
+	Kind   string // call26 (bl), jump26 (b), condbr19 (b.cond/cbz/cbnz), tbz14, adr21, adrp21, lo12 (add :lo12:); riscv_call_plt (call, rv64)
 	Symbol string
 }
 
@@ -1535,6 +1535,11 @@ func (e *encoder) label(fop *isaOperand, sym Symbol, pc int64, labels map[string
 	}
 	target, local := labels[sym.Name]
 	if !local {
+		// Literal loads need R_AARCH64_LD_PREL_LO19, not CONDBR19.
+		// Until that distinct relocation is supported, refuse to mislabel it.
+		if fields == "imm19" && !aarch64ConditionalBranchMnemonic(e.enc.Mnemonic) {
+			return nil, fmt.Errorf("label %s: external %s literal relocation is not supported", sym.Name, e.enc.Mnemonic)
+		}
 		return &Relocation{Kind: kind, Symbol: sym.Name}, nil
 	}
 	disp, ok := exactInt64Difference(target, pc)
@@ -1545,12 +1550,11 @@ func (e *encoder) label(fop *isaOperand, sym Symbol, pc int64, labels map[string
 	if scale <= 0 {
 		scale = 1
 	}
-	// The exact B/BL-immediate proofs compose local label encoding with the
-	// object writer's Branch26 model.  Both the instruction place and its
-	// target are instruction addresses, so reject equally misaligned inputs
-	// rather than admitting them merely because their difference is aligned.
-	if fields == "imm26" && (e.enc.Mnemonic == "b" || e.enc.Mnemonic == "bl") &&
-		(pc%4 != 0 || target%4 != 0) {
+	// A branch's place and target are instruction addresses. An aligned
+	// difference does not make equally misaligned addresses valid.
+	branch := fields == "imm26" && (e.enc.Mnemonic == "b" || e.enc.Mnemonic == "bl") ||
+		fields == "imm19" && aarch64ConditionalBranchMnemonic(e.enc.Mnemonic)
+	if branch && (pc%4 != 0 || target%4 != 0) {
 		return nil, fmt.Errorf("label %s: %s place %d and target %d must be four-byte aligned",
 			sym.Name, strings.ToUpper(e.enc.Mnemonic), pc, target)
 	}

@@ -25,6 +25,7 @@ import Oak.AArch64DirectBranchEncoding
 import Oak.AArch64AddressRelocation
 import Oak.AArch64CallBranchEncoding
 import Oak.AArch64CompareBranchEncoding
+import Oak.AArch64ConditionalBranch
 import Oak.AArch64BreakpointEncoding
 import Oak.AArch64Barrier
 import Oak.AArch64Stage2Maintenance
