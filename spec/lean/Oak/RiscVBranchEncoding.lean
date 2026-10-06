@@ -27,8 +27,8 @@ inductive Branch where
   deriving DecidableEq, Repr
 
 def Branch.row : Branch → Encoding
-  | .beq => beq | .bne => bne | .blt => blt
-  | .bge => bge | .bltu => bltu | .bgeu => bgeu
+  | .beq => Oak.RiscV.Enc.beq | .bne => Oak.RiscV.Enc.bne | .blt => Oak.RiscV.Enc.blt
+  | .bge => Oak.RiscV.Enc.bge | .bltu => Oak.RiscV.Enc.bltu | .bgeu => Oak.RiscV.Enc.bgeu
 
 -- OAK-RV64-J-ENC-BEGIN (generated from asm/rv64_encodings_gen.go)
 def jal : Encoding := ⟨"jal", 0x0000006f#32, 0x0000007f#32, [⟨"rd", 11, 7⟩, ⟨"jimm20", 31, 12⟩]⟩
@@ -72,7 +72,8 @@ theorem encodeB_fields (kind : Branch) (rs1 rs2 : BitVec 5) (half : BitVec 12) :
     encodeB kind rs1 rs2 half &&& kind.row.mask = kind.row.value := by
   cases kind <;>
     simp only [encodeB, Branch.row, encode, placeField, List.foldl,
-      bOperands, bimm12hi, bimm12lo, beq, bne, blt, bge, bltu, bgeu, decodeBHalf] <;>
+      bOperands, bimm12hi, bimm12lo, Oak.RiscV.Enc.beq, Oak.RiscV.Enc.bne,
+      Oak.RiscV.Enc.blt, Oak.RiscV.Enc.bge, Oak.RiscV.Enc.bltu, Oak.RiscV.Enc.bgeu, decodeBHalf] <;>
     bv_decide
 
 theorem encodeJ_fields (rd : BitVec 5) (half : BitVec 20) :

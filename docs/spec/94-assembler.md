@@ -10698,3 +10698,9 @@ register effect, source CFG/layout correspondence, compression/layout,
 relocations, ELF loading, and end-to-end executable correctness remain
 separate obligations. In particular, two odd model addresses with an even
 difference satisfy the offset predicate; no executability claim follows.
+
+The new bitvector theorems use Lean 4.33.1's standard `bv_decide` path.
+Its native certificate evaluation remains in the trusted base: `#print axioms`
+reports the generated `_native.bv_decide` dependencies, alongside the usual
+Lean logical axioms. Eliminating native evaluation from the proof trust
+boundary remains a separate closure obligation; these proofs do not claim it.
