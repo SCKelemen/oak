@@ -222,6 +222,17 @@ for rollback, and compose acceptance with formula binding. Allocation/FFI
 semantics, extraction correctness, and compiled ARM64/RV64 executables remain
 separate kernel obligations.
 
+`TestLRATKernelCheckerExtract` pins the complete production `lrat_check`
+extraction. `Oak.LRATCheckerState` proves its RUP function extensionally equal
+to the separately extracted implementation covered by `production_rup_entails`.
+It proves the actual assignment initializer clears exactly the declared
+variables while preserving the unused scratch suffix, and the inclusive
+live-table initializer starts with an empty database without counter wrap.
+The extracted deletion loop only removes live entries, even on partial
+failure, so it preserves every database model and the live-variable invariant.
+The initial-clause decoder, addition/store transitions, tracked-assignment
+preservation, and full-record/formula-binding composition are still open.
+
 At the clause
 boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists for raw
 AND, OR, XOR, and ITE gate records characterize those gates. It composes any
