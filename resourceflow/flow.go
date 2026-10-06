@@ -375,6 +375,34 @@ func (f *Flow) aliasEdge(left, right string) (AliasEdge, bool) {
 	return AliasEdge{}, false
 }
 
+// SameState compares the authority facts used by transfer and join for
+// environments descended from the same predecessor. Allocation cursors,
+// unreachable classes, and diagnostic source locations are not semantic
+// loop facts. Alias provenance parents are compared because Join uses them.
+func (f *Flow) SameState(other *Flow) bool {
+	if f == nil || other == nil {
+		return f == other
+	}
+	if len(f.aliases) != len(other.aliases) {
+		return false
+	}
+	for name, info := range f.aliases {
+		right, ok := other.aliases[name]
+		if !ok || info.class != right.class || info.parent != right.parent {
+			return false
+		}
+		leftState, rightState := f.classes[info.class], other.classes[right.class]
+		if leftState == nil || rightState == nil {
+			if leftState != rightState {
+				return false
+			}
+		} else if leftState.authority != rightState.authority {
+			return false
+		}
+	}
+	return true
+}
+
 // Join merges reachable branch exits. Branches are expected to be clones of a
 // common predecessor. Names introduced on only some paths do not escape the
 // join; incompatible provenance also fails closed by dropping that name.
