@@ -210,6 +210,7 @@ import Oak.ProtocolConformance
 import Oak.RiscV
 import Oak.RiscVBranchEncoding
 import Oak.RiscVCompressedBranchEncoding
+import Oak.RiscVRelaxation
 import Oak.RiscVMemory
 import Oak.SailRiscVBridge
 import Oak.Target

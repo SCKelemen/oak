@@ -121,6 +121,26 @@ func rv64Offsets(units []rv64Piece, labelAt map[string]int) ([]int64, map[string
 	return starts, labels
 }
 
+// rv64RelaxPass uses one layout snapshot for every admission decision in the
+// pass. Previously compressed units and relocation pairs keep their widths.
+// Every change is 4 -> 2, so at most len(units) changing passes are possible.
+// Oak.RiscVRelaxation proves the shrinking layout/range and termination model;
+// rv64_relaxation_lean_test.go checks this production step against that model.
+func rv64RelaxPass(units []rv64Piece, labelAt map[string]int) bool {
+	changed := false
+	starts, labels := rv64Offsets(units, labelAt)
+	for i := range units {
+		if units[i].size == 2 || units[i].fromCall || !rv64ControlTransfer(units[i].base) || !rvcCompressible(units[i].base) {
+			continue
+		}
+		if _, ok := rvcEncode(units[i].base, starts[i], labels); ok {
+			units[i].size = 2
+			changed = true
+		}
+	}
+	return changed
+}
+
 // encodeRV64Function lays the function out — under `option rvc`, every
 // instruction with a compressed form takes two bytes, branches and jumps
 // once their offsets fit, converging from the four-byte layout by
@@ -136,18 +156,7 @@ func encodeRV64Function(fn *Function) ([]byte, []Relocation, error) {
 				units[i].size = 2
 			}
 		}
-		for changed := true; changed; {
-			changed = false
-			starts, labels := rv64Offsets(units, labelAt)
-			for i := range units {
-				if units[i].size == 2 || units[i].fromCall || !rv64ControlTransfer(units[i].base) || !rvcCompressible(units[i].base) {
-					continue
-				}
-				if _, ok := rvcEncode(units[i].base, starts[i], labels); ok {
-					units[i].size = 2
-					changed = true
-				}
-			}
+		for rv64RelaxPass(units, labelAt) {
 		}
 	}
 	starts, labels := rv64Offsets(units, labelAt)
