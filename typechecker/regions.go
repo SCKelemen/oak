@@ -21,16 +21,21 @@ import (
 
 // RegionSignature is a function's region structure after erasure.
 type RegionSignature struct {
-	Regions []string // declared region parameters, in order
-	Params  []string // the region each parameter's type carries ("" for none)
-	Return  string   // the region the return type carries ("" for none)
+	Regions        []string            // declared region parameters, in order
+	Params         []string            // the region each parameter's type carries ("" for none)
+	Return         string              // the region the return type carries ("" for none)
+	ParamPaths     []map[string]string // borrow path -> instantiated region, before erasure
+	ReturnPaths    map[string]string
+	FieldSensitive bool // a signature mentions a record with multiple regions
 }
 
 // RegionRecord is a record type's region structure after erasure.
 type RegionRecord struct {
-	Regions   []string          // declared region parameters, in order
-	Positions []int             // their indices in the original parameter list
-	Fields    map[string]string // borrow-carrying field -> region
+	Regions        []string          // declared region parameters, in order
+	Positions      []int             // their indices in the original parameter list
+	Fields         map[string]string // borrow-carrying field -> region
+	Paths          map[string]string // full borrow path -> declared region
+	FieldSensitive bool
 }
 
 type regionInfo struct {
@@ -84,20 +89,37 @@ func (tc *TypeChecker) copyRegionSignature(template, specialized string) {
 // them), iterated to a fixpoint so a record may carry another's region.
 func (tc *TypeChecker) eraseRegions(program *ast.Program) {
 	info := tc.regions()
-	for changed := true; changed; {
-		changed = false
+	// Discover metadata before mutating any declarations. Otherwise a record
+	// declared before a nested record can lose its first region when a later
+	// pass discovers and erases its remaining region parameters.
+	for pass := 0; pass < len(program.Statements); pass++ {
+		changed := false
 		for _, stmt := range program.Statements {
 			adt, ok := stmt.(*ast.ADTType)
-			if !ok || adt.Name == nil || len(adt.TypeParams) == 0 || len(adt.Variants) != 1 || adt.Variants[0].Literal == nil {
+			if !ok || adt.Name == nil || len(adt.TypeParams) == 0 || len(adt.Variants) != 1 {
 				continue
 			}
-			recordLit, isRecord := adt.Variants[0].Literal.(*ast.RecordLiteral)
-			if !isRecord {
+			literal, ok := adt.Variants[0].Literal.(*ast.RecordLiteral)
+			if !ok {
 				continue
 			}
-			if tc.eraseRecordRegions(adt, recordLit, info) {
+			rec, regions := recordRegionInfo(adt, literal, info)
+			if len(regions) > 0 && !reflect.DeepEqual(info.records[adt.Name.Value], rec) {
+				info.records[adt.Name.Value] = rec
 				changed = true
 			}
+		}
+		if !changed {
+			break
+		}
+	}
+	for _, stmt := range program.Statements {
+		adt, ok := stmt.(*ast.ADTType)
+		if !ok || adt.Name == nil || len(adt.TypeParams) == 0 || len(adt.Variants) != 1 {
+			continue
+		}
+		if literal, ok := adt.Variants[0].Literal.(*ast.RecordLiteral); ok {
+			tc.eraseRecordRegions(adt, literal, info)
 		}
 	}
 	for _, stmt := range program.Statements {
@@ -295,36 +317,59 @@ func rebuildApplication(original *ast.IndexExpression, head string, args []ast.E
 
 // eraseRecordRegions erases a record's region parameters; reports whether
 // it erased any.
-func (tc *TypeChecker) eraseRecordRegions(adt *ast.ADTType, recordLit *ast.RecordLiteral, info *regionInfo) bool {
+func recordRegionInfo(adt *ast.ADTType, recordLit *ast.RecordLiteral, info *regionInfo) (RegionRecord, map[string]bool) {
 	fieldTypes := make([]ast.Expression, 0, len(recordLit.FieldOrder))
 	for _, field := range recordLit.FieldOrder {
 		fieldTypes = append(fieldTypes, field.Value)
 	}
 	regions := regionParameters(adt.TypeParams, fieldTypes, info.records)
-	if len(regions) == 0 {
-		return false
-	}
-	rec := RegionRecord{Fields: map[string]string{}}
-	remaining := make([]*ast.TypeParameter, 0, len(adt.TypeParams))
+	rec := RegionRecord{Fields: map[string]string{}, Paths: map[string]string{}, FieldSensitive: len(regions) > 1}
 	for i, tp := range adt.TypeParams {
 		if regions[tp.Name.Value] {
 			rec.Regions = append(rec.Regions, tp.Name.Value)
 			rec.Positions = append(rec.Positions, i)
-			continue
 		}
-		remaining = append(remaining, tp)
 	}
-	adt.TypeParams = remaining
-	for i := range recordLit.FieldOrder {
-		field := &recordLit.FieldOrder[i]
-		rewritten, region := eraseRegionType(field.Value, regions, info.records)
-		field.Value = rewritten
-		recordLit.Fields[field.Name] = rewritten
+	for _, field := range recordLit.FieldOrder {
+		paths, sensitive := regionTypePaths(field.Value, info.records)
+		rec.FieldSensitive = rec.FieldSensitive || sensitive
+		for path, region := range paths {
+			name := field.Name
+			if path != "" {
+				name += "." + path
+			}
+			rec.Paths[name] = region
+		}
+		// Legacy Fields keeps the first carried region without erasing the AST.
+		region := firstTypeRegion(field.Value, regions, info.records)
 		if region != "" {
 			rec.Fields[field.Name] = region
 		}
 	}
-	info.records[adt.Name.Value] = rec
+	return rec, regions
+}
+
+func (tc *TypeChecker) eraseRecordRegions(adt *ast.ADTType, recordLit *ast.RecordLiteral, info *regionInfo) bool {
+	rec, ok := info.records[adt.Name.Value]
+	if !ok {
+		return false
+	}
+	regions := map[string]bool{}
+	for _, r := range rec.Regions {
+		regions[r] = true
+	}
+	remaining := make([]*ast.TypeParameter, 0, len(adt.TypeParams))
+	for _, tp := range adt.TypeParams {
+		if !regions[tp.Name.Value] {
+			remaining = append(remaining, tp)
+		}
+	}
+	adt.TypeParams = remaining
+	for i := range recordLit.FieldOrder {
+		field := &recordLit.FieldOrder[i]
+		field.Value, _ = eraseRegionType(field.Value, regions, info.records)
+		recordLit.Fields[field.Name] = field.Value
+	}
 	return true
 }
 
@@ -341,7 +386,7 @@ func (tc *TypeChecker) eraseFunctionRegions(fn *ast.FunctionStatement, info *reg
 	if len(regions) == 0 {
 		return
 	}
-	sig := RegionSignature{Params: make([]string, len(fn.Parameters))}
+	sig := RegionSignature{Params: make([]string, len(fn.Parameters)), ParamPaths: make([]map[string]string, len(fn.Parameters))}
 	remaining := make([]*ast.TypeParameter, 0, len(fn.TypeParams))
 	for _, tp := range fn.TypeParams {
 		if regions[tp.Name.Value] {
@@ -352,8 +397,14 @@ func (tc *TypeChecker) eraseFunctionRegions(fn *ast.FunctionStatement, info *reg
 	}
 	fn.TypeParams = remaining
 	for i, p := range fn.Parameters {
+		paths, sensitive := regionTypePaths(p.Type, info.records)
+		sig.ParamPaths[i] = paths
+		sig.FieldSensitive = sig.FieldSensitive || sensitive
 		p.Type, sig.Params[i] = eraseRegionType(p.Type, regions, info.records)
 	}
+	var sensitive bool
+	sig.ReturnPaths, sensitive = regionTypePaths(fn.ReturnType, info.records)
+	sig.FieldSensitive = sig.FieldSensitive || sensitive
 	fn.ReturnType, sig.Return = eraseRegionType(fn.ReturnType, regions, info.records)
 	if fn.Body != nil {
 		eraseRegionsInDeclarations(reflect.ValueOf(fn.Body), regions, info.records)
@@ -394,4 +445,77 @@ func eraseRegionsInDeclarations(value reflect.Value, regions map[string]bool, re
 			eraseRegionsInDeclarations(value.MapIndex(key), regions, records)
 		}
 	}
+}
+
+// regionTypePaths captures field substitutions before erasure. Unsupported
+// wrappers retain the field-sensitive flag but no paths, so the borrow checker
+// can reject incomplete contracts rather than collapse independent regions.
+func regionTypePaths(expr ast.Expression, records map[string]RegionRecord) (map[string]string, bool) {
+	e, ok := expr.(*ast.IndexExpression)
+	if !ok || isArrayTypeSyntax(e) {
+		return nil, false
+	}
+	head, args, ok := lenientFlattenApplication(e)
+	if !ok {
+		return nil, false
+	}
+	if (head == "View" || head == "Span") && len(args) == 2 {
+		if r, ok := args[1].(*ast.Identifier); ok {
+			return map[string]string{"": r.Value}, false
+		}
+	}
+	if rec, ok := records[head]; ok {
+		substitution := map[string]string{}
+		for i, pos := range rec.Positions {
+			if pos < len(args) {
+				if r, ok := args[pos].(*ast.Identifier); ok {
+					substitution[rec.Regions[i]] = r.Value
+				}
+			}
+		}
+		paths := map[string]string{}
+		for path, region := range rec.Paths {
+			if r := substitution[region]; r != "" {
+				paths[path] = r
+			}
+		}
+		return paths, rec.FieldSensitive
+	}
+	sensitive := false
+	for _, arg := range args {
+		_, nested := regionTypePaths(arg, records)
+		sensitive = sensitive || nested
+	}
+	return nil, sensitive
+}
+
+func firstTypeRegion(expr ast.Expression, regions map[string]bool, records map[string]RegionRecord) string {
+	e, ok := expr.(*ast.IndexExpression)
+	if !ok || isArrayTypeSyntax(e) {
+		return ""
+	}
+	head, args, ok := lenientFlattenApplication(e)
+	if !ok {
+		return ""
+	}
+	positions := []int{}
+	if (head == "View" || head == "Span") && len(args) == 2 {
+		positions = []int{1}
+	} else if rec, ok := records[head]; ok {
+		positions = rec.Positions
+	} else {
+		for _, arg := range args {
+			if r := firstTypeRegion(arg, regions, records); r != "" {
+				return r
+			}
+		}
+	}
+	for _, pos := range positions {
+		if pos < len(args) {
+			if r, ok := args[pos].(*ast.Identifier); ok && regions[r.Value] {
+				return r.Value
+			}
+		}
+	}
+	return ""
 }

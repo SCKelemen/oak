@@ -445,7 +445,7 @@ they landed and the shape each admits.
    `OAK-B0113`: a return region naming no parameter, or two, or a view
    result from a span region. Executed: `compiler/e2e_region_returns_test.go`.
 3. Region-carrying records (`Cursor[R]: type = struct { data: View[u8, R],
-   pos: u32 }`, exactly one region per record): a function whose signature
+   pos: u32 }`, initially one region per record): a function whose signature
    gives a record parameter a region receives its borrow fields as borrows
    (`c.data`) and may pass them on, subslice them, or build and return a
    record in the same region; a returned record's borrow fields are traced
@@ -494,10 +494,47 @@ they landed and the shape each admits.
    the caller's reborrow, unchanged: the derived borrow is the existing
    subslice reborrow, read-only by its type.
 
+6. Multiple-region read-only records (2026-10-06). Independent fields
+   retain independent region contracts through construction, projection,
+   nested records, calls, returns, ordinary type specialization, and qualified
+   package calls:
+
+   ```oak
+   Parts[A, B]: type = struct {
+     header: View[u8, A],
+     payload: View[u8, B]
+   }
+   parts[A, B]: (a: View[u8, A], b: View[u8, B]): Parts[A, B] =
+     Parts { header: a, payload: b }
+   payload[A, B]: (p: Parts[A, B]): View[u8, B] = p.payload
+   ```
+
+   The type checker preserves a map from each borrowed field path to its
+   instantiated region before erasure. Each returned field must trace to
+   exactly one parameter borrow path bearing that region. Swapped fields,
+   local owners hidden behind bindings or calls, missing provenance, and
+   ambiguous source regions fail with `OAK-B0113`. Every conditional result
+   arm is checked. The caller binds one existing read-only borrow per result
+   field; projecting only `payload` retains only its owner, including when
+   the aggregate is a temporary. The aggregate binding itself keeps all its
+   fields borrowed until its lexical scope ends.
+
+   This increment requires explicit regions and read-only view sources.
+   Mutable fields or sources, multiple source paths sharing one return
+   region, ADT wrappers around multiple-region records, and untraceable
+   derived expressions fail closed. Region arguments remain erased: records
+   contain their ordinary view descriptors, with no runtime region state.
+   Tests execute emitted C and the interpreter and cover nested records,
+   reordered region arguments, forwarding packages, both owners' write
+   protection, and unrelated-owner release
+   (`compiler/e2e_multiple_regions_test.go`). The existing owner/reborrow
+   rules apply field by field; no new implementation-refinement proof is
+   claimed for the field-path traversal.
+
 What stays rejected: borrows in globals and statics, borrows in records
 without a region crossing a call, a returned borrow whose provenance the
-checker cannot establish, a region naming more than one parameter, a record
-with more than one region, and any borrow outliving its owner. Qualified
+checker cannot establish, an ambiguous region source, mutable multiple-region
+records, and any borrow outliving its owner. Qualified
 package calls are elaborated to the declaration identity before region
 erasure. Ordinary imports preserve explicit and elided return contracts,
 including forwarding through another package; the module regression covers

@@ -134,11 +134,13 @@ const (
 // regionContract is what a function's body owes its signature: the owners
 // of the return region, and the shape of the returned value.
 type regionContract struct {
-	function string
-	region   string
-	kind     returnKind
-	owners   map[string]bool
-	checked  bool
+	function    string
+	region      string
+	kind        returnKind
+	owners      map[string]bool
+	checked     bool
+	bodyBlock   *ast.BlockStatement // only the actual function body may discharge the return contract
+	fieldOwners map[string]string   // result path -> exact parameter owner
 }
 
 // paramRegions reports the region each parameter of a declared function
@@ -164,6 +166,9 @@ func (bc *BorrowChecker) returnContractFor(stmt *ast.FunctionStatement, env *typ
 		return nil
 	}
 	fn, sig, ok := regionSignatureFor(stmt.Name.Value, env)
+	if ok && sig.FieldSensitive {
+		return bc.multipleRegionContract(stmt, fn, sig, env)
+	}
 	if !ok || sig.Return == "" {
 		return nil
 	}
@@ -296,6 +301,20 @@ func (bc *BorrowChecker) checkReturnedProvenance(result ast.Expression, contract
 	}
 	contract.checked = true
 	if result == nil {
+		return
+	}
+	if contract.fieldOwners != nil {
+		for _, path := range sortedRegionPaths(contract.fieldOwners) {
+			owners, ok := bc.fieldProvenance(result, path, env, 0)
+			valid := ok && len(owners) > 0
+			for owner := range owners {
+				valid = valid && owner == contract.fieldOwners[path]
+			}
+			if !valid {
+				d := bc.reportBorrow(result, CodeReturnedBorrowRegion, fmt.Sprintf("function %q returns path %q outside its declared region", contract.function, path))
+				d.AddNote(fmt.Sprintf("this field must borrow %s", describeOwner(contract.fieldOwners[path])))
+			}
+		}
 		return
 	}
 	owners, ok := bc.provenanceOwners(result, env)
@@ -655,6 +674,16 @@ func (bc *BorrowChecker) provenanceOwners(expr ast.Expression, env *typechecker.
 			return nil, false
 		}
 		if _, sig, ok := regionSignatureFor(callee.Value, env); ok && sig.Return != "" {
+			if sig.FieldSensitive {
+				for _, path := range sortedRegionPaths(sig.ReturnPaths) {
+					sub, traced := bc.fieldProvenance(e, path, env, 0)
+					if !traced {
+						return nil, false
+					}
+					merge(sub)
+				}
+				return owners, len(owners) > 0
+			}
 			for i, region := range sig.Params {
 				if region == sig.Return && i < len(e.Arguments) {
 					return bc.provenanceOwners(e.Arguments[i], env)
@@ -680,6 +709,11 @@ func regionCallResult(expr ast.Expression, env *typechecker.TypeEnvironment) (ca
 	fn, sig, has := regionSignatureFor(ident.Value, env)
 	if !has || sig.Return == "" {
 		return "", nil, nil, false
+	}
+	if sig.FieldSensitive {
+		// This function also serves as the region-call predicate. Actual
+		// multi-region provenance is resolved field by field, never via this value.
+		return ident.Value, call, fn, true
 	}
 	for i, region := range sig.Params {
 		if region == sig.Return && i < len(call.Arguments) {
@@ -773,6 +807,17 @@ func (bc *BorrowChecker) sourceBorrows(expr ast.Expression, env *typechecker.Typ
 			}
 			return bc.sourceBorrows(e.Arguments[0], env)
 		}
+		if _, sig, has := regionSignatureFor(callee.Value, env); has && sig.FieldSensitive {
+			var sources []borrowSource
+			for _, path := range sortedRegionPaths(sig.ReturnPaths) {
+				sub, ok := bc.fieldSources(e, path, env, 0)
+				if !ok {
+					return nil, false
+				}
+				sources = append(sources, sub...)
+			}
+			return sources, len(sources) > 0
+		}
 		if _, regionArg, _, ok := regionCallResult(e, env); ok {
 			return bc.sourceBorrows(regionArg, env)
 		}
@@ -786,6 +831,11 @@ func (bc *BorrowChecker) sourceBorrows(expr ast.Expression, env *typechecker.Typ
 // borrow per source of the result's kind, or per borrow field of a
 // returned record. Reports whether the call was region-indexed.
 func (bc *BorrowChecker) bindRegionCall(call *ast.InvocationExpression, targetVar string, env *typechecker.TypeEnvironment) bool {
+	if id, ok := call.Function.(*ast.Identifier); ok {
+		if _, sig, has := regionSignatureFor(id.Value, env); has && sig.FieldSensitive {
+			return bc.bindMultipleRegionCall(call, targetVar, sig, env)
+		}
+	}
 	callee, regionArg, fn, ok := regionCallResult(call, env)
 	if !ok {
 		return false

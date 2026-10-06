@@ -92,3 +92,29 @@ func TestNonRegionTypeParametersSurvive(t *testing.T) {
 		t.Fatal("first must remain a template")
 	}
 }
+
+func TestMultipleRegionPathsBeforeErasure(t *testing.T) {
+	src := `
+Outer[T,A,B]: type = struct { tag:T, inner:Parts[A,B] }
+Parts[A,B]: type = struct { left:View[u8,A], right:View[u8,B] }
+reverse[A,B]: (p:Outer[u8,A,B]): Parts[B,A] = Parts {left:p.inner.right,right:p.inner.left}
+`
+	p := parser.New(scanner.New(src))
+	program := p.ParseProgram()
+	if len(p.Errors()) != 0 {
+		t.Fatal(p.Errors())
+	}
+	tc := New(object.NewEnvironment())
+	tc.CheckProgram(program)
+	if len(tc.Errors()) != 0 {
+		t.Fatal(tc.Errors())
+	}
+	rec, ok := tc.Env().RegionRecord("Outer")
+	if !ok || !rec.FieldSensitive || len(rec.Regions) != 2 || rec.Positions[0] != 1 || rec.Positions[1] != 2 || rec.Paths["inner.left"] != "A" || rec.Paths["inner.right"] != "B" {
+		t.Fatalf("outer metadata = %+v", rec)
+	}
+	sig, ok := tc.Env().RegionSignature("reverse")
+	if !ok || !sig.FieldSensitive || sig.ParamPaths[0]["inner.left"] != "A" || sig.ParamPaths[0]["inner.right"] != "B" || sig.ReturnPaths["left"] != "B" || sig.ReturnPaths["right"] != "A" {
+		t.Fatalf("signature = %+v", sig)
+	}
+}

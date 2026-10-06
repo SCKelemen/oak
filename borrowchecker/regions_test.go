@@ -123,6 +123,35 @@ func TestCallerBindingFromInlineViewAndBlockScope(t *testing.T) {
 	}
 }
 
+func TestDirectBorrowArgumentsLiveForTheCall(t *testing.T) {
+	t.Run("temporary span conflicts with live view", func(t *testing.T) {
+		src := "sink: (buf: [*]u8): u32 = u32(0)\n" +
+			"use: (): u32 { data: [4]u8\nv: []u8 = view(&data)\nsink(span(&data))\nlen(v) }"
+		bc := checkSource(t, src)
+		if got := countDiagnosticsWithCode(bc, string(CodeSpanConflictsWithView)); got != 1 {
+			t.Fatalf("temporary span beside a live view produced %d OAK-B0105, want 1: %s", got, diagText(bc))
+		}
+	})
+
+	t.Run("direct arguments overlap", func(t *testing.T) {
+		src := "pair: (write: [*]u8, read: []u8): u32 = u32(0)\n" +
+			"use: (): u32 { data: [4]u8\npair(span(&data), view(&data)) }"
+		bc := checkSource(t, src)
+		if got := countDiagnosticsWithCode(bc, string(CodeViewConflictsWithSpan)); got != 1 {
+			t.Fatalf("overlapping direct span/view arguments produced %d OAK-B0104, want 1: %s", got, diagText(bc))
+		}
+	})
+
+	t.Run("temporary is released", func(t *testing.T) {
+		src := "sink: (buf: [*]u8): u32 = u32(0)\n" +
+			"use: (): u32 { data: [4]u8\nsink(span(&data))\nv: []u8 = view(&data)\nlen(v) }"
+		bc := checkSource(t, src)
+		if len(bc.Diagnostics()) != 0 {
+			t.Fatalf("temporary span must end with the call: %s", diagText(bc))
+		}
+	})
+}
+
 func TestCallerBindingFromSpanArgumentSuspendsTheSpan(t *testing.T) {
 	// Increment 5: a span may be the region source of a read-only result.
 	// The result reborrows the span, which is suspended while it lives.

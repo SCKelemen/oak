@@ -213,7 +213,7 @@ func (bc *BorrowChecker) checkBlockStatement(block *ast.BlockStatement, env *typ
 	}
 	// The function body block: its result's provenance is checked while the
 	// locals it may be bound through are still live.
-	if bc.pendingReturn != nil && bc.currentBlockDepth == 1 && !bc.pendingReturn.checked {
+	if bc.pendingReturn != nil && block == bc.pendingReturn.bodyBlock && !bc.pendingReturn.checked {
 		bc.checkReturnedProvenance((&ast.BlockExpression{Block: block}).Result(), bc.pendingReturn, env)
 	}
 }
@@ -331,6 +331,9 @@ func (bc *BorrowChecker) checkFunctionStatement(stmt *ast.FunctionStatement, env
 	// the parameter whose owner outlives the call and is checked by
 	// provenance instead; every other view/span return is rejected.
 	bc.pendingReturn = bc.returnContractFor(stmt, env)
+	if body, ok := stmt.Body.(*ast.BlockExpression); ok && bc.pendingReturn != nil {
+		bc.pendingReturn.bodyBlock = body.Block
+	}
 	if bc.pendingReturn == nil {
 		bc.checkBorrowEscape(stmt, env)
 	}
@@ -614,6 +617,13 @@ func (bc *BorrowChecker) checkVariableDeclaration(vd *ast.VariableDeclaration, e
 	// Check if the value expression creates a borrow (check before we register the variable)
 	if vd.Value != nil {
 		bc.checkExpression(vd.Value, env, varName)
+		// Projection and derived expressions must retain a multi-region
+		// record's selected owner even when there is no named aggregate.
+		if isDirectBorrowType(declared) && bc.multipleRegionExpression(vd.Value, env) {
+			if _, tracked := bc.activeBorrows[varName]; !tracked {
+				bc.bindMultipleRegionProjection(vd.Value, varName, env)
+			}
+		}
 	}
 	if _, text := env.CheckedDeclarationType(vd).(*typechecker.StringType); text {
 		valueType := env.CheckedExpressionType(vd.Value)
@@ -1130,12 +1140,38 @@ func (bc *BorrowChecker) checkInvocationExpression(call *ast.InvocationExpressio
 			bc.recomputeOwnerStatesFromActiveBorrows()
 		}
 	}()
+	// A direct view(&owner) or span(&owner) argument is a borrow for the
+	// duration of this call. When that exact argument supplies the region of
+	// a named borrowed result, bindRegionCall below transfers the borrow into
+	// the result instead; creating a second temporary would make an inline
+	// writable return conflict with itself.
+	var retainedRegionArg ast.Expression
+	if targetVar != "" {
+		if _, arg, _, ok := regionCallResult(call, env); ok {
+			retainedRegionArg = arg
+		}
+	}
 	for i, arg := range call.Arguments {
 		if inner, ok := arg.(*ast.InvocationExpression); ok && isStringViewConversion(inner) {
 			name := fmt.Sprintf("$argument:%d:%p", i, call)
 			bc.checkStringViewCall(inner, env, name)
 			temporaries = append(temporaries, name)
 			continue
+		}
+		if inner, ok := arg.(*ast.InvocationExpression); ok && arg != retainedRegionArg {
+			if ident, isIdent := inner.Function.(*ast.Identifier); isIdent {
+				name := fmt.Sprintf("$argument:%d:%p", i, call)
+				switch ident.Value {
+				case "view":
+					bc.checkViewCall(inner, env, name)
+					temporaries = append(temporaries, name)
+					continue
+				case "span":
+					bc.checkSpanCall(inner, env, name)
+					temporaries = append(temporaries, name)
+					continue
+				}
+			}
 		}
 		// A boundary span (docs/spec/92-ffi.md section 2.5.2) is a read use
 		// of the view's owner, or a write use of the span's owner, for the
