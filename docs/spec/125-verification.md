@@ -209,10 +209,18 @@ including its mutable assignment/trail loops. `Oak.LRATRUP` proves the extracted
 rollback loop clears exactly the used trail prefix, preserves all other
 assignments and the trail, and restores zero scratch when every nonzero
 assignment is tracked. Its counter cannot wrap before the declared endpoint.
-These are implementation-linked component proofs. Production propagation
-soundness, the full word-parser/database refinement and their composition with
-formula binding, allocation/FFI semantics, extraction correctness, and compiled
-ARM64/RV64 executables remain separate kernel obligations.
+`Oak.LRATRUPSoundness.production_rup_entails` proves that an accepted call to
+the extracted production `lrat_rup` entails its decoded target clause in the
+exact live word database, assuming zero scratch, sufficient assignment
+capacity, and valid declared variables in live clauses. Its proof follows
+target negation, the duplicate-aware clause scan, and the hint loop; it does
+not assume a supplied abstract propagation derivation. The scan's candidate
+counter is proved non-wrapping using its progress invariant.
+The full word-parser/database refinement must still establish these
+preconditions on every call, including preservation of tracked assignments
+for rollback, and compose acceptance with formula binding. Allocation/FFI
+semantics, extraction correctness, and compiled ARM64/RV64 executables remain
+separate kernel obligations.
 
 At the clause
 boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists for raw
