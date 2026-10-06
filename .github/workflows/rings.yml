@@ -1,0 +1,73 @@
+name: SPSC ring safety
+
+on:
+  push:
+    branches: [specification]
+    paths:
+      - 'stdlib/rings.oak'
+      - 'compiler/**'
+      - 'borrow/**'
+      - 'codegen/**'
+      - 'spec/lean/**'
+      - 'docs/notes/spsc-batch-safety.md'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/rings.yml'
+  pull_request:
+    branches: [specification]
+    paths:
+      - 'stdlib/rings.oak'
+      - 'compiler/**'
+      - 'borrow/**'
+      - 'codegen/**'
+      - 'spec/lean/**'
+      - 'docs/notes/spsc-batch-safety.md'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/rings.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rings-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    name: Ring runtime and borrow regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Require host C compiler
+        run: cc --version
+      - name: Run interpreted, compiled, threaded, and negative borrow tests
+        run: go test -v -count=1 -timeout 20m ./compiler -run '^Test(E2ERings|RingsSpsc)'
+
+  proof:
+    name: Ring Lean model
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned elan
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan-rings.tar.gz
+          mkdir -p /tmp/elan-rings
+          tar -xzf /tmp/elan-rings.tar.gz -C /tmp/elan-rings
+          /tmp/elan-rings/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Check the ring model using the repository toolchain pin
+        working-directory: spec/lean
+        run: lake build +Oak.Rings
