@@ -387,6 +387,30 @@ separate integration runs the fallback through the real Oak solver/checker.
 The policy theorem and these tests do not universally refine the driver,
 either checker, constant folding, or source-to-CNF translation.
 
+SAT model admission is also independent of the solver's mutable state.
+`prove/solver/model.oak` checks the retained original formula in SAT mode,
+CNF mode, and the self-hosted certificate rung. It requires exact proof-free
+word framing, the declared number of clauses, complete consumption of the
+formula, in-range literals, and exactly one valid value (`1` false or `2`
+true) for every declared variable. Every clause must contain a true literal;
+all remaining literals are still validated after one is found. Unassigned,
+eliminated, and invalid assignment values are refused, including on unused
+variables. Empty formulas are satisfiable; an empty clause is not. Allocation
+hints are ignored by this read-only, allocation-free checker. A rejected SAT
+answer is reported as unknown by the drivers and supplies no new shell
+verdict; source-term confirmation remains required for a counterexample.
+
+`Oak.SATModelExtracted` is the compiler's extraction of this complete checker,
+with drift detection and formal-CI kernel replay against compiled Oak on 514
+raw formula/model pairs. `Oak.SATModel` proves the extracted scalar predicates
+and the clause-list model's composition into `Oak.RupCheck.Models`, including
+incompatibility with an accepted refutation of the same database. The general
+framing/scan-loop correspondence to the clause-list model is still open.
+Tests also replace the untrusted solver with one that fabricates SAT and
+confirm rejection in both drivers and the self-hosted shell without a Go
+cross-check. These checks do not prove source-to-CNF lowering or either
+machine-code backend.
+
 `oak build` checks theorems like any declaration and does not run the
 ladder; a theorem is never a build error for being open.
 

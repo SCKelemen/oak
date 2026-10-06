@@ -1,0 +1,49 @@
+// Independent SAT-model admission over the retained, original formula.
+// No solver trail, learned clause, or elimination stack is trusted here.
+// The formula uses the LRAT word framing with no proof words. Assignments
+// are complete and contain only 1 (false) or 2 (true), including unused vars.
+// Capacity hints at header words 5..7 are not part of the formula semantics.
+
+sat_model_value: (value: u32): Bool = value == u32(1) || value == u32(2)
+
+sat_model_literal: (lit: u32, value: u32): Bool =
+  lit % u32(2) == u32(1) ? { value == u32(2) } | { value == u32(1) }
+
+// Every word must be consumed, every literal checked even after the clause
+// already holds, and every subtraction preceded by its length guard.
+sat_check_model: (formula: []u32, assignment: []u32): Bool {
+  valid: Bool = len(formula) >= LRAT_HEADER_WORDS
+  valid = valid && formula[u32(0)] == LRAT_MAGIC
+  valid = valid && formula[u32(4)] == u32(0) && formula[u32(3)] == len(formula) - LRAT_HEADER_WORDS
+  valid = valid && formula[u32(1)] == len(assignment)
+  v: u32 = 0
+  while valid && v < len(assignment) {
+    valid = sat_model_value(assignment[v])
+    v = v + u32(1)
+  }
+  at: u32 = LRAT_HEADER_WORDS
+  clause: u32 = 0
+  while valid && clause < formula[u32(2)] {
+    valid = at < len(formula)
+    valid ? {
+      count: u32 = formula[at]
+      at = at + u32(1)
+      valid = count <= len(formula) - at
+      satisfied: Bool = false
+      j: u32 = 0
+      while valid && j < count {
+        lit: u32 = formula[at + j]
+        variable: u32 = lit / u32(2)
+        valid = variable < len(assignment)
+        valid ? {
+          satisfied = sat_model_literal(lit, assignment[variable]) || satisfied
+        } | { }
+        j = j + u32(1)
+      }
+      valid = valid && satisfied
+      valid ? { at = at + count } | { }
+    } | { }
+    clause = clause + u32(1)
+  }
+  valid && at == len(formula)
+}

@@ -52,6 +52,23 @@ explicitly assumes sound evidence for the independent database. Neither
 full checker/driver refinement nor source-to-CNF correctness follows from
 this policy model.
 
+### Solver model admission
+
+`prove/solver/model.oak` validates a complete SAT assignment against the
+retained original CNF word region, independently of solver trail and clause
+storage. SAT mode, CNF mode, and the self-hosted certificate rung all call it.
+Exact framing, clause count, literal domains, assignment values, and full
+input consumption are checked before the result counts; satisfying a clause
+early does not skip validation of its remaining literals. The complete
+checker is extracted to `Oak.SATModelExtracted`, protected by a drift test,
+and kernel-replayed against compiled Oak on a bounded raw-input corpus.
+`Oak.SATModel` proves the extracted literal/value predicates and soundness
+of clause-list model admission into `Oak.RupCheck.Models`. Universal
+refinement of the framing/scan loops to that model remains open, as do source
+lowering, extraction/compiler correctness, and ARM64/RV64 execution. Fault
+injection verifies that a fabricated solver model is refused by the actual
+drivers and the standalone self-hosted shell.
+
 ### 2.1 Source → checked program
 
 The type checker, borrow and resource checker, protocol projection, and

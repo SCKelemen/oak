@@ -71,6 +71,11 @@ jobs:
           OAK_REQUIRE_CLAUSE_AGREEMENT_LEAN: '1'
         run: go test . -run '^TestClauseAgreement' -count=1 -v
 
+      - name: Check self-hosted SAT-model admission and extraction
+        env:
+          OAK_REQUIRE_SAT_MODEL_LEAN: '1'
+        run: go test . -run '^TestOakSATModel' -count=1 -v
+
       - name: Check extracted standard library against compiled Oak
         run: go test ./compiler -run 'TestLeanStdlibFaithful' -count=1 -v
 

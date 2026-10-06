@@ -101,6 +101,11 @@ var oakLRATSource string
 //go:embed prove/solver/sat.oak
 var oakSATSource string
 
+// Independent admission of a SAT model against the original formula.
+//
+//go:embed prove/solver/model.oak
+var oakModelSource string
+
 // The clause engine written in Oak (prove/solver/cnf.oak): the diagram
 // engine's term walk emitting Tseitin clauses, reached through
 // OAK_SOLVER_MODE=cnf with the problem table on stdin.
@@ -356,6 +361,11 @@ sat_main: (): i32 {
     header_ok && body_ok && sat_init(l, span(&arena), view(&words), budget, false) ? {
       status = sat_solve(l, span(&arena))
     } | { }
+    status == SAT_SATISFIABLE ? {
+      arena_view: []u32 = view(&arena)
+      assignment: []u32 = subslice(arena_view, l.assign_at, variables)
+      sat_check_model(view(&words), assignment) ? { } | { status = SAT_MALFORMED }
+    } | { }
     sat_report(l, span(&arena), status, variables)
     free(c.disown(arena))
     free(c.disown(words))
@@ -576,6 +586,12 @@ cnf_main: (): i32 {
           write_u32(checked[u32(2)])
           write_byte(u8(10))
         } | { }
+        status == SAT_SATISFIABLE ? {
+          sat_view: []u32 = view(&sat_arena)
+          formula: []u32 = subslice(region_view, l.clauses_at, LRAT_HEADER_WORDS + literal_words)
+          assignment: []u32 = subslice(sat_view, sl.assign_at, variables)
+          sat_check_model(formula, assignment) ? { } | { status = SAT_MALFORMED }
+        } | { }
         sat_report(sl, span(&sat_arena), status, variables)
         free(c.disown(sat_arena))
       }
@@ -775,7 +791,7 @@ func oakSolverBinary() (string, error) {
 			compilerIdentity = fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
 		}
 	}
-	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakProtocolSource + "\x00" + oakShellSource + "\x00" + oakLeanSource + "\x00" + oakExploreSource + "\x00" + oakWitnessSource + "\x00" + oakDriverHelpersSource + "\x00" + oakLRATSource + "\x00" + oakLRATSource + "\x00" + oakSATSource + "\x00" + oakCNFSource + "\x00" + oakCertifySource + "\x00" + oakSolverDriverSource + "\x00" + compilerIdentity))
+	sum := sha256.Sum256([]byte(oakSolverSource + "\x00" + oakLoweringSource + "\x00" + oakSyntaxSource + "\x00" + oakTreeSource + "\x00" + oakProtocolSource + "\x00" + oakShellSource + "\x00" + oakLeanSource + "\x00" + oakExploreSource + "\x00" + oakWitnessSource + "\x00" + oakDriverHelpersSource + "\x00" + oakLRATSource + "\x00" + oakLRATSource + "\x00" + oakSATSource + "\x00" + oakModelSource + "\x00" + oakCNFSource + "\x00" + oakCertifySource + "\x00" + oakSolverDriverSource + "\x00" + compilerIdentity))
 	// OAK_SOLVER_NATIVE=1 builds the prover through the native backend
 	// (docs/spec/94-assembler.md §9): every function the backend reaches is
 	// checked, verified against its Oak body, and encoded by the Oak
@@ -794,7 +810,7 @@ func oakSolverBinary() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "protocol.oak": oakProtocolSource, "shell.oak": oakShellSource, "lean.oak": oakLeanSource, "explore.oak": oakExploreSource, "witness.oak": oakWitnessSource, "driver.oak": oakDriverHelpersSource, "lrat.oak": oakLRATSource, "sat.oak": oakSATSource, "cnf.oak": oakCNFSource, "certify.oak": oakCertifySource, "main.oak": oakSolverDriverSource} {
+	for name, text := range map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "protocol.oak": oakProtocolSource, "shell.oak": oakShellSource, "lean.oak": oakLeanSource, "explore.oak": oakExploreSource, "witness.oak": oakWitnessSource, "driver.oak": oakDriverHelpersSource, "lrat.oak": oakLRATSource, "sat.oak": oakSATSource, "model.oak": oakModelSource, "cnf.oak": oakCNFSource, "certify.oak": oakCertifySource, "main.oak": oakSolverDriverSource} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
 			return "", err
 		}

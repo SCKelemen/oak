@@ -186,24 +186,11 @@ certify_over: (whole: []u32, n0: u32, node_budget: u32, out: [*]u32): () {
         }
       } | {
         status == SAT_SATISFIABLE ? {
-          // The model against every clause of the region_view, then the
-          // input nodes set true read back as blaster variables.
+          // Check the original formula independently of solver storage.
           sat_view: []u32 = view(&sat_arena)
-          at: u32 = clause_layout.clauses_at + LRAT_HEADER_WORDS
-          end: u32 = at + literal_words
-          holds: Bool = true
-          while at < end && holds {
-            n: u32 = region_view[at]
-            satisfied: Bool = false
-            j: u32 = 0
-            while j < n && !satisfied {
-              lit: u32 = region_view[at + u32(1) + j]
-              satisfied = sat_view[sl.assign_at + lit / u32(2)] == sat_lit_true(lit)
-              j = j + u32(1)
-            }
-            holds = satisfied
-            at = at + u32(1) + n
-          }
+          formula: []u32 = subslice(region_view, clause_layout.clauses_at, LRAT_HEADER_WORDS + literal_words)
+          assignment: []u32 = subslice(sat_view, sl.assign_at, variables)
+          holds: Bool = sat_check_model(formula, assignment)
           holds ? {
             kept: u32 = 0
             node: u32 = 1

@@ -222,6 +222,7 @@ import Oak.LRATBounds
 import Oak.LRATRUP
 import Oak.LRATFormulaBinding
 import Oak.ClauseAgreement
+import Oak.SATModel
 import Oak.SolverLaws
 import Oak.Tseitin
 import Oak.TseitinCNF
