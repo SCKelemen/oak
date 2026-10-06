@@ -126,11 +126,10 @@ func TestDiagnosticCorpusCoversStableSourceDiagnostics(t *testing.T) {
 		}
 	}
 
-	// These codes are intentionally outside the public source contract today.
-	// Keeping the reasons here prevents them from becoming silent coverage gaps.
+	// This generic code is intentionally outside the stable public source
+	// contract: concrete borrow/resource semantics must use a specific code.
 	nonSource := map[string]string{
 		string(borrowchecker.CodeBorrowGeneric): "migration fallback for borrow checks that do not yet have a specific stable semantic code",
-		typechecker.CodeResourceUsedAfterConsume: "resource flow requires CheckProgramWithResources and a ResourceModel; Compilation does not expose a source opt-in until resource syntax is frozen",
 	}
 	for code, reason := range nonSource {
 		if reason == "" {
