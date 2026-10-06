@@ -10765,3 +10765,64 @@ Its native certificate evaluation remains in the trusted base: `#print axioms`
 reports the generated `_native.bv_decide` dependencies, alongside the usual
 Lean logical axioms. Eliminating native evaluation from the proof trust
 boundary remains a separate closure obligation; these proofs do not claim it.
+### 9.ar A saved register may be used (RV64, 2026-10-06)
+
+With the AArch64 classes closed by §9.aq, the two lanes compare directly
+for the first time: arm64 refuses 18 candidate forms and elides 240
+guards over 72 bodies; RV64 refuses 219 and elides 20 over 15. The lanes
+share no fact machinery — `asm/rv64_check.go` is its own checker — so the
+gap is where the work is, and its largest class is not a missing fact at
+all.
+
+123 of those refusals read `sN is restored from entry-relative -X, but
+was saved at -Y`. In `binary_result_ok` the prologue saves `s1` with `sd
+s1, 0(sp)` and the epilogue restores it with `ld s1, 0(sp)`; the two
+agree exactly. What the checker objected to is `lw s1, 92(sp)` in the
+middle of the body — four bytes, another slot — which is the register
+allocator using `s1` to hold a working value.
+
+The rule accepted only an exact restore, eight bytes from the register's
+own slot, and called every other frame load into a saved callee-saved
+register a mis-matched restore. That is narrower than the ABI contract.
+A callee-saved register may be used freely once it has been saved; what
+must hold is that it is saved before its first write and restored before
+return. So any other frame load now falls through to the ordinary write
+handling, in the integer and the float path alike.
+
+Nothing is loosened by this. The write handling already refuses a write
+to a callee-saved register that was never saved, and `ret` already
+refuses a register written and not restored from its own slot. That is
+where the contract lives, and it is checked rather than assumed here:
+deleting the restore from the body above produces exactly `ret with s1
+written but not restored from its frame slot`. A load from another slot
+is indistinguishable from a legitimate use, so the checker should not
+guess at the body's intent — it should hold the body to the property
+that matters, at the point where the property must hold.
+
+Measured on the stdlib-bearing program, verdict cache off, counted over
+the emitted bodies:
+
+| | base | after |
+|---|---|---|
+| instructions emitted (RV64) | 33248 | **32305** |
+| refused candidate forms (RV64) | 219 | **104** |
+| instructions emitted (arm64) | 32108 | 32108 |
+
+42 RV64 bodies are shorter and none is longer, 943 instructions in all —
+`path_match_chunk` 423 to 336, `grapheme_next` 201 to 134,
+`path_match_code` 307 to 241. No verdict moves, all 268 units keep
+theirs, and the AArch64 lane is untouched, as it must be.
+
+`TestRV64CalleeSavedMayBeUsedOnceSaved` carries the three refusals that
+still have to hold: a saved register used and never restored, a register
+restored and then written again, and a write before the save.
+`TestRV64CheckerRejects` had a case pinning the old message for a body
+that loads from the wrong slot and never restores; that body is still
+refused, at the `ret` rather than at the load, which is the more accurate
+diagnosis, and the case now says so.
+
+What remains on the lane says where to go next: of the 104 refusals left,
+72 are a memory operand whose base the checker cannot place and 32 a read
+it believes uninitialized. Those are §9.an and §9.aq exactly — the
+initialized set carried at labels, and labels seeded from predecessors
+rather than from walk order — now owed to the second checker.
