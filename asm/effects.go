@@ -775,9 +775,13 @@ func alignReads(t *term, asmReads map[*term]spanRead, oakReads map[readKey][]*te
 		cond := alignReads(t.cond, asmReads, oakReads, oakTable, upto, memo)
 		left := alignReads(t.left, asmReads, oakReads, oakTable, upto, memo)
 		right := alignReads(t.right, asmReads, oakReads, oakTable, upto, memo)
-		if cond != t.cond || left != t.left || right != t.right {
+		args, argsChanged := rewriteTermArgs(t.args, func(arg *term) *term {
+			return alignReads(arg, asmReads, oakReads, oakTable, upto, memo)
+		})
+		if cond != t.cond || left != t.left || right != t.right || argsChanged {
 			copied := *t
 			copied.cond, copied.left, copied.right = cond, left, right
+			copied.args = args
 			copied.id, copied.kbDone, copied.sigBits = 0, false, 0
 			out = &copied
 		}

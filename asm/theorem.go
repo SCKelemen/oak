@@ -221,6 +221,9 @@ func unsignedDivisionFacts(roots []*term) *term {
 		walk(t.left)
 		walk(t.right)
 		walk(t.cond)
+		for _, arg := range t.args {
+			walk(arg)
+		}
 	}
 	for _, root := range roots {
 		walk(root)
@@ -364,6 +367,9 @@ func controlParams(terms []*term) map[string]bool {
 		walk(t.cond)
 		walk(t.left)
 		walk(t.right)
+		for _, arg := range t.args {
+			walk(arg)
+		}
 	}
 	for _, t := range terms {
 		walk(t)
@@ -395,6 +401,9 @@ func selectorParams(terms []*term) map[string]bool {
 			condition(t.cond)
 			condition(t.left)
 			condition(t.right)
+			for _, arg := range t.args {
+				condition(arg)
+			}
 		}
 	}
 	var walk func(t *term)
@@ -409,6 +418,9 @@ func selectorParams(terms []*term) map[string]bool {
 		walk(t.cond)
 		walk(t.left)
 		walk(t.right)
+		for _, arg := range t.args {
+			walk(arg)
+		}
 	}
 	for _, t := range terms {
 		walk(t)

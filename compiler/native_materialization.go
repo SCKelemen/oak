@@ -26,10 +26,11 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		return "", fmt.Errorf("compiler: native materialization has configuration %T, expected nativegen.Lane", candidate.Config)
 	}
 	digest := sha256.New()
-	// v31 adds verifier-gated fixed-point carrier reuse to v30's carrier-aware
-	// scheduling recipe. Preserve every recipe input to avoid
-	// reusing another candidate's body.
-	writeNativeMaterializationPart(digest, "oak.native.materialization.v31")
+	// v32 admits adjacent alias labels in final cleanup and makes that
+	// post-schedule child reachable after ordinary cleanup; v31 added fixed-point
+	// carrier reuse. Preserve every recipe input to avoid reusing another
+	// candidate's body.
+	writeNativeMaterializationPart(digest, "oak.native.materialization.v32")
 	writeNativeLane(digest, lane)
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")

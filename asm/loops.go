@@ -1876,7 +1876,15 @@ func (ev *loopEvent) mentionsElsewhere(name string) bool {
 		if t.kind == termParam && t.name == symbol.name {
 			return true
 		}
-		return walk(t.cond) || walk(t.left) || walk(t.right)
+		if walk(t.cond) || walk(t.left) || walk(t.right) {
+			return true
+		}
+		for _, arg := range t.args {
+			if walk(arg) {
+				return true
+			}
+		}
+		return false
 	}
 	if walk(ev.cond) || walk(ev.headerTrap) || walk(ev.bodyTrap) {
 		return true
@@ -3117,7 +3125,7 @@ func upperClear(t *term, declared map[string]int) bool {
 		return strings.HasPrefix(t.name, "loop") && t.width <= 32
 	case termCmp:
 		return true
-	case termSelect, termFloat, termQuant:
+	case termSelect, termFloat, termApply, termQuant:
 		return t.width <= 32
 	case termIte:
 		return upperClear(t.left, declared) && upperClear(t.right, declared)
@@ -4801,14 +4809,32 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 			if preferred != "" && c.reg == preferred && c.a == 1 && c.b.kind == termConst && c.b.value == 0 {
 				r -= 8
 			}
+			equality := c.a == 1 && c.b.kind == termConst && c.b.value == 0
+			if equality {
+				// An equality whose header is not a constant is the pairing
+				// telling itself (a slot holding the hash's state words
+				// against the words); zero headers tell nothing — every
+				// accumulator starts at zero — so among those the exit-read
+				// parity and the condition decide below.
+				if h := asmEv.header[c.reg]; h != nil && h.kind != termConst {
+					r -= 6
+				}
+			}
 			if exitReadAsm[asmEv.freshName(c.reg)] != oakRead {
 				r += 4
 			}
 			if !inCond[asmEv.freshName(c.reg)] {
 				r += 2
 			}
-			if c.a != 1 || c.b.kind != termConst || c.b.value != 0 {
-				r++
+			switch {
+			case equality:
+			case c.b.kind == termConst:
+				r++ // an image at a constant offset (a counter's address temporary)
+			default:
+				// An image at a symbolic offset — the headers' difference as
+				// a term — is what every wrong pairing looks like; behind any
+				// equality and any in-condition register.
+				r += 3
 			}
 			return r
 		}
@@ -5636,7 +5662,15 @@ func termContainsSelect(t *term) bool {
 			return false
 		}
 		seen[t] = true
-		return t.kind == termSelect || visit(t.cond) || visit(t.left) || visit(t.right)
+		if t.kind == termSelect || visit(t.cond) || visit(t.left) || visit(t.right) {
+			return true
+		}
+		for _, arg := range t.args {
+			if visit(arg) {
+				return true
+			}
+		}
+		return false
 	}
 	return visit(t)
 }
@@ -6186,7 +6220,8 @@ func restoreLoopEntryMemories(t *term, ev *loopEvent, memo map[*term]*term, vali
 	cond := restoreLoopEntryMemories(t.cond, ev, memo, valid)
 	left := restoreLoopEntryMemories(t.left, ev, memo, valid)
 	right := restoreLoopEntryMemories(t.right, ev, memo, valid)
-	if cond == t.cond && left == t.left && right == t.right {
+	args, argsChanged := rewriteTermArgs(t.args, func(arg *term) *term { return restoreLoopEntryMemories(arg, ev, memo, valid) })
+	if cond == t.cond && left == t.left && right == t.right && !argsChanged {
 		// Nothing below reads a loop memory: the node stands, shared.
 		// Copying it anyway copied the whole graph once per call — an
 		// inner loop event of every inlined callee, on a body whose
@@ -6198,6 +6233,7 @@ func restoreLoopEntryMemories(t *term, ev *loopEvent, memo map[*term]*term, vali
 	out := *t
 	out.kbDone, out.sigBits = false, 0
 	out.cond, out.left, out.right = cond, left, right
+	out.args = args
 	memo[t] = &out
 	return &out
 }
@@ -6229,6 +6265,16 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 			args = append(args, substituteMemo(t.cond, sigma, memo))
 		}
 		rebuilt := floatTerm(t.op, t.width, args...)
+		memo[t] = rebuilt
+		return rebuilt
+	}
+	if t.kind == termApply {
+		args, changed := rewriteTermArgs(t.args, func(arg *term) *term { return substituteMemo(arg, sigma, memo) })
+		if !changed {
+			memo[t] = t
+			return t
+		}
+		rebuilt := applyTerm(t.name, t.width, args...)
 		memo[t] = rebuilt
 		return rebuilt
 	}
@@ -6276,6 +6322,9 @@ func loopTermNodes(asmLoops, oakLoops []*loopEvent) int {
 		count(t.left)
 		count(t.right)
 		count(t.cond)
+		for _, arg := range t.args {
+			count(arg)
+		}
 	}
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
 	for k, side := range [][]*loopEvent{asmLoops, oakLoops} {
@@ -6743,7 +6792,15 @@ func hasLargeBranch(t *term) bool {
 		if t.kind == termIte && t.cond.kind != termConst && !isLookupStep(t.cond, sizes) && termSize(t.left, sizes)+termSize(t.right, sizes) >= largeBranch {
 			return true
 		}
-		return walk(t.cond) || walk(t.left) || walk(t.right)
+		if walk(t.cond) || walk(t.left) || walk(t.right) {
+			return true
+		}
+		for _, arg := range t.args {
+			if walk(arg) {
+				return true
+			}
+		}
+		return false
 	}
 	return walk(t)
 }
@@ -7037,10 +7094,12 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 			}
 		}
 		cond, left, right := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
-		if cond != t.cond || left != t.left || right != t.right {
+		args, argsChanged := rewriteTermArgs(t.args, rewrite)
+		if cond != t.cond || left != t.left || right != t.right || argsChanged {
 			copy := *t
 			copy.kbDone, copy.sigBits = false, 0
 			copy.cond, copy.left, copy.right = cond, left, right
+			copy.args = args
 			out = &copy
 		}
 		memo[t] = out
@@ -7110,6 +7169,11 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 		out := t
 		switch t.kind {
 		case termConst, termParam:
+		case termApply:
+			args, changed := rewriteTermArgs(t.args, rewrite)
+			if changed {
+				out = applyTerm(t.name, t.width, args...)
+			}
 		case termIte:
 			if isLookupStep(t.cond, sizes) {
 				// A table lookup's step (`index = k`) is never settled by a
@@ -7290,6 +7354,9 @@ func splitCondition(a, b *term) *term {
 		walk(t.cond)
 		walk(t.left)
 		walk(t.right)
+		for _, arg := range t.args {
+			walk(arg)
+		}
 	}
 	walk(a)
 	walk(b)
@@ -7307,6 +7374,9 @@ func termSize(t *term, memo map[*term]int) int {
 		return n
 	}
 	n := min(termSizeCap, 1+termSize(t.cond, memo)+termSize(t.left, memo)+termSize(t.right, memo))
+	for _, arg := range t.args {
+		n = min(termSizeCap, n+termSize(arg, memo))
+	}
 	memo[t] = n
 	return n
 }
@@ -7334,7 +7404,15 @@ func dagNodes(limit int, terms ...*term) (int, bool) {
 		if len(seen) > limit {
 			return true
 		}
-		return walk(t.cond) || walk(t.left) || walk(t.right)
+		if walk(t.cond) || walk(t.left) || walk(t.right) {
+			return true
+		}
+		for _, arg := range t.args {
+			if walk(arg) {
+				return true
+			}
+		}
+		return false
 	}
 	for _, t := range terms {
 		if walk(t) {
@@ -7480,6 +7558,16 @@ func impliesEqualCongruent(premise, a, b *term, widthOf func(string) int, budget
 		if a.name == b.name && pair(a.left, b.left) {
 			return true, true
 		}
+	case termApply:
+		if a.name != b.name || len(a.args) != len(b.args) {
+			return false, false
+		}
+		for i := range a.args {
+			if a.args[i].width != b.args[i].width || !pair(a.args[i], b.args[i]) {
+				return false, false
+			}
+		}
+		return true, true
 	}
 	return false, false
 }
@@ -7503,6 +7591,12 @@ func spineOf(t *term, depth int) string {
 		return fmt.Sprintf("ite(%s, %s, %s)", spineOf(t.cond, depth-1), spineOf(t.left, depth-1), spineOf(t.right, depth-1))
 	case termCmp:
 		return fmt.Sprintf("(%s %s %s)", spineOf(t.left, depth-1), t.op, spineOf(t.right, depth-1))
+	case termApply:
+		parts := make([]string, len(t.args))
+		for i, arg := range t.args {
+			parts[i] = spineOf(arg, depth-1)
+		}
+		return fmt.Sprintf("%s:%d(%s)", t.name, t.width, strings.Join(parts, ", "))
 	}
 	return fmt.Sprintf("%s%d(%s, %s)", t.op, t.width, spineOf(t.left, depth-1), spineOf(t.right, depth-1))
 }
@@ -7735,6 +7829,22 @@ func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool,
 	pBits := bl.blast(premise)
 	stage("the premise")
 	if pBits == nil {
+		if trace && bl.bdd.exceeded && os.Getenv("OAK_VERIFY_PREMISE_PROBE") != "" {
+			// Which conjunct of the premise the diagrams cannot hold:
+			// each alone, under a fresh diagram of the decision's budget.
+			for k, c := range conjunctsOf(premise) {
+				probe := newBlaster(bl.params, bl.widths)
+				probe.bdd = newBDD(loopDecisionNodeBudget)
+				bits := probe.blast(c)
+				n, _ := dagNodes(1<<20, c)
+				show := 160
+				exceeded := bits == nil || probe.bdd.exceeded
+				fmt.Fprintf(os.Stderr, "verify: premise conjunct %d: %d term nodes, %d diagram nodes, exceeded=%v: %s\n", k, n, len(probe.bdd.nodes), exceeded, c.stringBounded(&show))
+				if exceeded {
+					blastCulprits(bl, c, 2)
+				}
+			}
+		}
 		return false, false
 	}
 	if pBits[0] != bddTrue {
@@ -7987,7 +8097,15 @@ func mentions(t *term, name string) bool {
 		if t.kind == termParam && t.name == name {
 			return true
 		}
-		return walk(t.cond) || walk(t.left) || walk(t.right)
+		if walk(t.cond) || walk(t.left) || walk(t.right) {
+			return true
+		}
+		for _, arg := range t.args {
+			if walk(arg) {
+				return true
+			}
+		}
+		return false
 	}
 	return walk(t)
 }
@@ -8178,6 +8296,15 @@ func renameLoopMemory(t *term, from string, entryLog []*spanWrite, base string, 
 		} else {
 			out = t
 		}
+	case termApply:
+		args, changed := rewriteTermArgs(t.args, func(arg *term) *term {
+			return renameLoopMemory(arg, from, entryLog, base, width, memo)
+		})
+		if changed {
+			out = applyTerm(t.name, t.width, args...)
+		} else {
+			out = t
+		}
 	default:
 		left := renameLoopMemory(t.left, from, entryLog, base, width, memo)
 		right := renameLoopMemory(t.right, from, entryLog, base, width, memo)
@@ -8286,4 +8413,64 @@ func spanEqualSplitting(premise *term, name string, elemWidth int, oakMemory, as
 		}
 	}
 	return allEqual, true
+}
+
+// blastCulprits descends a term the diagrams cannot hold and reports the
+// deepest subterms that still exceed the decision's budget alone while
+// every operand of theirs blasts within it: the construct that costs,
+// not the conjunct around it (OAK_VERIFY_PREMISE_PROBE under trace).
+func blastCulprits(bl *blaster, t *term, maxReports int) int {
+	cost := func(u *term) (int, bool) {
+		probe := newBlaster(bl.params, bl.widths)
+		probe.bdd = newBDD(loopDecisionNodeBudget)
+		bits := probe.blast(u)
+		return len(probe.bdd.nodes), bits == nil || probe.bdd.exceeded
+	}
+	reported := 0
+	seen := map[*term]bool{}
+	var walk func(u *term)
+	walk = func(u *term) {
+		if u == nil || seen[u] || reported >= maxReports {
+			return
+		}
+		seen[u] = true
+		if _, exceeded := cost(u); !exceeded {
+			return
+		}
+		childExceeds := false
+		children := []*term{u.cond, u.left, u.right}
+		for _, arg := range u.args {
+			children = append(children, arg)
+		}
+		for _, c := range children {
+			if c == nil {
+				continue
+			}
+			if _, exceeded := cost(c); exceeded {
+				childExceeds = true
+				walk(c)
+			}
+		}
+		if !childExceeds && reported < maxReports {
+			reported++
+			n, _ := dagNodes(1<<20, u)
+			show := 240
+			kinds := ""
+			for _, c := range children {
+				if c != nil {
+					nodes, _ := cost(c)
+					kinds += fmt.Sprintf(" [%d nodes]", nodes)
+				}
+			}
+			fmt.Fprintf(os.Stderr, "verify: culprit: kind %d op %q width %d, %d term nodes, operands%s: %s\n", u.kind, u.op, u.width, n, kinds, u.stringBounded(&show))
+			if dump := os.Getenv("OAK_VERIFY_CULPRIT_DUMP"); dump != "" {
+				if f, err := os.OpenFile(dump, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+					fmt.Fprintf(f, "order %q params %v\nculprit (%d term nodes):\n%s\n\n", bl.label, bl.params, n, u.String())
+					f.Close()
+				}
+			}
+		}
+	}
+	walk(t)
+	return reported
 }

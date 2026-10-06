@@ -432,6 +432,25 @@ one-group form as a proof fallback. It closes one more group in the stage-2
 instructions), after which carrier-aware rescheduling lowers modeled stalls
 19→18. The complete body remains proven.
 
+A cleanup measurement then exposed branch chains whose targets were the second
+or later labels in one adjacent alias run. The separately verifier-gated final
+cleanup now removes a branch to any label before the next alignment or
+instruction; the boundary is a fail-closed refusal because alignment can change
+the target address. Keeping the rule after allocation preserves ordinary
+cleanup's coloring inputs. The ordered machine phase also registers
+`post-schedule-cleanup` after `late-cleanup`, making it reachable for cleaned
+bodies outside the fill-unrolling family. Against untouched `4dac5e05`, four proven stage-2 bodies lose 17
+branches; Mach-O text shrinks 68 bytes and the aligned object 72 bytes. All 27
+relocations and all eight OS conformance tests remain unchanged/passing.
+Materialization v32 keys the changed recipe.
+
+Revalidation at `79c5e56f` found later cleanup had absorbed all but two selected
+instructions: `translate` loses one final copy and `walk_leaf` one branch, with
+8 bytes less text/object and every verdict still proven. Allowing the child on
+fill-unrolled plans consumed `reset`'s bounded validation slots ahead of its
+known unrotated proof fallback, so that composition now refuses; the current
+baseline and candidate both keep the optimized proven `reset`.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, and exact trip counts against register bounds.

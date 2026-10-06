@@ -100,6 +100,59 @@ canonical nodes. -/
 theorem structural_eq {α : Type} (I : Interp α) (ρ : Nat → α) (s t : Term) (h : s = t) :
     eval I ρ s = eval I ρ t := by subst h; rfl
 
+/-! ### Applications of arbitrary arity
+
+`asm/verify.go`'s `termApply` generalizes the fixed float nodes above.  Its
+operation key contains the result width and the complete argument-width
+signature; the application carries the argument terms in order.  The same
+table argument is independent of arity.
+-/
+
+/-- A term language whose applications have an arbitrary ordered argument
+list. The operation key includes the verifier's name and width signature. -/
+inductive NaryTerm where
+  | var (n : Nat)
+  | app (k : Nat) (args : List NaryTerm)
+  deriving Repr
+
+/-- An interpretation of arbitrary-arity operation symbols. -/
+structure NaryInterp (α : Type) where
+  op : Nat → List α → α
+
+mutual
+  /-- Evaluation of an arbitrary-arity term. -/
+  def evalNary {α : Type} (I : NaryInterp α) (ρ : Nat → α) : NaryTerm → α
+    | .var n => ρ n
+    | .app k args => I.op k (evalNaryArgs I ρ args)
+
+  /-- Evaluation of an application's ordered argument list. -/
+  def evalNaryArgs {α : Type} (I : NaryInterp α) (ρ : Nat → α) : List NaryTerm → List α
+    | [] => []
+    | arg :: args => evalNary I ρ arg :: evalNaryArgs I ρ args
+end
+
+/-- The Ackermann table for arbitrary arity. As above, indexing by the
+operation and the complete list of operand values makes consistency
+structural. -/
+structure NaryTable (α : Type) where
+  v : Nat → List α → α
+
+def NaryTable.interp {α : Type} (t : NaryTable α) : NaryInterp α := ⟨t.v⟩
+
+/-- Soundness is unchanged at arbitrary arity: the actual interpretation is
+itself one of the universally quantified consistent tables. -/
+theorem ackermann_nary_sound {α : Type} (s t : NaryTerm)
+    (h : ∀ (tab : NaryTable α) (ρ : Nat → α),
+      evalNary tab.interp ρ s = evalNary tab.interp ρ t)
+    (I : NaryInterp α) (ρ : Nat → α) : evalNary I ρ s = evalNary I ρ t := by
+  have := h ⟨I.op⟩ ρ
+  simpa [NaryTable.interp] using this
+
+/-- Equal ordered operand values give equal results for any arity. -/
+theorem shared_nary_application {α : Type} (I : NaryInterp α) (k : Nat)
+    (xs ys : List α) (h : xs = ys) : I.op k xs = I.op k ys := by
+  exact congrArg (I.op k) h
+
 /-! ### Verdicts up to the NaN payload
 
 A float result is compared after every NaN pattern is mapped to one

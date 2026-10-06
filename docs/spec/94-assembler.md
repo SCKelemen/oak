@@ -1939,7 +1939,7 @@ inductively (`l↔r17`, `found↔r16`, `j↔r14`, the inner `found↔r16`, and
 the callee's `k`, `same` as themselves) in three seconds — alongside
 `longest`; `TestE2ENativeLiteralsVerdicts` asserts both. Left to C in the
 same module at that point: the functions with more than eight vector
-parameters (`classify` and its callers — taken the same day, §9.ah) and,
+parameters (`classify` and its callers — taken the same day, §9.ap) and,
 as evidence or trusted, `groups_of` (budget), `build` (an expression
 statement in a loop body), `verify_count` (an inner loop summarized per
 path past the event budget) — the last two proven below.
@@ -6683,15 +6683,17 @@ differential tests pass. Runtime is not reported from the loaded host; static
 provenance is in
 `benchmarks/native/results/stage2-global-load-mask-elision-2026-09-17.json`.
 
-**Post-schedule cleanup (2026-09-17, AArch64 lane).** Scheduling and the final
+**Post-schedule cleanup (2026-09-17, broadened 2026-09-18, AArch64 lane).** Scheduling and the final
 scalar-global passes above can expose copies after the ordinary late cleanup
 has run. The separate `post-schedule-cleanup` candidate reruns the same
 block-local `cleanupItems` fixpoint on that final spelling. It adds no rewrite
-rule: the five rules, whole-function general-register liveness, control-flow
+rule: the six rules, whole-function general-register liveness, control-flow
 boundaries, and refusal conditions specified by "Late copy and branch cleanup"
-remain unchanged. The candidate is eligible only after scheduling and
-normalized scalar-global forwarding, so unrelated functions do not acquire a
-second no-op search branch. Its pre-cleanup parent remains selectable.
+remain unchanged. The 2026-09-18 ordered phase registers this transform after
+ordinary `late-cleanup` and makes it eligible after cleanup. That order is what
+lets the one-way phase search reach the separately checked final child for
+unscheduled bodies and bodies without normalized scalar-global forwarding. Its
+earlier cleaned parent remains selectable.
 
 The rerun is non-neutral and **verdict-gated**. The seam checker checks the
 rewritten machine body, and the unchanged whole-body verifier remains the
@@ -6710,6 +6712,29 @@ alignment (5944→5912), and 27 unchanged relocations. All five OS differential
 tests pass. Runtime is not reported from the heavily loaded host; static
 provenance is in
 `benchmarks/native/results/stage2-post-schedule-cleanup-2026-09-17.json`.
+
+The 2026-09-18 final cleanup increment adds a branch rule over adjacent alias
+labels: `b L`, followed only by labels including `L`, falls through to the same
+instruction and loses the branch. It never crosses an alignment or instruction.
+Keeping this rule in the separately verdict-gated final child avoids perturbing
+register allocation. Materialization v32 separates the new cleanup recipe from
+earlier cached bodies. Against the untouched `4dac5e05` compiler, the fresh
+stage-2 pilot removes 17 branches from four selected proven bodies: `map_page`
+139→136, `translate` 76→71, `unmap_page` 172→168, and `walk_leaf` 123→118
+instructions. `alloc_table` keeps its proven parent rather than a smaller
+trusted scheduled form. Mach-O `__text` shrinks by 68 bytes and the aligned
+object by 72 bytes, all 27 relocations remain, and both objects pass all eight
+current OS conformance tests. Exact provenance is in
+`benchmarks/native/results/stage2-alias-label-cleanup-2026-09-18.json`.
+
+Revalidation at `79c5e56f` (2026-10-05) leaves two selected sites after later
+cleanup work: one final copy in `translate` and one alias-label branch in
+`walk_leaf`, both proven, for 8 bytes less Mach-O text/object and 27 unchanged
+relocations. The child refuses a fill-unrolled parent: composing it there used
+the bounded validation slots before `reset`'s established unrotated proof
+fallback, while refusing it preserves the same optimized proven body as the
+baseline. All eight OS conformance tests pass; exact provenance is in
+`benchmarks/native/results/stage2-alias-label-cleanup-2026-10-05.json`.
 
 **Dead callee-save trimming (2026-09-17, AArch64 lane).** Reallocation can
 make a parameter home in x19–x28 dead while the lowering's conservative frame
@@ -8886,6 +8911,90 @@ cause: `ident`, `chain_cond`, and `add_trap` have no loop of their own
 and reach the search through their callees' (`rstr`, `sb_str`,
 `t_binary`).
 
+**The n-ary application term (2026-10-05).** The verifier term language
+now has that general `termApply`: a stable application namespace includes
+the semantic name, result width, arity, and every argument width, while its
+ordered argument slice is unbounded. Witness execution gives it one fixed,
+deterministic interpretation; that interpretation is evidence only. The BDD
+decision flattens the arguments' bits into the existing select-abstraction
+table, whose Ackermann constraint proves exactly the required congruence.
+`Oak.Uninterpreted.ackermann_nary_sound` generalizes the table soundness
+argument to an arbitrary ordered argument list, and
+`shared_nary_application` states its congruence law.
+Structural equality, canonicalization, loop substitution and memory
+restoration, parameter and memory-read discovery, term sizing, and evaluator
+numbering all traverse every argument. Native proof-certificate replay and
+the serialized Oak solver refuse the new kind explicitly, so it cannot cross
+either proof boundary by being mistaken for an older node.
+
+**Finite-value calls use applications (2026-10-05).** A first fail-closed
+consumer now takes an internal call at `call:<callee>:result` (one operation
+per aggregate result leaf) when the verifier itself establishes that the
+callee's complete varying input is finite: scalar, record, tagged-union, or
+fixed-array parameters, flattened in declaration and element order. The gate
+refuses borrowed spans/views, mutable globals and global arrays, effect rows,
+externs, atomics, methods, generics, recursion, vectors, floats, unknown
+invocations, and transitive calls outside the same gate. Immutable declared
+tables may remain implicit in the operation, since their state cannot change
+between applications in one execution. A 4096-bit input ceiling is a
+profitability fallback, not a semantic boundary. Eligible calls become
+applications when their transitive body contains a loop or their finite input
+plus result is at least 512 bits; smaller straight-line calls retain the more
+precise and cheaper expanded term. Machine-call summarization
+and Oak call lowering apply the identical namespace to the identical ordered
+leaves; the caller verdict still records the callee dependency, while the
+callee's internal loop events no longer enter the caller coupling. Every
+refused call follows the prior expanded-summary path. Tests pin the stable
+leaf order, each important refusal, cross-lane scalar call proofs, and a
+data-dependent scalar loop whose caller imports zero callee loops. The six
+Bits bodies still require the open part: a sound argument for every mutable
+memory state a callee reads, including caller stores between two dynamic
+applications.
+
+**Equality bit by bit, conjunctions from the deepest literal up
+(2026-10-05).** The study of the coupling-search bucket began with
+`ident`: its loop proof spent its whole allowance before the callee
+loop's continue conditions came up, every implication's premise
+exceeding the decision's budget, and the probe (`OAK_VERIFY_PREMISE_PROBE`
+under trace: each conjunct of the premise blasted alone) named the
+conjunct: `lean_reserved(rs_name(…))`, fifty-two comparisons of a
+name's two 64-bit words against constants under its length — a
+disjunction of points that is a few thousand nodes as a function in any
+order. The blaster built each `eq` as the difference's zero test
+through the subtractor's borrow chain, and grew that zero test, the
+bitwise equality of the consistency constraint, and every such
+conjunction from the shallowest literal down, re-creating the whole
+path a step: a 128-bit point cost 4,288 nodes and the shape 518,445.
+Equality and inequality are now the conjunction of the bits'
+agreements, and those conjunctions grow from the deepest literal up,
+one node a step: 382 and 22,581 (`TestReservedShapeBlast`, which pins
+both bounds). The decisions' budgets are unchanged; what they buy is.
+With that, `ident`'s proof reached the premise's other construct, and
+the probe's descent (`blastCulprits`) named it: `le.state_at + 9 ==
+le.strs_at + (ew[k] << 1)`, an adder equality whose one operand is a
+read's value. A read's block of variables interleaves with the
+parameters' bits only while the read is among the first `selectSlots`
+distinct reads of the decision — eight — and `ident`'s premise reads
+`ew` and the loop's memory at nine addresses, so the ninth block
+trailed every parameter and the adder across them was exponential
+under every order (a million nodes against 13,626 interleaved,
+`TestSelectSlotInterleaving`). A proof's diagrams now interleave
+sixty-four reads (`proofSelectSlots`); the CNF export keeps eight, the
+numbering the Lean replay pins. Tallied at 1e47c540, the equality alone:
+598 proven, 228 evidence, 125 trusted (593, 233, 125 before) — `ap_lits`,
+`args_finish`, `cnf_variable`, `pool_push_pool`, and `px_intern` cross.
+The interleaving leaves the tally where the equality put it (598, 228,
+125 at a0e387d3). `ident` itself still stops where it did: the probe's dump reconstructed
+in `TestIdentShapeBlast` puts its premise's conditional at 754,007 nodes
+with every read interleaved — the adder equality `le.state_at + 9 ==
+le.strs_at + (v << 1)` where `v` is a read selected by the lookup's
+outcome `b` (`found == NONE`, the name not empty) costs 223,269 alone,
+`b`'s condition carried into every carry, and the conditional over the
+whole multiplies it. Under `b` and under its negation each side is a
+plain read and the equality is the 13,626-node adder: a case split on
+the condition the premise's reads select by, before the diagram, is the
+step the coupling-search bucket's bodies want next.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —
@@ -9372,7 +9481,7 @@ A mid-level IR is not introduced: it would re-derive how the facts reach
 the lowering across ten thousand lines for what the item list can carry
 until an allocator shows otherwise.
 
-### 9.ad Vector homes across calls (2026-09-15)
+### 9.ao Vector homes across calls (2026-09-15)
 
 The second increment of the optimization system (`90-backend.md` §16).
 A function that makes calls keeps its vector locals in the caller-saved
@@ -9629,7 +9738,7 @@ upward — the scalar leaf homes in x2–x7 (§9, the twenty-second
 increment) for the vector file; v0 is left for the result. Nothing is
 saved: a leaf makes no call. A home released at a local's last use
 returns to its pool. The registers taken are declared as clobbers and
-`Lane.VectorHomes` gates the shape with the same fallback as §9.ad.
+`Lane.VectorHomes` gates the shape with the same fallback as §9.ao.
 
 As of 2026-09-25, these existing unused argument homes are preferred before
 callee-saved and scratch homes, avoiding unnecessary d8–d15 save/restore
@@ -9691,7 +9800,7 @@ the verifier taking callees at their bodies. The compiler reports every body's s
 and obligation: `layer A — strength reduction ×2 decided at the bit
 level; reduction unrolling ×1 under Oak.Reduction.unrolled4_eq`.
 
-### 9.ah The vector class of the argument layout (2026-09-15)
+### 9.ap The vector class of the argument layout (2026-09-15)
 
 A function with more than eight floating-point or vector parameters
 stayed with the C backend: the register contract passes eight, in v0–v7,
@@ -9859,6 +9968,24 @@ split runs only after a closed unequal decision, never past a budget,
 so it adds nothing to a body that proves directly or exhausts its
 budget. `zero_page` and `z` are **proven** in their hoisted, rotated
 forms.
+
+**Covering masks and packed pairs canonicalize away (2026-09-18).** The
+machine spells a 32-bit word it widened as `h and 0xffffffff`, and the
+low word of a pair it packed as `(lo or (hi shl 32)) and 0xffffffff`;
+the Oak side spells the word. Through a hash round the two spellings
+made the coupling's preservation obligations differ at every leaf, so
+they went to the bit level and past its budget. The canonicalizer now
+drops a low-ones mask that covers every significant bit of its operand
+and reads the low word of a packed pair as its low operand (the high
+word's rule existed), so the sides meet syntactically:
+`sha256_compress_view` is proven where it was witnessed, and the first
+loop of `sha256_update` preserves its state words. Among a slot's
+coupling candidates an equality whose header is not a constant now ranks
+first and an image with a symbolic offset last.
+A narrow view of a parameter under a covering mask (`byte and 0xff` at
+32 bits) becomes the view zero-extended, the form its widened counterpart
+reduces to, so declared-width equality still meets the two views of one
+byte (2026-10-05).
 
 **Probing a body that calls (2026-09-17).** The slots a store at a
 data-dependent index reaches (`strb w12, [x11, w23, uxtw]` under its

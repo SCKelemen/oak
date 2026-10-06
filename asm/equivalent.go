@@ -48,6 +48,11 @@ func termEquivalent(a, b *term, w int, memo map[[3]any]bool) bool {
 		equal = a.op == b.op && a.left.width == b.left.width && termEquivalent(a.left, b.left, a.left.width, memo) && termEquivalent(a.right, b.right, a.left.width, memo)
 	case termFloat:
 		equal = a.op == b.op && a.width == b.width && a.width >= w && termEquivalent(a.left, b.left, widthOrZero(a.left), memo) && termEquivalent(a.right, b.right, widthOrZero(a.right), memo) && termEquivalent(a.cond, b.cond, widthOrZero(a.cond), memo)
+	case termApply:
+		equal = a.name == b.name && a.width == b.width && a.width >= w && len(a.args) == len(b.args)
+		for i := 0; equal && i < len(a.args); i++ {
+			equal = a.args[i].width == b.args[i].width && termEquivalent(a.args[i], b.args[i], a.args[i].width, memo)
+		}
 	}
 	memo[key] = equal
 	return equal

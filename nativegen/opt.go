@@ -457,7 +457,7 @@ func Transforms() []opt.Transform {
 			fired:   RotatedLoops,
 		}},
 		&laneTransform{
-			// Vector homes across calls (docs/spec/94-assembler.md §9.ad): a
+			// Vector homes across calls (docs/spec/94-assembler.md §9.ao): a
 			// calling function's vector locals in v16–v31, saved around a
 			// call only when live after it, instead of sixteen-byte slots;
 			// the checker and the verifier decide.
@@ -597,20 +597,24 @@ func Transforms() []opt.Transform {
 			apply:    func(l Lane) Lane { l.ElideGlobalLoadMasks = true; return l },
 			fired:    ElidedGlobalLoadMasks,
 		}},
-		&gatedTransform{laneTransform: laneTransform{
-			// Scheduling and the final global-forwarding passes can expose or
-			// create block-local copies after the ordinary cleanup has run.
-			name: TransformPostScheduleCleanup, phase: opt.PhaseMachine, proof: opt.Mechanical,
-			arches:   arm64Only,
-			applied:  func(l Lane) bool { return l.PostScheduleCleanup },
-			eligible: func(l Lane) bool { return l.Schedule && l.ElideGlobalLoadMasks },
-			apply:    func(l Lane) Lane { l.PostScheduleCleanup = true; return l },
-			fired:    PostScheduledCleanup,
-		}},
 		multiplyAddTransform,
 		valueSelectTransform,
 		vecBlocksTransform,
 		cleanupTransform,
+		&gatedTransform{laneTransform: laneTransform{
+			// Allocation and the final scheduled/address passes can expose or
+			// create block-local copies after the ordinary cleanup has run. Keep
+			// this transform after cleanupTransform: the phase search is ordered,
+			// so that is what makes the separately checked child reachable. Fill
+			// unrolling retains its established validation fallback until the
+			// search can budget another proof-changing child without displacing it.
+			name: TransformPostScheduleCleanup, phase: opt.PhaseMachine, proof: opt.Mechanical,
+			arches:   arm64Only,
+			applied:  func(l Lane) bool { return l.PostScheduleCleanup },
+			eligible: func(l Lane) bool { return l.Cleanup && !l.UnrollFills },
+			apply:    func(l Lane) Lane { l.PostScheduleCleanup = true; return l },
+			fired:    PostScheduledCleanup,
+		}},
 		&gatedTransform{laneTransform: laneTransform{
 			// Copy cleanup exposes private address temporaries. Retry load
 			// sharing and include stores, in place: no memory reordering.
