@@ -7050,8 +7050,11 @@ func premiseSelectCondition(premise *term) *term {
 	return best.cond
 }
 
-// splitDepth bounds the case splits nested in one decision.
-const splitDepth = 2
+// splitDepth bounds the case splits nested in one decision. Three lets a
+// categorical guard shed its outer memory selector and two remaining control
+// predicates before the bit-level decision; the proof-wide node and call
+// budgets still bound the total work across all resulting cases.
+const splitDepth = 3
 
 // maskedZeroTestRelation recognizes equal or opposite zero tests after
 // discarding only masks that cannot clear a possible set bit. It is a

@@ -9034,7 +9034,7 @@ reads. Before the arm, congruence, or bit-level rules can build a diagram,
 it proves the implication once with the condition and once with its
 negation. Each case structurally prunes the premise and both equality sides
 under that direct fact first; both cases must decide and hold, under the
-existing two-split depth and shared proof-node allowance. Boolean lookup
+existing bounded split depth and shared proof-node allowance. Boolean lookup
 trees, a single selected value, and choices with a constant or computed
 alternative do not enter the eager rule. The old post-budget split remains
 the fallback for branches in the equality sides. `TestIdentShapeBlast`
@@ -9060,6 +9060,20 @@ from the obligation; `TestUnsignedZeroComparisonFoldsBeforeItsBound` pins the
 four laws, both exclusions, and the canonicalized-zero production path. This
 is the first post-split obstruction, not yet a claim that the whole `ident`
 coupling proves.
+
+The corrected fold moves the production probe past that obstruction. Its next
+failed branch has already discarded two independent selectors and presents a
+third useful guard; allowing three nested exhaustive splits instead of two
+shrinks the final `ident` proof attempt from 29.99 s to 10.75 s on the same
+development host. The proof-wide 16-million-node allowance, the one-million
+nodes per loop implication, and the implication-call bound are unchanged, and
+the complete assembler suite remains at its baseline (88.6 s in the confirming
+run). This is a proof-search reduction, not a tier change: `ident` still ends as
+evidence. The smallest remaining child asks for `k + 1 <= limit` while the
+premise supplies only `k <= limit`; that implication is not valid at equality.
+The surrounding continue conditions may still agree, but proving them requires
+retaining the selecting context or avoiding that over-strong congruence child,
+not an unsigned-successor rewrite.
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
