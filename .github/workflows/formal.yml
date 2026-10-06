@@ -29,9 +29,9 @@ jobs:
           /tmp/elan-init -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
-      - name: Check RV64 branch encoding proofs
+      - name: Check RV64 encoding, relaxation, and materialization proofs
         working-directory: spec/lean
-        run: lake build Oak.RiscVBranchEncoding Oak.RiscVCompressedBranchEncoding Oak.RiscVRelaxation
+        run: lake build Oak.RiscVBranchEncoding Oak.RiscVCompressedBranchEncoding Oak.RiscVRelaxation Oak.RiscVMaterialization
 
       - name: Build formal specification
         working-directory: spec/lean
@@ -76,10 +76,10 @@ jobs:
           OAK_REQUIRE_LINKER_LEAN: '1'
         run: go test ./compiler -run '^TestE2ESelfHostedPlacement$' -count=1 -v
 
-      - name: Check RV64 branch production decisions against Lean
+      - name: Check RV64 production decisions against Lean
         env:
           OAK_REQUIRE_RV64_LEAN: '1'
-        run: go test ./asm -run '^TestRV64((LocalBranches|CompressedBranches)MatchLean|RelaxationMatchesLean)$' -count=1 -v
+        run: go test ./asm -run '^TestRV64((LocalBranches|CompressedBranches)MatchLean|(Relaxation|Materialization)MatchesLean)$' -count=1 -v
 
       - name: Check solver formula binding in Go, Oak, and Lean
         env:
