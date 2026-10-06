@@ -10,9 +10,12 @@ its kernel-reduced decisions with compiled Oak on raw formula/model words.
 
 The scalar theorems below prove the extracted assignment/literal predicates.
 The clause-list model then composes checked literals into a model of the
-decoded database. Universal refinement of the extracted framing/scan loops
-to this clause-list model, the compiler, and source-to-CNF lowering remain
-separate obligations. Bounded replay is not that universal refinement.
+decoded database. `Oak.SATModelSoundness` derives exact decoding and a model
+from successful execution of the generated framing/scan loops, for UInt32
+view lengths. Extraction, compilation, and source-to-CNF lowering remain
+separate obligations. Bounded replay is additional implementation evidence.
+The new loop proof awaits its first successful mandatory formal-CI kernel
+build; its refinement obligation is not yet recorded as closed.
 -/
 
 set_option autoImplicit false

@@ -63,11 +63,20 @@ early does not skip validation of its remaining literals. The complete
 checker is extracted to `Oak.SATModelExtracted`, protected by a drift test,
 and kernel-replayed against compiled Oak on a bounded raw-input corpus.
 `Oak.SATModel` proves the extracted literal/value predicates and soundness
-of clause-list model admission into `Oak.RupCheck.Models`. Universal
-refinement of the framing/scan loops to that model remains open, as do source
-lowering, extraction/compiler correctness, and ARM64/RV64 execution. Fault
-injection verifies that a fabricated solver model is refused by the actual
-drivers and the standalone self-hosted shell.
+of clause-list model admission into `Oak.RupCheck.Models`.
+`Oak.SATModelSoundness` derives exact, fully consumed clause decoding and a
+model from execution of the generated assignment, literal, and clause loops.
+Its two size hypotheses are the UInt32 length domain of Oak views, not
+assumed parsing, scan soundness, or solver correctness. A second theorem
+rules out simultaneous accepted RUP evidence for that same decoded database.
+The formal-CI contract pins these hypotheses and checks for proof holes.
+**Validation pending:** these production soundness proofs await their first
+successful kernel build. The loop-refinement obligation remains open until
+the mandatory `TestOakSATModelSoundnessLean` gate passes.
+Source lowering, extraction/compiler correctness, native memory safety,
+and ARM64/RV64 execution remain open parts of this chain. Fault injection
+verifies that a fabricated solver model is refused by the actual drivers
+and the standalone self-hosted shell.
 
 ### 2.1 Source → checked program
 

@@ -233,6 +233,7 @@ import Oak.LRATStore
 import Oak.LRATFormulaBinding
 import Oak.ClauseAgreement
 import Oak.SATModel
+import Oak.SATModelSoundness
 import Oak.SolverLaws
 import Oak.Tseitin
 import Oak.TseitinCNF

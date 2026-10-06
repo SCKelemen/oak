@@ -444,8 +444,22 @@ verdict; source-term confirmation remains required for a counterexample.
 with drift detection and formal-CI kernel replay against compiled Oak on 514
 raw formula/model pairs. `Oak.SATModel` proves the extracted scalar predicates
 and the clause-list model's composition into `Oak.RupCheck.Models`, including
-incompatibility with an accepted refutation of the same database. The general
-framing/scan-loop correspondence to the clause-list model is still open.
+incompatibility with an accepted refutation of the same database.
+`Oak.SATModelSoundness.production_model_sound` follows the actual extracted
+assignment, literal, and clause loops by induction on their execution fuel.
+For representable UInt32 view lengths, successful execution derives valid
+assignment values, proof-free framing, exact independent natural-offset
+clause decoding, complete formula consumption, and a model of the decoded
+database. No decoder/scan correspondence or solver correctness premise is
+supplied. `production_model_not_rup` composes this result with RUP soundness:
+the same decoded formula cannot also have an accepted refutation. The
+formal CI contract checks these theorem signatures and rejects `sorryAx`.
+**Validation pending:** the proof source awaits its first successful Lean
+kernel build; the loop-refinement obligation remains open until the mandatory
+`TestOakSATModelSoundnessLean` gate passes. Compiled corpus tests alone do not
+establish this theorem.
+Extraction, native memory safety, compilation, and source lowering remain
+separate obligations.
 Tests also replace the untrusted solver with one that fabricates SAT and
 confirm rejection in both drivers and the self-hosted shell without a Go
 cross-check. These checks do not prove source-to-CNF lowering or either

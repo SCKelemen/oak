@@ -68,6 +68,60 @@ type satModelCase struct {
 	want                bool
 }
 
+// Pin the theorem's public contract: successful execution must supply exact
+// decoding and a model with no assumed scan/decoder correspondence premise.
+func TestOakSATModelSoundnessLean(t *testing.T) {
+	lake, err := exec.LookPath("lake")
+	if err != nil {
+		if os.Getenv("OAK_REQUIRE_SAT_MODEL_LEAN") != "" {
+			t.Fatal("lake is required for the production SAT-model soundness gate")
+		}
+		t.Skip("lake not on PATH; formal CI requires the production soundness proof")
+	}
+	source := `import Oak.SATModelSoundness
+open Oak.SATModel
+
+example (formula values : Array UInt32) (fuel : Nat)
+    (formulaSize : formula.size < 4294967296) (valueSize : values.size < 4294967296)
+    (accepted : sat_check_model formula values fuel = some true) :
+    ∃ clauses, decodeFormula formula = some clauses ∧
+      Oak.RupCheck.Models (arrayAssignment values) (database clauses) :=
+  (production_model_sound formula values fuel formulaSize valueSize accepted).2.2.2
+
+example (formula values : Array UInt32) (fuel : Nat)
+    (formulaSize : formula.size < 4294967296) (valueSize : values.size < 4294967296)
+    (accepted : sat_check_model formula values fuel = some true)
+    (clauses : List (List UInt32)) (decoded : decodeFormula formula = some clauses) :
+    ¬ Oak.RupCheck.Accepted (database clauses) :=
+  production_model_not_rup formula values fuel formulaSize valueSize accepted clauses decoded
+
+example : decodeFormula #[1280459348, 1, 1, 2, 0, 0, 0, 0, 1, 1] = some [[1]] := by decide
+example : decodeFormula #[1280459348, 1, 1, 3, 0, 0, 0, 0, 1, 1, 0] = none := by decide
+example : decodeFormula #[1280459348, 0, 1, 1, 0, 0, 0, 0, 0] = some [[]] := by decide
+example : decodeFormula #[1280459348, 0, 0, 0, 0, 0, 0, 0] = some [] := by decide
+
+#print axioms Oak.SATModel.production_model_sound
+#print axioms Oak.SATModel.production_model_not_rup
+`
+	path := filepath.Join(t.TempDir(), "SATModelSoundnessContract.lean")
+	if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	for _, args := range [][]string{{"build", "Oak.SATModelSoundness"}, {"env", "lean", path}} {
+		cmd := exec.CommandContext(ctx, lake, args...)
+		cmd.Dir = filepath.Join("spec", "lean")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Lean model soundness: %v (%v)\n%s", err, ctx.Err(), out)
+		}
+		if strings.Contains(string(out), "sorryAx") {
+			t.Fatalf("production soundness depends on a proof hole:\n%s", out)
+		}
+	}
+}
+
 func satModelCases(t *testing.T) []satModelCase {
 	t.Helper()
 	encode := func(text string) []uint32 {
