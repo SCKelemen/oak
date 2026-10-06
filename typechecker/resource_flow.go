@@ -2643,14 +2643,14 @@ func joinReachable(branches []*resourceflow.Flow, diverged []bool, incoming *res
 // Per-expression result caches are refreshed when the expression is visited;
 // diagnostic provenance and expired local dependencies are not loop inputs.
 type resourceLoopFacts struct {
-	dependents map[string]map[string]bool
-	scopes map[string]int
-	mutable map[string]bool
-	unknown map[string]bool
-	entry map[string]entryAuthority
-	owned map[string]string
-	transferred map[string]bool
-	callables map[string]string
+	dependents       map[string]map[string]bool
+	scopes           map[string]int
+	mutable          map[string]bool
+	unknown          map[string]bool
+	entry            map[string]entryAuthority
+	owned            map[string]string
+	transferred      map[string]bool
+	callables        map[string]string
 	unknownCallables map[string]bool
 }
 
@@ -2658,12 +2658,12 @@ func (a *typedResourceAnalysis) loopFacts() resourceLoopFacts {
 	deps, scopes, _ := a.cloneDependents()
 	return resourceLoopFacts{
 		dependents: deps, scopes: scopes,
-		mutable: maps.Clone(a.mutableDependents),
-		unknown: maps.Clone(a.unknownResources),
-		entry: maps.Clone(a.entryModes),
-		owned: maps.Clone(a.owned),
-		transferred: maps.Clone(a.transferred),
-		callables: maps.Clone(a.callableContracts),
+		mutable:          maps.Clone(a.mutableDependents),
+		unknown:          maps.Clone(a.unknownResources),
+		entry:            maps.Clone(a.entryModes),
+		owned:            maps.Clone(a.owned),
+		transferred:      maps.Clone(a.transferred),
+		callables:        maps.Clone(a.callableContracts),
 		unknownCallables: maps.Clone(a.unknownCallables),
 	}
 }

@@ -17,7 +17,7 @@ pub first: (buf: []u8): []u8 = subslice(buf, 0, 1)
 
 func moduleRegionFiles(main string) map[string]string {
 	return map[string]string{
-		"oak.mod": helloManifest,
+		"oak.mod":           helloManifest,
 		"slices/slices.oak": moduleRegionLibrary,
 		"forward/forward.oak": `package forward
 s := import("example.com/hello/slices")

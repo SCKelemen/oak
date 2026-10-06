@@ -193,3 +193,23 @@ main: (): i32 = 0
 		}
 	}
 }
+
+// The void transition ABI restores Host on normal return. A runtime that
+// returns without completing its work violates the extern contract; Oak does
+// not silently add the missing wait. Keep this negative control beside the
+// successful delayed-write realization above.
+func TestE2EBufferCustodyPrematureCompletionControl(t *testing.T) {
+	helper := filepath.Join(t.TempDir(), "premature.c")
+	source := `
+#include <stddef.h>
+void mlrt_submit(float *base, size_t len) { (void)base; (void)len; }
+void mlrt_complete(float *base, size_t len) { (void)base; (void)len; }
+`
+	if err := os.WriteFile(helper, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, code, abnormal := buildAndRunFrom(t, "premature_custody", New().WithSource("premature.oak", custodyProgram), helper)
+	if abnormal || code != 1 {
+		t.Fatalf("premature completion must fail the result assertion: exit=(%d,%v)", code, abnormal)
+	}
+}

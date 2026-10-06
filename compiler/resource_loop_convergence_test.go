@@ -8,9 +8,9 @@ import (
 	"github.com/SCKelemen/oak/typechecker"
 )
 
-// A loop can propagate unknown provenance one binding per iteration.
-// A three-state authority component does not give a product environment
-// height three, nor establish convergence after two body traversals.
+// Long alias chains must never turn unknown provenance into exclusive
+// authority. These are regression controls: the previous conservative joins
+// already rejected these examples before the convergence-driven traversal.
 func TestResourceLoopPropagatesUnknownThroughAliasChain(t *testing.T) {
 	for _, depth := range []int{3, 5, 9} {
 		t.Run(fmt.Sprint(depth), func(t *testing.T) {

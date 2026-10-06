@@ -497,8 +497,13 @@ they landed and the shape each admits.
 What stays rejected: borrows in globals and statics, borrows in records
 without a region crossing a call, a returned borrow whose provenance the
 checker cannot establish, a region naming more than one parameter, a record
-with more than one region, region functions called across package
-boundaries by qualified name, and any borrow outliving its owner.
+with more than one region, and any borrow outliving its owner. Qualified
+package calls are elaborated to the declaration identity before region
+erasure. Ordinary imports preserve explicit and elided return contracts,
+including forwarding through another package; the module regression covers
+region records, owner-write rejection, span suspension, and local-owner
+escape (`compiler/e2e_module_regions_test.go`). Abstract sealed signatures
+and indirect region-polymorphic callable values are outside that coverage.
 
 ## 8d. Scalar views of record views (implemented)
 
@@ -801,7 +806,11 @@ to a borrowed result whose owner, or whose own binding, lives in an inner
 scope, which would let the result outlive what it depends on. Rebinding a
 dependent releases its old dependency. Control-flow joins keep every
 dependency established on any path — a conservative set, never fresh
-authority — and the two-iteration loop probe applies. A path that leaves a
+authority. Loops join successive backedges until both authority and the
+tracked dependency/permission facts stabilize; a fixed number of probes
+is not used as evidence of convergence. A rejected traversal stops early.
+The condition contributes an exit state after its effects, including when
+the body runs zero times. A path that leaves a
 loop through `break` does not fall through to its branch's join; its
 authority state joins the loop's exit, so a close placed before the break
 (as `defer` places it) is seen on exactly the paths it runs on. Freshness never
@@ -913,8 +922,8 @@ analysis sees it there. Not yet specified: what dropping does
 
 With this, milestone 4 of the authority roadmap (stages (a)–(e)), the
 first increment of milestone 5, and the first increment of milestone 6
-are implemented for opaque resources. Open follow-ups: a source spelling for
-result identities, contracts on record-typed parameters and results that
+are implemented for opaque resources. Open follow-ups: contracts on
+record-typed parameters and results that
 carry borrowed fields, and array element provenance.
 
 **Source spelling.** Every fact above — parameter and receiver modes, the

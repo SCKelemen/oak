@@ -32,22 +32,24 @@ func TestSameStateTracksJoinInputs(t *testing.T) {
 	}
 }
 
-func TestLoopJoinNeedsMoreThanTwoPasses(t *testing.T) {
+// A component's height is not the height of the whole environment. This
+// abstract monotone transfer advances one independent component per pass;
+// it checks the convergence predicate, not an Oak source-level exploit.
+func TestLoopJoinProductStateConvergence(t *testing.T) {
 	head := New()
-	head.Register("owner", nil)
-	head.Alias("c", "owner", nil)
-	head.Alias("b", "c", nil)
-	head.Alias("a", "b", nil)
+	for _, name := range []string{"a", "b", "c"} {
+		head.Register(name, nil)
+	}
 	passes := 0
 	for {
 		body := head.Clone()
-		if !body.Rebind("a", "b", nil) {
-			body.Forget("a")
+		body.Consume("a", nil)
+		if !head.CanUse("a") {
+			body.Consume("b", nil)
 		}
-		if !body.Rebind("b", "c", nil) {
-			body.Forget("b")
+		if !head.CanUse("b") {
+			body.Consume("c", nil)
 		}
-		body.Forget("c")
 		next := Join(head, body)
 		passes++
 		if next.SameState(head) {
@@ -56,10 +58,10 @@ func TestLoopJoinNeedsMoreThanTwoPasses(t *testing.T) {
 		}
 		head = next
 		if passes > 8 {
-			t.Fatal("finite descending alias domain did not converge")
+			t.Fatal("finite authority domain did not converge")
 		}
 	}
-	if passes <= 2 || head.Registered("a") || !head.CanUse("owner") {
-		t.Fatalf("passes=%d a-known=%v owner-live=%v", passes, head.Registered("a"), head.CanUse("owner"))
+	if passes <= 2 || head.CanUse("c") {
+		t.Fatalf("passes=%d c-live=%v", passes, head.CanUse("c"))
 	}
 }
