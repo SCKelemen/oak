@@ -220,6 +220,7 @@ import Oak.BddComplement
 import Oak.RupCheck
 import Oak.LRATBounds
 import Oak.LRATRUP
+import Oak.LRATRUPSoundness
 import Oak.LRATFormulaBinding
 import Oak.ClauseAgreement
 import Oak.SATModel
