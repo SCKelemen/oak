@@ -98,6 +98,117 @@ pub spsc_count: (cursor: [*]SpscCursor): u32 {
   atomic_load_acquire(cursor[0].tail) - atomic_load_acquire(cursor[0].head)
 }
 
+// Batch state is separate from the shared cursor so the hot producer and
+// consumer cache lines keep the same layout. A producer batch is private to
+// the producer: reserve establishes a claim, put_run fills it without
+// publication, and commit publishes up to the written prefix with one release
+// store. Abandoning or replacing a reservation is safe because unpublished
+// slots carry no authority to the consumer.
+pub SpscProducerBatch: type = struct {
+  reserved: u32
+  filled: u32
+}
+
+// spsc_reserve opens a producer batch for n items. It reloads head at most
+// once when the producer's cached observation would refuse the reservation.
+// False means insufficient room or an invalid batch size; no shared index is
+// published.
+pub spsc_reserve: (cursor: [*]SpscCursor, batch: [*]SpscProducerBatch, capacity: u32, n: u32): Bool {
+  spsc_check(cursor, capacity)
+  assert(len(batch) == u32(1))
+  batch[0].reserved = u32(0)
+  batch[0].filled = u32(0)
+  ok: Bool = false
+  n > u32(0) && n <= capacity ? {
+    tail: u32 = atomic_load_relaxed(cursor[0].tail)
+    used: u32 = tail - cursor[0].head_seen
+    room: Bool = used <= capacity - n
+    !room ? {
+      cursor[0].head_seen = atomic_load_acquire(cursor[0].head)
+      used = tail - cursor[0].head_seen
+      room = used <= capacity - n
+    }
+    room ? {
+      batch[0].reserved = n
+      ok = true
+    }
+  }
+  ok
+}
+
+// spsc_put_run writes a prefix of vals into an open reservation and returns
+// how many items it accepted. Nothing is visible to the consumer until
+// spsc_commit publishes the tail.
+pub spsc_put_run[T]: (cursor: [*]SpscCursor, batch: [*]SpscProducerBatch, storage: [*]T, vals: []T): u32 {
+  capacity: u32 = len(storage)
+  spsc_check(cursor, capacity)
+  assert(len(batch) == u32(1))
+  room: u32 = batch[0].reserved >= batch[0].filled ? batch[0].reserved - batch[0].filled | u32(0)
+  n: u32 = len(vals)
+  n > room ? { n = room }
+  base: u32 = atomic_load_relaxed(cursor[0].tail) + batch[0].filled
+  mask: u32 = capacity - u32(1)
+  i: u32 = u32(0)
+  while i < n {
+    storage[(base + i) & mask] = vals[i]
+    i = i + u32(1)
+  }
+  batch[0].filled = batch[0].filled + n
+  n
+}
+
+// spsc_commit publishes the first n written items of an open reservation with
+// one release store. A partial commit deliberately abandons the unwritten or
+// uncommitted suffix; a later reserve may reuse it.
+pub spsc_commit: (cursor: [*]SpscCursor, batch: [*]SpscProducerBatch, n: u32): Bool {
+  assert(len(cursor) == u32(1))
+  assert(len(batch) == u32(1))
+  ok: Bool = false
+  batch[0].reserved > u32(0) && n <= batch[0].filled ? {
+    tail: u32 = atomic_load_relaxed(cursor[0].tail)
+    atomic_store_release(cursor[0].tail, tail + n)
+    batch[0].reserved = u32(0)
+    batch[0].filled = u32(0)
+    ok = true
+  }
+  ok
+}
+
+// spsc_run returns the first contiguous visible run without copying. The view
+// stops at the wrap point, so draining a wrapped ring takes at most two runs.
+// The storage view carries the caller's region into the result: the caller
+// cannot acquire writable access to that same storage until the view's scope
+// ends.
+pub spsc_run[T, R]: (cursor: [*]SpscCursor, storage: View[T, R]): View[T, R] {
+  capacity: u32 = len(storage)
+  spsc_check(cursor, capacity)
+  head: u32 = atomic_load_relaxed(cursor[0].head)
+  tail: u32 = atomic_load_acquire(cursor[0].tail)
+  lo: u32 = head & (capacity - u32(1))
+  n: u32 = tail - head
+  room: u32 = capacity - lo
+  n > room ? { n = room }
+  storage[lo:lo + n]
+}
+
+// spsc_consume returns n visible slots to the producer with one release store.
+// The storage span is intentionally part of the authority contract even though
+// the function does not modify payload bytes: acquiring writable storage proves
+// that no zero-copy view of those slots is still live at the call site.
+// Callers must pass the same storage paired with cursor.
+pub spsc_consume[T]: (cursor: [*]SpscCursor, storage: [*]T, n: u32): Bool {
+  capacity: u32 = len(storage)
+  spsc_check(cursor, capacity)
+  head: u32 = atomic_load_relaxed(cursor[0].head)
+  tail: u32 = atomic_load_acquire(cursor[0].tail)
+  ok: Bool = false
+  n <= tail - head ? {
+    atomic_store_release(cursor[0].head, head + n)
+    ok = true
+  }
+  ok
+}
+
 // SeqCell is one slot's sequence cell on its own 64-byte line: neighboring
 // slots are claimed and published by different threads, so packed cells
 // would make every publication a store into a line another core is
