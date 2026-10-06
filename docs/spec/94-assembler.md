@@ -1510,6 +1510,35 @@ dynamic `PostDecode`/`BranchTo`, fall-through and trap execution remain open;
 no control-flow occurrence, memory-ordering effect, or proof-admission upgrade
 is inferred from these pure results.
 
+The ordinary conditional-branch arithmetic now covers `B.cond`, `CBZ W/X`,
+and `CBNZ W/X` in `Oak.AArch64ConditionalBranch`. Its five rows are pinned to
+the generated Arm table. Universal Lean theorems establish fixed-bit and
+register/condition preservation, exact signed `imm19` extraction, little-endian
+word reconstruction, and target reconstruction for the aligned displacement
+range `[-2^20, 2^20)`. Local encoding and relocation agree for every old
+immediate. The CBZ W packer is proved equal to the existing Sail-connected
+packer above; the other forms do not gain a Sail execution claim from this.
+
+The executable writer's `condbr19` patch validates the ordinary conditional
+opcode, each address's four-byte alignment, and the unsigned address distance
+before replacing the immediate. It independently decodes the candidate target
+before mutation. Address addition and subtraction cannot wrap into acceptance;
+near-`uint64` targets and crossings of the signed-address boundary are tested.
+`BC.cond`, literal loads, unrelated opcodes, and invalid ranges fail closed.
+External literal loads are refused at encoding rather than mislabeled as
+`R_AARCH64_CONDBR19`; their distinct `R_AARCH64_LD_PREL_LO19` support remains
+open. Local literal-load encoding is unchanged.
+
+The dedicated ARM64 conditional-branch CI job requires Lean and checks actual
+production accept/refuse decisions and function bytes against the model, all
+register numbers and condition fields, dirty-immediate replacement, rejected
+relocations preserving their bytes, and forward/backward references in emitted
+ELF images. This is bounded implementation correspondence, not universal
+refinement of Go or Oak. Condition evaluation, architectural PC and traps,
+fall-through, dynamic branch execution, source-CFG correctness, and complete
+file-format/linker correctness remain separate obligations. Rejection preserves
+the current relocation's bytes; the whole relocation batch is not transactional.
+
 The BBM trap word `BRK #1` has the corresponding software-breakpoint seam.
 `Oak.AArch64BreakpointEncoding` proves its field packing and `0xd4200020`;
 generated Sail Lean recovers the immediate and proves the selected exception-
