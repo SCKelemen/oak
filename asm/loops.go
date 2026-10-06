@@ -908,7 +908,7 @@ func pruneWritesUnder(premise *term, log []*spanWrite, widthOf func(string) int)
 		return log
 	}
 	pruned := pruneUnder(premise, selected, widthOf)
-	cmemo, cbool := map[*term]*term{}, map[*term]bool{}
+	cmemo, cbool := newCanonicalTable(), map[*term]bool{}
 	out := make([]*spanWrite, 0, len(log))
 	next := 0
 	for k, w := range log {
@@ -5724,7 +5724,7 @@ func refineReachFactorUnder(prefix, factor *term) *term {
 // (asm/span_cases.go canonicalLinear, to a fixpoint).
 func sameUnderFacts(premise, a, b *term) bool {
 	pruned := pruneUnderFacts(premise, []*term{a, b})
-	cmemo, cbool := map[*term]*term{}, map[*term]bool{}
+	cmemo, cbool := newCanonicalTable(), map[*term]bool{}
 	return equalTerms(respell(canonicalMemo(pruned[0], cmemo, cbool)), respell(canonicalMemo(pruned[1], cmemo, cbool)))
 }
 
@@ -6978,7 +6978,7 @@ func maskedZeroTestRelation(a, b *term) int {
 
 // zeroTestOf reports a fact `(Y eq 0)` (1) or `(Y ne 0)` (-1) whose Y,
 // read at one bit, is the value asked about; 0 otherwise.
-func zeroTestOf(fact, value *term, cmemo map[*term]*term, cbool map[*term]bool) int {
+func zeroTestOf(fact, value *term, cmemo *canonicalTable, cbool map[*term]bool) int {
 	if fact.kind != termCmp || (fact.op != "eq" && fact.op != "ne") || fact.right.kind != termConst || fact.right.value != 0 {
 		return 0
 	}
@@ -7032,7 +7032,7 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 	// One canonical memo for the pass: the terms' Boolean nodes share
 	// their subgraph, and a canonicalization from scratch per node copied
 	// it once per node.
-	cmemo, cbool := map[*term]*term{}, map[*term]bool{}
+	cmemo, cbool := newCanonicalTable(), map[*term]bool{}
 	premise = canonicalMemo(truncate(premise, 1), cmemo, cbool)
 	var facts []*term
 	var collectFacts func(*term)

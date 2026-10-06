@@ -45,7 +45,7 @@ func spanEqualByCases(fn string, name string, premise, oak, machine *term, impli
 			}
 		}
 		pruned := pruneUnderFacts(p, []*term{oak, machine})
-		cmemo, cbool := map[*term]*term{}, map[*term]bool{}
+		cmemo, cbool := newCanonicalTable(), map[*term]bool{}
 		a := respell(canonicalMemo(pruned[0], cmemo, cbool))
 		b := respell(canonicalMemo(pruned[1], cmemo, cbool))
 		if !equalTerms(a, b) {
