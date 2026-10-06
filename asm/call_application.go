@@ -24,7 +24,9 @@ const (
 // globals, effectful or foreign calls, atomics, methods, and unknown
 // invocations. The ordinary expanded call summary remains the fallback.
 func (lo *oakLowering) callApplicationArguments(callee *ast.FunctionStatement) ([]*term, bool) {
-	if !lo.finiteCallApplication(callee, map[string]bool{}) {
+	// Witness runs must execute the callee: an application's evidence
+	// interpretation is not the source function's result.
+	if lo.concrete != nil || lo.expandCallApplications || !lo.finiteCallApplication(callee, map[string]bool{}) {
 		return nil, false
 	}
 	var args []*term

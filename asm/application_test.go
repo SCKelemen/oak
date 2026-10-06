@@ -182,3 +182,52 @@ func TestApplicationEvidenceCannotRefuteTheorem(t *testing.T) {
 		})
 	}
 }
+
+func TestApplicationEvidenceCannotRefuteNativeEquality(t *testing.T) {
+	sig, err := parseSignature("caller: (x: u8) -> u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := applyTerm("call:callee:result", 8, paramTerm("x", 8))
+	other := constTerm(app.eval(map[string]uint64{"x": 0})^1, 8)
+	fn := &Function{Name: "caller"}
+	for _, pair := range [][2]*term{{app, other}, {other, app}} {
+		verdict := decideEqual(fn, newLowering(sig), pair[0], pair[1], 8, "")
+		if verdict.Kind != VerdictTrusted {
+			t.Fatalf("abstract call disagreement = %s: %s; want trusted", verdict.Kind, verdict.Message)
+		}
+	}
+	lo := newLowering(sig)
+	lo.machineTrap = cmpTerm("ne", app, constTerm(app.eval(map[string]uint64{"x": 0}), 8))
+	if verdict := decideEqual(fn, lo, constTerm(0, 8), constTerm(1, 8), 8, ""); verdict.Kind != VerdictTrusted {
+		t.Fatalf("application-dependent domain = %s: %s; want trusted", verdict.Kind, verdict.Message)
+	}
+	verdict := decideEqual(fn, newLowering(sig), app, app, 8, "")
+	if verdict.Kind != VerdictProven {
+		t.Fatalf("identical applications = %s; want proven", verdict.Kind)
+	}
+	verdict = decideEqual(fn, newLowering(sig), paramTerm("x", 8), constTerm(1, 8), 8, "")
+	if verdict.Kind != VerdictMismatch {
+		t.Fatalf("concrete disagreement = %s; want mismatch", verdict.Kind)
+	}
+}
+
+func TestApplicationNativeBitCountermodelsAreUndecided(t *testing.T) {
+	app := applyTerm("call:callee:result", 8, paramTerm("x", 8))
+	for _, test := range []struct {
+		name                string
+		left, right, domain *term
+	}{
+		{"left", app, constTerm(0, 8), nil},
+		{"right", constTerm(0, 8), app, nil},
+		{"domain", constTerm(0, 8), constTerm(1, 8), cmpTerm("eq", app, constTerm(0, 8))},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bl := newBlaster([]string{"x"}, map[string]int{"x": 8})
+			verdict, undecided := blastEqual(bl, &Function{Name: "caller"}, []string{"x"}, test.left, test.right, test.domain, 8, "")
+			if !undecided || verdict.Kind == VerdictMismatch {
+				t.Fatalf("abstract countermodel = %#v, undecided=%v", verdict, undecided)
+			}
+		})
+	}
+}

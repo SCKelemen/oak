@@ -5465,6 +5465,8 @@ var oakComparisons = map[string][2]string{
 // signedness (i8/i16/i32/i64 compare signed, everything else unsigned),
 // and the span/view parameters with their element widths.
 type oakLowering struct {
+	// expandCallApplications recovers body-level proofs after machine inlining.
+	expandCallApplications bool
 	// returnSlot names the local the body builds in the result area
 	// (ReturnSlotLocal); its large array fields are span memories, as
 	// are those of the frame locals in spanFieldLocals (the backend's
@@ -10640,6 +10642,10 @@ func verifyChunkJoining(fn *Function, sig *ast.FunctionStatement, oakBody ast.Ex
 
 // verifyExecution decides one execution of the body against the Oak body.
 func verifyExecution(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int, asmTerm *term, exec *pathExecutor, reason string, ok bool) Verdict {
+	return verifyExecutionWithApplications(fn, sig, oakBody, chunk, asmTerm, exec, reason, ok, false)
+}
+
+func verifyExecutionWithApplications(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int, asmTerm *term, exec *pathExecutor, reason string, ok, expandCalls bool) Verdict {
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
@@ -10647,6 +10653,7 @@ func verifyExecution(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (every path traps) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 	}
 	lowering := prepareLowering(fn, sig, nil)
+	lowering.expandCallApplications = expandCalls
 	lowering.resultChunk = chunk
 	lowering.machineTrap = exec.trap
 	for _, event := range exec.loops {
@@ -10725,6 +10732,12 @@ func verifyExecution(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 		for k, more := range exec.moreResults {
 			asmTerms = append(asmTerms, maskResult(fn, sig, more, k+1))
 		}
+	}
+	if !expandCalls && !theoremHasGeneralApplication(nil, asmTerms) && theoremHasGeneralApplication(nil, oakTerms) {
+		// The backend may inline a call which the source lowering abstracts.
+		// Rebuild the source from its body to recover that equality; retain
+		// compact applications when both sides still use call summaries.
+		return verifyExecutionWithApplications(fn, sig, oakBody, chunk, asmTerm, exec, reason, ok, true)
 	}
 	if name := typeText(sig.ReturnType); name == "f32" || name == "f64" {
 		// A float result is decided up to its NaN payload (floatCanonicalNaN).
@@ -12699,6 +12712,7 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	// inside the domain and most bodies prove without it (wrapping both
 	// terms in the domain cost the diagrams a quarter of the proofs).
 	domain := lowering.domainCondition()
+	abstractCalls := theoremHasGeneralApplication(asmTerm, []*term{oakTerm, domain})
 
 	// The unknowns are every parameter either side mentions: scalars, span
 	// lengths, span elements, and span bases — at the width each is
@@ -12729,6 +12743,11 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	// refutation, the decision below is the proof.
 	evaluator := newTermEvaluator(asmTerm, oakTerm)
 	inputs := witnessInputs(names, params)
+	if abstractCalls {
+		// Application values are arbitrary interpretations, not executable
+		// call results. They provide neither refutations nor witness evidence.
+		inputs = nil
+	}
 	if visits := len(evaluator.terms) * len(inputs); visits > witnessVisitBudget {
 		stride := (visits + witnessVisitBudget - 1) / witnessVisitBudget
 		thinned := inputs[:0:0]
@@ -12828,6 +12847,9 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 				return a.verdict
 			}
 		}
+	}
+	if abstractCalls {
+		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (abstract call applications remain undecided) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 	}
 	return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
 }
@@ -12939,6 +12961,11 @@ func blastEqual(bl *blaster, fn *Function, names []string, asmTerm, oakTerm, dom
 		}
 		if differs == bddFalse {
 			continue // equal under every memory, though not node for node
+		}
+		if theoremHasGeneralApplication(asmTerm, []*term{oakTerm, domain}) {
+			// A model of an abstract call need not be realizable by its body.
+			// Universal equalities still prove above; countermodels cannot refute.
+			return Verdict{}, true
 		}
 		env := bl.counterexampleOf(differs)
 		if asmTerm.eval(env) == oakTerm.eval(env) && (hasUninterpreted(asmTerm) || hasUninterpreted(oakTerm)) {

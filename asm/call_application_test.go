@@ -34,9 +34,21 @@ func TestFiniteCallApplicationDoesNotImportCalleeLoops(t *testing.T) {
 	if result == nil || exec == nil || len(exec.loops) != 0 {
 		t.Fatalf("call application imported %d callee loops", len(exec.loops))
 	}
+	// Concrete execution must expand the same call on both sides, so the
+	// witness is the actual sum rather than an arbitrary application value.
+	env := map[string]uint64{"n": 4}
+	concreteResult, _, reason, ok := executeBodyChunk(fn, sig, env, 0, 0)
+	if !ok || theoremHasGeneralApplication(concreteResult, nil) || concreteResult.eval(env) != 6 {
+		t.Fatalf("concrete machine call: result=%v, ok=%v, reason=%s", concreteResult, ok, reason)
+	}
 	spec, err := parseSignatureWithBody(decl + " = sum_to(n)")
 	if err != nil {
 		t.Fatal(err)
+	}
+	lo := prepareLowering(fn, sig, env)
+	concreteOak, reason, ok := lo.lower(spec.Body, 32)
+	if !ok || theoremHasGeneralApplication(concreteOak, nil) || concreteOak.eval(env) != 6 {
+		t.Fatalf("concrete Oak call: result=%v, ok=%v, reason=%s", concreteOak, ok, reason)
 	}
 	verdict := Verify(fn, sig, spec.Body)
 	if verdict.Kind != VerdictProven || !strings.Contains(verdict.Message, "sum_to") {
@@ -112,6 +124,20 @@ func TestWideStraightLineCallUsesApplication(t *testing.T) {
 	}
 	if result.kind != termApply || len(result.args) != 16 {
 		t.Fatalf("wide straight-line call term = %#v", result)
+	}
+
+	// If the machine inlines the body incorrectly, expanding the source
+	// application must still expose the genuine counterexample.
+	decl := "caller: (" + strings.Join(callerParams, ", ") + ") -> u32"
+	unit, errs := ParseUnit("wide_call.oakasm", decl+" = {\n bind w0 = x0\n add w0, w0, #1\n ret\n}\n")
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	fn := unit.Functions[0]
+	fn.Callees = map[string]*ast.FunctionStatement{"wide": callee}
+	verdict := Verify(fn, caller, caller.Body)
+	if verdict.Kind != VerdictMismatch {
+		t.Fatalf("incorrectly inlined call = %s: %s; want mismatch", verdict.Kind, verdict.Message)
 	}
 }
 
