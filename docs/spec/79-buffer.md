@@ -1,8 +1,7 @@
 # Contiguous byte buffers and builders
 
 Status: normative. The qualified allocation-free package and scalar reference
-implementation are stabilizing. Borrow-returning observation APIs remain future
-work.
+implementation, including region-indexed borrowed observations, are stabilizing.
 
 ## 1. Scope
 
@@ -23,6 +22,7 @@ pub Error: type = Full | InsufficientData
 
 pub live_len: (cursor: [*]Cursor, capacity: u32): u32
 pub tail_space: (cursor: [*]Cursor, capacity: u32): u32
+pub peek[R]: (cursor: [*]Cursor, storage: View[u8, R]): View[u8, R]
 pub append: (cursor: [*]Cursor, storage: [*]u8, src: []u8): Result[u32, Error]
 pub peek_into: (cursor: [*]Cursor, storage: []u8, dst: [*]u8): Result[u32, Error]
 pub consume: (cursor: [*]Cursor, capacity: u32, count: u32): Result[u32, Error]
@@ -42,6 +42,28 @@ uses subtraction only after establishing the ordering. Live bytes occupy
 `append` copies the whole source at `end` and advances `end`, or returns
 `Full` with cursor and storage unchanged. It does not compact implicitly;
 `tail_space` is contiguous tail capacity, not total reclaimable capacity.
+
+`peek` returns a read-only view of the complete live interval in O(1), without
+copying, allocating, or consuming. It validates the cursor before slicing; an
+empty interval, including `[capacity, capacity)`, is valid.
+The result carries the storage region. Writes, append, and compaction through
+that storage are forbidden while the view lives. Pass a read-only storage view;
+an existing mutable span must leave scope before acquiring that view.
+
+The view captures the interval at the call. It does not borrow the cursor, so
+logical `consume` or `reset` may change the cursor while the observation remains
+live. Those operations cannot erase or reuse the observed bytes: storage writes
+still require the view's scope to end. Keep the cursor and storage paired; this
+API does not establish that pairing through an owning wrapper.
+
+```oak
+true ? {
+  live: []u8 = buffer.peek(cursor, view(&data))
+  // Read live here. No payload bytes are copied.
+}
+// The observation has ended; storage can be compacted or appended to.
+_ = buffer.compact(cursor, span(&data))
+```
 
 `peek_into` is exact: it fills the complete destination without consuming, or
 returns `InsufficientData` without writing. `read_into` performs that exact copy
@@ -84,7 +106,8 @@ than pretending the whole construction is transactional.
 ## 4. Storage, portability, and concurrency
 
 The caller initializes storage and retains ownership. The package retains no
-borrow after return. Mutable storage calls require exclusive access under Oak's
+borrow internally. `peek` returns a caller-tracked storage borrow.
+Mutable storage calls require exclusive access under Oak's
 ordinary borrowing rules; this is a sequential queue, not an atomic ring.
 Copying a cursor does not create independent ownership of its backing bytes.
 
@@ -108,10 +131,15 @@ atomicity, and the lack of implicit compaction/allocation.
   and held by the extraction drift test.
 - **Proved:** `BufferLaws.lean` proves live/tail arithmetic, atomic full append,
   atomic short peek/consume, canonical reset, sticky builder fixed points, and
-  both `finish` outcomes for arbitrary valid inputs.
+  both `finish` outcomes for arbitrary valid inputs. `peek_valid` proves the
+  observed contents and cursor preservation on the extraction; `peek_reversed`
+  and `peek_past_end` prove invalid-interval rejection. These content theorems
+  do not establish runtime aliasing, lifetime safety, or O(1) execution.
 - **Refined:** not yet. Bulk-copy lowering and extraction-to-backend
   correspondence remain open.
 
-Borrow-returning live views await the region-indexed return surface. A typed
-elevation that owns fixed inline storage may be added when it removes repeated
-pairing obligations without introducing aggregate-copy surprises.
+Borrowed views have compiled/interpreted observation tests and compile-time
+rejections for writes, append, compaction, and escaping a local owner. Their region
+safety is enforced by the borrow checker; no end-to-end refinement claim is made.
+A typed elevation that owns fixed inline storage may be added when it removes
+repeated pairing obligations without introducing aggregate-copy surprises.

@@ -319,7 +319,7 @@ var (
 	bitsetFlatName    = regexp.MustCompile(`\b(Error|storage_bytes|contains|set|count_ones)\b`)
 	endianFlatName    = regexp.MustCompile(`\b(Error|read_u16_le|write_u16_le|read_u16_be|write_u16_be|read_u32_le|write_u32_le|read_u32_be|write_u32_be|read_u64_le|write_u64_le|read_u64_be|write_u64_be)\b`)
 	bufferFlatType    = regexp.MustCompile(`\b(Cursor|Error|Builder)\b`)
-	bufferFlatFunc    = regexp.MustCompile(`\b(check|live_len|tail_space|append|peek_into|consume|read_into|compact|reset|finish)\b`)
+	bufferFlatFunc    = regexp.MustCompile(`\b(check|live_len|tail_space|append|peek|peek_into|consume|read_into|compact|reset|finish)\b`)
 	arrayListFlatType = regexp.MustCompile(`\b(Cursor|Error)\b`)
 	arrayListFlatFunc = regexp.MustCompile(`\b(check|push|get|set|pop|insert|remove|swap_remove|clear)\b`)
 )

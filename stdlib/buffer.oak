@@ -1,5 +1,5 @@
 // Contiguous byte queues and value-state builders over caller-owned storage.
-// No operation allocates, retains a borrow, or compacts implicitly.
+// No operation allocates, stores a borrow, or compacts implicitly.
 package buffer
 
 // Live bytes occupy [start, end). Keep the cursor paired with its storage.
@@ -24,6 +24,14 @@ pub live_len: (cursor: [*]Cursor, capacity: u32): u32 {
 pub tail_space: (cursor: [*]Cursor, capacity: u32): u32 {
   check(cursor, capacity)
   capacity - cursor[0].end
+}
+
+// Observe the live interval in O(1), without consuming or copying bytes.
+// The returned view borrows storage, not the cursor: it keeps this interval
+// even if the caller subsequently changes the cursor's logical position.
+pub peek[R]: (cursor: [*]Cursor, storage: View[u8, R]): View[u8, R] {
+  check(cursor, len(storage))
+  storage[cursor[0].start:cursor[0].end]
 }
 
 // Append requires contiguous tail space. Reclaim a consumed prefix explicitly
