@@ -1,0 +1,131 @@
+// Core Wasm scalar-v1 assembler bootstrap. No allocation or external assembler.
+// Return zero on refusal; otherwise the exact number of bytes written. Every
+// public writer preflights the complete footprint and preserves dst on refusal.
+
+WasmInstruction: type = struct { opcode: u32, immediate: i64 }
+
+wasm_signed_next: (value: i64): i64 {
+  q: i64 = value / i64(128)
+  value < i64(0) && value % i64(128) != i64(0) ? q - i64(1) | q
+}
+
+wasm_uleb_size: (value: u64): u32 {
+  v: u64 = value
+  size: u32 = 1
+  while v >= u64(128) { v = v >> u64(7); size = size + u32(1) }
+  size
+}
+
+wasm_sleb_size: (value: i64): u32 {
+  v: i64 = value
+  size: u32 = 1
+  while v < i64(-64) || v >= i64(64) {
+    v = wasm_signed_next(v)
+    size = size + u32(1)
+  }
+  size
+}
+
+wasm_write_uleb: (dst: [*]u8, offset: u32, value: u64): u32 {
+  size: u32 = wasm_uleb_size(value)
+  result: u32 = 0
+  offset <= len(dst) && size <= len(dst) - offset ? {
+    v: u64 = value
+    i: u32 = 0
+    while i < size {
+      b: u32 = u32_trunc_u64(v & u64(127))
+      i + u32(1) < size ? { b = b | u32(128) }
+      dst[offset + i] = u8_trunc_u32(b)
+      v = v >> u64(7)
+      i = i + u32(1)
+    }
+    result = size
+  }
+  result
+}
+
+wasm_write_sleb: (dst: [*]u8, offset: u32, value: i64): u32 {
+  size: u32 = wasm_sleb_size(value)
+  result: u32 = 0
+  offset <= len(dst) && size <= len(dst) - offset ? {
+    v: i64 = value
+    i: u32 = 0
+    while i < size {
+      b: u32 = u32_trunc_u64(u64_bits_i64(v) & u64(127))
+      i + u32(1) < size ? { b = b | u32(128) }
+      dst[offset + i] = u8_trunc_u32(b)
+      v = wasm_signed_next(v)
+      i = i + u32(1)
+    }
+    result = size
+  }
+  result
+}
+
+// 0 invalid; 1 plain; 2 block type; 3 u32 index; 4 s32; 5 s64.
+wasm_instruction_kind: (op: u32): u32 {
+  result: u32 = 0
+  op == u32(2) || op == u32(3) || op == u32(4) ? { result = u32(2) } | {
+    op == u32(12) || op == u32(13) || op == u32(16) || op == u32(32) || op == u32(33) || op == u32(34) ? { result = u32(3) } | {
+      op == u32(65) ? { result = u32(4) } | {
+        op == u32(66) ? { result = u32(5) } | {
+          op == u32(0) || op == u32(1) || op == u32(5) || op == u32(11) || op == u32(15) || op == u32(26) ||
+              (op >= u32(69) && op <= u32(79)) || (op >= u32(81) && op <= u32(90)) ||
+              (op >= u32(106) && op <= u32(115)) || (op >= u32(124) && op <= u32(133)) ? { result = u32(1) }
+        }
+      }
+    }
+  }
+  result
+}
+
+wasm_instruction_size: (instruction: WasmInstruction): u32 {
+  kind: u32 = wasm_instruction_kind(instruction.opcode)
+  v: i64 = instruction.immediate
+  size: u32 = 0
+  kind == u32(1) && v == i64(0) ? { size = u32(1) }
+  kind == u32(2) && (v == i64(64) || v == i64(127) || v == i64(126)) ? { size = u32(2) }
+  kind == u32(3) && v >= i64(0) && v <= i64(4294967295) ? { size = u32(1) + wasm_uleb_size(u64_bits_i64(v)) }
+  (kind == u32(4) && v >= i64(-2147483648) && v <= i64(2147483647)) || kind == u32(5) ? {
+    size = u32(1) + wasm_sleb_size(v)
+  }
+  size
+}
+
+wasm_write_instruction: (dst: [*]u8, offset: u32, instruction: WasmInstruction): u32 {
+  size: u32 = wasm_instruction_size(instruction)
+  result: u32 = 0
+  size != u32(0) && offset <= len(dst) && size <= len(dst) - offset ? {
+    kind: u32 = wasm_instruction_kind(instruction.opcode)
+    dst[offset] = u8_trunc_u32(instruction.opcode)
+    kind == u32(2) ? { dst[offset + u32(1)] = u8_trunc_u32(u32_trunc_u64(u64_bits_i64(instruction.immediate))) }
+    kind == u32(3) ? { wasm_write_uleb(dst, offset + u32(1), u64_bits_i64(instruction.immediate)) }
+    kind == u32(4) || kind == u32(5) ? { wasm_write_sleb(dst, offset + u32(1), instruction.immediate) }
+    result = size
+  }
+  result
+}
+
+// Validate the entire sequence before writing, including a late bad instruction.
+// The immutable plan must be disjoint from dst. Empty plans return zero bytes.
+WasmAssembly: type = struct { status: u32, size: u32 }
+wasm_assemble: (dst: [*]u8, offset: u32, plan: []WasmInstruction): WasmAssembly {
+  total: u32 = 0
+  i: u32 = 0
+  ok: Bool = offset <= len(dst)
+  while i < len(plan) && ok {
+    size: u32 = wasm_instruction_size(plan[i])
+    size != u32(0) && size <= len(dst) - offset - total ? { total = total + size } | { ok = false }
+    i = i + u32(1)
+  }
+  ok ? {
+    i = u32(0)
+    pos: u32 = offset
+    while i < len(plan) {
+      size: u32 = wasm_write_instruction(dst, pos, plan[i])
+      pos = pos + size
+      i = i + u32(1)
+    }
+    WasmAssembly { status: u32(0), size: total }
+  } | { WasmAssembly { status: u32(1), size: u32(0) } }
+}

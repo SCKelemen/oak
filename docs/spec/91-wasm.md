@@ -378,10 +378,13 @@ cross-checks the export names and carrier signatures against the manifest.
 Malformed bytes are also checked by the runtime. These are implementations and
 tests, not universal proofs or an independently **verified** Oak decoder.
 
-The first formal slice is the LEB prefix model described below, not Wasm
-execution or source-to-output refinement. No authoritative Wasm certificate
-checker or verified browser runtime is claimed. `Oak.Target` currently models the
-existing C/native targets only; its theorems do not cover `core/wasm32` yet.
+Formal coverage includes LEB grammar/encoding laws and complete scalar-profile
+instruction/sequence encode-decode model theorems. The
+[assembler proof contract](91-wasm-assembler-proofs.md) describes the production
+Go decoder/encoder, bootstrap Oak assembler, universal model claims and finite
+correspondence gates. `Oak.Target` includes Core Wasm registration, data-model
+metadata and C-driver refusal. Wasm execution, source-to-output refinement,
+authoritative certificates and a verified browser runtime remain open.
 
 ## 4. Independent byte-validation boundary
 

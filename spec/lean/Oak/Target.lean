@@ -7,8 +7,8 @@ static-linking default, the C data model), and the resolution of a C
 compiler driver from what a host has, in a fixed order. The theorems are
 the tooling's promises:
 
-* every supported target is LP64 — the one C data model the backend
-  assumes (`92-ffi.md` §2.4);
+* supported native targets use LP64 or ILP32; Core Wasm uses 32-bit
+  pointer metadata and never resolves through the C toolchain;
 * the lane of a target is a function of its architecture alone, so a unit
   applies to a target exactly when its lane matches (`94-assembler.md` §9);
 * resolution is total over the availability record: it yields a driver or
@@ -23,12 +23,12 @@ the tooling's promises:
 namespace Oak.Target
 
 inductive OS where
-  | linux | darwin | freestanding
+  | linux | darwin | freestanding | core
   deriving DecidableEq, Repr
 
 inductive Arch where
   | arm64 | amd64 | riscv64
-  | arm | riscv32 -- the 32-bit microcontroller architectures (Cortex-M, RV32)
+  | arm | riscv32 | wasm32 -- 32-bit microcontroller and Core Wasm architectures
   deriving DecidableEq, Repr
 
 structure Target where
@@ -36,15 +36,17 @@ structure Target where
   arch : Arch
   deriving DecidableEq, Repr
 
-/-- The 32-bit microcontroller architectures. -/
-def Arch.mcu : Arch → Bool
-  | .arm | .riscv32 => true
+/-- Architectures with 32-bit pointer/data-model metadata. -/
+def Arch.word32 : Arch → Bool
+  | .arm | .riscv32 | .wasm32 => true
   | _ => false
 
 /-- The closed set: Darwin has no RISC-V platform; the microcontroller
     architectures exist freestanding only. -/
 def supported (t : Target) : Bool :=
   match t.os, t.arch with
+  | .core, .wasm32 => true
+  | .core, _ | _, .wasm32 => false
   | .darwin, .riscv64 => false
   | .linux, .arm | .linux, .riscv32 | .darwin, .arm | .darwin, .riscv32 => false
   | _, _ => true
@@ -59,9 +61,9 @@ structure DataModel where
 def lp64 : DataModel := ⟨32, 64, 64⟩
 def ilp32 : DataModel := ⟨32, 32, 32⟩
 
-/-- `Target.DataModel` in Go: ILP32 for the microcontroller architectures,
-    LP64 otherwise — the two models `92-ffi.md` §2.4 admits. -/
-def dataModel (t : Target) : DataModel := if t.arch.mcu then ilp32 else lp64
+/-- `Target.DataModel` in Go: ILP32 for 32-bit architectures, LP64 otherwise.
+    For Core Wasm this is numeric/pointer metadata, not a C ABI promise. -/
+def dataModel (t : Target) : DataModel := if t.arch.word32 then ilp32 else lp64
 
 theorem dataModel_lp64_or_ilp32 (t : Target) : dataModel t = lp64 ∨ dataModel t = ilp32 := by
   unfold dataModel; split <;> simp
@@ -71,13 +73,13 @@ theorem dataModel_lp64_or_ilp32 (t : Target) : dataModel t = lp64 ∨ dataModel 
 theorem int_bits_32 (t : Target) : (dataModel t).intBits = 32 := by
   unfold dataModel; split <;> rfl
 
-/-- Pointers are the machine word: 32 bits exactly on the microcontrollers. -/
-theorem ptr_bits (t : Target) : (dataModel t).ptrBits = (if t.arch.mcu then 32 else 64) := by
+/-- Pointers are the machine word: 32 bits exactly on the 32-bit architectures. -/
+theorem ptr_bits (t : Target) : (dataModel t).ptrBits = (if t.arch.word32 then 32 else 64) := by
   unfold dataModel; split <;> simp_all [lp64, ilp32]
 
-theorem hosted_lp64 (t : Target) (h : supported t = true) (hos : t.os ≠ .freestanding) : dataModel t = lp64 := by
+theorem hosted_lp64 (t : Target) (h : supported t = true) (hos : t.os ≠ .freestanding) (hc : t.os ≠ .core) : dataModel t = lp64 := by
   obtain ⟨os, arch⟩ := t
-  cases os <;> cases arch <;> simp_all [supported, dataModel, Arch.mcu]
+  cases os <;> cases arch <;> simp_all [supported, dataModel, Arch.word32]
 
 /-- The assembler lane of an architecture (`Function.Arch` in Go): arm64,
     rv64, or none for amd64. -/
@@ -88,7 +90,7 @@ inductive Lane where
 def lane : Target → Option Lane
   | ⟨_, .arm64⟩ => some .arm64
   | ⟨_, .riscv64⟩ => some .rv64
-  | ⟨_, .amd64⟩ | ⟨_, .arm⟩ | ⟨_, .riscv32⟩ => none
+  | ⟨_, .amd64⟩ | ⟨_, .arm⟩ | ⟨_, .riscv32⟩ | ⟨_, .wasm32⟩ => none
 
 /-- The lane depends on the architecture alone. -/
 theorem lane_arch (t u : Target) (h : t.arch = u.arch) : lane t = lane u := by
@@ -114,10 +116,11 @@ theorem lanes_exclusive (t : Target) (l m : Lane) (hl : unitApplies l t = true) 
   exact Option.some.inj hm
 
 inductive Format where
-  | macho | elf
+  | macho | elf | wasm
   deriving DecidableEq, Repr
 
-def format (t : Target) : Format := if t.os = .darwin then .macho else .elf
+def format (t : Target) : Format :=
+  if t.os = .core then .wasm else if t.os = .darwin then .macho else .elf
 
 def staticLink (t : Target) : Bool := t.os == .linux
 def freestanding (t : Target) : Bool := t.os == .freestanding
@@ -141,14 +144,14 @@ theorem bare_riscv64_lp64 : rv64FloatABI ⟨.freestanding, .riscv64⟩ = .soft :
 def defaultCPU (t : Target) : Option String :=
   if t.os ≠ .freestanding then none
   else match t.arch with
-    | .riscv64 => some "generic_rv64"
-    | .riscv32 => some "generic_rv32"
+    | .riscv64 => some "generic_rv64+m"
+    | .riscv32 => some "generic_rv32+m"
     | .arm => some "cortex_m4"
     | _ => none
 
 /-- The default processor of a freestanding RISC-V target is soft-float,
     which is what the companion object declares for it. -/
-theorem defaultCPU_bare_rv64 : defaultCPU ⟨.freestanding, .riscv64⟩ = some "generic_rv64" ∧ rv64FloatABI ⟨.freestanding, .riscv64⟩ = .soft := ⟨rfl, rfl⟩
+theorem defaultCPU_bare_rv64 : defaultCPU ⟨.freestanding, .riscv64⟩ = some "generic_rv64+m" ∧ rv64FloatABI ⟨.freestanding, .riscv64⟩ = .soft := ⟨rfl, rfl⟩
 
 /-- Hosted targets take the toolchain's baseline. -/
 theorem defaultCPU_hosted (t : Target) (h : t.os ≠ .freestanding) : defaultCPU t = none := by
@@ -184,8 +187,8 @@ def finish (k : Kind) (t : Target) (isHost : Bool) : Driver :=
     clang (a hosted cross target needs a sysroot), a GNU cross compiler. -/
 def resolve (h : Host) (t : Target) : Option Driver :=
   let isHost := t == h.platform
-  if h.oakCC then some (finish .explicit t isHost)
-  else if !supported t then none
+  if !supported t || t.os == .core then none
+  else if h.oakCC then some (finish .explicit t isHost)
   else if isHost && h.hasCC then some (finish .host t isHost)
   else if h.hasZig then some (finish .zig t isHost)
   else if h.hasClang && (freestanding t || h.sysroot || isHost) then some (finish .clang t isHost)
@@ -201,18 +204,18 @@ theorem resolve_targets (h : Host) (t : Target) (d : Driver) (hd : resolve h t =
     | (cases hd; rfl)
     | (simp at hd)
 
-/-- The explicit compiler wins. -/
-theorem resolve_explicit (h : Host) (t : Target) (hcc : h.oakCC = true) :
+/-- The explicit compiler wins for an admitted C target. -/
+theorem resolve_explicit (h : Host) (t : Target) (hcc : h.oakCC = true) (hs : supported t = true) (hc : t.os ≠ .core) :
     resolve h t = some (finish .explicit t (t == h.platform)) := by
-  unfold resolve; simp [hcc]
+  unfold resolve; simp [hcc, hs, hc]
 
 /-- The host target always resolves when cc is present. -/
-theorem resolve_host (h : Host) (hcc : h.hasCC = true) (hs : supported h.platform = true) :
+theorem resolve_host (h : Host) (hcc : h.hasCC = true) (hs : supported h.platform = true) (hc : h.platform.os ≠ .core) :
     ∃ d, resolve h h.platform = some d := by
   unfold resolve
   by_cases ho : h.oakCC
-  · exact ⟨finish .explicit h.platform (h.platform == h.platform), by simp [ho]⟩
-  · exact ⟨finish .host h.platform (h.platform == h.platform), by simp [ho, hcc, hs]⟩
+  · exact ⟨finish .explicit h.platform (h.platform == h.platform), by simp [ho, hs, hc]⟩
+  · exact ⟨finish .host h.platform (h.platform == h.platform), by simp [ho, hcc, hs, hc]⟩
 
 /-- A cross build for Linux links statically; a freestanding build is an
     object and never static. -/
@@ -222,16 +225,16 @@ theorem finish_freestanding_object (k : Kind) (a : Arch) (isHost : Bool) :
     (finish k ⟨.freestanding, a⟩ isHost).object = true ∧ (finish k ⟨.freestanding, a⟩ isHost).static = false := by
   simp [finish, staticLink, freestanding]
 
-/-- With zig present, every supported target resolves from any host: the
+/-- With zig present, every supported C target resolves from any host: the
     "cross build from everywhere" promise. -/
-theorem resolve_zig (h : Host) (t : Target) (hz : h.hasZig = true) (hs : supported t = true) :
+theorem resolve_zig (h : Host) (t : Target) (hz : h.hasZig = true) (hs : supported t = true) (hc : t.os ≠ .core) :
     ∃ d, resolve h t = some d := by
   unfold resolve
   by_cases ho : h.oakCC
-  · exact ⟨finish .explicit t (t == h.platform), by simp [ho]⟩
+  · exact ⟨finish .explicit t (t == h.platform), by simp [ho, hs, hc]⟩
   · by_cases hh : ((t == h.platform) && h.hasCC) = true
-    · exact ⟨finish .host t (t == h.platform), by simp [ho, hs, hh]⟩
-    · exact ⟨finish .zig t (t == h.platform), by simp [ho, hs, hh, hz]⟩
+    · exact ⟨finish .host t (t == h.platform), by simp [ho, hs, hh, hc]⟩
+    · exact ⟨finish .zig t (t == h.platform), by simp [ho, hs, hh, hz, hc]⟩
 
 /-! ## Running a cross build (`oak run -target`, `toolchain.ResolveEmulator`) -/
 
@@ -274,5 +277,24 @@ theorem runWith_freestanding_none (p : Target) (r : Runners) (a : Arch)
 theorem runWith_explicit (p : Target) (r : Runners) (t : Target) (ht : t ≠ p) (he : r.explicit = true) :
     runWith p r t = some .explicit := by
   simp [runWith, ht, he]
+
+/-- Wasm cannot inherit a native lane or external C compiler, even via OAK_CC. -/
+theorem core_wasm_profile :
+    supported ⟨.core, .wasm32⟩ = true ∧
+    dataModel ⟨.core, .wasm32⟩ = ilp32 ∧
+    lane ⟨.core, .wasm32⟩ = none ∧
+    format ⟨.core, .wasm32⟩ = .wasm := by decide
+
+theorem wasm_only_core (os : OS) : supported ⟨os, .wasm32⟩ = true ↔ os = .core := by
+  cases os <;> decide
+
+theorem core_only_wasm (a : Arch) : supported ⟨.core, a⟩ = true ↔ a = .wasm32 := by
+  cases a <;> decide
+
+theorem resolve_wasm_none (h : Host) : resolve h ⟨.core, .wasm32⟩ = none := by
+  simp [resolve]
+
+theorem resolve_unsupported_none (h : Host) (t : Target) (hs : supported t = false) :
+    resolve h t = none := by simp [resolve, hs]
 
 end Oak.Target
