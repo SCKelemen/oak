@@ -38,8 +38,8 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - name: Check implementation laws
         working-directory: spec/lean
-        run: lake build Oak.Stdlib.TimeCalendarLaws
-      - name: Check calendar correspondence in compiled Oak, interpreted Oak, and Lean
+        run: lake build Oak.Stdlib.TimeCodecLaws
+      - name: Check calendar and codec correspondence in compiled Oak, interpreted Oak, and Lean
         env:
           OAK_REQUIRE_TIME_LEAN: '1'
-        run: go test ./compiler -run '^TestLeanTimeCalendarFaithful$' -count=1 -timeout=12m -v
+        run: go test ./compiler -run '^Test(LeanTimeCalendarFaithful|LeanTimeCodecFaithful)$' -count=1 -timeout=12m -v
