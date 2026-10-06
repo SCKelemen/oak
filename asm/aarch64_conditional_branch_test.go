@@ -82,6 +82,11 @@ func TestAArch64ConditionalBranchLeanRows(t *testing.T) {
 
 func checkAArch64Cond19Lean(t *testing.T, examples []string) {
 	t.Helper()
+	checkAArch64BranchLean(t, "AArch64ConditionalBranch", examples)
+}
+
+func checkAArch64BranchLean(t *testing.T, module string, examples []string) {
+	t.Helper()
 	lake, err := exec.LookPath("lake")
 	if err != nil {
 		if os.Getenv("OAK_REQUIRE_ARM64_COND19_LEAN") != "" {
@@ -89,7 +94,7 @@ func checkAArch64Cond19Lean(t *testing.T, examples []string) {
 		}
 		t.Skip("lake not on PATH; formal workflow requires this oracle")
 	}
-	source := "import Oak.AArch64ConditionalBranch\nopen Oak.AArch64ConditionalBranch\n" + strings.Join(examples, "\n") + "\n"
+	source := "import Oak." + module + "\nopen Oak." + module + "\n" + strings.Join(examples, "\n") + "\n"
 	path := filepath.Join(t.TempDir(), "AArch64ConditionalProductionPins.lean")
 	if err := os.WriteFile(path, []byte(source), 0600); err != nil {
 		t.Fatal(err)

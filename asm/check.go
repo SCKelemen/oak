@@ -1930,6 +1930,10 @@ func (c *checker) instruction(instr Instruction) bool {
 	case "b":
 		return c.branch(instr, true)
 	case "b.":
+		// A64 AL and NV both branch unconditionally without consuming NZCV.
+		if instr.Cond == "al" || instr.Cond == "nv" {
+			return c.branch(instr, true)
+		}
 		if !c.flagsValid {
 			c.errorf(instr.Line, "b.%s consumes flags no dominating instruction produced (cmp/adds/subs must precede it with no intervening label or call)", instr.Cond)
 		}

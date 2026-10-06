@@ -1116,6 +1116,8 @@ func conditionHolds(code string, left, right uint64, width int) bool {
 // conditionFromFlags is the ARM condition table.
 func conditionFromFlags(code string, n, z, c, v bool) bool {
 	switch code {
+	case "al", "nv":
+		return true // A64's 1111 condition is not inverted by ConditionHolds.
 	case "eq":
 		return z
 	case "ne":
@@ -5404,6 +5406,9 @@ func branchCondition(instr Instruction, state *symbolicState) (*term, string, bo
 	}
 	switch instr.Mnemonic {
 	case "b.":
+		if instr.Cond == "al" || instr.Cond == "nv" {
+			return constTerm(1, 1), "", true
+		}
 		if state.flags == nil || state.flags.unknown {
 			return nil, "b.cond reading flags no cmp/subs/adds produced", false
 		}

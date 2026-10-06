@@ -66,7 +66,7 @@ const (
 var conditionCodes = map[string]bool{
 	"eq": true, "ne": true, "cs": true, "hs": true, "cc": true, "lo": true,
 	"mi": true, "pl": true, "vs": true, "vc": true, "hi": true, "ls": true,
-	"ge": true, "lt": true, "gt": true, "le": true, "al": true,
+	"ge": true, "lt": true, "gt": true, "le": true, "al": true, "nv": true,
 	// The SVE spellings of the flags a predicate-generating instruction
 	// sets (whilelt, the compares): none/any (Z), first/nfrst (N),
 	// pmore/plast (C and Z), tcont/tstop (N and V), nlast/last (C).
