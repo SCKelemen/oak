@@ -213,6 +213,7 @@ import Oak.Rings
 import Oak.BinaryCodec
 import Oak.BddComplement
 import Oak.RupCheck
+import Oak.LRATBounds
 import Oak.SolverLaws
 import Oak.Tseitin
 import Oak.TseitinCNF
