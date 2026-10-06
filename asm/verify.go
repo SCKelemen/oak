@@ -1116,21 +1116,28 @@ func flagsCondition(code string, flags *flagsFact) *term {
 // The constructors fold constants: a term over constants is the constant
 // its total evaluation yields. Folding is what lets a counted loop decide
 // its own exit (the counter's comparison becomes a constant) on both sides.
-func cmpTerm(code string, left, right *term) *term {
-	// Unsigned zero is the least value at every width. Fold these before
-	// either operand is traversed: a loop bound can be a large conditional
-	// memory expression, while `0 <= bound` is still unconditionally true.
+func unsignedZeroComparison(code string, left, right *term) (uint64, bool) {
 	// Prefixed conditions describe flags from an operation other than the
 	// ordinary subtraction comparison and do not have these order laws.
 	if kind, bare := splitFlagsKind(code); kind == "" {
 		switch {
 		case left.kind == termConst && left.value == 0 && bare == "ls",
 			right.kind == termConst && right.value == 0 && (bare == "hs" || bare == "cs"):
-			return constTerm(1, left.width)
+			return 1, true
 		case left.kind == termConst && left.value == 0 && bare == "hi",
 			right.kind == termConst && right.value == 0 && (bare == "lo" || bare == "cc"):
-			return constTerm(0, left.width)
+			return 0, true
 		}
+	}
+	return 0, false
+}
+
+func cmpTerm(code string, left, right *term) *term {
+	// Unsigned zero is the least value at every width. Fold these before
+	// either operand is traversed: a loop bound can be a large conditional
+	// memory expression, while `0 <= bound` is still unconditionally true.
+	if value, ok := unsignedZeroComparison(code, left, right); ok {
+		return constTerm(value, left.width)
 	}
 	if left.kind == termConst && right.kind == termConst {
 		// The comparison happens at the operands' width (evalUncached).
@@ -12574,12 +12581,20 @@ func canonicalMemo(t *term, memo *canonicalTable, boolean map[*term]bool) *term 
 				// two u32 parameters, against the Oak body's `start > n`).
 				left, right = narrow.left, narrow.right
 			}
-			if distributed, ok := compareSmallConditional(t.op, left, right); ok {
-				out = canonicalMemo(adaptWidth(distributed, t.width), memo, boolean)
-			} else if distributed, ok := compareSmallConditional(t.op, right, left); ok {
-				// Equality and inequality are symmetric; keep the conditional
-				// in the position the helper expects.
-				out = canonicalMemo(adaptWidth(distributed, t.width), memo, boolean)
+			if value, ok := unsignedZeroComparison(t.op, left, right); ok {
+				// The literal zero may only appear after canonicalizing its
+				// operand (`x & 0`, a pruned conditional), so repeat the
+				// constructor's unsigned-order fold here before reading the
+				// other, potentially very large operand.
+				out = constTerm(value, t.width)
+			} else {
+				if distributed, ok := compareSmallConditional(t.op, left, right); ok {
+					out = canonicalMemo(adaptWidth(distributed, t.width), memo, boolean)
+				} else if distributed, ok := compareSmallConditional(t.op, right, left); ok {
+					// Equality and inequality are symmetric; keep the conditional
+					// in the position the helper expects.
+					out = canonicalMemo(adaptWidth(distributed, t.width), memo, boolean)
+				}
 			}
 			if out != nil {
 				break

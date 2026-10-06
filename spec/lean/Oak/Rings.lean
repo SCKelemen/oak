@@ -88,6 +88,39 @@ theorem pop_inv (s : Spsc α) (hinv : s.Inv) : s.pop.Inv := by
   simp only [Spsc.pop] at hp hlt
   exact hinv p (by omega) hlt
 
+
+/-- Publishing a finite batch is repeated single-item publication at the
+    abstract level. This is the semantic reference for one release-store
+    implementation: the machine may publish the final tail once, but the
+    logical FIFO state is the fold of the committed prefix. -/
+def Spsc.pushBatch (s : Spsc α) (xs : List α) : Spsc α :=
+  xs.foldl Spsc.push s
+
+theorem pushBatch_nil (s : Spsc α) : s.pushBatch [] = s := rfl
+
+theorem pushBatch_cons (s : Spsc α) (x : α) (xs : List α) :
+    s.pushBatch (x :: xs) = (s.push x).pushBatch xs := rfl
+
+/-- Consuming n visible items is n abstract pops. -/
+def Spsc.consumeN (s : Spsc α) (n : Nat) : Spsc α :=
+  { s with head := s.head + n }
+
+theorem consumeN_count (s : Spsc α) (n : Nat) (hle : n ≤ s.tail - s.head) :
+    (s.consumeN n).tail - (s.consumeN n).head = (s.tail - s.head) - n := by
+  simp [Spsc.consumeN]
+  omega
+
+/-- A contiguous zero-copy run never exposes more than the logical queue and
+    never crosses the physical wrap point. -/
+def Spsc.runLen (s : Spsc α) : Nat :=
+  min (s.tail - s.head) (s.cap - (s.head % s.cap))
+
+theorem runLen_le_count (s : Spsc α) : s.runLen ≤ s.tail - s.head := by
+  simp [Spsc.runLen]
+
+theorem runLen_le_wrap_room (s : Spsc α) : s.runLen ≤ s.cap - (s.head % s.cap) := by
+  simp [Spsc.runLen]
+
 /-- A pop from a non-empty ring returns the item pushed at `head`: FIFO. -/
 theorem pop_returns_pushed (s : Spsc α) (hinv : s.Inv) (hnotempty : s.head < s.tail) :
     s.buf (s.head % s.cap) = s.pushed s.head :=

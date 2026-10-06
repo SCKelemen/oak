@@ -62,6 +62,36 @@ happens-before relation of chapter 66 (`Oak.Rings`, and
 The canonical consumers are the 1024cores queue family: the intrusive
 MPSC's atomic next links and the bounded MPMC's per-slot sequence cells.
 
+The SPSC package also exposes a **batched publication and zero-copy receive
+surface**. It does not change the ring's memory model; it changes how many
+payload operations one publication covers:
+
+- `spsc_reserve` opens a producer-private claim of up to the available
+  capacity. `spsc_put_run` fills a prefix of that claim without publishing it,
+  and `spsc_commit` advances `tail` once with release ordering. A failed
+  reservation or an abandoned suffix is invisible to the consumer.
+- `spsc_run` acquires `tail` and returns the first contiguous visible run as
+  a read-only region-indexed view of the caller's storage. It stops at the
+  physical wrap point, so a wrapped logical queue is observed as at most two
+  runs. No payload is copied.
+- `spsc_consume` advances `head` once with release ordering. It requires a
+  writable span of the same paired storage even though it does not modify
+  payload bytes: this makes the borrow checker prove that a view returned by
+  `spsc_run` has ended before slots are returned to the producer. The storage
+  pairing itself remains the caller's ring-object invariant.
+
+A batch therefore has one publication event for a sequence of slot writes. The
+same release/acquire happens-before proof applies pointwise to every payload in
+the committed prefix. Zero-copy receive does not weaken the reuse proof:
+consumer reads occur while the view is live, the view must end before
+`spsc_consume`, and the producer cannot reuse those slots until it acquires the
+released `head`.
+
+The batch API is still nonblocking and allocation-free. It does not turn SPSC
+into a multi-producer queue, and it does not change the progress contract of
+MPSC/MPMC: their compare-exchange retry loops remain lock-free rather than
+hard-realtime bounded.
+
 ## 2. Single-operation memory orders
 
 Oak defines `relaxed`, `acquire`, `release`, `acq-rel`, and `seq-cst`.

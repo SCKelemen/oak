@@ -1,6 +1,8 @@
 # Oak Feature and Verification Status
 
-This matrix is intentionally conservative. A historical document saying “complete” is not sufficient evidence for current implementation/proof status.\n\nThe feature names and S/I/T/M/P/R states are mechanically snapshotted by `compiler/status_inventory_test.go`. Adding/removing a row or changing a claimed verification state requires an explicit evidence review and contract update.
+This matrix is intentionally conservative. A historical document saying “complete” is not sufficient evidence for current implementation/proof status.
+
+The feature names and S/I/T/M/P/R states are mechanically snapshotted by `compiler/status_inventory_test.go`. Adding/removing a row or changing a claimed verification state requires an explicit evidence review and contract update.
 
 For platform-by-platform coverage, see [target maturity](../targets.md).
 The new [Core Wasm scalar profile](91-wasm.md) and browser prototype have an
