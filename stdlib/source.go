@@ -194,7 +194,12 @@ var mxSource string
 // (stdlib/README.md); its names (instant_add, weekday, ...) stay qualified.
 //
 //go:embed time.oak
-var timeSource string
+var timeBaseSource string
+
+//go:embed time_calendar.oak
+var timeCalendarSource string
+
+var timeSource = timeBaseSource + "\n" + timeCalendarSource
 
 // timesim is a library package only (import("timesim")): drives a simulated
 // TimeSource from the event queue, injects tape-drawn clock faults, and

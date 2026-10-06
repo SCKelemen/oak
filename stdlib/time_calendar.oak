@@ -1,0 +1,455 @@
+// Civil values and the ISO 8601 nanosecond profile. Composed into package time
+// by source.go. See docs/spec/114-temporal.md for grammar, errors, and laws.
+// These values do not read clocks, allocate, or assume a named time zone.
+
+pub Date: type = struct { year: i32, month: u8, day: u8 }
+pub Time: type = struct { hour: u8, minute: u8, second: u8, nanos: u32 }
+pub DateTime: type = struct { date: Date, time: Time }
+// Months and days are calendar units; the time component is an exact duration.
+// In particular, P1D and PT24H remain different values.
+pub Period: type = struct { months: i32, days: i32, time: Duration }
+pub MonthEnd: type = Reject | Clamp
+pub OffsetKind: type = UtcDesignator | Numeric | UnknownLocal
+pub OffsetDateTime: type = struct { datetime: DateTime, offset_minutes: i32, offset_kind: OffsetKind }
+pub WeekDate: type = struct { year: i32, week: u8, weekday: u8 }
+
+pub date_valid: (d: Date): Bool = d.year >= i32(0) && d.year <= i32(9999) && d.month >= u8(1) && d.month <= u8(12) && d.day >= u8(1) && d.day <= days_in_month(d.year, d.month)
+pub time_valid: (t: Time): Bool = t.hour < u8(24) && t.minute < u8(60) && t.second < u8(60) && t.nanos < u32(1000000000)
+pub datetime_valid: (dt: DateTime): Bool = date_valid(dt.date) && time_valid(dt.time)
+
+pub date_create: (year: i32, month: u8, day: u8): Result[Date, TimeError] {
+  d: Date = Date { year: year, month: month, day: day }
+  date_valid(d) ? { .Ok(d) } | { .Err(.InvalidCivil) }
+}
+pub time_of_day: (hour: u8, minute: u8, second: u8, nanos: u32): Result[Time, TimeError] {
+  t: Time = Time { hour: hour, minute: minute, second: second, nanos: nanos }
+  time_valid(t) ? { .Ok(t) } | { .Err(.InvalidCivil) }
+}
+pub datetime_create: (d: Date, t: Time): Result[DateTime, TimeError] {
+  dt: DateTime = DateTime { date: d, time: t }
+  datetime_valid(dt) ? { .Ok(dt) } | { .Err(.InvalidCivil) }
+}
+pub datetime_civil: (dt: DateTime): Civil = Civil { year: dt.date.year, month: dt.date.month, day: dt.date.day, hour: dt.time.hour, minute: dt.time.minute, second: dt.time.second, nanos: dt.time.nanos }
+pub datetime_from_civil: (c: Civil): Result[DateTime, TimeError] = datetime_create(Date { year: c.year, month: c.month, day: c.day }, Time { hour: c.hour, minute: c.minute, second: c.second, nanos: c.nanos })
+
+// Checked calendar-day boundary; raw civil_from_days has a much wider domain.
+pub date_from_epoch_days: (days: i64): Result[Date, TimeError] {
+  days < i64(-719528) || days > i64(2932896) ? { .Err(.Overflowed) } | {
+    c: Civil = civil_from_days(days)
+    .Ok(Date { year: c.year, month: c.month, day: c.day })
+  }
+}
+pub date_epoch_days: (d: Date): Result[i64, TimeError] = date_valid(d) ? { .Ok(days_from_civil(d.year, d.month, d.day)) } | { .Err(.InvalidCivil) }
+pub date_add_days: (d: Date, days: i64): Result[Date, TimeError] {
+  !date_valid(d) ? { .Err(.InvalidCivil) } | {
+    base: i64 = days_from_civil(d.year, d.month, d.day)
+    // Test against the supported date range before adding even an i64 edge.
+    days < i64(-719528) - base || days > i64(2932896) - base ? { .Err(.Overflowed) } | { date_from_epoch_days(base + days) }
+  }
+}
+pub date_add_months: (d: Date, months: i32, policy: MonthEnd): Result[Date, TimeError] {
+  !date_valid(d) ? { .Err(.InvalidCivil) } | {
+    index: i64 = i64(d.year) * i64(12) + i64(d.month) - i64(1) + i64(months)
+    index < i64(0) || index >= i64(120000) ? { .Err(.Overflowed) } | {
+      y: i32 = i32_trunc_i64(index / i64(12))
+      m: u8 = u8_trunc_u64(u64_bits_i64(index % i64(12) + i64(1)))
+      last: u8 = days_in_month(y, m)
+      clamp: Bool = policy ? | .Reject => false | .Clamp => true
+      d.day > last && !clamp ? { .Err(.InvalidCivil) } | {
+        .Ok(Date { year: y, month: m, day: d.day > last ? last | d.day })
+      }
+    }
+  }
+}
+pub date_add_period: (d: Date, p: Period, policy: MonthEnd): Result[Date, TimeError] {
+  p.time.nanos != i64(0) ? { .Err(.InvalidDuration) } | {
+    shifted: Result[Date, TimeError] = date_add_months(d, p.months, policy)
+    shifted ? | .Err(e) => .Err(e) | .Ok(m) => date_add_days(m, i64(p.days))
+  }
+}
+// Add a duration on a nominal 86400-second civil day. This is not zone/DST
+// arithmetic. Splitting the duration first avoids overflowing at i64 edges.
+pub datetime_add_duration: (dt: DateTime, d: Duration): Result[DateTime, TimeError] {
+  !datetime_valid(dt) ? { .Err(.InvalidCivil) } | {
+    t: Time = dt.time
+    local: i64 = (i64(t.hour) * i64(3600) + i64(t.minute) * i64(60) + i64(t.second)) * NANOS_PER_SECOND + i64(t.nanos)
+    rest: i64 = local + d.nanos % NANOS_PER_DAY
+    carry: i64 = floor_div(rest, NANOS_PER_DAY)
+    within: i64 = rest - carry * NANOS_PER_DAY
+    shifted: Result[Date, TimeError] = date_add_days(dt.date, d.nanos / NANOS_PER_DAY + carry)
+    shifted ? | .Err(e) => .Err(e) | .Ok(next) => {
+      seconds: i64 = within / NANOS_PER_SECOND
+      .Ok(DateTime { date: next, time: Time {
+        hour: u8_trunc_u64(u64_bits_i64(seconds / i64(3600))),
+        minute: u8_trunc_u64(u64_bits_i64(seconds / i64(60) % i64(60))),
+        second: u8_trunc_u64(u64_bits_i64(seconds % i64(60))),
+        nanos: u32_trunc_u64(u64_bits_i64(within % NANOS_PER_SECOND))
+      } })
+    }
+  }
+}
+pub datetime_add_period: (dt: DateTime, p: Period, policy: MonthEnd): Result[DateTime, TimeError] {
+  !datetime_valid(dt) ? { .Err(.InvalidCivil) } | {
+    calendar: Period = Period { months: p.months, days: p.days, time: duration_nanos(i64(0)) }
+    shifted: Result[Date, TimeError] = date_add_period(dt.date, calendar, policy)
+    shifted ? | .Err(e) => .Err(e) | .Ok(d) => datetime_add_duration(DateTime { date: d, time: dt.time }, p.time)
+  }
+}
+pub date_from_ordinal: (year: i32, ordinal: u32): Result[Date, TimeError] {
+  last: u32 = is_leap_year(year) ? u32(366) | u32(365)
+  year < i32(0) || year > i32(9999) || ordinal == u32(0) || ordinal > last ? { .Err(.InvalidCivil) } | {
+    date_from_epoch_days(days_from_civil(year, u8(1), u8(1)) + i64(ordinal) - i64(1))
+  }
+}
+// ISO weekday: Monday=1 .. Sunday=7. Week 1 contains January 4.
+iso_weekday: (days: i64): u8 = u8_trunc_u64(u64_bits_i64(floor_mod(days + i64(3), i64(7)) + i64(1)))
+week_one: (year: i32): i64 {
+  jan4: i64 = days_from_civil(year, u8(1), u8(4))
+  jan4 - i64(iso_weekday(jan4)) + i64(1)
+}
+pub date_from_week: (w: WeekDate): Result[Date, TimeError] {
+  w.year < i32(0) || w.year > i32(9999) || w.week < u8(1) || w.week > u8(53) || w.weekday < u8(1) || w.weekday > u8(7) ? { .Err(.InvalidCivil) } | {
+    days: i64 = week_one(w.year) + (i64(w.week) - i64(1)) * i64(7) + i64(w.weekday) - i64(1)
+    days >= week_one(w.year + i32(1)) ? { .Err(.InvalidCivil) } | { date_from_epoch_days(days) }
+  }
+}
+pub date_to_week: (d: Date): Result[WeekDate, TimeError] {
+  !date_valid(d) ? { .Err(.InvalidCivil) } | {
+    days: i64 = days_from_civil(d.year, d.month, d.day)
+    wd: u8 = iso_weekday(days)
+    thursday: Civil = civil_from_days(days + i64(4) - i64(wd))
+    thursday.year < i32(0) || thursday.year > i32(9999) ? { .Err(.Overflowed) } | {
+      .Ok(WeekDate { year: thursday.year, week: u8_trunc_u64(u64_bits_i64((days - week_one(thursday.year)) / i64(7) + i64(1))), weekday: wd })
+    }
+  }
+}
+
+// Complete calendar, ordinal, and week dates, in basic or extended form.
+pub parse_iso_date: (src: []u8): Result[Date, TimeError] {
+  n: u32 = len(src)
+  y: u32 = read_digits(src, u32(0), u32(4))
+  y == BAD_DIGITS ? { .Err(.InvalidFormat) } | {
+    year: i32 = i32_bits_u32(y)
+    extended: Bool = n > u32(4) && src[4] == u8(45)
+    at: u32 = extended ? u32(5) | u32(4)
+    week: Bool = n > at && src[at] == u8(87)
+    week ? {
+      w: u32 = read_digits(src, at + u32(1), u32(2))
+      day_at: u32 = extended ? u32(9) | u32(7)
+      d: u32 = read_digits(src, day_at, u32(1))
+      w == BAD_DIGITS || d == BAD_DIGITS || n != day_at + u32(1) || (extended && src[8] != u8(45)) ? { .Err(.InvalidFormat) } | {
+        date_from_week(WeekDate { year: year, week: u8_trunc_u32(w), weekday: u8_trunc_u32(d) })
+      }
+    } | n == at + u32(3) ? {
+      ordinal: u32 = read_digits(src, at, u32(3))
+      ordinal == BAD_DIGITS ? { .Err(.InvalidFormat) } | { date_from_ordinal(year, ordinal) }
+    } | {
+      day_at: u32 = extended ? u32(8) | u32(6)
+      m: u32 = read_digits(src, at, u32(2))
+      d: u32 = read_digits(src, day_at, u32(2))
+      m == BAD_DIGITS || d == BAD_DIGITS || n != day_at + u32(2) || (extended && src[7] != u8(45)) ? { .Err(.InvalidFormat) } | {
+        date_create(year, u8_trunc_u32(m), u8_trunc_u32(d))
+      }
+    }
+  }
+}
+// This profile requires seconds and permits 1..9 fractional second digits.
+// A comma decimal mark is admitted for ISO text, but not RFC 3339 text.
+pub parse_iso_time: (src: []u8): Result[Time, TimeError] {
+  n: u32 = len(src)
+  h: u32 = read_digits(src, u32(0), u32(2))
+  m: u32 = read_digits(src, u32(3), u32(2))
+  s: u32 = read_digits(src, u32(6), u32(2))
+  n < u32(8) || h == BAD_DIGITS || m == BAD_DIGITS || s == BAD_DIGITS || src[2] != u8(58) || src[5] != u8(58) ? { .Err(.InvalidFormat) } | {
+    ns: u32 = 0
+    ok: Bool = true
+    n > u32(8) ? {
+      ok = n >= u32(10) && n <= u32(18) && (src[8] == u8(46) || src[8] == u8(44))
+      at: u32 = 9
+      scale: u32 = 100000000
+      while at < n && ok {
+        ok = is_digit(src[at])
+        ok ? { ns = ns + u32(src[at] - u8(48)) * scale }
+        scale = scale / u32(10)
+        at = at + u32(1)
+      }
+    }
+    !ok ? { .Err(.InvalidFormat) } | { time_of_day(u8_trunc_u32(h), u8_trunc_u32(m), u8_trunc_u32(s), ns) }
+  }
+}
+pub parse_iso_datetime: (src: []u8): Result[DateTime, TimeError] {
+  len(src) < u32(19) || src[10] != u8(84) || src[4] != u8(45) || src[7] != u8(45) ? { .Err(.InvalidFormat) } | {
+    d: Result[Date, TimeError] = parse_iso_date(src[0:10])
+    d ? | .Err(e) => .Err(e) | .Ok(day) => {
+      t: Result[Time, TimeError] = parse_iso_time(src[11:len(src)])
+      t ? | .Err(e) => .Err(e) | .Ok(clock) => .Ok(DateTime { date: day, time: clock })
+    }
+  }
+}
+
+// Format into a local scratch buffer then copy, so *every* error leaves the
+// entire destination unchanged. Canonical output retains all nanoseconds.
+copy_time_text: (dst: [*]u8, text: []u8, size: u32): Result[u32, TimeError] {
+  len(dst) < size ? { .Err(.DestinationTooSmall) } | {
+    at: u32 = 0
+    while at < size { dst[at] = text[at]; at = at + u32(1) }
+    .Ok(size)
+  }
+}
+write_date: (dst: [*]u8, at: u32, d: Date): () {
+  put_digits(dst, at, u32_bits_i32(d.year), u32(4))
+  dst[at + u32(4)] = u8(45)
+  put_digits(dst, at + u32(5), u32(d.month), u32(2))
+  dst[at + u32(7)] = u8(45)
+  put_digits(dst, at + u32(8), u32(d.day), u32(2))
+}
+write_time: (dst: [*]u8, at: u32, t: Time): u32 {
+  put_digits(dst, at, u32(t.hour), u32(2))
+  dst[at + u32(2)] = u8(58)
+  put_digits(dst, at + u32(3), u32(t.minute), u32(2))
+  dst[at + u32(5)] = u8(58)
+  put_digits(dst, at + u32(6), u32(t.second), u32(2))
+  next: u32 = at + u32(8)
+  t.nanos > u32(0) ? {
+    fraction: u32 = t.nanos
+    width: u32 = 9
+    while fraction % u32(10) == u32(0) { fraction = fraction / u32(10); width = width - u32(1) }
+    dst[next] = u8(46)
+    put_digits(dst, next + u32(1), fraction, width)
+    next = next + u32(1) + width
+  }
+  next
+}
+pub format_iso_date: (dst: [*]u8, d: Date): Result[u32, TimeError] {
+  !date_valid(d) ? { .Err(.InvalidCivil) } | {
+    buf: [10]u8
+    write_date(span(&buf), u32(0), d)
+    copy_time_text(dst, view(&buf), u32(10))
+  }
+}
+pub format_iso_time: (dst: [*]u8, t: Time): Result[u32, TimeError] {
+  !time_valid(t) ? { .Err(.InvalidCivil) } | {
+    buf: [18]u8
+    n: u32 = write_time(span(&buf), u32(0), t)
+    copy_time_text(dst, view(&buf), n)
+  }
+}
+pub format_iso_datetime: (dst: [*]u8, dt: DateTime): Result[u32, TimeError] {
+  !datetime_valid(dt) ? { .Err(.InvalidCivil) } | {
+    buf: [29]u8
+    write_date(span(&buf), u32(0), dt.date)
+    buf[10] = u8(84)
+    n: u32 = write_time(span(&buf), u32(11), dt.time)
+    copy_time_text(dst, view(&buf), n)
+  }
+}
+
+pub offset_datetime_valid: (z: OffsetDateTime): Bool {
+  kind_ok: Bool = z.offset_kind ? | .Numeric => true | .UtcDesignator => z.offset_minutes == i32(0) | .UnknownLocal => z.offset_minutes == i32(0)
+  datetime_valid(z.datetime) && offset_valid(z.offset_minutes) && kind_ok
+}
+pub offset_datetime_to_instant: (z: OffsetDateTime): Result[Instant, TimeError] {
+  !datetime_valid(z.datetime) ? { .Err(.InvalidCivil) } | !offset_datetime_valid(z) ? { .Err(.InvalidOffset) } | { civil_to_instant(datetime_civil(z.datetime), z.offset_minutes) }
+}
+// RFC 3339 civil representation, independent of the i64-nanosecond Instant
+// range. Preserve Z, +00:00, and -00:00 separately (RFC 9557 section 2).
+pub parse_rfc3339_datetime: (src: []u8): Result[OffsetDateTime, TimeError] {
+  n: u32 = len(src)
+  n < u32(20) || (src[10] != u8(84) && src[10] != u8(116)) || src[4] != u8(45) || src[7] != u8(45) ? { .Err(.InvalidFormat) } | {
+    at: u32 = 19
+    n > at && src[at] == u8(46) ? {
+      at = at + u32(1)
+      while at < n && at < u32(29) && is_digit(src[at]) { at = at + u32(1) }
+    }
+    at >= n ? { .Err(.InvalidFormat) } | {
+      off: i32 = 0
+      kind: OffsetKind = .UtcDesignator
+      ok: Bool = true
+      numeric: Bool = src[at] == u8(43) || src[at] == u8(45)
+      numeric ? {
+        h: u32 = read_digits(src, at + u32(1), u32(2))
+        m: u32 = read_digits(src, at + u32(4), u32(2))
+        ok = n - at == u32(6) && h < u32(24) && m < u32(60) && src[at + u32(3)] == u8(58)
+        ok ? {
+          off = i32_bits_u32(h * u32(60) + m)
+          src[at] == u8(45) ? { off = i32(0) - off }
+          kind = src[at] == u8(45) && off == i32(0) ? { .UnknownLocal } | { .Numeric }
+        }
+      } | { ok = n - at == u32(1) && (src[at] == u8(90) || src[at] == u8(122)) }
+      !ok ? { numeric ? { .Err(.InvalidOffset) } | { .Err(.InvalidFormat) } } | {
+        d: Result[Date, TimeError] = parse_iso_date(src[0:10])
+        d ? | .Err(e) => .Err(e) | .Ok(day) => {
+          t: Result[Time, TimeError] = parse_iso_time(src[11:at])
+          t ? | .Err(e) => .Err(e) | .Ok(clock) => .Ok(OffsetDateTime { datetime: DateTime { date: day, time: clock }, offset_minutes: off, offset_kind: kind })
+        }
+      }
+    }
+  }
+}
+pub format_rfc3339_datetime: (dst: [*]u8, z: OffsetDateTime): Result[u32, TimeError] {
+  !datetime_valid(z.datetime) ? { .Err(.InvalidCivil) } | !offset_datetime_valid(z) ? { .Err(.InvalidOffset) } | {
+    buf: [35]u8
+    write_date(span(&buf), u32(0), z.datetime.date)
+    buf[10] = u8(84)
+    at: u32 = write_time(span(&buf), u32(11), z.datetime.time)
+    zulu: Bool = z.offset_kind ? | .UtcDesignator => true | .Numeric => false | .UnknownLocal => false
+    zulu ? { buf[at] = u8(90); at = at + u32(1) } | {
+      unknown: Bool = z.offset_kind ? | .UnknownLocal => true | .Numeric => false | .UtcDesignator => false
+      negative: Bool = z.offset_minutes < i32(0) || unknown
+      magnitude: u32 = u32_bits_i32(z.offset_minutes < i32(0) ? { i32(0) - z.offset_minutes } | { z.offset_minutes })
+      buf[at] = negative ? u8(45) | u8(43)
+      put_digits(span(&buf), at + u32(1), magnitude / u32(60), u32(2))
+      buf[at + u32(3)] = u8(58)
+      put_digits(span(&buf), at + u32(4), magnitude % u32(60), u32(2))
+      at = at + u32(6)
+    }
+    copy_time_text(dst, view(&buf), at)
+  }
+}
+
+// ISO designator profile: [sign]P[nY][nM][nD][T[nH][nM][n[.f]S]] or
+// [sign]PnW. A leading sign is Oak's explicit extension. Fractions are exact,
+// seconds-only, 1..9 digits; weeks cannot mix with other units. No floats.
+// Accumulate unsigned magnitudes so the signed minima remain representable.
+parse_iso_components: (src: []u8, fixed_only: Bool): Result[Period, TimeError] {
+  n: u32 = len(src)
+  at: u32 = 0
+  negative: Bool = false
+  n > u32(0) && (src[0] == u8(43) || src[0] == u8(45)) ? { negative = src[0] == u8(45); at = u32(1) }
+  at >= n || src[at] != u8(80) ? { .Err(.InvalidDuration) } | {
+    at = at + u32(1)
+    months: u64 = 0
+    days: u64 = 0
+    nanos: u64 = 0
+    cal_limit: u64 = negative ? u64(2147483648) | u64(2147483647)
+    time_limit: u64 = negative ? u64(9223372036854775808) | u64(9223372036854775807)
+    in_time: Bool = false
+    time_seen: Bool = false
+    any: Bool = false
+    week: Bool = false
+    rank: u32 = 0
+    valid: Bool = true
+    overflow: Bool = false
+    while at < n && valid && !overflow {
+      src[at] == u8(84) ? {
+        valid = !in_time && !week
+        in_time = true
+        at = at + u32(1)
+      } | {
+        start: u32 = at
+        value: u64 = 0
+        while at < n && is_digit(src[at]) && !overflow {
+          digit: u64 = u64(src[at] - u8(48))
+          overflow = value > (u64(18446744073709551615) - digit) / u64(10)
+          !overflow ? { value = value * u64(10) + digit }
+          at = at + u32(1)
+        }
+        valid = at > start
+        fractional: Bool = false
+        fraction: u64 = 0
+        at < n && (src[at] == u8(46) || src[at] == u8(44)) ? {
+          fractional = true
+          at = at + u32(1)
+          digits: u32 = 0
+          scale: u64 = 100000000
+          while at < n && is_digit(src[at]) && digits < u32(9) {
+            fraction = fraction + u64(src[at] - u8(48)) * scale
+            scale = scale / u64(10)
+            digits = digits + u32(1)
+            at = at + u32(1)
+          }
+          valid = valid && digits > u32(0) && (at >= n || !is_digit(src[at]))
+        }
+        at >= n ? { valid = false } | valid && !overflow ? {
+          unit: u8 = src[at]
+          next_rank: u32 = 0
+          factor: u64 = 1
+          bucket: u32 = 0
+          in_time ? {
+            unit == u8(72) ? { next_rank = u32(4); factor = u64(3600000000000) } |
+            unit == u8(77) ? { next_rank = u32(5); factor = u64(60000000000) } |
+            unit == u8(83) ? { next_rank = u32(6); factor = u64(1000000000) }
+            bucket = u32(2)
+            time_seen = true
+          } | {
+            unit == u8(89) ? { next_rank = u32(1); factor = u64(12) } |
+            unit == u8(77) ? { next_rank = u32(2) } |
+            unit == u8(68) ? { next_rank = u32(3); bucket = u32(1) } |
+            unit == u8(87) ? { next_rank = u32(3); bucket = u32(1); factor = u64(7); week = true }
+          }
+          valid = next_rank > rank && (!fractional || (in_time && unit == u8(83))) && (!fixed_only || in_time) && (!week || !any)
+          valid ? {
+            current: u64 = bucket == u32(0) ? months | bucket == u32(1) ? days | nanos
+            limit: u64 = bucket == u32(2) ? time_limit | cal_limit
+            // fraction < 1e9 <= limit; current <= limit is a loop invariant.
+            overflow = fraction > limit - current
+            !overflow ? { overflow = value > (limit - current - fraction) / factor }
+            !overflow ? {
+              total: u64 = current + value * factor + fraction
+              bucket == u32(0) ? { months = total } | bucket == u32(1) ? { days = total } | { nanos = total }
+            }
+            rank = next_rank
+            any = true
+          }
+          at = at + u32(1)
+        }
+      }
+    }
+    overflow ? { .Err(.Overflowed) } | !valid || !any || (in_time && !time_seen) ? { .Err(.InvalidDuration) } | {
+      // Two's-complement conversion also handles -2^63 and -2^31 exactly.
+      mn: i32 = i32_bits_u32(u32_trunc_u64(negative ? { u64(0) - months } | { months }))
+      dy: i32 = i32_bits_u32(u32_trunc_u64(negative ? { u64(0) - days } | { days }))
+      ns: i64 = i64_bits_u64(negative ? { u64(0) - nanos } | { nanos })
+      .Ok(Period { months: mn, days: dy, time: duration_nanos(ns) })
+    }
+  }
+}
+pub parse_iso_period: (src: []u8): Result[Period, TimeError] = parse_iso_components(src, false)
+// Only PT units are admitted. Calendar days/months need a date and a policy.
+pub parse_iso_duration: (src: []u8): Result[Duration, TimeError] {
+  r: Result[Period, TimeError] = parse_iso_components(src, true)
+  r ? | .Err(e) => .Err(e) | .Ok(p) => .Ok(p.time)
+}
+
+magnitude_i64: (n: i64): u64 = n < i64(0) ? { u64(0) - u64_bits_i64(n) } | { u64_bits_i64(n) }
+write_iso_unit: (dst: [*]u8, at: u32, value: u64, unit: u8): u32 {
+  next: u32 = put_u64(dst, at, value)
+  dst[next] = unit
+  next + u32(1)
+}
+pub format_iso_period: (dst: [*]u8, p: Period): Result[u32, TimeError] {
+  negative: Bool = p.months < i32(0) || p.days < i32(0) || p.time.nanos < i64(0)
+  positive: Bool = p.months > i32(0) || p.days > i32(0) || p.time.nanos > i64(0)
+  negative && positive ? { .Err(.InvalidDuration) } | {
+    // Maximum: sign + P + 11 month digits/designator + 11 day digits/
+    // designator + T + 8 hour digits/designator + 3 minute digits/designator
+    // + 13 seconds/fraction/designator = 49 bytes; 64 gives explicit room.
+    buf: [64]u8
+    at: u32 = 0
+    negative ? { buf[at] = u8(45); at = at + u32(1) }
+    buf[at] = u8(80)
+    at = at + u32(1)
+    months: u64 = magnitude_i64(i64(p.months))
+    days: u64 = magnitude_i64(i64(p.days))
+    ns: u64 = magnitude_i64(p.time.nanos)
+    months > u64(0) ? { at = write_iso_unit(span(&buf), at, months, u8(77)) }
+    days > u64(0) ? { at = write_iso_unit(span(&buf), at, days, u8(68)) }
+    ns > u64(0) || (months == u64(0) && days == u64(0)) ? {
+      buf[at] = u8(84)
+      at = at + u32(1)
+      hours: u64 = ns / u64(3600000000000)
+      minutes: u64 = ns / u64(60000000000) % u64(60)
+      seconds: u64 = ns / u64(1000000000) % u64(60)
+      fraction: u64 = ns % u64(1000000000)
+      hours > u64(0) ? { at = write_iso_unit(span(&buf), at, hours, u8(72)) }
+      minutes > u64(0) ? { at = write_iso_unit(span(&buf), at, minutes, u8(77)) }
+      seconds > u64(0) || fraction > u64(0) || (hours == u64(0) && minutes == u64(0)) ? {
+        at = put_frac(span(&buf), at, seconds, fraction, u32(9))
+        buf[at] = u8(83)
+        at = at + u32(1)
+      }
+    }
+    copy_time_text(dst, view(&buf), at)
+  }
+}
+pub format_iso_duration: (dst: [*]u8, d: Duration): Result[u32, TimeError] = format_iso_period(dst, Period { months: i32(0), days: i32(0), time: d })
