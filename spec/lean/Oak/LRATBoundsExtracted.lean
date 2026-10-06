@@ -11,4 +11,7 @@ namespace Oak.LRATBounds
 def lrat_fits (at_ : UInt32) (count : UInt32) (limit : UInt32) (fuel : Nat) : Option (Bool) := do
   pure ((decide (at_ <= limit)) && (decide (count <= (limit - at_))))
 
+def lrat_alloc_fits (count : UInt32) (fuel : Nat) : Option (Bool) := do
+  pure (decide (count < (1073741823 : UInt32)))
+
 end Oak.LRATBounds
