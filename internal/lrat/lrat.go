@@ -364,7 +364,12 @@ func Check(formula, certificate string) (Result, error) {
 	var hints []int64
 	for sc.nextLine() {
 		first, ok := sc.token()
-		if !ok || first == "c" {
+		if !ok {
+			// token already consumed the blank line's newline. Skipping
+			// here would discard the next command as well.
+			continue
+		}
+		if first == "c" {
 			sc.skipLine()
 			continue
 		}

@@ -33,6 +33,16 @@ jobs:
           lean -DwarningAsError=true -o proof/RUPSoundness.olean proof/RUPSoundness.lean 2>&1 | tee build/soundness/lean.log
           lean -DwarningAsError=true -o proof/RUPExecutable.olean proof/RUPExecutable.lean 2>&1 | tee build/soundness/executable.log
           lean -DwarningAsError=true -o proof/RUPText.olean proof/RUPText.lean 2>&1 | tee build/soundness/text.log
+      - name: Compare production LRAT line handling with the independent checkers
+        working-directory: experiments/verification-poc
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LEAN_PATH="$PWD/proof"
+          export OAK_PRODUCTION_LRAT_CORPUS_OUT="$PWD/build/soundness/production-line-boundaries.json"
+          go test -race -count=1 -v ../../internal/lrat 2>&1 | tee build/soundness/production-lrat.log
+          go test -race -count=1 -v ./internal/lrat -run '^TestProductionLineBoundaries$' 2>&1 | tee build/soundness/production-line-boundaries.log
+          lean -DwarningAsError=true --run proof/RUPTextCompare.lean "$OAK_PRODUCTION_LRAT_CORPUS_OUT" 2>&1 | tee build/soundness/production-line-boundaries-lean.log
       - name: Prove bounded decimal and scanner state models
         working-directory: experiments/verification-poc
         shell: bash
@@ -215,4 +225,5 @@ jobs:
             experiments/verification-poc/build/tools/provenance.json
             experiments/verification-poc/tools.lock.json
           retention-days: 30
+
 

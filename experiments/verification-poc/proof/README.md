@@ -262,5 +262,14 @@ the model's soundness transferred to the Oak decoder. `OakTextExtracted.lean`
 (roadmap step 3, `docs/spec/95-extraction.md`) is the compiler's own
 extraction of the same Oak sources, generated and drift-checked, and
 `OakTextCompare.lean` requires it to agree with the other three on every
-case; the remaining assumption is the translator's correctness, and the
-theorem relating the extraction to the transliteration is next.
+case. The extraction connection is now proved: `ExtractionScanner.lean`,
+`ExtractionDecoder.lean`, `ExtractionRUP.lean`, and `ExtractionStream.lean`
+compose into `rup_text_check_sound_text`. Under its byte-size and fuel
+premises, acceptance by the extracted program implies that the text model's
+layout exists and its initial database is unsatisfiable. Extractor and
+compiler fidelity to the executed binary remain assumptions.
+
+See [Production checker correspondence](ProductionChecker.md) for the distinct
+production LRAT kernel, the shared-profile regression gate, and the remaining
+proof obligations. The extracted experiment theorem does not automatically
+apply to `oak prove`'s checker.
