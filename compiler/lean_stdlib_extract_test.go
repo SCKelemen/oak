@@ -93,6 +93,9 @@ var leanStdlibPackages = []struct {
 	// deps) instead of a library package: a committed extraction of a
 	// program shape rather than of a package.
 	source string
+	// rootsFile selects a pure fragment; extraction still closes over its callees.
+	rootsFile    string
+	excludeRoots []string
 }{
 	{name: "bytes", file: "BytesExtracted.lean", namespace: "Oak.Stdlib.Bytes"},
 	{name: "bitset", file: "BitsetExtracted.lean", namespace: "Oak.Stdlib.Bitset"},
@@ -113,6 +116,7 @@ drive_swap_remove_u8: (cursor: [*]Cursor, storage: [*]u8, index: u32): Result[u8
 	{name: "random", file: "RandomExtracted.lean", namespace: "Oak.Stdlib.Random", driver: `
 drive_shuffle_u32: (state: [*]Xoshiro, items: [*]u32): () { random_shuffle[u32](state, items) }
 `},
+	{name: "time", file: "TimeCalendarExtracted.lean", namespace: "Oak.Stdlib.Time", rootsFile: "time_calendar.oak", excludeRoots: []string{"offset_datetime_to_instant"}},
 	{name: "uuid", file: "UuidExtracted.lean", namespace: "Oak.Stdlib.Uuid", deps: []string{"random", "encoding"}},
 	{name: "float", file: "FloatExtracted.lean", namespace: "Oak.Stdlib.Float"},
 	// Tensors as records over views (docs/spec/56-kernels.md section 8):
@@ -206,6 +210,23 @@ func TestLeanStdlibExtract(t *testing.T) {
 	for _, pkg := range leanStdlibPackages {
 		t.Run(pkg.name, func(t *testing.T) {
 			source, roots := leanStdlibProgram(t, pkg.name, pkg.deps, pkg.driver, pkg.source)
+			if pkg.rootsFile != "" {
+				fragment, err := os.ReadFile(filepath.Join("..", "stdlib", pkg.rootsFile))
+				if err != nil {
+					t.Fatal(err)
+				}
+				roots = topLevelNames(t, string(fragment))
+				sort.Strings(roots)
+				for _, excluded := range pkg.excludeRoots {
+					kept := roots[:0]
+					for _, root := range roots {
+						if root != excluded {
+							kept = append(kept, root)
+						}
+					}
+					roots = kept
+				}
+			}
 			comp := New().WithSource("stdlib_"+pkg.name+".oak", source)
 			// A package's asm units ride along as the loader attaches them
 			// (stdlib.AsmUnits): their body-less declarations are dispatch
