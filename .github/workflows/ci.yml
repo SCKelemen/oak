@@ -108,6 +108,11 @@ jobs:
     - name: Run Linux native executables under user-mode QEMU
       run: go test -v -timeout 10m ./compiler -run '^TestE2ENativeExecutableLinuxUnderUserQEMU$'
 
+    - name: Execute Oak-written ARM64 and RV64 ELF images
+      env:
+        OAK_REQUIRE_SELFHOST_QEMU: '1'
+      run: go test -v ./compiler -run '^TestE2ESelfHosted(RelocationKernel|ELF)$' -count=1
+
   riscv64-memory-refinement:
     name: RISC-V Memory Refinement
     runs-on: ubuntu-24.04
