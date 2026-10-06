@@ -61,7 +61,7 @@ theorem patchLower_immediate (w : BitVec 32) (lo : BitVec 12) :
 
 theorem split_bounds (d : Int) (hlo : -2147485696 ≤ d) (hhi : d ≤ 2147481599) :
     -524288 ≤ high d ∧ high d < 524288 ∧ -2048 ≤ low d ∧ low d < 2048 := by
-  unfold high low
+  unfold low high
   omega
 
 theorem split_exact (d : Int) : high d * 4096 + low d = d := by
@@ -75,8 +75,8 @@ theorem decode_patch (upper lower : BitVec 32) (d : Int)
   obtain ⟨hhlo, hhhi, hllo, hlhi⟩ := split_bounds d hlo hhi
   unfold decode
   rw [patchUpper_immediate, patchLower_immediate]
-  rw [BitVec.toInt_ofInt_eq_self (by decide) hhlo hhhi]
-  rw [BitVec.toInt_ofInt_eq_self (by decide) hllo hlhi]
+  rw [BitVec.toInt_ofInt_eq_self (w := 20) (by decide) hhlo hhhi]
+  rw [BitVec.toInt_ofInt_eq_self (w := 12) (by decide) hllo hlhi]
   exact split_exact d
 
 theorem relocate_eq_some_iff (call : Bool) (upper lower : BitVec 32)
@@ -97,7 +97,6 @@ theorem relocate_reaches {call : Bool} {upper lower : BitVec 32}
   obtain ⟨hf, _, hp⟩ := (relocate_eq_some_iff call upper lower place target patched).mp h
   simp only [fits, decide_eq_true_eq] at hf
   rw [hp]
-  simp only
   rw [decode_patch upper lower (delta place target) hf.2.2.2.2.1 hf.2.2.2.2.2]
   unfold delta
   omega
