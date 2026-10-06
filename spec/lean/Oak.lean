@@ -9,6 +9,7 @@ import Oak.AssemblerCalleeIdentity
 import Oak.TrapDomainAdmission
 import Oak.ObjectLayout
 import Oak.ObjectRelocation
+import Oak.RV64Relocation
 import Oak.Kernel
 import Oak.BufferCustody
 import Oak.AlignmentFact

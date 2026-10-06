@@ -74,7 +74,7 @@ func (o ExecutableOptions) stackTop() uint64 {
 
 // startStub is the `_start` of a target, as `.oakasm` text.
 func startStub(o ExecutableOptions) (string, error) {
-	entry := o.Entry
+	entry := "oak_entry"
 	switch {
 	case o.OS == OSLinux && o.Arch == ArchRV64:
 		// exit(a0): the result is already in a0.
@@ -160,6 +160,11 @@ func encodeStart(o ExecutableOptions) (EncodedFunction, error) {
 	if err != nil {
 		return EncodedFunction{}, fmt.Errorf("executable: the start stub does not encode: %v", err)
 	}
+	for i := range relocs {
+		if relocs[i].Symbol == "oak_entry" {
+			relocs[i].Symbol = o.Entry
+		}
+	}
 	return EncodedFunction{Symbol: "_start", Bytes: code, Relocs: relocs, Align: 4, Arch: o.Arch}, nil
 }
 
@@ -172,12 +177,42 @@ func WriteExecutable(functions []EncodedFunction, o ExecutableOptions) ([]byte, 
 	if o.Entry == "" {
 		return nil, fmt.Errorf("executable: no entry symbol")
 	}
+	if o.OS == OSFreestanding && o.StackTop == 0 && o.base() > ^uint64(0)-(1<<20) {
+		return nil, fmt.Errorf("executable: default stack top overflows")
+	}
+	entryFound := false
+	for _, fn := range functions {
+		if fn.Symbol == o.Entry && len(fn.Bytes) != 0 {
+			entryFound = true
+		}
+	}
+	if !entryFound {
+		return nil, fmt.Errorf("executable: entry %q is not a nonempty function", o.Entry)
+	}
+	for _, d := range o.Data {
+		if d.Align > 4096 || d.Align < 0 {
+			return nil, fmt.Errorf("executable: data alignment %d is outside the page profile", d.Align)
+		}
+	}
 	start, err := encodeStart(o)
 	if err != nil {
 		return nil, err
 	}
 	all := append([]EncodedFunction{start}, functions...)
 	for _, fn := range functions {
+		width := 4
+		if fn.Compressed && o.Arch == ArchRV64 {
+			width = 2
+		}
+		if fn.Compressed && o.Arch != ArchRV64 || len(fn.Bytes)%width != 0 ||
+			fn.Align < 0 || fn.Align > 4096 || (fn.Align != 0 && fn.Align < int64(width)) {
+			return nil, fmt.Errorf("executable: %s has invalid instruction extent or alignment", fn.Symbol)
+		}
+		for _, r := range fn.Relocs {
+			if rv64Reloc(r.Kind) != (o.Arch == ArchRV64) || r.Offset%width != 0 {
+				return nil, fmt.Errorf("executable: %s has a wrong-lane or misaligned relocation", fn.Symbol)
+			}
+		}
 		if fn.Arch != o.Arch && !(fn.Arch == "" && o.Arch == ArchArm64) {
 			return nil, fmt.Errorf("executable: %s is %s code in a %s executable", fn.Symbol, fn.Arch, o.Arch)
 		}
@@ -221,6 +256,13 @@ func WriteExecutable(functions []EncodedFunction, o ExecutableOptions) ([]byte, 
 	dataOff := textOff + int64(len(layout.text))
 	for dataOff%dataAlign != 0 {
 		dataOff++
+	}
+	if dataAlign > page {
+		return nil, fmt.Errorf("executable: data alignment %d exceeds the page", dataAlign)
+	}
+	loadSize := uint64(dataOff-textOff) + uint64(len(layout.data))
+	if loadSize == 0 || base > ^uint64(0)-loadSize {
+		return nil, fmt.Errorf("executable: load segment exceeds the address space")
 	}
 	dataAddr := textAddr + uint64(dataOff-textOff)
 	for _, d := range layout.dataSyms {
@@ -299,9 +341,14 @@ func WriteExecutable(functions []EncodedFunction, o ExecutableOptions) ([]byte, 
 	machine, flags := uint16(183), uint32(0)
 	if o.Arch == ArchRV64 {
 		machine = 243
+		for _, fn := range functions {
+			if fn.Compressed {
+				flags |= 1 // EF_RISCV_RVC
+			}
+		}
 		switch o.RV64FloatABI {
 		case "double":
-			flags = 0x4
+			flags |= 0x4
 		case "soft", "":
 		default:
 			return nil, fmt.Errorf("executable: RISC-V float ABI %q", o.RV64FloatABI)
@@ -421,43 +468,21 @@ func resolveRelocations(l *textLayout, textAddr uint64, symbolAddr map[string]ui
 			}
 			le.PutUint32(l.text[r.offset:], patched.adrp)
 			le.PutUint32(l.text[r.offset+4:], patched.add)
-		case "riscv_pcrel":
-			place := textAddr + uint64(r.offset)
-			delta := int64(target) - int64(place)
-			// auipc rd, hi20 then addi rd, rd, lo12: the same split as a call's.
+		case "riscv_pcrel", "riscv_call_plt":
 			if len(l.text) < 8 || r.offset > int64(len(l.text)-8) {
-				return fmt.Errorf("executable: an la at %d cut short", r.offset)
+				return fmt.Errorf("executable: an AUIPC pair at %d cut short", r.offset)
 			}
-			if delta < -(1<<31) || delta >= 1<<31 {
-				return fmt.Errorf("executable: la of %s at %#x is %d bytes away, beyond auipc's reach", r.symbol, place, delta)
+			if textAddr > ^uint64(0)-uint64(r.offset) {
+				return fmt.Errorf("executable: relocation address overflows")
 			}
-			hi := (delta + 0x800) >> 12
-			lo := delta - hi<<12
-			auipc := le.Uint32(l.text[r.offset:])
-			addi := le.Uint32(l.text[r.offset+4:])
-			auipc = auipc&0xfff | uint32(hi&0xfffff)<<12
-			addi = addi&0x000fffff | uint32(lo&0xfff)<<20
-			le.PutUint32(l.text[r.offset:], auipc)
-			le.PutUint32(l.text[r.offset+4:], addi)
-		case "riscv_call_plt":
-			place := textAddr + uint64(r.offset)
-			delta := int64(target) - int64(place)
-			// auipc ra, hi20 then jalr ra, lo12(ra): hi rounds so lo is a
-			// signed 12-bit remainder.
-			if len(l.text) < 8 || r.offset > int64(len(l.text)-8) {
-				return fmt.Errorf("executable: a call at %d cut short", r.offset)
+			upper := le.Uint32(l.text[r.offset:])
+			lower := le.Uint32(l.text[r.offset+4:])
+			patched, err := patchRV64PCRel(r.kind, upper, lower, textAddr+uint64(r.offset), target)
+			if err != nil {
+				return fmt.Errorf("executable: %s to %s: %w", r.kind, r.symbol, err)
 			}
-			if delta < -(1<<31) || delta >= 1<<31 {
-				return fmt.Errorf("executable: call to %s at %#x is %d bytes away, beyond auipc's reach", r.symbol, place, delta)
-			}
-			hi := (delta + 0x800) >> 12
-			lo := delta - hi<<12
-			auipc := le.Uint32(l.text[r.offset:])
-			jalr := le.Uint32(l.text[r.offset+4:])
-			auipc = auipc&0xfff | uint32(hi&0xfffff)<<12
-			jalr = jalr&0x000fffff | uint32(lo&0xfff)<<20
-			le.PutUint32(l.text[r.offset:], auipc)
-			le.PutUint32(l.text[r.offset+4:], jalr)
+			le.PutUint32(l.text[r.offset:], patched.upper)
+			le.PutUint32(l.text[r.offset+4:], patched.lower)
 		default:
 			return fmt.Errorf("executable: relocation kind %q to %s cannot be resolved by the executable writer", r.kind, r.symbol)
 		}

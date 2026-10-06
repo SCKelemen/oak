@@ -1,0 +1,56 @@
+// Minimal static ELF64 image construction in Oak. Input text is already linked;
+// arch 1 is AArch64, arch 2 is RV64 without C. One RX PT_LOAD, no interpreter,
+// section table, dynamic relocations, writable data, or implicit startup code.
+// The caller supplies the entry stub and the OS/loader contract.
+
+native_write_half: (dst: [*]u8, offset: u32, value: u16): () {
+  dst[offset] = u8_trunc_u16(value)
+  dst[offset + u32(1)] = u8_trunc_u16(value >> u16(8))
+}
+
+native_write_quad: (dst: [*]u8, offset: u32, value: u64): () {
+  native_write_word(dst, offset, u32_trunc_u64(value))
+  native_write_word(dst, offset + u32(4), u32_trunc_u64(value >> u64(32)))
+}
+
+// Returns the image length, or zero without mutation on invalid input.
+// src and dst are disjoint borrows, enforced by Oak's call-site checker.
+native_elf_image: (dst: [*]u8, src: []u8, arch: u32, base: u64, entry: u32): u32 {
+  written: u32 = 0
+  (arch == u32(1) || arch == u32(2)) && base % u64(4096) == u64(0) &&
+      len(src) > u32(0) && len(src) % u32(4) == u32(0) &&
+      entry < len(src) && entry % u32(4) == u32(0) &&
+      len(dst) >= u32(4096) && len(src) <= len(dst) - u32(4096) &&
+      base <= u64(18446744073709551615) - u64(len(src)) ? {
+    size: u32 = u32(4096) + len(src)
+    i: u32 = 0
+    while i < u32(4096) { dst[i] = u8(0)
+      i = i + u32(1) }
+    native_write_word(dst, u32(0), u32(0x464c457f))
+    dst[u32(4)] = u8(2)
+    dst[u32(5)] = u8(1)
+    dst[u32(6)] = u8(1)
+    native_write_half(dst, u32(16), u16(2))
+    machine: u16 = arch == u32(1) ? u16(183) | u16(243)
+    native_write_half(dst, u32(18), machine)
+    native_write_word(dst, u32(20), u32(1))
+    native_write_quad(dst, u32(24), base + u64(entry))
+    native_write_quad(dst, u32(32), u64(64))
+    native_write_half(dst, u32(52), u16(64))
+    native_write_half(dst, u32(54), u16(56))
+    native_write_half(dst, u32(56), u16(1))
+    native_write_word(dst, u32(64), u32(1))
+    native_write_word(dst, u32(68), u32(5))
+    native_write_quad(dst, u32(72), u64(4096))
+    native_write_quad(dst, u32(80), base)
+    native_write_quad(dst, u32(88), base)
+    native_write_quad(dst, u32(96), u64(len(src)))
+    native_write_quad(dst, u32(104), u64(len(src)))
+    native_write_quad(dst, u32(112), u64(4096))
+    i = u32(0)
+    while i < len(src) { dst[u32(4096) + i] = src[i]
+      i = i + u32(1) }
+    written = size
+  }
+  written
+}

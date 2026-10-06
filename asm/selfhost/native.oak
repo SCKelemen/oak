@@ -1,0 +1,163 @@
+// Bootstrap assembler/linker kernel in Oak. The host supplies symbol addresses
+// and caller-owned storage. No allocation, parser, ELF reader, or system linker.
+// Numeric kinds: 1 ARM64 B, 2 ARM64 BL, 3 ARM64 ADRP+ADD,
+// 4 RV64 AUIPC+JALR ra, 5 RV64 AUIPC+ADDI. Zero means success.
+NativePatch: type = struct { status: u32, first: u32, second: u32 }
+NativeDelta: type = struct { status: u32, value: i64 }
+
+native_u32_i64: (value: i64): u32 = u32_trunc_u64(u64_bits_i64(value))
+
+native_bad: (): NativePatch = NativePatch { status: u32(1), first: u32(0), second: u32(0) }
+
+// Subtract only after comparing the unsigned addresses; never narrow an
+// arbitrary address into i64 or accept a displacement through address wrap.
+native_delta: (place: u64, target: u64, positive: u64, negative: u64): NativeDelta {
+  target >= place ? {
+    distance: u64 = target - place
+    distance <= positive && distance <= u64(9223372036854775807) ? { NativeDelta { status: u32(0), value: i64_bits_u64(distance) } } |
+      { NativeDelta { status: u32(1), value: i64(0) } }
+  } | {
+    distance: u64 = place - target
+    distance <= negative && distance <= u64(9223372036854775807) ? { NativeDelta { status: u32(0), value: -i64_bits_u64(distance) } } |
+      { NativeDelta { status: u32(1), value: i64(0) } }
+  }
+}
+
+// Assemble B/BL from an admitted byte displacement.
+native_arm64_branch: (call: Bool, delta: i64): NativePatch {
+  delta < i64(-134217728) || delta > i64(134217724) || delta % i64(4) != i64(0) ? {
+    native_bad()
+  } | {
+    words: i64 = delta / i64(4)
+    field: u32 = words < i64(0) ? native_u32_i64(i64(67108864) + words) | native_u32_i64(words)
+    opcode: u32 = call ? u32(0x94000000) | u32(0x14000000)
+    NativePatch { status: u32(0), first: opcode | field, second: u32(0) }
+  }
+}
+
+// RV64 AUIPC sign extends its U immediate to XLEN. In particular the upper
+// 2048 bytes of the naive signed-32-bit positive interval cannot be encoded.
+native_rv64_pair: (call: Bool, rd: u32, delta: i64): NativePatch {
+  rd == u32(0) || rd > u32(31) || (call && (rd != u32(1) || delta % i64(2) != i64(0))) ||
+      delta < i64(-2147485696) || delta > i64(2147481599) ? {
+    native_bad()
+  } | {
+    hi: i64 = (delta + i64(2147485696)) / i64(4096) - i64(524288)
+    lo: i64 = delta - (hi * i64(4096))
+    upper: u32 = hi < i64(0) ? native_u32_i64(i64(1048576) + hi) | native_u32_i64(hi)
+    lower: u32 = lo < i64(0) ? native_u32_i64(i64(4096) + lo) | native_u32_i64(lo)
+    opcode: u32 = call ? u32(0x67) | u32(0x13)
+    NativePatch { status: u32(0), first: (upper << u32(12)) | (rd << u32(7)) | u32(0x17),
+      second: (lower << u32(20)) | (rd << u32(15)) | (rd << u32(7)) | opcode }
+  }
+}
+
+native_relocate: (kind: u32, first: u32, second: u32, place: u64, target: u64): NativePatch {
+  result: NativePatch = native_bad()
+  kind == u32(1) || kind == u32(2) ? {
+    call: Bool = kind == u32(2)
+    opcode: u32 = call ? u32(0x94000000) | u32(0x14000000)
+    (first & u32(0xfc000000)) == opcode && place % u64(4) == u64(0) && target % u64(4) == u64(0) ? {
+      delta: NativeDelta = native_delta(place, target, u64(134217724), u64(134217728))
+      delta.status == u32(0) ? { result = native_arm64_branch(call, delta.value) }
+    }
+  } | {
+    kind == u32(3) ? {
+      rd: u32 = first & u32(31)
+      place % u64(4) == u64(0) && place <= u64(18446744073709551608) &&
+          (first & u32(0x9f000000)) == u32(0x90000000) &&
+          (second & u32(0xffc00000)) == u32(0x91000000) && rd != u32(31) &&
+          (second & u32(31)) == rd && ((second >> u32(5)) & u32(31)) == rd ? {
+        delta: NativeDelta = native_delta(place >> u64(12), target >> u64(12), u64(1048575), u64(1048576))
+        delta.status == u32(0) ? {
+          field: u32 = delta.value < i64(0) ? native_u32_i64(i64(2097152) + delta.value) | native_u32_i64(delta.value)
+          low: u32 = u32_trunc_u64(target & u64(4095))
+          result = NativePatch { status: u32(0),
+            first: (first & u32(0x9f00001f)) | ((field & u32(3)) << u32(29)) | ((field >> u32(2)) << u32(5)),
+            second: (second & u32(0xffc003ff)) | (low << u32(10)) }
+        }
+      }
+    } | {
+      kind == u32(4) || kind == u32(5) ? {
+        call: Bool = kind == u32(4)
+        rd: u32 = (first >> u32(7)) & u32(31)
+        opcode: u32 = call ? u32(0x67) | u32(0x13)
+        place % u64(2) == u64(0) && place <= u64(18446744073709551608) &&
+            (!call || target % u64(2) == u64(0)) &&
+            (first & u32(127)) == u32(0x17) && (second & u32(0x707f)) == opcode &&
+            ((second >> u32(7)) & u32(31)) == rd && ((second >> u32(15)) & u32(31)) == rd ? {
+          delta: NativeDelta = native_delta(place, target, u64(2147481599), u64(2147485696))
+          delta.status == u32(0) ? { result = native_rv64_pair(call, rd, delta.value) }
+        }
+      }
+    }
+  }
+  result
+}
+
+native_read_word: (src: [*]u8, offset: u32): u32 {
+  u32(src[offset]) | (u32(src[offset + u32(1)]) << u32(8)) |
+    (u32(src[offset + u32(2)]) << u32(16)) | (u32(src[offset + u32(3)]) << u32(24))
+}
+
+native_write_word: (dst: [*]u8, offset: u32, word: u32): () {
+  dst[offset] = u8_trunc_u32(word)
+  dst[offset + u32(1)] = u8_trunc_u32(word >> u32(8))
+  dst[offset + u32(2)] = u8_trunc_u32(word >> u32(16))
+  dst[offset + u32(3)] = u8_trunc_u32(word >> u32(24))
+}
+
+// The byte-level linker operation checks the whole footprint before reading,
+// and computes both words before writing. Every refusal leaves dst unchanged.
+native_link_patch: (dst: [*]u8, offset: u32, kind: u32, base: u64, target: u64): u32 {
+  status: u32 = 1
+  width: u32 = kind == u32(1) || kind == u32(2) ? u32(4) | u32(8)
+  offset <= len(dst) && width <= len(dst) - offset &&
+      base <= u64(18446744073709551615) - u64(offset) ? {
+    first: u32 = native_read_word(dst, offset)
+    second: u32 = 0
+    width == u32(8) ? { second = native_read_word(dst, offset + u32(4)) }
+    patch: NativePatch = native_relocate(kind, first, second, base + u64(offset), target)
+    status = patch.status
+    status == u32(0) ? {
+      native_write_word(dst, offset, patch.first)
+      width == u32(8) ? { native_write_word(dst, offset + u32(4), patch.second) }
+    }
+  }
+  status
+}
+
+NativeRelocation: type = struct { offset: u32, kind: u32, symbol: u32 }
+
+// Link a complete sorted relocation plan over caller-owned text. Symbols are
+// resolved addresses indexed by the producer. Reject undefined indices,
+// overlapping/unsorted records, bad footprints, words, and addresses before
+// changing any text. This is a two-pass operation with constant extra storage.
+native_link_text: (dst: [*]u8, plan: []NativeRelocation, symbols: []u64, base: u64): u32 {
+  status: u32 = 0
+  last_end: u32 = 0
+  i: u32 = 0
+  while i < len(plan) && status == u32(0) {
+    r: NativeRelocation = plan[i]
+    width: u32 = r.kind == u32(1) || r.kind == u32(2) ? u32(4) | u32(8)
+    r.symbol < len(symbols) && r.offset >= last_end && r.offset <= len(dst) &&
+        width <= len(dst) - r.offset && base <= u64(18446744073709551615) - u64(r.offset) ? {
+      second: u32 = 0
+      width == u32(8) ? { second = native_read_word(dst, r.offset + u32(4)) }
+      p: NativePatch = native_relocate(r.kind, native_read_word(dst, r.offset), second,
+        base + u64(r.offset), symbols[r.symbol])
+      status = p.status
+      last_end = r.offset + width
+    } | { status = u32(1) }
+    i = i + u32(1)
+  }
+  status == u32(0) ? {
+    i = u32(0)
+    while i < len(plan) {
+      r: NativeRelocation = plan[i]
+      native_link_patch(dst, r.offset, r.kind, base, symbols[r.symbol])
+      i = i + u32(1)
+    }
+  }
+  status
+}
