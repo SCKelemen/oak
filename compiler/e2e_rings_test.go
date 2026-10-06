@@ -204,6 +204,91 @@ func TestE2ERingsSequential(t *testing.T) {
 	}
 }
 
+
+func TestE2ERingsSpscBatchAndZeroCopy(t *testing.T) {
+	program := `package main
+
+import("rings")
+
+main: (): i32 {
+  state: [1]rings.SpscCursor
+  batch_state: [1]rings.SpscProducerBatch
+  data: [8]u32
+  input: [6]u32 = [6]u32{ 1, 2, 3, 4, 5, 6 }
+  cursor: [*]rings.SpscCursor = span(&state)
+  batch: [*]rings.SpscProducerBatch = span(&batch_state)
+  storage: [*]u32 = span(&data)
+
+  assert(rings.spsc_reserve(cursor, batch, len(storage), u32(6)))
+  assert(rings.spsc_put_run[u32](cursor, batch, storage, view(&input)) == u32(6))
+  assert(rings.spsc_commit(cursor, batch, u32(6)))
+  assert(rings.spsc_count(cursor) == u32(6))
+
+  total: u32 = u32(0)
+  taken: u32 = u32(0)
+  {
+    visible: []u32 = rings.spsc_run[u32](cursor, view(&data))
+    assert(len(visible) == u32(6))
+    i: u32 = u32(0)
+    while i < len(visible) {
+      total = total + visible[i]
+      i = i + u32(1)
+    }
+    taken = len(visible)
+  }
+  assert(rings.spsc_consume[u32](cursor, storage, taken))
+  assert(rings.spsc_count(cursor) == u32(0))
+
+  // Force a wrapped visible range: consume six, then publish four at tail 6.
+  more: [4]u32 = [4]u32{ 7, 8, 9, 10 }
+  assert(rings.spsc_reserve(cursor, batch, len(storage), u32(4)))
+  assert(rings.spsc_put_run[u32](cursor, batch, storage, view(&more)) == u32(4))
+  assert(rings.spsc_commit(cursor, batch, u32(4)))
+  first: u32 = u32(0)
+  {
+    r0: []u32 = rings.spsc_run[u32](cursor, view(&data))
+    assert(len(r0) == u32(2) && r0[0] == u32(7) && r0[1] == u32(8))
+    first = len(r0)
+  }
+  assert(rings.spsc_consume[u32](cursor, storage, first))
+  second: u32 = u32(0)
+  {
+    r1: []u32 = rings.spsc_run[u32](cursor, view(&data))
+    assert(len(r1) == u32(2) && r1[0] == u32(9) && r1[1] == u32(10))
+    second = len(r1)
+  }
+  assert(rings.spsc_consume[u32](cursor, storage, second))
+  assert(rings.spsc_count(cursor) == u32(0))
+  i32_bits_u32(total * u32(2))
+}
+`
+	want := interpretModule(t, ringsModule(t, program))
+	exit, abnormal := buildPackageAndRun(t, New().WithPackageDir(ringsModule(t, program)))
+	if abnormal || int64(exit) != want || exit != 42 {
+		t.Fatalf("interpreter %d, compiled exit %d abnormal %v, want 42", want, exit, abnormal)
+	}
+}
+
+func TestRingsSpscZeroCopySuspendsStorage(t *testing.T) {
+	program := `package main
+
+import("rings")
+
+main: (): i32 {
+  state: [1]rings.SpscCursor
+  data: [4]u32
+  cursor: [*]rings.SpscCursor = span(&state)
+  r: []u32 = rings.spsc_run[u32](cursor, view(&data))
+  rings.spsc_consume[u32](cursor, span(&data), u32(0))
+  i32_bits_u32(r[0])
+}
+`
+	_, err := New().WithPackageDir(ringsModule(t, program)).Check().Get()
+	if err == nil || !strings.Contains(err.Error(), "OAK-B0107") {
+		t.Fatalf("consume while zero-copy view lives: %v, want OAK-B0107", err)
+	}
+}
+
 // ringsThreadedProgram exports the producer and consumer loops over rings
 // the caller owns: the C harness below holds the cursors and the storage
 // in static arrays, hands them in as spans, and runs the loops on pthreads.
