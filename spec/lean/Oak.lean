@@ -214,6 +214,7 @@ import Oak.Rings
 import Oak.BinaryCodec
 import Oak.BddComplement
 import Oak.RupCheck
+import Oak.LRATBounds
 import Oak.LRATFormulaBinding
 import Oak.SolverLaws
 import Oak.Tseitin
