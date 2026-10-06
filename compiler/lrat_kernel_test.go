@@ -143,14 +143,23 @@ main: (): i32 {
 
 // Tie the proof to the production guard, not a handwritten equivalent.
 func TestLRATKernelBoundsExtract(t *testing.T) {
-	extracted, err := New().WithSource("lrat.oak", lratKernelSource(t)).EmitLeanRoots("Oak.LRATBounds", []string{"lrat_fits"}).Get()
+	lratKernelExtract(t, "LRATBounds", []string{"lrat_fits", "lrat_alloc_fits"})
+}
+
+func TestLRATKernelRUPExtract(t *testing.T) {
+	lratKernelExtract(t, "LRATRUP", []string{"lrat_rup"})
+}
+
+func lratKernelExtract(t *testing.T, module string, roots []string) {
+	t.Helper()
+	extracted, err := New().WithSource("lrat.oak", lratKernelSource(t)).EmitLeanRoots("Oak."+module, roots).Get()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(extracted, "sorry") {
 		t.Fatal("extraction contains sorry")
 	}
-	path := filepath.Join("..", "spec", "lean", "Oak", "LRATBoundsExtracted.lean")
+	path := filepath.Join("..", "spec", "lean", "Oak", module+"Extracted.lean")
 	if os.Getenv("OAK_LEAN_EXTRACT_UPDATE") == "1" {
 		if err := os.WriteFile(path, []byte(extracted), 0o644); err != nil {
 			t.Fatal(err)
@@ -161,6 +170,6 @@ func TestLRATKernelBoundsExtract(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(committed) != extracted {
-		t.Fatal("LRAT bounds extraction drift; regenerate with OAK_LEAN_EXTRACT_UPDATE=1")
+		t.Fatalf("%s extraction drift; regenerate with OAK_LEAN_EXTRACT_UPDATE=1", module)
 	}
 }

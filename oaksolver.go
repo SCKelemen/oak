@@ -589,65 +589,45 @@ cnf_main: (): i32 {
 }
 
 lrat_main: (): i32 {
-  chunk_raw: c.Ptr = malloc(c.Size(CHUNK))
-  header_bytes_raw: c.Ptr = malloc(c.Size(LRAT_HEADER_WORDS * u32(4)))
-  header_words_raw: c.Ptr = malloc(c.Size(LRAT_HEADER_WORDS * u32(4)))
-  header_ok: Bool = false
-  h: [8]u32
-  unsafe {
-    header_bytes: Buffer[u8] = c.own[u8](header_bytes_raw, LRAT_HEADER_WORDS * u32(4))
-    header_ok = read_fully(chunk_raw, span(&header_bytes), LRAT_HEADER_WORDS * u32(4))
-    header_words: Buffer[u32] = c.own[u32](header_words_raw, LRAT_HEADER_WORDS)
-    words_of(view(&header_bytes), span(&header_words), LRAT_HEADER_WORDS)
-    lrat_fill(span(&h), view(&header_words), LRAT_HEADER_WORDS)
-    free(c.disown(header_words))
-    free(c.disown(header_bytes))
-  }
-  header_ok = header_ok && h[u32(0)] == LRAT_MAGIC
-  variables: u32 = header_ok ? { h[u32(1)] + u32(1) } | { u32(1) }
-  body_words: u32 = header_ok ? { h[u32(3)] + h[u32(4)] } | { u32(0) }
-  ids: u32 = header_ok ? { h[u32(5)] + u32(1) } | { u32(1) }
-  store_words: u32 = header_ok ? { h[u32(6)] + u32(1) } | { u32(1) }
-  total: u32 = LRAT_HEADER_WORDS + body_words
-  bytes_raw: c.Ptr = malloc(c.Size(body_words * u32(4) + u32(4)))
-  words_raw: c.Ptr = malloc(c.Size(total * u32(4)))
-  starts_raw: c.Ptr = malloc(c.Size(ids * u32(4)))
-  lengths_raw: c.Ptr = malloc(c.Size(ids * u32(4)))
-  alive_raw: c.Ptr = malloc(c.Size(ids))
-  store_raw: c.Ptr = malloc(c.Size(store_words * u32(4)))
-  assign_raw: c.Ptr = malloc(c.Size(variables))
-  trail_raw: c.Ptr = malloc(c.Size(variables * u32(4)))
   status: u32 = LRAT_CAPACITY
-  additions: u32 = 0
-  deletions: u32 = 0
-  unsafe {
-    body: Buffer[u8] = c.own[u8](bytes_raw, body_words * u32(4) + u32(4))
-    body_ok: Bool = body_words == u32(0) || read_fully(chunk_raw, span(&body), body_words * u32(4))
-    words: Buffer[u32] = c.own[u32](words_raw, total)
-    lrat_fill(span(&words), view(&h), LRAT_HEADER_WORDS)
-    lrat_words_at(view(&body), span(&words), LRAT_HEADER_WORDS, body_words)
-    starts: Buffer[u32] = c.own[u32](starts_raw, ids)
-    lengths: Buffer[u32] = c.own[u32](lengths_raw, ids)
-    alive: Buffer[u8] = c.own[u8](alive_raw, ids)
-    store: Buffer[u32] = c.own[u32](store_raw, store_words)
-    assign: Buffer[u8] = c.own[u8](assign_raw, variables)
-    trail: Buffer[u32] = c.own[u32](trail_raw, variables)
-    out: [3]u32
-    header_ok && body_ok ? {
-      status = lrat_check(view(&words), span(&starts), span(&lengths), span(&alive), span(&store), span(&assign), span(&trail), span(&out))
-      additions = out[u32(1)]
-      deletions = out[u32(2)]
+  out: [3]u32 = [3]u32{7, 0, 0}
+  chunk_raw: c.Ptr = malloc(c.Size(CHUNK))
+  chunk_raw != c.null() ? {
+    header_bytes: [32]u8
+    h: [8]u32
+    header_ok: Bool = read_fully(chunk_raw, span(&header_bytes), u32(32))
+    header_ok ? {
+      words_of(view(&header_bytes), span(&h), LRAT_HEADER_WORDS)
+      h[u32(0)] == LRAT_MAGIC ? {
+      lrat_header_fits(view(&h)) ? {
+        body_words: u32 = h[u32(3)] + h[u32(4)]
+        total: u32 = LRAT_HEADER_WORDS + body_words
+        // The header guard bounds total * 4, and total is at least eight.
+        bytes_raw: c.Ptr = malloc(c.Size(total * u32(4)))
+        words_raw: c.Ptr = malloc(c.Size(total * u32(4)))
+        unsafe {
+          bytes_raw != c.null() && words_raw != c.null() ? {
+            body: Buffer[u8] = c.own[u8](bytes_raw, total * u32(4))
+            words: Buffer[u32] = c.own[u32](words_raw, total)
+            body_ok: Bool = read_fully(chunk_raw, span(&body), body_words * u32(4))
+            // A raw stream is exactly one record, including byte framing.
+            body_ok = body_ok && u64(c_read(c.Int(0), chunk_raw, c.Size(1))) == u64(0)
+            body_ok ? {
+              lrat_fill(span(&words), view(&h), LRAT_HEADER_WORDS)
+              lrat_words_at(view(&body), span(&words), LRAT_HEADER_WORDS, body_words)
+              status = lrat_check_allocated(view(&words), span(&out))
+            } | { status = LRAT_MALFORMED }
+            released_words: c.Ptr = c.disown(words)
+            released_body: c.Ptr = c.disown(body)
+          } | { }
+          free(words_raw)
+          free(bytes_raw)
+        }
+      } | { }
+      } | { status = LRAT_MALFORMED }
     } | { status = LRAT_MALFORMED }
-    free(c.disown(trail))
-    free(c.disown(assign))
-    free(c.disown(store))
-    free(c.disown(alive))
-    free(c.disown(lengths))
-    free(c.disown(starts))
-    free(c.disown(words))
-    free(c.disown(body))
-  }
-  free(chunk_raw)
+    free(chunk_raw)
+  } | { }
   write_byte(u8(108))
   write_byte(u8(114))
   write_byte(u8(97))
@@ -655,9 +635,9 @@ lrat_main: (): i32 {
   write_byte(u8(32))
   write_u32(status)
   write_byte(u8(32))
-  write_u32(additions)
+  write_u32(out[u32(1)])
   write_byte(u8(32))
-  write_u32(deletions)
+  write_u32(out[u32(2)])
   write_byte(u8(10))
   0
 }

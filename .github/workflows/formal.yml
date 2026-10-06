@@ -74,8 +74,11 @@ jobs:
       - name: Check extracted standard library against compiled Oak
         run: go test ./compiler -run 'TestLeanStdlibFaithful' -count=1 -v
 
-      - name: Check self-hosted LRAT kernel and bounds extraction
+      - name: Check self-hosted LRAT kernel and production extraction
         run: go test ./compiler -run '^TestLRATKernel' -count=1 -v
+
+      - name: Check LRAT allocating entries and failure cleanup
+        run: go test . -run '^TestOakLRAT(AllocatedEntry|RawStreamEntry)$' -count=1 -v
 
       # The self-hosted laws (docs/spec/125-verification.md section 7): the
       # decided files everywhere, the Lean-proved file here, where the

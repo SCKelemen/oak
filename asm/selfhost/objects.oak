@@ -1,0 +1,157 @@
+// Text-only object linker. Source fragments and symbol names are byte pools;
+// all record fields are checked before use. Definitions are strictly sorted
+// by name, relocations by (object, offset). No host-resolved addresses.
+NativeObject: type = struct { source: u32, size: u32, alignment: u32 }
+NativeSymbol: type = struct { name: u32, length: u32, object: u32, offset: u32 }
+NativeObjectRelocation: type = struct { object: u32, offset: u32, kind: u32, name: u32, length: u32 }
+NativeLinkResult: type = struct { status: u32, size: u32, entry: u32 }
+
+native_name_valid: (names: []u8, at: u32, size: u32): Bool =
+  size > u32(0) && at <= len(names) && size <= len(names) - at
+
+// Callers admit both spans first. Names are opaque bytes, not NUL-terminated.
+native_name_compare: (names: []u8, a: u32, an: u32, b: u32, bn: u32): i32 {
+  i: u32 = 0
+  order: i32 = 0
+  while i < an && i < bn && order == i32(0) {
+    names[a + i] < names[b + i] ? { order = i32(-1) } |
+      { names[a + i] > names[b + i] ? { order = i32(1) } }
+    i = i + u32(1)
+  }
+  order == i32(0) ? {
+    an < bn ? { order = i32(-1) } | { an > bn ? { order = i32(1) } }
+  }
+  order
+}
+
+// Lower-bound search over admitted, strictly sorted definitions. The missing
+// sentinel is len(symbols); it can never be mistaken for a valid definition.
+native_symbol_find: (names: []u8, symbols: []NativeSymbol, name: u32, size: u32): u32 {
+  lo: u32 = 0
+  hi: u32 = len(symbols)
+  while lo < hi {
+    mid: u32 = lo + (hi - lo) / u32(2)
+    s: NativeSymbol = symbols[mid]
+    native_name_compare(names, s.name, s.length, name, size) < i32(0) ? {
+      lo = mid + u32(1)
+    } | { hi = mid }
+  }
+  found: u32 = len(symbols)
+  lo < len(symbols) ? {
+    s: NativeSymbol = symbols[lo]
+    native_name_compare(names, s.name, s.length, name, size) == i32(0) ? { found = lo }
+  }
+  found
+}
+
+// Success returns the linked text extent and its named entry offset. Refusal
+// returns {1, 0, 0} and leaves dst untouched. Scratch layout may be changed on
+// refusal. All borrows must be disjoint from writable storage at the call site.
+// arch 1 is ARM64, arch 2 is uncompressed RV64; all symbols are strong text
+// labels at instruction boundaries. Inputs are trusted only after admission.
+native_link_objects: (dst: [*]u8, layout: [*]u32, src: []u8, objects: []NativeObject,
+    names: []u8, symbols: []NativeSymbol, plan: []NativeObjectRelocation,
+    arch: u32, base: u64, entry_name: u32, entry_length: u32): NativeLinkResult {
+  result: NativeLinkResult = NativeLinkResult { status: u32(1), size: u32(0), entry: u32(0) }
+  good: Bool = (arch == u32(1) || arch == u32(2)) && base % u64(4) == u64(0) &&
+    len(objects) > u32(0) && len(layout) >= len(objects) && native_name_valid(names, entry_name, entry_length)
+  total: u64 = 0
+  i: u32 = 0
+  while good && i < len(objects) {
+    o: NativeObject = objects[i]
+    good = o.size > u32(0) && o.size % u32(4) == u32(0) &&
+      o.alignment >= u32(4) && o.alignment <= u32(4096) &&
+      (o.alignment & (o.alignment - u32(1))) == u32(0) &&
+      o.source <= len(src) && o.size <= len(src) - o.source
+    good ? {
+      // total is bounded by the u32 destination extent at each iteration.
+      align: u64 = u64(o.alignment)
+      padding: u64 = (align - ((base % align + total % align) % align)) % align
+      start: u64 = total + padding
+      end: u64 = start + u64(o.size)
+      good = end <= u64(len(dst)) && base <= u64(18446744073709551615) - end
+      good ? { layout[i] = u32_trunc_u64(start)
+        total = end }
+    }
+    i = i + u32(1)
+  }
+  i = u32(0)
+  while good && i < len(symbols) {
+    s: NativeSymbol = symbols[i]
+    good = native_name_valid(names, s.name, s.length) && s.object < len(objects)
+    good ? { good = s.offset < objects[s.object].size && s.offset % u32(4) == u32(0) }
+    good && i > u32(0) ? {
+      prior: NativeSymbol = symbols[i - u32(1)]
+      good = native_name_compare(names, prior.name, prior.length, s.name, s.length) < i32(0)
+    }
+    i = i + u32(1)
+  }
+  entry: u32 = 0
+  good ? {
+    index: u32 = native_symbol_find(names, symbols, entry_name, entry_length)
+    good = index < len(symbols)
+    good ? { s: NativeSymbol = symbols[index]
+      entry = layout[s.object] + s.offset }
+  }
+  // Validate every relocation against the original source before any writes.
+  last_end: u32 = 0
+  i = u32(0)
+  while good && i < len(plan) {
+    r: NativeObjectRelocation = plan[i]
+    good = r.object < len(objects) && native_name_valid(names, r.name, r.length) &&
+      ((arch == u32(1) && r.kind >= u32(1) && r.kind <= u32(3)) ||
+       (arch == u32(2) && (r.kind == u32(4) || r.kind == u32(5))))
+    good ? {
+      o: NativeObject = objects[r.object]
+      width: u32 = r.kind == u32(1) || r.kind == u32(2) ? u32(4) | u32(8)
+      good = r.offset % u32(4) == u32(0) && r.offset <= o.size && width <= o.size - r.offset
+      good ? {
+        place: u32 = layout[r.object] + r.offset
+        good = place >= last_end
+        index: u32 = native_symbol_find(names, symbols, r.name, r.length)
+        good = good && index < len(symbols)
+        good ? {
+          s: NativeSymbol = symbols[index]
+          at: u32 = o.source + r.offset
+          first: u32 = u32(src[at]) | (u32(src[at + u32(1)]) << u32(8)) |
+            (u32(src[at + u32(2)]) << u32(16)) | (u32(src[at + u32(3)]) << u32(24))
+          second: u32 = 0
+          width == u32(8) ? {
+            second = u32(src[at + u32(4)]) | (u32(src[at + u32(5)]) << u32(8)) |
+              (u32(src[at + u32(6)]) << u32(16)) | (u32(src[at + u32(7)]) << u32(24))
+          }
+          p: NativePatch = native_relocate(r.kind, first, second, base + u64(place),
+            base + u64(layout[s.object]) + u64(s.offset))
+          good = p.status == u32(0)
+          last_end = place + width
+        }
+      }
+    }
+    i = i + u32(1)
+  }
+  good ? {
+    // Commit only after all layout, name, entry, and instruction checks pass.
+    i = u32(0)
+    while u64(i) < total { dst[i] = u8(0)
+      i = i + u32(1) }
+    i = u32(0)
+    while i < len(objects) {
+      o: NativeObject = objects[i]
+      j: u32 = 0
+      while j < o.size { dst[layout[i] + j] = src[o.source + j]
+        j = j + u32(1) }
+      i = i + u32(1)
+    }
+    i = u32(0)
+    while i < len(plan) {
+      r: NativeObjectRelocation = plan[i]
+      index: u32 = native_symbol_find(names, symbols, r.name, r.length)
+      s: NativeSymbol = symbols[index]
+      native_link_patch(dst, layout[r.object] + r.offset, r.kind, base,
+        base + u64(layout[s.object]) + u64(s.offset))
+      i = i + u32(1)
+    }
+    result = NativeLinkResult { status: u32(0), size: u32_trunc_u64(total), entry: entry }
+  }
+  result
+}

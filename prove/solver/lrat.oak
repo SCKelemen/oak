@@ -59,6 +59,22 @@ LRAT_UNASSIGNED: u8 = 0
 // when at <= limit. Oak.LRATBounds proves this extracted implementation.
 lrat_fits: (at: u32, count: u32, limit: u32): Bool = at <= limit && count <= limit - at
 
+// Allocating entry points reserve one sentinel element and may allocate u32
+// words. Check before either count + 1 or multiplication by four is evaluated.
+// Zero counts still receive a nonzero allocation. This is a representation
+// bound, not a promise that the allocator can satisfy the request.
+lrat_alloc_fits: (count: u32): Bool = count < u32(1073741823)
+
+// A complete header must fit both word and byte indexing before a driver
+// reads/allocates its body. The body leaves room for the eight header words.
+lrat_header_fits: (h: []u32): Bool {
+  ok: Bool = len(h) >= LRAT_HEADER_WORDS
+  ok = ok && h[u32(0)] == LRAT_MAGIC
+  ok = ok && lrat_alloc_fits(h[u32(1)]) && lrat_alloc_fits(h[u32(5)]) && lrat_alloc_fits(h[u32(6)])
+  ok = ok && h[u32(2)] <= h[u32(5)] && lrat_fits(h[u32(3)], h[u32(4)], u32(1073741815))
+  ok
+}
+
 // lrat_true_value is the assignment under which the literal holds.
 lrat_true_value: (lit: u32): u8 = lit % u32(2) == u32(1) ? u8(2) | u8(1)
 lrat_false_value: (lit: u32): u8 = lit % u32(2) == u32(1) ? u8(1) | u8(2)
