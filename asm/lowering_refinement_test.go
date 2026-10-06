@@ -297,6 +297,13 @@ var loweringProgramRenders = []struct {
 	// Nested places are stable too: restoring r while lowering the RHS must
 	// not detach the r.x[0] leaf that the assignment already resolved.
 	{"R: type = struct {\n  x: [1]u32\n}\n\nf: (a, b: u32) -> u32 = {\n  r: R = R { x: [a] }\n  r.x[0] = a < b ? { b } | { a }\n  r.x[0]\n}\n", "((a lo b) ? b : a)"},
+	// The resolved aggregate place stays attached while a one-trip loop
+	// lowers a conditional RHS. The public prover may summarize these calls
+	// as applications and enumerate their u8 domain; these direct fixtures
+	// keep the structural lowering regression pinned at its source.
+	{"Box: type = struct {\n  items: [2]u8\n  value: u8\n}\n\nf: (x: u8) -> u8 = {\n  out: Box = Box { items: [0, 0], value: 0 }\n  i: u8 = 0\n  while i < u8(1) {\n    out = true ? { Box { items: [x, 0], value: x } } | { out }\n    i = i + u8(1)\n  }\n  out.value\n}\n", "x"},
+	{"Box: type = struct {\n  items: [2]u8\n  value: u8\n}\n\nf: (x: u8) -> u8 = {\n  out: Box = Box { items: [0, 0], value: 0 }\n  i: u8 = 0\n  while i < u8(1) {\n    out.value = true ? { x } | { u8(0) }\n    i = i + u8(1)\n  }\n  out.value\n}\n", "x"},
+	{"Box: type = struct {\n  items: [2]u8\n  value: u8\n}\n\nf: (x: u8) -> u8 = {\n  out: Box = Box { items: [0, 0], value: 0 }\n  i: u8 = 0\n  while i < u8(1) {\n    out.items[u32(i)] = true ? { x } | { u8(0) }\n    i = i + u8(1)\n  }\n  out.items[0]\n}\n", "x"},
 	// Data-dependent loops (`whileEvent`): the carried locals stand as the
 	// fresh symbols `loop<index>.<var>` after the loop (`loopEvent`).
 	{"f: (n: u32) -> u32 = {\n  s: u32 = 0\n  i: u32 = 0\n  while i < n {\n    s = s + i\n    i = i + 1\n  }\n  s + i\n}\n", "(loop1.s add loop1.i)"},

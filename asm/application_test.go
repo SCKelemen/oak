@@ -143,3 +143,42 @@ func TestApplicationDeclaredWidthEqualityChecksArguments(t *testing.T) {
 		t.Fatal("applications with different arguments compared equal at declared widths")
 	}
 }
+
+func TestApplicationEvidenceCannotRefuteTheorem(t *testing.T) {
+	x := paramTerm("x", 8)
+	application := applyTerm("call:callee:result", 8, x)
+	atZero := application.eval(map[string]uint64{"x": 0})
+	names := []string{"x"}
+	widths := map[string]int{"x": 8}
+
+	tests := []struct {
+		name  string
+		claim *term
+		traps []*term
+	}{
+		{
+			name:  "claim",
+			claim: cmpTerm("eq", application, constTerm(atZero^1, 8)),
+		},
+		{
+			name:  "trap",
+			claim: constTerm(1, 1),
+			traps: []*term{cmpTerm("eq", application, constTerm(atZero, 8))},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			lowered := &loweredTheorem{claim: test.claim, traps: test.traps, names: names, widths: widths}
+			if decision, refuted := lowered.witnessRefutation(); refuted || decision.Kind == DecisionRefuted {
+				t.Fatalf("the evidence interpretation refuted the theorem during witness evaluation: %#v", decision)
+			}
+
+			bl := newBlaster(names, widths)
+			evaluator := newTermEvaluator(append([]*term{test.claim}, test.traps...)...)
+			decision, exceeded := decideBlasted(bl, test.traps, test.claim, names, evaluator)
+			if exceeded || decision.Kind != DecisionUndecided {
+				t.Fatalf("application-dependent diagrams = %#v, exceeded=%v; want undecided", decision, exceeded)
+			}
+		})
+	}
+}

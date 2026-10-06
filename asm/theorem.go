@@ -274,13 +274,25 @@ func decideLowered(lowered *loweredTheorem) Decision {
 func (lowered *loweredTheorem) witnessRefutation() (Decision, bool) {
 	t, traps, names, widths := lowered.claim, lowered.traps, lowered.names, lowered.widths
 	evaluator := newTermEvaluator(append([]*term{t}, traps...)...)
+	claimHasApplication := theoremHasGeneralApplication(t, nil)
+	trapHasApplication := make([]bool, len(traps))
+	for i, trap := range traps {
+		trapHasApplication[i] = theoremHasGeneralApplication(trap, nil)
+	}
 	for _, env := range witnessInputs(names, widths) {
-		for _, trap := range traps {
+		for i, trap := range traps {
+			// A finite-call application has no executable interpretation in
+			// the theorem term: applicationValue is evidence-only, while the
+			// proof authority is Ackermann congruence. Its arbitrary value
+			// therefore cannot turn a witness into a source-level trap.
+			if trapHasApplication[i] {
+				continue
+			}
 			if evaluator.evaluate(trap, env) != 0 {
 				return Decision{Kind: DecisionRefuted, Message: "the body traps (a shift count at the width, a failed assert, or a construction outside its predicate) at " + describeEnv(names, env)}, true
 			}
 		}
-		if evaluator.evaluate(t, env) != 1 {
+		if !claimHasApplication && evaluator.evaluate(t, env) != 1 {
 			return Decision{Kind: DecisionRefuted, Message: "counterexample " + describeEnv(names, env)}, true
 		}
 	}
@@ -447,6 +459,9 @@ func decideBlasted(bl *blaster, traps []*term, t *term, names []string, evaluato
 			return Decision{}, true
 		}
 		if bits[0] != bddFalse {
+			if theoremHasGeneralApplication(trap, nil) {
+				return Decision{Kind: DecisionUndecided, Message: "the diagrams fire a trap only under an uninterpreted application; its evidence interpretation cannot establish a source-level trap"}, false
+			}
 			env := bl.counterexample(bits[0], bddFalse)
 			if evaluator.evaluate(trap, env) == 0 {
 				return Decision{Kind: DecisionUndecided, Message: "the diagrams fire a trap only under the abstraction of an uninterpreted operation; the body does not trap at the assignment they chose"}, false
@@ -464,6 +479,9 @@ func decideBlasted(bl *blaster, traps []*term, t *term, names []string, evaluato
 			order = ", " + bl.label
 		}
 		return Decision{Kind: DecisionProven, Message: fmt.Sprintf("at the bit level (%d BDD nodes%s)", len(bl.bdd.nodes), order), Order: orderNames[bl.label], Nodes: len(bl.bdd.nodes)}, false
+	}
+	if theoremHasGeneralApplication(t, nil) {
+		return Decision{Kind: DecisionUndecided, Message: "the diagrams differ under an uninterpreted application; its evidence interpretation cannot establish a source-level counterexample"}, false
 	}
 	env := bl.counterexample(bits[0], bddTrue)
 	if evaluator.evaluate(t, env) == 1 {
