@@ -24,12 +24,14 @@ package asm
 
 import (
 	"fmt"
+	"io"
 	"math/bits"
 	"os"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -5146,6 +5148,27 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 					failure = fmt.Sprintf("loop %d's continue conditions were not proven equal", k+1)
 					if trace {
 						fmt.Fprintf(os.Stderr, "verify %s: %s (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, failure, decided, substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma), bodyPremise(k, sigma, false))
+						if dump := os.Getenv("OAK_VERIFY_OBLIGATION_DUMP"); dump != "" {
+							// The obligation in full (String abbreviates past 400 nodes):
+							// a study of why the conditions did not couple starts from
+							// the complete terms, not their spines.
+							if f, err := os.OpenFile(dump, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+								full := func(t *term) string { budget := 1 << 24; return t.stringBounded(&budget) }
+								oakCond, asmCond, premise := substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma), bodyPremise(k, sigma, false)
+								fmt.Fprintf(f, "%s loop %d: %s\noak (%d nodes, canonical %d):\n%s\nasm (%d nodes, canonical %d):\n%s\npremise (%d nodes):\n%s\n\n", fn.Name, k+1, failure,
+									termSize(oakCond, map[*term]int{}), termSize(canonical(oakCond), map[*term]int{}), full(oakCond),
+									termSize(asmCond, map[*term]int{}), termSize(canonical(asmCond), map[*term]int{}), full(asmCond),
+									termSize(premise, map[*term]int{}), full(premise))
+								f.Close()
+							}
+							// The same obligation as a replayable DAG (TestReplayObligation
+							// decides it again in seconds, where a probe of the whole
+							// function rebuilds the package first).
+							if f, err := os.OpenFile(dump+".dag", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644); err == nil {
+								writeTermDAG(f, widthOfName, bodyPremise(k, sigma, false), substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma))
+								f.Close()
+							}
+						}
 					}
 					if !decided {
 						// Beyond the node budget under this pairing; another
@@ -6486,7 +6509,38 @@ type nodeBudget struct {
 	// allowance (synthesized in impliesEqualDepth) lets one diagram grow
 	// to the full blastNodeBudget.
 	loop bool
+	// optimistic marks a bounded shortcut's budget (nodeBudget.bounded):
+	// an implication left undecided under it is not recorded as
+	// undecided, since the full allowance may still decide it.
+	optimistic bool
 }
+
+// bounded runs attempt under at most limit of the budget's nodes (the
+// shortcuts: a decision without its premise, under a weaker premise),
+// charging the proof what the attempt spent. A shortcut that fails for
+// budget costs the proof the bound, not a whole decision's allowance.
+func (budget *nodeBudget) bounded(limit int, attempt func(*nodeBudget) (bool, bool)) (holds bool, decided bool) {
+	if budget == nil {
+		return attempt(nil)
+	}
+	if limit > budget.remaining || verifyOff("bounded") {
+		limit = budget.remaining
+	}
+	if budget.decided == nil {
+		budget.decided = map[decisionKey]decisionResult{}
+	}
+	child := &nodeBudget{remaining: limit, calls: budget.calls, decided: budget.decided, loop: budget.loop, optimistic: true}
+	holds, decided = attempt(child)
+	budget.remaining -= limit - child.remaining
+	budget.calls = child.calls
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "verify: shortcut spent %d of %d nodes: holds=%v decided=%v\n", limit-child.remaining, limit, holds, decided)
+	}
+	return holds, decided
+}
+
+// optimisticNodeBudget bounds one shortcut attempt's diagrams.
+const optimisticNodeBudget = 250000
 
 // decisionKey identifies one implication within a proof: its premise and
 // sides by identity, at its case-split depth (the depth bounds the splits
@@ -6683,13 +6737,18 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 	if budget.decided == nil {
 		budget.decided = map[decisionKey]decisionResult{}
 	}
-	budget.decided[key] = decisionResult{holds, decided}
+	if decided || !budget.optimistic {
+		budget.decided[key] = decisionResult{holds, decided}
+	}
 	return holds, decided
 }
 
 func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
 	if depth == 0 {
 		premise, a, b = canonical(premise), canonical(a), canonical(b)
+	}
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "verify: implication at depth %d: a %d nodes, b %d nodes, premise %d nodes, budget %d, optimistic=%v\n", depth, termSize(a, map[*term]int{}), termSize(b, map[*term]int{}), termSize(premise, map[*term]int{}), budget.remaining, budget.optimistic)
 	}
 	width := a.width
 	if b.width > width {
@@ -6747,6 +6806,9 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 	sort.Strings(names)
 	narrowByPremise(premise, widths)
 	if refutedByValuation(premise, a, b, names, widths) {
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify: refuted by a valuation at depth %d: a %d nodes, b %d nodes, premise %d nodes\n  a: %s\n  b: %s\n  premise: %s\n", depth, termSize(a, map[*term]int{}), termSize(b, map[*term]int{}), termSize(premise, map[*term]int{}), abbreviate(a.String(), 700), abbreviate(b.String(), 700), abbreviate(premise.String(), 1500))
+		}
 		return false, true
 	}
 	if premise.kind != termConst && termSize(a, map[*term]int{})+termSize(b, map[*term]int{}) <= smallSides {
@@ -6755,18 +6817,39 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 		// diagram first, where the premise — a conjunction of the inner
 		// loops' exit facts over their element reads — costs every order
 		// its budget for nothing.
-		if holds, decided := impliesEqualDepth(constTerm(1, 1), a, b, widthOf, budget, depth); decided && holds {
+		if holds, decided := budget.bounded(optimisticNodeBudget, func(b2 *nodeBudget) (bool, bool) {
+			return impliesEqualDepth(constTerm(1, 1), a, b, widthOf, b2, depth)
+		}); decided && holds {
 			return true, true
 		}
 	}
+	// The premise's conjuncts that share no symbol with the sides, even
+	// through other conjuncts (an inner loop's exit facts over its own
+	// symbols, a callee's summary), weigh on every diagram and decide
+	// nothing: the implication is tried first under the conjuncts that
+	// can bear on it — a weaker premise, so a proof under it is a proof —
+	// and under the whole only when that fails. A bounded shortcut: its
+	// failure costs the bound, not a decision's allowance. (Two finer
+	// readings — the conjuncts within the sides' own symbols, those
+	// reaching them outside memory indices — were tried and withdrawn:
+	// step_count's coupling spent thirty times its proof's time refuting
+	// them, and ident did not decide under them.)
+	premise = premiseUnderItself(premise)
+	if os.Getenv("OAK_VERIFY_TRACE") != "" && premise.kind != termConst {
+		fmt.Fprintf(os.Stderr, "verify: premise at depth %d: kind %d op %q width %d, %d conjuncts, %d nodes\n", depth, premise.kind, premise.op, premise.width, len(conjunctsOf(premise)), termSize(premise, map[*term]int{}))
+		if termSize(premise, map[*term]int{}) > 5000 {
+			for k, c := range conjunctsOf(premise) {
+				fmt.Fprintf(os.Stderr, "  conjunct %d: %d nodes: %s\n", k, termSize(c, map[*term]int{}), spineOf(c, 3))
+			}
+		}
+	}
 	if relevant, dropped := relevantPremise(premise, a, b); dropped {
-		// The premise's conjuncts that share no symbol with the sides,
-		// even through other conjuncts (an inner loop's exit facts over
-		// its own symbols, a callee's summary), weigh on every diagram
-		// and decide nothing: the implication is tried first under the
-		// conjuncts that can bear on it — a weaker premise, so a proof
-		// under it is a proof — and under the whole only when that fails.
-		if holds, decided := impliesEqualDepth(relevant, a, b, widthOf, budget, depth); decided && holds {
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			fmt.Fprintf(os.Stderr, "verify: relevant premise at depth %d: %d of %d nodes, %d of %d conjuncts\n", depth, termSize(relevant, map[*term]int{}), termSize(premise, map[*term]int{}), len(conjunctsOf(relevant)), len(conjunctsOf(premise)))
+		}
+		if holds, decided := budget.bounded(optimisticNodeBudget, func(b2 *nodeBudget) (bool, bool) {
+			return impliesEqualDepth(relevant, a, b, widthOf, b2, depth)
+		}); decided && holds {
 			return true, true
 		}
 	}
@@ -6785,10 +6868,16 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 	if holds, decided := impliesEqualByArms(premise, a, b, widthOf, budget, depth); decided {
 		return holds, true
 	}
+	if holds, decided := impliesEqualOneSidedArms(premise, a, b, widthOf, budget, depth); decided && !verifyOff("onesided") {
+		return holds, true
+	}
 	if holds, decided := impliesEqualCongruent(premise, a, b, widthOf, budget, depth); decided {
 		return holds, true
 	}
 	blasters := equalityBlasters(names, widths, a, b)
+	if cb := componentBlaster(names, widths, premise, a, b); cb != nil && !verifyOff("components") {
+		blasters = append(blasters, cb)
+	}
 	var stop atomic.Bool
 	type attempt struct{ holds, decided bool }
 	results := make(chan attempt, len(blasters))
@@ -6969,6 +7058,409 @@ func splitDecideOn(premise, a, b, cond *term, widthOf func(string) int, budget *
 		}
 		if !holds {
 			return false, true
+		}
+	}
+	return true, true
+}
+
+// componentBlaster is the components-apart order for an implication
+// (newComponentBlaster), nil when the premise and sides form one block.
+// Parameters and reads are linked strongly when one comparison (or the
+// equality's sides) relates them — their bits must interleave, as an
+// adder's or an equality's operands — and weakly when one Boolean
+// connective (a conditional, a disjunction, a negation) joins the atoms
+// they are in: those need not interleave, but their blocks should be
+// adjacent, since the diagram remembers which arm or disjunct holds across
+// every variable between them. The blocks are the strong components; their
+// order a walk of the weak links from the sides' block, reversed, so the
+// sides' block is last and each block stands next to the blocks it is
+// weakly linked to (ident's keyword table: the name's words, the length
+// read, then the arena facts, where any interleaving multiplied the table
+// by the facts).
+func componentBlaster(names []string, widths map[string]int, premise, a, b *term) *blaster {
+	parent := map[string]string{}
+	find := func(x string) string {
+		for parent[x] != "" && parent[x] != x {
+			x = parent[x]
+		}
+		return x
+	}
+	union := func(x, y string) {
+		rx, ry := find(x), find(y)
+		if rx != ry {
+			parent[rx] = ry
+		}
+	}
+	type read struct {
+		span  string
+		index *term
+	}
+	readKey := func(r read) string { return fmt.Sprintf("read:%s:%p", r.span, r.index) }
+	reads := map[string]read{}
+	// atoms gathers the parameters and reads beneath a term (not those
+	// inside a read's index: the index relates the read to the memory,
+	// not its value to the index's parameters).
+	var atoms func(t *term, into map[string]bool, seen map[*term]bool)
+	atoms = func(t *term, into map[string]bool, seen map[*term]bool) {
+		if t == nil || seen[t] {
+			return
+		}
+		seen[t] = true
+		switch t.kind {
+		case termParam:
+			into[t.name] = true
+			return
+		case termConst:
+			return
+		case termSelect:
+			key := readKey(read{t.name, t.left})
+			reads[key] = read{t.name, t.left}
+			into[key] = true
+			return
+		}
+		atoms(t.cond, into, seen)
+		atoms(t.left, into, seen)
+		atoms(t.right, into, seen)
+		for _, arg := range t.args {
+			atoms(arg, into, seen)
+		}
+	}
+	linkAll := func(members map[string]bool) {
+		var first string
+		for m := range members {
+			if parent[m] == "" {
+				parent[m] = m
+			}
+			if first == "" {
+				first = m
+			} else {
+				union(first, m)
+			}
+		}
+	}
+	// Strong links: the atoms of one comparison; the sides together.
+	var weak [][]string // the members of each Boolean connective
+	visited := map[*term]bool{}
+	var walk func(t *term)
+	walk = func(t *term) {
+		if t == nil || visited[t] {
+			return
+		}
+		visited[t] = true
+		switch {
+		case t.kind == termCmp:
+			members := map[string]bool{}
+			atoms(t, members, map[*term]bool{})
+			linkAll(members)
+		case t.kind == termSelect:
+			// The index's operands interleave among themselves (an adder
+			// over the base and the position); the read's value is a block
+			// of its own unless a comparison relates it.
+			members := map[string]bool{}
+			atoms(t.left, members, map[*term]bool{})
+			linkAll(members)
+		case t.kind == termIte && t.width == 1, t.kind == termBinary && t.width == 1 && (t.op == "or" || t.op == "xor" || t.op == "and"):
+			members := map[string]bool{}
+			atoms(t, members, map[*term]bool{})
+			if len(members) > 1 {
+				list := make([]string, 0, len(members))
+				for m := range members {
+					list = append(list, m)
+				}
+				sort.Strings(list)
+				weak = append(weak, list)
+			}
+		}
+		walk(t.cond)
+		walk(t.left)
+		walk(t.right)
+		for _, arg := range t.args {
+			walk(arg)
+		}
+	}
+	// The premise's top-level conjuncts are independent; each is walked on
+	// its own so the conjunction does not weakly link everything.
+	for _, c := range conjunctsOf(premise) {
+		walk(c)
+	}
+	walk(a)
+	walk(b)
+	sides := map[string]bool{}
+	atoms(a, sides, map[*term]bool{})
+	atoms(b, sides, map[*term]bool{})
+	linkAll(sides)
+	for _, name := range names {
+		if parent[name] == "" {
+			parent[name] = name
+		}
+	}
+	// Blocks: the strong components of the parameters and reads.
+	blockOf := map[string]string{}
+	isBlock := map[string]bool{}
+	var blocks []string
+	note := func(block string) {
+		if !isBlock[block] {
+			isBlock[block] = true
+			blocks = append(blocks, block)
+		}
+	}
+	for _, name := range names {
+		block := find(name)
+		blockOf[name] = block
+		note(block)
+	}
+	readBlocks := map[string]string{}
+	for key := range reads {
+		block := find(key)
+		readBlocks[key] = block
+		note(block)
+	}
+	if len(blocks) < 2 {
+		return nil
+	}
+	// Weak adjacency between blocks, and the order: from the sides' block
+	// along the weak links, reversed.
+	adjacent := map[string][]string{}
+	for _, members := range weak {
+		for i := range members {
+			for j := range members {
+				bi, bj := find(members[i]), find(members[j])
+				if bi != bj {
+					adjacent[bi] = append(adjacent[bi], bj)
+				}
+			}
+		}
+	}
+	var sideBlock string
+	for m := range sides {
+		sideBlock = find(m)
+		break
+	}
+	var order []string
+	queued := map[string]bool{}
+	if sideBlock != "" {
+		queue := []string{sideBlock}
+		queued[sideBlock] = true
+		for len(queue) > 0 {
+			block := queue[0]
+			queue = queue[1:]
+			order = append(order, block)
+			next := append([]string(nil), adjacent[block]...)
+			sort.Strings(next)
+			for _, n := range next {
+				if !queued[n] {
+					queued[n] = true
+					queue = append(queue, n)
+				}
+			}
+		}
+	}
+	for _, block := range blocks {
+		if !queued[block] {
+			queued[block] = true
+			order = append(order, block)
+		}
+	}
+	for i, j := 0, len(order)-1; i < j; i, j = i+1, j-1 {
+		order[i], order[j] = order[j], order[i]
+	}
+	reserved := map[string]int{}
+	for _, block := range readBlocks {
+		reserved[block]++
+	}
+	for block := range reserved {
+		reserved[block] += 2 // reads met at blast time only (an abstraction's operand)
+	}
+	readBlock := func(span string, index *term) (string, bool) {
+		block, known := readBlocks[readKey(read{span, index})]
+		return block, known
+	}
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		var show []string
+		for _, block := range order {
+			var members []string
+			for _, name := range names {
+				if blockOf[name] == block {
+					members = append(members, name)
+				}
+			}
+			show = append(show, fmt.Sprintf("%v+%d reads", members, reserved[block]))
+		}
+		fmt.Fprintf(os.Stderr, "verify: components apart: %s\n", strings.Join(show, " | "))
+	}
+	return newComponentBlaster(names, widths, blockOf, order, reserved, readBlock)
+}
+
+// verifyOff reports a rule named in OAK_VERIFY_OFF (a comma list): the
+// bisection switch that attributed a pilot regression to one canonical
+// form in minutes (docs/spec/94-assembler.md §9). Rules: selfprune,
+// onesided, components, bounded. Read once.
+func verifyOff(name string) bool {
+	verifyOffOnce.Do(func() {
+		verifyOffRules = map[string]bool{}
+		for _, off := range strings.Split(os.Getenv("OAK_VERIFY_OFF"), ",") {
+			if off != "" {
+				verifyOffRules[off] = true
+			}
+		}
+	})
+	return verifyOffRules[name]
+}
+
+var (
+	verifyOffOnce  sync.Once
+	verifyOffRules map[string]bool
+)
+
+// premiseUnderItself rewrites each large conjunct of a premise by the
+// facts its other conjuncts state. A path condition repeats the guards it
+// passed: the keyword table's verdict stands as one conjunct and again
+// inside each path disjunct and each negated branch, and a conjunct that
+// restates it is, under the premise, the rest of itself. The whole is
+// equivalent to the premise, and the restated guard no longer ties the
+// arena facts to the table's words in one conjunct (relevantPremise can
+// then leave the table out of a decision over the arena alone). Small
+// premises and small conjuncts are left as they are.
+func premiseUnderItself(premise *term) *term {
+	if verifyOff("selfprune") || premise.kind == termConst || termSize(premise, map[*term]int{}) < premiseSelfPruneSize {
+		return premise
+	}
+	conjuncts := conjunctsOf(premise)
+	if len(conjuncts) < 2 || len(conjuncts) > premiseSelfPruneConjuncts {
+		return premise
+	}
+	sizes := map[*term]int{}
+	out := make([]*term, len(conjuncts))
+	copy(out, conjuncts)
+	changed := false
+	for i, c := range conjuncts {
+		if termSize(c, sizes) < largeBranch {
+			continue
+		}
+		// The conjuncts before i as already rewritten, those after as
+		// they are: every conjunct is still stated while c is rewritten,
+		// and two copies of one fact leave one (each under the other
+		// would leave none).
+		others := make([]*term, 0, len(conjuncts)-1)
+		for j := range conjuncts {
+			if j != i {
+				others = append(others, out[j])
+			}
+		}
+		pruned := pruneUnderFacts(conjoinAll(others), []*term{c})[0]
+		if pruned != c {
+			out[i], changed = pruned, true
+		}
+	}
+	if !changed {
+		return premise
+	}
+	rewritten := canonical(conjoinAll(out))
+	if os.Getenv("OAK_VERIFY_TRACE") != "" {
+		fmt.Fprintf(os.Stderr, "verify: premise under itself: %d nodes from %d\n", termSize(rewritten, map[*term]int{}), termSize(premise, sizes))
+	}
+	return rewritten
+}
+
+// premiseSelfPruneSize is the premise size from which premiseUnderItself
+// rewrites; premiseSelfPruneConjuncts bounds the conjuncts it considers
+// (each is rewritten under the others, a pass per conjunct).
+const (
+	premiseSelfPruneSize      = 1000
+	premiseSelfPruneConjuncts = 32
+)
+
+// writeTermDAG writes terms as a replayable DAG: one line per node in
+// dependency order (`#id kind width declared op name value cond left right
+// args...`, children by id, -1 for none), the parameters' declared widths
+// (`width name w`), then the roots (`root #id`). readTermDAG (a test
+// helper) rebuilds the same DAG, so a decision met in a whole-function
+// probe can be studied on its own.
+func writeTermDAG(w io.Writer, widthOf func(string) int, roots ...*term) {
+	ids := map[*term]int{}
+	params := map[string]bool{}
+	var write func(t *term) int
+	write = func(t *term) int {
+		if t == nil {
+			return -1
+		}
+		if id, seen := ids[t]; seen {
+			return id
+		}
+		cond, left, right := write(t.cond), write(t.left), write(t.right)
+		args := make([]string, len(t.args))
+		for i, arg := range t.args {
+			args[i] = strconv.Itoa(write(arg))
+		}
+		id := len(ids)
+		ids[t] = id
+		if t.kind == termParam {
+			params[t.name] = true
+		}
+		fmt.Fprintf(w, "#%d\t%d\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%s\n", id, t.kind, t.width, t.declared, t.op, t.name, t.value, cond, left, right, strings.Join(args, "\t"))
+		return id
+	}
+	rootIDs := make([]int, len(roots))
+	for i, root := range roots {
+		rootIDs[i] = write(root)
+	}
+	names := make([]string, 0, len(params))
+	for name := range params {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Fprintf(w, "width\t%s\t%d\n", name, widthOf(name))
+	}
+	for _, id := range rootIDs {
+		fmt.Fprintf(w, "root\t#%d\n", id)
+	}
+}
+
+// impliesEqualOneSidedArms proves premise → (a = b) when one side is a
+// conditional and the other is not: a machine condition settled branch
+// by branch (`c1 ? k < n1 : (c2 ? k < n2 : k < n3)`, the loop's guard
+// under each path the code generator split) against the source's one
+// comparison over the merged value (`k < (c ? n : m)`). Each arm is
+// proven under the premise strengthened by its condition, the other
+// side rewritten by that direct fact first, so the comparison over the
+// merged value meets the arm it agrees with. Like the arm rule it
+// recurses at the same depth — the conditional's spine shrinks by one
+// branch per step — and proves but never refutes. Lookup steps (a table
+// walked by a chain of equalities) are not split: their arms are the
+// rows, not the paths.
+func impliesEqualOneSidedArms(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+	a, b = pushMask(a), pushMask(b)
+	if (a.kind == termIte) == (b.kind == termIte) {
+		return false, false
+	}
+	if a.kind == termIte {
+		a, b = b, a
+	}
+	if b.cond.kind == termConst || isLookupStep(b.cond, map[*term]int{}) {
+		return false, false
+	}
+	if budget != nil && budget.remaining <= 0 {
+		return false, false
+	}
+	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
+	if trace {
+		fmt.Fprintf(os.Stderr, "verify: one-sided arms at depth %d on %s\n", depth, abbreviate(b.cond.String(), 150))
+	}
+	c := truncate(b.cond, 1)
+	for polarity, branch := range []*term{c, notTerm(c)} {
+		arm := b.left
+		if polarity == 1 {
+			arm = b.right
+		}
+		pruned := pruneUnderFacts(branch, []*term{premise, a, arm})
+		casePremise := canonical(binaryTerm("and", branch, pruned[0]))
+		holds, decided := impliesEqualDepth(casePremise, canonical(pruned[1]), canonical(pruned[2]), widthOf, budget, depth)
+		if trace {
+			fmt.Fprintf(os.Stderr, "verify: one-sided arms depth %d polarity %d: holds=%v decided=%v\n", depth, polarity, holds, decided)
+		}
+		if !decided || !holds {
+			return false, false
 		}
 	}
 	return true, true
@@ -7923,6 +8415,26 @@ const smallSides = 400
 // dropped (nothing to gain otherwise). Element reads of the same span
 // count as sharing its name.
 func relevantPremise(premise, a, b *term) (*term, bool) {
+	return relevantPremiseBy(premise, a, b, allSymbolsOf)
+}
+
+// allSymbolsOf is a term's parameters by root (an element parameter by its
+// span): the symbols relevantPremise relates conjuncts and sides by.
+func allSymbolsOf(t *term) map[string]bool {
+	names := map[string]bool{}
+	collectParams(t, names)
+	out := map[string]bool{}
+	for name := range names {
+		if span, _, isElement := elementParam(name); isElement {
+			name = span
+		}
+		out[rootParam(name)] = true
+	}
+	return out
+}
+
+// relevantPremiseBy is relevantPremise with the symbols of a term given.
+func relevantPremiseBy(premise, a, b *term, symbolsOf func(*term) map[string]bool) (*term, bool) {
 	var conjuncts []*term
 	var split func(t *term)
 	split = func(t *term) {
@@ -7936,18 +8448,6 @@ func relevantPremise(premise, a, b *term) (*term, bool) {
 	split(premise)
 	if len(conjuncts) < 2 {
 		return premise, false
-	}
-	symbolsOf := func(t *term) map[string]bool {
-		names := map[string]bool{}
-		collectParams(t, names)
-		out := map[string]bool{}
-		for name := range names {
-			if span, _, isElement := elementParam(name); isElement {
-				name = span
-			}
-			out[rootParam(name)] = true
-		}
-		return out
 	}
 	live := symbolsOf(a)
 	for name := range symbolsOf(b) {
@@ -8054,13 +8554,23 @@ func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool,
 			// Which conjunct of the premise the diagrams cannot hold:
 			// each alone, under a fresh diagram of the decision's budget.
 			for k, c := range conjunctsOf(premise) {
-				probe := newBlaster(bl.params, bl.widths)
-				probe.bdd = newBDD(loopDecisionNodeBudget)
+				probe := bl.fresh(loopDecisionNodeBudget) // the same order, a fresh diagram
 				bits := probe.blast(c)
 				n, _ := dagNodes(1<<20, c)
 				show := 160
 				exceeded := bits == nil || probe.bdd.exceeded
-				fmt.Fprintf(os.Stderr, "verify: premise conjunct %d: %d term nodes, %d diagram nodes, exceeded=%v: %s\n", k, n, len(probe.bdd.nodes), exceeded, c.stringBounded(&show))
+				fmt.Fprintf(os.Stderr, "verify: premise conjunct %d (%s): %d term nodes, %d diagram nodes, exceeded=%v: %s\n", k, bl.label, n, len(probe.bdd.nodes), exceeded, c.stringBounded(&show))
+				if dump := os.Getenv("OAK_VERIFY_CONJUNCT_DUMP"); dump != "" && len(probe.bdd.nodes) > 100000 {
+					// The first costly conjunct as a replayable DAG
+					// (TestReplayBlast descends into its diagram).
+					if _, err := os.Stat(dump); err != nil {
+						if f, err := os.Create(dump); err == nil {
+							widthOf := func(name string) int { return bl.widths[name] }
+							writeTermDAG(f, widthOf, c)
+							f.Close()
+						}
+					}
+				}
 				if exceeded {
 					blastCulprits(bl, c, 2)
 				}
@@ -8209,6 +8719,9 @@ func refutedByValuationWithin(premise, a, b *term, names []string, widths map[st
 			env[target.name] = (target.value + delta) & mask(widths[target.name])
 			settle(env, target.name)
 			if evaluator.evaluate(premise, env) != 0 && evaluator.evaluate(a, env) != evaluator.evaluate(b, env) {
+				if os.Getenv("OAK_VERIFY_REFUTATION_TRACE") != "" {
+					fmt.Fprintf(os.Stderr, "verify: refuting valuation (target %s): %v: a %d, b %d\n", target.name, env, evaluator.evaluate(a, env), evaluator.evaluate(b, env))
+				}
 				return true
 			}
 		}
@@ -8239,6 +8752,9 @@ func refutedByValuationWithin(premise, a, b *term, names []string, widths map[st
 			continue
 		}
 		if evaluator.evaluate(a, env) != evaluator.evaluate(b, env) {
+			if os.Getenv("OAK_VERIFY_REFUTATION_TRACE") != "" {
+				fmt.Fprintf(os.Stderr, "verify: refuting valuation (round %d): %v: a %d, b %d\n", round, env, evaluator.evaluate(a, env), evaluator.evaluate(b, env))
+			}
 			return true
 		}
 	}
@@ -8686,7 +9202,8 @@ func blastCulprits(bl *blaster, t *term, maxReports int) int {
 			fmt.Fprintf(os.Stderr, "verify: culprit: kind %d op %q width %d, %d term nodes, operands%s: %s\n", u.kind, u.op, u.width, n, kinds, u.stringBounded(&show))
 			if dump := os.Getenv("OAK_VERIFY_CULPRIT_DUMP"); dump != "" {
 				if f, err := os.OpenFile(dump, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
-					fmt.Fprintf(f, "order %q params %v\nculprit (%d term nodes):\n%s\n\n", bl.label, bl.params, n, u.String())
+					full := 1 << 24 // the complete term, where String abbreviates
+					fmt.Fprintf(f, "order %q params %v\nculprit (%d term nodes):\n%s\n\n", bl.label, bl.params, n, u.stringBounded(&full))
 					f.Close()
 				}
 			}

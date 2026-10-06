@@ -1382,7 +1382,7 @@ func sameTerm(a, b *term, budget *int) bool {
 		return false
 	}
 	*budget--
-	if a.kind != b.kind || a.width != b.width || a.op != b.op || a.name != b.name || a.value != b.value {
+	if a.kind != b.kind || a.width != b.width || a.op != b.op || a.name != b.name || a.value != b.value || a.declaredWidth() != b.declaredWidth() {
 		return false
 	}
 	switch a.kind {
@@ -6295,7 +6295,19 @@ func booleanValued(t *term, memo map[*term]bool) bool {
 // complementary reports whether two one-bit conditions are each other's
 // negation: one the other's xor with 1, or comparisons of the same
 // operands under opposite codes.
+// selfComparison is the value of `t <op> t` plus one (zero: not decided
+// here): the equalities and non-strict orders hold, the strict orders
+// and the inequality fail.
+var selfComparison = map[string]int{"eq": 2, "hs": 2, "cs": 2, "ls": 2, "ge": 2, "le": 2, "ne": 1, "lo": 1, "cc": 1, "hi": 1, "lt": 1, "gt": 1}
+
 func complementary(a, b *term) bool {
+	if a.kind == termIte && b.kind == termIte {
+		// Pointwise: the same choice between complementary arms (the
+		// source's `p ? x == 0 : y == z` against the path fact
+		// `p ? x != 0 : y != z` the machine recorded).
+		budget := sameTermBudget
+		return sameTerm(a.cond, b.cond, &budget) && complementary(a.left, b.left) && complementary(a.right, b.right)
+	}
 	isNot := func(x, y *term) bool {
 		if x.kind != termBinary || x.op != "xor" || x.right.kind != termConst || x.right.value != 1 {
 			return false
@@ -12719,6 +12731,12 @@ func canonicalMemo(t *term, memo *canonicalTable, boolean map[*term]bool) *term 
 				out = adaptWidth(left, t.width)
 			case right.kind == termConst && right.value == 0 && t.op == "eq" && booleanValued(left, boolean):
 				out = adaptWidth(binaryTerm("xor", left, constTerm(1, left.width)), t.width)
+			case left.width == right.width && selfComparison[t.op] != 0 && func() bool { budget := sameTermBudget; return sameTerm(left, right, &budget) }():
+				// A term compared with itself: a write log's read at the
+				// index of its own last write (`ew[i] = v` then `ew[i]`)
+				// asks `i = i` before yielding v, and the reads it would
+				// otherwise fall through to are dead.
+				out = constTerm(uint64(selfComparison[t.op]-1), t.width)
 			case left == t.left && right == t.right:
 				out = t
 			default:

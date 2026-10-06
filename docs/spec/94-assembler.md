@@ -9118,6 +9118,77 @@ selector facts have not simplified that fact's conditional bound to `904`.
 The next seam is therefore propagation among accumulated premise facts, not
 more split depth or a larger diagram budget.
 
+**One-sided arms, premise hygiene, components apart (2026-10-06).** The
+whole-`ident` probe after that split still left loop 3's continue
+conditions undecided (about seven seconds a form). The obligation, dumped
+in full (`OAK_VERIFY_OBLIGATION_DUMP=<path>` writes the terms and a
+replayable DAG at `<path>.dag`; `OAK_VERIFY_REPLAY=<path>.dag go test
+./asm/ -run TestReplayObligation` decides it again in seconds), is a
+machine condition settled branch by branch — `c1 ? k < n1 : (c2 ? k < n2
+: k < n3)`, the loop's guard under each path the code generator split —
+against the source's one comparison over the merged value, `k < (c ? n :
+m)`, under a premise of sixteen thousand nodes. Five rules came out of
+the replay, each sound on its own. (1) The one-sided arm rule
+(`impliesEqualOneSidedArms`): when one side is a conditional and the other
+is not, each arm is proven under the premise strengthened by its
+condition, the other side rewritten by that direct fact first; it recurses
+at the same depth as the arm rule, since the conditional's spine shrinks by
+one branch per step, and proves but never refutes. (2) Canonical forms the
+premise exposed: a term compared with itself folds (a write log's read at
+the index of its own last write asked `i = i` before yielding the value,
+and the reads it fell through to were dead); `complementary` recognizes a
+conditional pointwise (`p ? x = 0 : y = z` against the path fact `p ? x ≠ 0
+: y ≠ z`); and `sameTerm` compares declared widths, so a parameter's narrow
+view is not its full value. Three more forms helped the replay and were
+withdrawn by the stage2 pilot's gate (`OAK_VERIFY_OFF=<rule,...>` bisects
+the decider's rules on a body): a zero test of a difference as the
+operands' equality cost `unmap_page` its straight-line proof, and the
+distribution of an equality test over a conditional value past sixteen
+bits together with the spelling of a Boolean conditional with a constant
+arm as a connective cost `map_page` its trap-domain obligation — each a
+shape the arm and congruence rules matched before and not after. (3)
+Premise hygiene: each large conjunct is rewritten under the facts its
+other conjuncts state (`premiseUnderItself`; the earlier ones as already
+rewritten, so two copies of one fact leave one), and the relevant premise
+(the conjuncts reaching the sides' symbols) and the premise-free attempt
+for small sides are bounded shortcuts (`nodeBudget.bounded`, 250,000
+nodes) whose failure costs the proof the bound rather than a decision's
+allowance, and whose undecided results are not cached; the premise-free
+attempt had spent a million nodes refuting nothing. Two finer readings of
+the premise — the conjuncts within the sides' own symbols, those reaching
+them outside memory indices — were tried and withdrawn: the literals
+scanner's `step_count` spent thirty times its proof's time (392 s against
+9 s) refuting them under small premises, and `ident` did not decide under
+them. (4) A sixth variable
+order, "components apart" (`componentBlaster`, `newComponentBlaster`):
+parameters and reads one comparison relates, or one index computes from,
+or the equality's sides join, interleave in a block; the blocks stand in
+the order of a walk of the Boolean connectives from the sides' block,
+reversed, and each block carries select slots of its own, so two parts of
+a premise over disjoint variables occupy disjoint ranges of the order. The
+keyword table over the name's two words and its length beside the arena
+facts over the offsets was the product of their diagrams under every
+earlier order (a million nodes where each part was tens of thousands); apart
+they are a sum. The per-conjunct premise probe now blasts under the failing
+order (`blaster.fresh`), and `OAK_VERIFY_CONJUNCT_DUMP` with
+`TestReplayBlast` descends into one conjunct's diagram. (5) The traces
+name every implication's depth, sizes, and remaining budget, the premise's
+conjunct count, the shortcuts' cost, and a refuting valuation
+(`OAK_VERIFY_REFUTATION_TRACE`). After all five the replay decides the
+first polarity of the top split and still exhausts the proof's sixteen
+million nodes in the second: the remaining cost is named. The arena
+facts resolve reads through the write log by alias checks between
+offsets — `le.state_at + 9 = le.strs_at + (ew[le.state_at + 8] << 1)` is
+13,600 nodes under the interleaved order, a shifted read against two
+offsets — and each resolved value's thirty-two bits replicate the chain of
+those checks, so one premise conjunct of eighty-four term nodes is 300,000
+diagram nodes and the arena-only premise of a goal over two cells exceeds a
+decision's allowance by itself. `ident` stays witness-checked; the next
+step is either an algebraic normal form for those offset equalities (one
+linear form, decided once per pair of offsets) or the decision of the
+write-log reads at the term level, where the aliasing between arena regions
+is the same question on both sides.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —

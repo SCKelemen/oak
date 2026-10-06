@@ -52,6 +52,25 @@ type blaster struct {
 	// (the data parameters, under the control-first orders), so a
 	// comparison of a parameter with an element read stays linear.
 	lastBase, lastSize int
+	// components, when set, is the components-apart order
+	// (newComponentBlaster): every block carries select slots of its own,
+	// so a read's variables sit with the parameters its comparisons relate
+	// it to, and two parts of a premise over disjoint variables occupy
+	// disjoint ranges of the order (their conjunction a sum of diagrams,
+	// not a product). blockReserved is the slots a block holds,
+	// blockUsed those taken; readBlock places a read by its span and index
+	// term; slotPlaces records where each slot went; trailBase is the
+	// first variable past every block (slots beyond a block's reserve).
+	components    bool
+	blockReserved map[string]int
+	blockUsed     map[string]int
+	blockBase     map[string]int    // block -> first variable
+	blockParams   map[string]int    // block -> parameters in it
+	blockOf       map[string]string // parameter -> block
+	readBlock     func(span string, index *term) (string, bool)
+	slotPlaces    []slotPlace
+	trailBase     int
+	trailUsed     int
 	// owners maps a parameter variable back to its parameter bit, for
 	// counterexamples under either order.
 	owners map[int]variableOwner
@@ -236,6 +255,90 @@ func newBlockedBlaster(params []string, widths map[string]int, groupOf func(stri
 	return bl
 }
 
+// A slotPlace is where a select slot's variables lie under the
+// components-apart order: bit j at base + j*stride + offset, or, past a
+// block's reserve, in the trailing area at trail + j.
+type slotPlace struct {
+	base, stride, offset int
+	trailing             bool
+	trail                int
+}
+
+// newComponentBlaster orders the parameters in blocks by component — the
+// parameters and reads one comparison, one index, or the equality's sides
+// relate (componentBlaster) — the blocks in the order given, each with
+// select slots of its own for the reads placed in it (reserved per block),
+// the bits within a block interleaved. Two parts of a premise that share
+// no variable then occupy disjoint ranges: under every other order their
+// bits interleave and the diagram of their conjunction is the product of
+// their diagrams (ident's keyword table over a name's words, beside the
+// arena facts over the offsets: a million nodes where each part is tens
+// of thousands).
+func newComponentBlaster(params []string, widths map[string]int, blockOf map[string]string, order []string, reserved map[string]int, readBlock func(span string, index *term) (string, bool)) *blaster {
+	bl := newBlaster(params, widths)
+	bl.grouped = true
+	bl.components = true
+	bl.label = "components apart"
+	bl.groupBase = map[string]int{}
+	bl.groupSize = map[string]int{}
+	bl.groupPos = map[string]int{}
+	bl.blockOf = blockOf
+	bl.blockReserved = reserved
+	bl.blockUsed = map[string]int{}
+	bl.blockBase = map[string]int{}
+	bl.blockParams = map[string]int{}
+	bl.readBlock = readBlock
+	members := map[string][]string{}
+	for _, name := range params {
+		members[blockOf[name]] = append(members[blockOf[name]], name)
+	}
+	base := 0
+	for _, block := range order {
+		bl.blockBase[block] = base
+		bl.blockParams[block] = len(members[block])
+		for pos, name := range members[block] {
+			bl.groupBase[name] = base
+			bl.groupSize[name] = len(members[block])
+			bl.groupPos[name] = pos
+		}
+		base += 64 * (len(members[block]) + reserved[block])
+	}
+	bl.trailBase = base
+	return bl
+}
+
+// fresh is a blaster of the same variable order with an empty diagram of
+// the given budget: no reads met, no memo, no assumption.
+func (bl *blaster) fresh(budget int) *blaster {
+	nb := *bl
+	nb.bdd = newBDD(budget)
+	nb.selects = nil
+	nb.memo = nil
+	nb.owners = map[int]variableOwner{}
+	nb.assume, nb.assumed, nb.pruned = 0, false, 0
+	nb.slotPlaces = nil
+	nb.blockUsed = map[string]int{}
+	nb.trailUsed = 0
+	return &nb
+}
+
+// placeSlot chooses the variables of a new select slot under the
+// components-apart order: its component's block while that block has
+// reserve, the trailing area otherwise.
+func (bl *blaster) placeSlot(span string, index *term) {
+	if block, known := bl.readBlock(span, index); known && bl.blockUsed[block] < bl.blockReserved[block] {
+		if _, laid := bl.blockBase[block]; laid {
+			used := bl.blockUsed[block]
+			bl.blockUsed[block] = used + 1
+			size := bl.blockParams[block]
+			bl.slotPlaces = append(bl.slotPlaces, slotPlace{base: bl.blockBase[block], stride: size + bl.blockReserved[block], offset: size + used})
+			return
+		}
+	}
+	bl.slotPlaces = append(bl.slotPlaces, slotPlace{trailing: true, trail: bl.trailBase + 64*bl.trailUsed})
+	bl.trailUsed++
+}
+
 // selectSlots is the number of distinct element reads that share the
 // interleaved variable order with the parameters (bit j of every operand
 // adjacent — what keeps adders linear-size). Further reads take variables
@@ -271,7 +374,10 @@ func (bl *blaster) stride() int { return len(bl.params) + bl.selectSlots() }
 // across the parameters, or within its root's block under the grouped order.
 func (bl *blaster) variableIndex(param string, bit int) int {
 	var v int
-	if bl.grouped {
+	if bl.components {
+		size := bl.groupSize[param] + bl.blockReserved[bl.blockOf[param]]
+		v = bl.groupBase[param] + bit*size + bl.groupPos[param]
+	} else if bl.grouped {
 		size := bl.groupSize[param]
 		if base := bl.groupBase[param]; base == bl.lastBase {
 			size += bl.selectSlots() // the last block carries the select slots
@@ -288,6 +394,13 @@ func (bl *blaster) variableIndex(param string, bit int) int {
 // the parameters for the first slots (under the grouped order, with the
 // last block's), past every parameter bit after them.
 func (bl *blaster) selectVariable(slot, bit int) int {
+	if bl.components {
+		place := bl.slotPlaces[slot]
+		if place.trailing {
+			return place.trail + bit
+		}
+		return place.base + bit*place.stride + place.offset
+	}
 	if bl.grouped {
 		size := bl.lastSize + bl.selectSlots()
 		if slot < bl.selectSlots() {
@@ -336,6 +449,9 @@ func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []
 		}
 	}
 	slot := len(bl.selects)
+	if bl.components {
+		bl.placeSlot(span, index)
+	}
 	vars := make([]int, width)
 	for i := range vars {
 		vars[i] = bl.selectVariable(slot, i)
