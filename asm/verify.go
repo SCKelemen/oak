@@ -1117,6 +1117,21 @@ func flagsCondition(code string, flags *flagsFact) *term {
 // its total evaluation yields. Folding is what lets a counted loop decide
 // its own exit (the counter's comparison becomes a constant) on both sides.
 func cmpTerm(code string, left, right *term) *term {
+	// Unsigned zero is the least value at every width. Fold these before
+	// either operand is traversed: a loop bound can be a large conditional
+	// memory expression, while `0 <= bound` is still unconditionally true.
+	// Prefixed conditions describe flags from an operation other than the
+	// ordinary subtraction comparison and do not have these order laws.
+	if kind, bare := splitFlagsKind(code); kind == "" {
+		switch {
+		case left.kind == termConst && left.value == 0 && bare == "ls",
+			right.kind == termConst && right.value == 0 && (bare == "hs" || bare == "cs"):
+			return constTerm(1, left.width)
+		case left.kind == termConst && left.value == 0 && bare == "hi",
+			right.kind == termConst && right.value == 0 && (bare == "lo" || bare == "cc"):
+			return constTerm(0, left.width)
+		}
+	}
 	if left.kind == termConst && right.kind == termConst {
 		// The comparison happens at the operands' width (evalUncached).
 		m := mask(left.width)

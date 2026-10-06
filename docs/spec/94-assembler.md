@@ -9015,6 +9015,17 @@ measured conditional blow-up but does not claim that `ident` or the package
 tally changed tier; the next probe must name the work remaining after this
 split.
 
+That probe now names the next first failure precisely: the coupling asks
+whether `0 <= bound`, where `bound` is the 23,862-node conditional result of
+the reserved-name loop. All orders spent their million-node allowance on the
+bound even though unsigned zero is the least value. Comparison construction
+now folds `0 <= x` and `x >= 0` to true and `0 > x` and `x < 0` to false
+before traversing `x` (`ls`/`hs` and the `cs`/`cc` aliases). Signed conditions
+and conditions over `add:` flags are deliberately excluded. The fold removes
+that whole decision tree from the obligation; `TestUnsignedZeroComparisonFoldsBeforeItsBound`
+pins the four laws and both exclusions. This is the first post-split
+obstruction, not yet a claim that the whole `ident` coupling proves.
+
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
 constants (24 pages of 2048 entries), a guarded store each iteration —

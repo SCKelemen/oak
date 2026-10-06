@@ -593,6 +593,38 @@ func TestSplitDecideOnStillRefutesAReachableUnequalArm(t *testing.T) {
 	}
 }
 
+func TestUnsignedZeroComparisonFoldsBeforeItsBound(t *testing.T) {
+	i := paramTerm("i", 32)
+	condition := paramTerm("condition", 1)
+	bound := iteTerm(condition, selectTerm("memory", i, 32), selectTerm("memory", binaryTerm("add", i, constTerm(1, 32)), 32))
+	zero := constTerm(0, 32)
+	for _, test := range []struct {
+		name        string
+		code        string
+		left, right *term
+		want        uint64
+	}{
+		{"zero at most bound", "ls", zero, bound, 1},
+		{"bound at least zero", "hs", bound, zero, 1},
+		{"bound carry-set alias", "cs", bound, zero, 1},
+		{"zero above bound", "hi", zero, bound, 0},
+		{"bound below zero", "lo", bound, zero, 0},
+		{"bound carry-clear alias", "cc", bound, zero, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := cmpTerm(test.code, test.left, test.right)
+			if got.kind != termConst || got.value != test.want || got.width != 32 {
+				t.Fatalf("%s comparison = %s, want u32(%d)", test.code, got, test.want)
+			}
+		})
+	}
+	for _, code := range []string{"le", "add:ls"} {
+		if got := cmpTerm(code, zero, bound); got.kind != termCmp {
+			t.Fatalf("%s used an unsigned subtraction law: %s", code, got)
+		}
+	}
+}
+
 // Pure scalar status checks can be split into separate post-loop reach facts;
 // a factor reading symbolic memory stays atomic so a callee's memory condition
 // is not duplicated through every postcondition.
