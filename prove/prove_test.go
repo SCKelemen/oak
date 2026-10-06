@@ -73,10 +73,10 @@ main: (): i32 = 0
 	}
 }
 
-// A conditional on an aggregate assignment's right-hand side snapshots and
-// restores the lowering's locals. The resolved destination must remain part
-// of the restored aggregate tree: replacing that tree made these writes land
-// on detached nodes and produced false counterexamples.
+// The public prover decides the aggregate-update regression through either
+// the bit-level lowering or exhaustive u8 enumeration. Direct lowering
+// fixtures in asm/lowering_refinement_test.go pin the resolved-place identity
+// itself even when finite-call summaries select the enumeration route here.
 func TestConditionalAggregateAssignmentKeepsResolvedPlace(t *testing.T) {
 	src := `
 Box: type = struct { items: [2]u8, value: u8 }
@@ -125,8 +125,8 @@ main: (): i32 = 0
 		t.Fatalf("got %d results, want 3: %+v", len(results), results)
 	}
 	for _, result := range results {
-		if result.Status != Decided || !strings.Contains(result.Detail, "bit level") {
-			t.Errorf("%s: got %s (%s), want a bit-level decision", result.Name, result.Status, result.Detail)
+		if result.Status != Decided || (!strings.Contains(result.Detail, "bit level") && result.Detail != "all 256 cases") {
+			t.Errorf("%s: got %s (%s), want a bit-level decision or exhaustive u8 decision", result.Name, result.Status, result.Detail)
 		}
 	}
 }
