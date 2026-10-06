@@ -1,0 +1,50 @@
+// Experimental HKDF-SHA-256, RFC 5869. See CRYPTO.md.
+package hkdf
+
+import("crypto/hmac")
+
+// An empty salt is equivalent to HashLen zero bytes under HMAC padding.
+// Writes the first 32 bytes only; short output is unchanged on failure.
+pub extract256: (salt: []u8, ikm: []u8, out: [*]u8): Bool = hmac.sum256(salt, ikm, out)
+
+// Fill the entire output. RFC 5869 permits at most 255 * HashLen bytes.
+// PRK must contain at least HashLen bytes. Invalid lengths fail before any
+// write, including a short PRK paired with an empty output. No entropy is
+// generated here; callers supply input keying material and a context in info.
+pub expand256: (prk: []u8, info: []u8, out: [*]u8): Bool {
+  len(prk) < u32(32) || len(out) > u32(8160) ? { false } | {
+    previous: [32]u8
+    used: u32 = 0
+    written: u32 = 0
+    counter: u32 = 1
+    while written < len(out) {
+      index: [1]u8
+      index[0] = u8_trunc_u32(counter)
+      next: [32]u8
+      true ? {
+        previous_view: []u8 = view(&previous)
+        hmac.sum256_parts(prk, subslice(previous_view, u32(0), used), info, view(&index), span(&next))
+      }
+      count: u32 = len(out) - written
+      count > u32(32) ? { count = u32(32) }
+      i: u32 = 0
+      while i < count {
+        out[written + i] = next[i]
+        i = i + u32(1)
+      }
+      previous = next
+      used = u32(32)
+      written = written + count
+      counter = counter + u32(1)
+    }
+    true
+  }
+}
+
+pub key256: (salt: []u8, ikm: []u8, info: []u8, out: [*]u8): Bool {
+  len(out) > u32(8160) ? { false } | {
+    prk: [32]u8
+    extract256(salt, ikm, span(&prk))
+    expand256(view(&prk), info, out)
+  }
+}

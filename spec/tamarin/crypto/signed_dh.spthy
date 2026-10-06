@@ -1,0 +1,66 @@
+theory Oak_Signed_DH
+begin
+builtins: diffie-hellman, signing, hashing
+
+// A small server-authenticated ephemeral DH model, NOT TLS or a proposed
+// wire protocol. The server public key is authenticated out of band.
+// Unbounded sessions; the network is adversarial. No ephemeral-key reveal.
+// Hash abstracts transcript-bound derivation, not the HKDF byte algorithm.
+rule Server_key:
+  [ Fr(~sk) ] --[ ServerKey() ]-> [ !Server(~sk), Out(pk(~sk)) ]
+
+restriction One_server_key:
+  "All #i #j. ServerKey() @ i & ServerKey() @ j ==> #i = #j"
+
+rule Reveal_server_key:
+  [ !Server(sk) ] --[ Compromise() ]-> [ Out(sk) ]
+
+rule Client_start:
+  [ !Server(sk), Fr(~x), Fr(~sid) ]
+  --[ Start(~sid) ]->
+  [ Waiting(~sid, ~x, pk(sk)), Out(<'client', 'server', ~sid, 'g'^~x>) ]
+
+rule Server_respond:
+  let Y = 'g'^~y
+      transcript = <'oak-dh-model-v1', 'client', 'server', sid, X, Y>
+      key = h(<X^~y, transcript>)
+  in
+  [ !Server(sk), Fr(~y), In(<'client', 'server', sid, X>) ]
+  --[ Responded(sid, X, Y, key) ]->
+  [ Out(<sid, Y, sign(transcript, sk)>) ]
+
+rule Client_accept:
+  let X = 'g'^x
+      transcript = <'oak-dh-model-v1', 'client', 'server', sid, X, Y>
+      key = h(<Y^x, transcript>)
+  in
+  [ Waiting(sid, x, server_pk), In(<sid, Y, signature>) ]
+  --[ Eq(verify(signature, transcript, server_pk), true),
+      Accepted(sid, X, Y, key) ]->
+  [ ]
+
+restriction Equality:
+  "All a b #i. Eq(a,b) @ i ==> a = b"
+
+lemma executable:
+  exists-trace
+  "Ex sid X Y key #i. Accepted(sid, X, Y, key) @ i
+    & not (Ex #r. Compromise() @ r)"
+
+lemma server_authentication:
+  "All sid X Y key #i. Accepted(sid, X, Y, key) @ i ==>
+    (Ex #j. Responded(sid, X, Y, key) @ j & j < i)
+    | (Ex #r. Compromise() @ r & r < i)"
+
+// Even a later server signing-key compromise does not expose a completed
+// session. Erasure/no ephemeral reveal and ideal DH are explicit assumptions.
+lemma forward_secrecy:
+  "All sid X Y key #i #j.
+    Accepted(sid, X, Y, key) @ i & K(key) @ j ==>
+    (Ex #r. Compromise() @ r & r < i)"
+
+lemma single_accept:
+  "All sid X Y key X2 Y2 key2 #i #j.
+    Accepted(sid, X, Y, key) @ i & Accepted(sid, X2, Y2, key2) @ j
+    ==> #i = #j"
+end

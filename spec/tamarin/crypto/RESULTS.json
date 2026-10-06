@@ -1,0 +1,37 @@
+{
+  "scope": "symbolic models only; no Oak implementation refinement or machine-code proof",
+  "tool_version": "maude tool: 'maude'\n checking version: tamarin-prover 1.12.0, (C) David Basin, Cas Cremers, Jannik Dreier, Simon Meier, Ralf Sasse, Benedikt Schmidt, 2010-2023\n\nThis program comes with ABSOLUTELY NO WARRANTY. It is free software, and you\nare welcome to redistribute it according to its LICENSE, see\n'https://github.com/tamarin-prover/tamarin-prover/blob/master/LICENSE'.\n\n3.5.1. OK.\n checking installation: OK.\nGenerated from:\nTamarin version 1.12.0\nMaude version 3.5.1\nGit revision: 82780bbaf3328a45f624ddb41e51bf75425f851c (with uncommited changes), branch: master\nCompiled at: 2026-03-07 14:22:39.174278293 UTC\n",
+  "models": [
+    {
+      "file": "signed_dh.spthy",
+      "sha256": "42e501c319ba2ac1ebb1a6108b7dcafc5ab725c6e3263309961adbd52e1c48bc",
+      "expected": {
+        "executable": "verified",
+        "forward_secrecy": "verified",
+        "server_authentication": "verified",
+        "single_accept": "verified"
+      },
+      "passed": true
+    },
+    {
+      "file": "unauthenticated_dh.spthy",
+      "sha256": "dda2a512745c17e5e06918abdc726f1e53599b513cef7dc819c72a3cba2334e0",
+      "expected": {
+        "attacker_knows_session": "verified",
+        "executable": "verified",
+        "unauthenticated_secrecy": "falsified"
+      },
+      "passed": true
+    },
+    {
+      "file": "acme_request.spthy",
+      "sha256": "78ea48972edfd0d5c8607e69d080f6d7165a39a32b2a62f2c910975ab3c5d3d8",
+      "expected": {
+        "executable": "verified",
+        "nonce_single_use": "verified",
+        "request_authentication": "verified"
+      },
+      "passed": true
+    }
+  ]
+}

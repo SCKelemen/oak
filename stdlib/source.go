@@ -182,6 +182,17 @@ var mathSource string
 //go:embed hash.oak
 var hashSource string
 
+// Experimental crypto packages remain qualified and outside import(std).
+//
+//go:embed crypto/subtle.oak
+var cryptoSubtleSource string
+
+//go:embed crypto/hmac.oak
+var cryptoHMACSource string
+
+//go:embed crypto/hkdf.oak
+var cryptoHKDFSource string
+
 // mx is a library package only (import("mx")): the OCP Microscaling MXFP4
 // block format — E2M1 elements under an E8M0 block scale — in Oak
 // (docs/spec/20-types.md section 11.3.1a).
@@ -523,6 +534,9 @@ var Packages = map[string]string{
 	"url":             urlSource,
 	"math":            mathSource,
 	"hash":            hashSource,
+	"crypto/subtle":   cryptoSubtleSource,
+	"crypto/hmac":     cryptoHMACSource,
+	"crypto/hkdf":     cryptoHKDFSource,
 	"mx":              mxSource,
 	"time":            timeSource,
 	"timesim":         timesimSource,

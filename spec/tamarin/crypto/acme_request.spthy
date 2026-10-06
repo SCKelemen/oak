@@ -1,0 +1,55 @@
+theory Oak_ACME_Request
+begin
+builtins: signing
+
+// RFC 8555 section 6.2 request envelope abstraction ONLY. Accounts already
+// exist; public keys are authentic. Nonce storage is linear and persistent
+// across requests. This does NOT model account creation, domain control,
+// certificate issuance, TLS, JSON/base64url parsing, or durable crash recovery.
+rule Account:
+  [ In($account), Fr(~sk) ] --[ Registered($account) ]->
+  [ !AccountKey($account, ~sk), !AccountPublic($account, pk(~sk)), Out(pk(~sk)) ]
+
+restriction One_key_per_account:
+  "All account #i #j. Registered(account) @ i & Registered(account) @ j ==> #i = #j"
+
+rule Compromise_account:
+  [ !AccountKey(account, sk) ] --[ Compromised(account) ]-> [ Out(sk) ]
+
+rule Issue_nonce:
+  [ Fr(~nonce) ] --> [ UnusedNonce(~nonce), Out(~nonce) ]
+
+rule Sign_request:
+  let body = <'acme-jws', 'ES256', account, nonce, url, payload>
+  in
+  [ !AccountKey(account, sk), In(<nonce, url, payload>) ]
+  --[ Signed(account, nonce, url, payload) ]->
+  [ Out(<url, <account, nonce, url, payload, sign(body, sk)>>) ]
+
+// Outer url is the actual receiving endpoint; inner url is protected by
+// the signature. The repeated variable enforces their equality.
+rule Accept_request:
+  let body = <'acme-jws', 'ES256', account, nonce, url, payload>
+  in
+  [ !AccountPublic(account, public_key), UnusedNonce(nonce),
+    In(<url, <account, nonce, url, payload, signature>>) ]
+  --[ Eq(verify(signature, body, public_key), true),
+      Accepted(account, nonce, url, payload) ]-> [ ]
+
+restriction Equality:
+  "All a b #i. Eq(a,b) @ i ==> a = b"
+
+lemma executable:
+  exists-trace
+  "Ex account nonce url payload #i. Accepted(account, nonce, url, payload) @ i
+    & not (Ex a #r. Compromised(a) @ r)"
+
+lemma request_authentication:
+  "All account nonce url payload #i. Accepted(account, nonce, url, payload) @ i ==>
+    (Ex #j. Signed(account, nonce, url, payload) @ j & j < i)
+    | (Ex #r. Compromised(account) @ r & r < i)"
+
+lemma nonce_single_use:
+  "All a b nonce u v p q #i #j.
+    Accepted(a, nonce, u, p) @ i & Accepted(b, nonce, v, q) @ j ==> #i = #j"
+end

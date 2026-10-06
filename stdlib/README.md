@@ -10,6 +10,11 @@ idempotent; conflicting declarations, aliases and unknown imports are rejected.
 Standard-library files also load as qualified packages; new code should prefer
 those package APIs as each bootstrap area migrates.
 
+The experimental crypto packages `crypto/subtle`, `crypto/hmac`, and
+`crypto/hkdf` are qualified imports only. See [CRYPTO.md](CRYPTO.md) for their
+contracts, Go-inspired package plan, RFC tests, Tamarin models, and outstanding
+ARM64/RV64 implementation and side-channel proof obligations.
+
 ## Values and generic functions
 
 `Option[T]`, `Result[T,E]`, and `Overflow` have canonical declarations within a

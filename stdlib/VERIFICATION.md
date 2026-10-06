@@ -40,6 +40,13 @@ fix the other.
 
 ## The table
 
+The new experimental crypto foundation is tracked separately in
+[CRYPTO.md](CRYPTO.md): HMAC-SHA-256 and HKDF-SHA-256 have RFC vectors and
+Go differential tests (`compiler/e2e_crypto_test.go`), and `crypto/subtle`
+has byte-equality tests. None yet has extraction/refinement, constant-time,
+secure-erasure, or ARM64/RV64 machine proof closure. The independent Tamarin
+DH/ACME models under `spec/tamarin/crypto` do not prove those implementations.
+
 | Package | Go e2e | Oak tests | Oracle | Extraction | Universal | Decided | Remaining | Faithful | Benchmarks (Oak / Go) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `std` prelude (`Option`/`Result`, ring, intrusive lists/queues, splice, min-heap, deque, ID pool) | `e2e_stdlib_test.go`, `e2e_stdlib_collections_test.go`, `e2e_stdlib_splice_test.go`, `e2e_stdlib_heap_test.go`, `e2e_stdlib_deque_id_test.go` | — | sequence/array/occupancy models written in the tests | — | — | — | no laws stated; ring and remaining collection contracts are model-tested only | as callees only | — |

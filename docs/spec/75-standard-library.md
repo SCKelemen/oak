@@ -188,6 +188,12 @@ an overly broad package. In particular:
 - ordinary hashing is separate from cryptographic and constant-time claims;
 - portable algorithms do not expose a target ABI in their public signatures.
 
+The experimental crypto package plan and initial HMAC/HKDF contracts are in
+[`stdlib/CRYPTO.md`](../../stdlib/CRYPTO.md). Crypto combines pure primitives
+with explicit entropy, secret-storage and protocol capabilities. Public
+vectors, symbolic Tamarin protocol properties, implementation refinement,
+and functional/leakage preservation to both ARM64 and RV64 are separate gates.
+
 ## 7. The public contract
 
 Every exported operation documents the following facts. A fact enforced by the
