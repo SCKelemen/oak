@@ -21,9 +21,11 @@ func stableDiagnosticDeclarations(t *testing.T) []diagnosticDeclaration {
 	t.Helper()
 	var out []diagnosticDeclaration
 	for _, root := range []string{
+		".",
 		filepath.Join("..", "typechecker"),
 		filepath.Join("..", "borrowchecker"),
 		filepath.Join("..", "discipline"),
+		filepath.Join("..", "modules"),
 	} {
 		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
