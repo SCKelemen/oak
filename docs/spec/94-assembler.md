@@ -1566,9 +1566,17 @@ and explicitly adopts sequential PC+4 fall-through. It does not execute the
 full Arm `PostDecode`/`BranchTo` machinery, fetch or alignment faults, address
 translation, instrumentation, interrupts, or an architectural fetch loop.
 The Go correspondence checks remain finite evidence, not a universal proof
-of the production verifier. Source-CFG correctness, state provenance,
+of the production verifier. General source-CFG correctness, state provenance,
 complete file-format/linker correctness, and end-to-end architectural
 execution remain separate obligations.
+
+The register-resident OptIR Boolean terminator with empty edge copies now has
+a narrower CFG-to-bytes result in `Oak.AArch64ControlFlow`: all five layout
+choices reach the selected successor address while preserving registers and
+flags. A checked certificate ties actual emitted words to that plan and its
+physical fall-through layout. The machine CFG also treats AL/NV as having
+only their target edge. See [ARM64 control-flow proofs](94-arm64-control-flow-proofs.md)
+for the production witnesses and remaining assumptions.
 
 The BBM trap word `BRK #1` has the corresponding software-breakpoint seam.
 `Oak.AArch64BreakpointEncoding` proves its field packing and `0xd4200020`;
