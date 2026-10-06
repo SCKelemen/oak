@@ -1730,7 +1730,7 @@ type Lane struct {
 	// VectorHomes keeps the vector locals of a function that calls in the
 	// caller-saved vector registers v16–v31, saved around a call only when
 	// live after it, instead of sixteen-byte frame slots reloaded at every
-	// use (docs/spec/94-assembler.md §9.ad); the checker and the verifier
+	// use (docs/spec/94-assembler.md §9.ao); the checker and the verifier
 	// decide, and the compiler falls back to slots on refusal.
 	VectorHomes bool
 	// LoopArrayHomes keeps selected literal-index u32/u64 array elements in

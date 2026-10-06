@@ -1,14 +1,14 @@
 package compiler
 
-// The OS pilot's addr_space.map_page at a smaller geometry: a two-level
+// The OS pilot's addr_space.map_page at its production geometry: a two-level
 // page walk over a record span whose leaf descriptor depends on a
-// permission, with the table allocation's zeroing loop inlined. The span
+// permission, with the table allocation's zeroing loop. The span
 // memory after the loops is proven by cases (docs/spec/94-assembler.md
 // §9, asm/span_cases.go): the machine writes a constant descriptor per
 // permission branch where the Oak side writes one value with the
 // permission's conditionals inside it, and the two spell the leaf index
-// under different masks. The table holds 128 entries, past the unrolling
-// bound, so the zeroing loop is proven as a loop, as the pilot's is.
+// under different masks. The 24 tables hold 2048 entries each, so the
+// zeroing loop and interprocedural walk match the pilot's proof boundary.
 
 import (
 	"strings"
@@ -17,13 +17,13 @@ import (
 	"github.com/SCKelemen/oak/diagnostic"
 )
 
-const nativeMapPageProgram = `max_pages: u16 = u16(4)
-entries: u32 = u32(128)
+const nativeMapPageProgram = `max_pages: u16 = u16(24)
+entries: u32 = u32(2048)
 page_size: u64 = u64(16384)
-l0_shift: u64 = u64(21)
-l0_mask: u64 = u64(127)
+l0_shift: u64 = u64(25)
+l0_mask: u64 = u64(2047)
 l1_shift: u64 = u64(14)
-l1_mask: u64 = u64(127)
+l1_mask: u64 = u64(2047)
 va_limit: u64 = u64(0x100000000)
 desc_valid: u64 = u64(1)
 desc_page: u64 = u64(2)
@@ -31,11 +31,11 @@ desc_pa_mask: u64 = u64(0x0000FFFFFFFFF000)
 ap_shift: u64 = u64(6)
 
 Regime: type = struct {
-  pages: [512]u64
-  free_stack: [4]u16
+  pages: [49152]u64
+  free_stack: [24]u16
   free_count: u16
   high_water: u16
-  entry_count: [4]u16
+  entry_count: [24]u16
   root: u16
   mapped_pages: u32
   pool_base: u64
@@ -105,28 +105,37 @@ check_range: (va: u64, pa: u64): () {
   st = oor2 ? u8(5) | st
 }
 
+walk_leaf: (s: [*]Regime, dom: u32, va: u64): u16 {
+  table: u16 = s[dom].root
+  idx0: u64 = (va >> l0_shift) & l0_mask
+  d0: u64 = s[dom].pages[cell(table, u32_trunc_u64(idx0))]
+  invalid: Bool = (d0 & desc_valid) == u64(0)
+  invalid ? {
+    ai: u16 = alloc_table(s, dom)
+    setd: Bool = st == u8(0)
+    setd ? {
+      s[dom].pages[cell(table, u32_trunc_u64(idx0))] = table_desc(page_pa(s[dom].pool_base, ai))
+      s[dom].entry_count[u32(table)] = s[dom].entry_count[u32(table)] + u16(1)
+    } | {
+    }
+  } | {
+  }
+  ok: Bool = st == u8(0)
+  ok ? {
+    table = pa_index(s[dom].pool_base, s[dom].pages[cell(table, u32_trunc_u64(idx0))] & desc_pa_mask)
+  } | {
+  }
+  table
+}
+
 map_page: (s: [*]Regime, dom: u32, va: u64, pa: u64, perm: u8): u8 {
   st = u8(0)
   check_range(va, pa)
   go: Bool = st == u8(0)
   go ? {
-    table: u16 = s[dom].root
-    idx0: u64 = (va >> l0_shift) & l0_mask
-    d0: u64 = s[dom].pages[cell(table, u32_trunc_u64(idx0))]
-    invalid: Bool = (d0 & desc_valid) == u64(0)
-    invalid ? {
-      ai: u16 = alloc_table(s, dom)
-      setd: Bool = st == u8(0)
-      setd ? {
-        s[dom].pages[cell(table, u32_trunc_u64(idx0))] = table_desc(page_pa(s[dom].pool_base, ai))
-        s[dom].entry_count[u32(table)] = s[dom].entry_count[u32(table)] + u16(1)
-      } | {
-      }
-    } | {
-    }
+    leaf: u16 = walk_leaf(s, dom, va)
     ok: Bool = st == u8(0)
     ok ? {
-      leaf: u16 = pa_index(s[dom].pool_base, s[dom].pages[cell(table, u32_trunc_u64(idx0))] & desc_pa_mask)
       idx1: u64 = (va >> l1_shift) & l1_mask
       d: u64 = s[dom].pages[cell(leaf, u32_trunc_u64(idx1))]
       already: Bool = (d & desc_valid) != u64(0)
@@ -172,7 +181,7 @@ func TestE2ENativeMapPageProvenByCases(t *testing.T) {
 	if abnormal || code != 42 {
 		t.Fatalf("native: exit = (%d, abnormal=%v), want 42\n%s", code, abnormal, joined)
 	}
-	for _, unit := range []string{"map_page", "alloc_table"} {
+	for _, unit := range []string{"map_page", "walk_leaf", "alloc_table"} {
 		if !strings.Contains(joined, "asm unit "+unit+": proven") {
 			t.Fatalf("%s must be proven:\n%s", unit, joined)
 		}

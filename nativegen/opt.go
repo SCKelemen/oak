@@ -457,7 +457,7 @@ func Transforms() []opt.Transform {
 			fired:   RotatedLoops,
 		}},
 		&laneTransform{
-			// Vector homes across calls (docs/spec/94-assembler.md §9.ad): a
+			// Vector homes across calls (docs/spec/94-assembler.md §9.ao): a
 			// calling function's vector locals in v16–v31, saved around a
 			// call only when live after it, instead of sixteen-byte slots;
 			// the checker and the verifier decide.

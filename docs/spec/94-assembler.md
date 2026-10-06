@@ -1939,7 +1939,7 @@ inductively (`l↔r17`, `found↔r16`, `j↔r14`, the inner `found↔r16`, and
 the callee's `k`, `same` as themselves) in three seconds — alongside
 `longest`; `TestE2ENativeLiteralsVerdicts` asserts both. Left to C in the
 same module at that point: the functions with more than eight vector
-parameters (`classify` and its callers — taken the same day, §9.ah) and,
+parameters (`classify` and its callers — taken the same day, §9.ap) and,
 as evidence or trusted, `groups_of` (budget), `build` (an expression
 statement in a loop body), `verify_count` (an inner loop summarized per
 path past the event budget) — the last two proven below.
@@ -8925,10 +8925,32 @@ Structural equality, canonicalization, loop substitution and memory
 restoration, parameter and memory-read discovery, term sizing, and evaluator
 numbering all traverse every argument. Native proof-certificate replay and
 the serialized Oak solver refuse the new kind explicitly, so it cannot cross
-either proof boundary by being mistaken for an older node. Calls do not use
-the term yet: a summary must add a sound token for every memory state the
-callee can read, including caller stores between two dynamic applications.
-Until that token lands, the six Bits bodies retain their expanded summaries.
+either proof boundary by being mistaken for an older node.
+
+**Finite-value calls use applications (2026-10-05).** A first fail-closed
+consumer now takes an internal call at `call:<callee>:result` (one operation
+per aggregate result leaf) when the verifier itself establishes that the
+callee's complete varying input is finite: scalar, record, tagged-union, or
+fixed-array parameters, flattened in declaration and element order. The gate
+refuses borrowed spans/views, mutable globals and global arrays, effect rows,
+externs, atomics, methods, generics, recursion, vectors, floats, unknown
+invocations, and transitive calls outside the same gate. Immutable declared
+tables may remain implicit in the operation, since their state cannot change
+between applications in one execution. A 4096-bit input ceiling is a
+profitability fallback, not a semantic boundary. Eligible calls become
+applications when their transitive body contains a loop or their finite input
+plus result is at least 512 bits; smaller straight-line calls retain the more
+precise and cheaper expanded term. Machine-call summarization
+and Oak call lowering apply the identical namespace to the identical ordered
+leaves; the caller verdict still records the callee dependency, while the
+callee's internal loop events no longer enter the caller coupling. Every
+refused call follows the prior expanded-summary path. Tests pin the stable
+leaf order, each important refusal, cross-lane scalar call proofs, and a
+data-dependent scalar loop whose caller imports zero callee loops. The six
+Bits bodies still require the open part: a sound argument for every mutable
+memory state a callee reads, including caller stores between two dynamic
+applications.
+
 **Equality bit by bit, conjunctions from the deepest literal up
 (2026-10-05).** The study of the coupling-search bucket began with
 `ident`: its loop proof spent its whole allowance before the callee
@@ -8947,6 +8969,31 @@ Equality and inequality are now the conjunction of the bits'
 agreements, and those conjunctions grow from the deepest literal up,
 one node a step: 382 and 22,581 (`TestReservedShapeBlast`, which pins
 both bounds). The decisions' budgets are unchanged; what they buy is.
+With that, `ident`'s proof reached the premise's other construct, and
+the probe's descent (`blastCulprits`) named it: `le.state_at + 9 ==
+le.strs_at + (ew[k] << 1)`, an adder equality whose one operand is a
+read's value. A read's block of variables interleaves with the
+parameters' bits only while the read is among the first `selectSlots`
+distinct reads of the decision — eight — and `ident`'s premise reads
+`ew` and the loop's memory at nine addresses, so the ninth block
+trailed every parameter and the adder across them was exponential
+under every order (a million nodes against 13,626 interleaved,
+`TestSelectSlotInterleaving`). A proof's diagrams now interleave
+sixty-four reads (`proofSelectSlots`); the CNF export keeps eight, the
+numbering the Lean replay pins. Tallied at 1e47c540, the equality alone:
+598 proven, 228 evidence, 125 trusted (593, 233, 125 before) — `ap_lits`,
+`args_finish`, `cnf_variable`, `pool_push_pool`, and `px_intern` cross.
+The interleaving leaves the tally where the equality put it (598, 228,
+125 at a0e387d3). `ident` itself still stops where it did: the probe's dump reconstructed
+in `TestIdentShapeBlast` puts its premise's conditional at 754,007 nodes
+with every read interleaved — the adder equality `le.state_at + 9 ==
+le.strs_at + (v << 1)` where `v` is a read selected by the lookup's
+outcome `b` (`found == NONE`, the name not empty) costs 223,269 alone,
+`b`'s condition carried into every carry, and the conditional over the
+whole multiplies it. Under `b` and under its negation each side is a
+plain read and the equality is the 13,626-node adder: a case split on
+the condition the premise's reads select by, before the diagram, is the
+step the coupling-search bucket's bodies want next.
 
 **Trap guards get their own budget; pruning in one pass (2026-09-16).**
 The OS pilot filed that `reset` — two nested counted loops over module
@@ -9434,7 +9481,7 @@ A mid-level IR is not introduced: it would re-derive how the facts reach
 the lowering across ten thousand lines for what the item list can carry
 until an allocator shows otherwise.
 
-### 9.ad Vector homes across calls (2026-09-15)
+### 9.ao Vector homes across calls (2026-09-15)
 
 The second increment of the optimization system (`90-backend.md` §16).
 A function that makes calls keeps its vector locals in the caller-saved
@@ -9691,7 +9738,7 @@ upward — the scalar leaf homes in x2–x7 (§9, the twenty-second
 increment) for the vector file; v0 is left for the result. Nothing is
 saved: a leaf makes no call. A home released at a local's last use
 returns to its pool. The registers taken are declared as clobbers and
-`Lane.VectorHomes` gates the shape with the same fallback as §9.ad.
+`Lane.VectorHomes` gates the shape with the same fallback as §9.ao.
 
 As of 2026-09-25, these existing unused argument homes are preferred before
 callee-saved and scratch homes, avoiding unnecessary d8–d15 save/restore
@@ -9753,7 +9800,7 @@ the verifier taking callees at their bodies. The compiler reports every body's s
 and obligation: `layer A — strength reduction ×2 decided at the bit
 level; reduction unrolling ×1 under Oak.Reduction.unrolled4_eq`.
 
-### 9.ah The vector class of the argument layout (2026-09-15)
+### 9.ap The vector class of the argument layout (2026-09-15)
 
 A function with more than eight floating-point or vector parameters
 stayed with the C backend: the register contract passes eight, in v0–v7,
