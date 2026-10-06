@@ -105,7 +105,7 @@ theorem relocate_reaches {call : Bool} {upper lower : BitVec 32}
 theorem call_target_even {place target : Nat} (h : fits true place target = true) :
     target % 2 = 0 := by
   simp only [fits, decide_eq_true_eq] at h
-  exact h.2.2.2.1 rfl
+  exact h.2.2.2.1 True.intro
 
 -- Regression: the old signed-32-bit check admitted this invalid upper half.
 example : fits false 0 2147481600 = false := by decide
