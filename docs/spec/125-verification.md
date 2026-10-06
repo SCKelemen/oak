@@ -209,7 +209,7 @@ including its mutable assignment/trail loops. `Oak.LRATRUP` proves the extracted
 rollback loop clears exactly the used trail prefix, preserves all other
 assignments and the trail, and restores zero scratch when every nonzero
 assignment is tracked. Its counter cannot wrap before the declared endpoint.
-`Oak.LRATRUPSoundness.production_rup_entails` proves that an accepted call to
+`Oak.LRATRUP.production_rup_entails` (in `Oak.LRATRUPSoundness`) proves that an accepted call to
 the extracted production `lrat_rup` entails its decoded target clause in the
 exact live word database, assuming zero scratch for declared variables,
 sufficient assignment capacity, and valid declared variables in live clauses. Its proof follows
@@ -230,8 +230,29 @@ variables while preserving the unused scratch suffix, and the inclusive
 live-table initializer starts with an empty database without counter wrap.
 The extracted deletion loop only removes live entries, even on partial
 failure, so it preserves every database model and the live-variable invariant.
-The initial-clause decoder, addition/store transitions, tracked-assignment
-preservation, and full-record/formula-binding composition are still open.
+`Oak.LRATRUPValidity` proves acceptance validates every target literal's
+variable index, including the suffix after a tautology has settled the RUP
+check. This establishes validity for the next stored clause from production
+execution rather than assuming it for incoming targets.
+
+`Oak.LRATStore` proves the production addition-copy loop writes exactly the
+target interval and preserves every other store word. With the live clauses
+contained in the already-used prefix, the copy and metadata writes implement
+exactly one insertion of the decoded input clause. Composed with
+`production_rup_entails`, this proves an accepted RUP addition preserves every
+old database model. The same transition preserves the used-prefix and
+live-variable invariants. The accepted initial-clause literal scan is proved
+to perform the same copy while validating every literal, so its insertion
+also establishes those invariants. The production initial-clause framing
+guards imply the source/destination bounds and non-wrapping arithmetic used
+by these proofs.
+
+These are component proofs of the extracted production loops and writes;
+the caller's capacities, used-prefix invariant, and (for RUP entailment)
+zero assignment scratch remain explicit hypotheses. The outer initial-clause
+traversal, tracked-assignment preservation between RUP calls, complete
+step-parser refinement, and full-record/formula-binding composition are
+still open.
 
 At the clause
 boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists for raw
