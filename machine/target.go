@@ -160,10 +160,12 @@ var arm64Target = &target{
 	},
 	conditional: func(a asm.Instruction) bool {
 		switch a.Mnemonic {
-		case "cbz", "cbnz", "tbz", "tbnz", "b.":
+		case "cbz", "cbnz", "tbz", "tbnz":
 			return true
+		case "b.":
+			return a.Cond != "al" && a.Cond != "nv"
 		case "b":
-			return a.Cond != ""
+			return a.Cond != "" && a.Cond != "al" && a.Cond != "nv"
 		}
 		return false
 	},
