@@ -1635,6 +1635,18 @@ func (c *checker) enterLabel(label Label) {
 	case c.forgetAtLabels:
 		c.forgetGuards()
 	case c.labelIn == nil:
+		// The first pass has no assumption from a previous iteration, so
+		// it starts the label at the meet of the predecessors already
+		// walked — the branches that target it and the fall-through,
+		// which arrive above has just recorded. Carrying the textual
+		// state over instead starts a label pessimistically whenever the
+		// instructions before it belong to a path that does not reach it,
+		// and a loop then locks that in: the meet only ever shrinks, so a
+		// fact lost on the first pass is lost for good, however many
+		// passes follow (docs/spec/94-assembler.md §9.ao).
+		if seen, known := c.labelArrive[label.Name]; known {
+			c.applyGuards(seen)
+		}
 		c.pendingCmp = cmpFact{}
 		c.pendingCcmp = ccmpFact{}
 		c.condFacts = map[int]condFact{}

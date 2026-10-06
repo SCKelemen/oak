@@ -77,3 +77,34 @@ func TestVerifyOuterGuardLoop(t *testing.T) {
 		t.Fatalf("the idiomatic sum loop must be proven, got %s: %s", proven.Kind, proven.Message)
 	}
 }
+
+// A label is seeded from its predecessors, not from walk order
+// (docs/spec/94-assembler.md §9.ao). The first pass has no assumption
+// from a previous iteration; carrying the textual state over starts a
+// label pessimistically whenever the instructions before it belong to a
+// path that does not reach it, and a loop locks that in, because the
+// meet only ever shrinks.
+func TestLabelSeededFromPredecessorsNotWalkOrder(t *testing.T) {
+	decl := "pick: (v: []u8, i: u32) -> u32"
+	// The not-taken path overwrites the span base and jumps away; the
+	// taken path loops, indexing through that base. No path reaching the
+	// loop overwrites it.
+	body := "  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10, x29, x30\n  frame 32\n  sub sp, sp, #32\n  stp x29, x30, [sp]\n  cmp w2, w1\n  b.lo other\n  ldr x0, [sp, #16]\n  b done\nother:\n  mov w9, wzr\nloop:\n  cmp w9, w1\n  b.hs done\n  ldrb w10, [x0, w9, uxtw]\n  add w9, w9, #1\n  b loop\ndone:\n  mov w0, wzr\n  ldp x29, x30, [sp]\n  add sp, sp, #32\n  ret"
+	if findings := checkBody(t, decl, body); len(findings) != 0 {
+		t.Fatalf("the loop's base is never overwritten on a path that reaches it: %v", findings)
+	}
+	// The same shape with the overwrite on the path that does reach the
+	// loop: the base really is gone there, and the access is refused.
+	reaching := "  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10, x29, x30\n  frame 32\n  sub sp, sp, #32\n  stp x29, x30, [sp]\n  cmp w2, w1\n  b.lo other\n  b done\nother:\n  ldr x0, [sp, #16]\n  mov w9, wzr\nloop:\n  cmp w9, w1\n  b.hs done\n  ldrb w10, [x0, w9, uxtw]\n  add w9, w9, #1\n  b loop\ndone:\n  mov w0, wzr\n  ldp x29, x30, [sp]\n  add sp, sp, #32\n  ret"
+	findings := checkBody(t, decl, reaching)
+	if len(findings) == 0 || !strings.Contains(strings.Join(findings, "\n"), "is neither") {
+		t.Fatalf("an overwrite on the reaching path must still refuse, got: %v", findings)
+	}
+	// And the back edge still shrinks: a base overwritten inside the loop
+	// is gone at the header on the second iteration.
+	inLoop := "  bind x0, w1 = v\n  bind w2 = i\n  clobber x9, x10, x29, x30\n  frame 32\n  sub sp, sp, #32\n  stp x29, x30, [sp]\n  mov w9, wzr\nloop:\n  cmp w9, w1\n  b.hs done\n  ldrb w10, [x0, w9, uxtw]\n  ldr x0, [sp, #16]\n  add w9, w9, #1\n  b loop\ndone:\n  mov w0, wzr\n  ldp x29, x30, [sp]\n  add sp, sp, #32\n  ret"
+	findings = checkBody(t, decl, inLoop)
+	if len(findings) == 0 || !strings.Contains(strings.Join(findings, "\n"), "is neither") {
+		t.Fatalf("a base the back edge overwrites must be refused at the header, got: %v", findings)
+	}
+}
