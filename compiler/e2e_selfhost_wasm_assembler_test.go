@@ -290,6 +290,14 @@ func selfhostWasmPlanCases() []selfhostWasmPlanCase {
 	}
 	longPlan[len(longPlan)-1] = encoding.Instruction{Opcode: 0x42, Immediate: math.MinInt64}
 	plans = append(plans, longPlan)
+	// Refusal after a long valid prefix must terminate without committing it.
+	for _, bad := range []encoding.Instruction{
+		{Opcode: 0xff},
+		{Opcode: 0x41, Immediate: math.MaxInt32 + 1},
+	} {
+		lateFailure := append([]encoding.Instruction(nil), longPlan...)
+		plans = append(plans, append(lateFailure, bad))
+	}
 	var cases []selfhostWasmPlanCase
 	for _, plan := range plans {
 		encoded, _ := encoding.Assemble(plan)

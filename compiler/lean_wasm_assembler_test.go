@@ -71,9 +71,9 @@ func TestLeanWasmAssemblerFaithful(t *testing.T) {
 			t.Fatalf("lake %v: %v\n%s", args, err, out)
 		}
 	}
-	run("build", "Oak.WasmAssemblerSequence")
+	run("build", "Oak.WasmAssemblerTotal")
 	var source strings.Builder
-	const preamble = "import Oak.WasmAssemblerSequence\nopen Oak.WasmAssembler\nset_option maxRecDepth 8192\n"
+	const preamble = "import Oak.WasmAssemblerTotal\nopen Oak.WasmAssembler\nset_option maxRecDepth 8192\n"
 	claims := 0
 	pin := func(call string, want uint32, buffer []byte) {
 		fmt.Fprintf(&source, "example : %s = some (%d, %s) := by decide +kernel\n", call, want, wasmLeanArray(buffer))
@@ -123,6 +123,10 @@ func TestLeanWasmAssemblerFaithful(t *testing.T) {
 	}
 	for _, tc := range selfhostWasmPlanCases() {
 		status, size, dst := tc.expected()
+		// Independently connect the total mathematical admission/result model
+		// to the shared Go/Oak corpus, including late refusal and short storage.
+		fmt.Fprintf(&source, "example : assemblyResult (Array.replicate %d 165) %d %s = (⟨%d, %d⟩, %s) := by decide +kernel\n", tc.capacity, tc.offset, tc.leanPlan(), status, size, wasmLeanArray(dst))
+		claims++
 		fmt.Fprintf(&source, "example : wasm_assemble (Array.replicate %d 165) %d %s %d = some (⟨%d, %d⟩, %s) := by decide +kernel\n", tc.capacity, tc.offset, tc.leanPlan(), len(tc.plan)+11, status, size, wasmLeanArray(dst))
 		claims++
 	}

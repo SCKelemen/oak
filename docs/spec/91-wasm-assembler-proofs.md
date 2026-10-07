@@ -90,13 +90,16 @@ The binary rules retain the [pinned Core reference](https://github.com/WebAssemb
 | `write_instruction_exact`, `write_instruction_decode` | Every instruction write terminates within eleven fuel units, writes exact canonical bytes when valid and fitting, preserves the entire destination otherwise, and decodes from the actual buffer |
 | `assemble_preflight_exact`, `assemble_emit_exact`, `assemble_admitted_exact` | Both extracted passes terminate for every valid fitting plan with `plan.size + 11` fuel, compute the exact size, and write the independent instruction sequence's bytes without wrapped addresses or counts |
 | `assemble_decode`, `assemble_success_bytes` | Actual assembled output decodes to the original instruction tokens in order with the original suffix; array length and every byte outside the exact window are preserved |
+| `assemble_preflight_refuses`, `assemble_refuses` | Every invalid or non-fitting plan terminates within `plan.size + 11` fuel and returns failure, zero size and the complete original destination, including late malformed instructions and offsets past the end |
+| `assemble_exact`, `assemble_terminates` | For all representable plans/destinations and all u32 offsets, the extracted assembler terminates and equals the independent validity/capacity/byte-result model |
+| `assemble_admission_iff`, `assemble_refusal_iff`, `assemble_fuel_independent` | Success occurs exactly for valid fitting plans; refusal occurs exactly otherwise with unchanged storage; additional sufficient fuel cannot change any status, count or output byte |
 
 Encoding recursion decreases the bit-width budget; it is not an execution-fuel
 assumption. Sequence decoding uses a syntactic instruction count. The numeric law assumes already-evaluated integer operands; it does not prove
 local selection or the emitted control structure. The encoding, numeric and
 target models do not execute general control flow or prove guest memory safety.
-The extracted LEB and instruction writers, and valid fitting plans, have the
-bounded termination proofs described below.
+The extracted LEB, instruction and whole-plan operations have the bounded
+termination proofs described below, including all refusals.
 The target model also corrects the existing RISC-V default CPU names
 and places unsupported-target refusal before explicit C-driver selection, as
 the current Go implementation does.
@@ -143,9 +146,16 @@ success frame covers every array index. The plan and destination remain disjoint
 These are extraction-loop budgets, not CPU instruction counts or a complexity
 claim about generated code.
 
-Whole-plan bounded termination for invalid or non-fitting plans remains open;
-every returned whole-plan refusal already has a universal failure-atomicity law.
-None of these byte proofs authorizes a source-to-module verification claim.
+`WasmAssemblerTotal.lean` closes whole-plan refusal and totality. It proves that
+any invalid instruction or capacity failure in an arbitrary suffix reaches a
+returned refusal, including after a long valid prefix. An offset past the end
+refuses before reading the plan. The same `plan.size + 11` budget therefore
+suffices for every input with representable disjoint spans, regardless of
+validity or fit. `assemble_exact` equates the extracted result to `assemblyResult`,
+which uses independent sequence encoding and mathematical capacity, with exact
+bytes on success and the original buffer on refusal. Success/refusal equivalences
+and fuel independence follow without assuming a returning run. These proofs do
+not authorize a source-to-module verification claim.
 
 ## Production evidence and gates
 
@@ -173,8 +183,9 @@ None of these byte proofs authorizes a source-to-module verification claim.
   the proved bounds of ten sizing guards and eleven writer guards, including
   instruction operations. Plan checks use `instruction count + 11`, with a
   maximum-width operand late in a long plan and an explicit insufficient-fuel
-  case. Refusing plans are also tested at that budget, without claiming their
-  universal termination theorem.
+  case. The shared plan corpus also kernel-checks the total result model against
+  the Go oracle, including long valid prefixes ending in invalid opcodes or
+  out-of-range immediates. Refusing plans have the same universal fuel bound.
 - `TestE2ESelfHostedWasmTransactions`: the shared whole-plan corpus covers empty
   and mixed plans, exact fits, short storage, out-of-range offsets and late bad
   opcodes/immediates; every destination byte is checked.
@@ -198,7 +209,7 @@ the mechanically extracted Oak definitions under the extraction boundary above.
 
 | Boundary | Required next work |
 | --- | --- |
-| Implementation refinement | Prove bounded termination of whole-plan refusal; prove Go encoder and exact module parser/type-validator correspondence |
+| Implementation refinement | Prove Go encoder and exact module parser/type-validator correspondence; discharge compiler/extractor correspondence beyond the stated modeling boundary |
 | Decoded semantics | Model values, operand/local/control stacks, calls, traps and module instantiation; connect every admitted numeric/control form |
 | Compiler correctness | Source/OptIR-to-decoded-Wasm refinement, edge-copy and structured/dispatch control proofs, certificate identity and authoritative admission |
 | Language/library coverage | Narrow integers, conversions and checked shifts; memory/aggregates/globals; explicit float/SIMD/atomic profiles; corresponding stdlib coverage |
