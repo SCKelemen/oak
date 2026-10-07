@@ -2,7 +2,7 @@ import Oak.LRATStore
 
 /-!
 Trail coverage for successive production RUP calls. The trail contains each
-assigned declared variable once, so a fresh assignment has space in a trail
+assigned declared var once, so a fresh assignment has space in a trail
 of `variables` entries and its counter cannot wrap. Rollback then restores
 the zero scratch required by the next addition's soundness theorem.
 -/
@@ -30,14 +30,14 @@ theorem trail_initial (assign : Array UInt8) (trail : Array UInt32) (variables :
     exact False.elim (nonzero (zero v hv))
 
 theorem trail_fresh_room (assign : Array UInt8) (trail : Array UInt32)
-    (variables used variable : UInt32) (state : TrailState assign trail variables used)
-    (inside : variable < variables) (fresh : assign.getD variable.toNat 0 = 0) :
+    (variables used var : UInt32) (state : TrailState assign trail variables used)
+    (inside : var < variables) (fresh : assign.getD var.toNat 0 = 0) :
     used < variables := by
-  have absent : variable.toNat ∉ trailIndices trail 0 used.toNat := by
+  have absent : var.toNat ∉ trailIndices trail 0 used.toNat := by
     intro member
     exact state.nonzero _ member fresh
   have distinct := List.nodup_cons.mpr ⟨absent, state.distinct⟩
-  have subset : variable.toNat :: trailIndices trail 0 used.toNat ⊆ List.range variables.toNat := by
+  have subset : var.toNat :: trailIndices trail 0 used.toNat ⊆ List.range variables.toNat := by
     intro v member
     rcases List.mem_cons.mp member with same | old
     · subst v
@@ -48,44 +48,44 @@ theorem trail_fresh_room (assign : Array UInt8) (trail : Array UInt32)
   rw [UInt32.lt_iff_toNat_lt]
   omega
 
-theorem trail_push_indices (trail : Array UInt32) (used variable : UInt32)
+theorem trail_push_indices (trail : Array UInt32) (used var : UInt32)
     (room : used.toNat < trail.size) (noWrap : (used + 1).toNat = used.toNat + 1) :
-    trailIndices (trail.setIfInBounds used.toNat variable) 0 (used + 1).toNat =
-      trailIndices trail 0 used.toNat ++ [variable.toNat] := by
+    trailIndices (trail.setIfInBounds used.toNat var) 0 (used + 1).toNat =
+      trailIndices trail 0 used.toNat ++ [var.toNat] := by
   unfold trailIndices
   rw [noWrap, List.range'_1_concat, List.map_append]
   have prefix : (List.range' 0 used.toNat).map
-      (fun k => ((trail.setIfInBounds used.toNat variable).getD k 0).toNat) =
+      (fun k => ((trail.setIfInBounds used.toNat var).getD k 0).toNat) =
       (List.range' 0 used.toNat).map (fun k => (trail.getD k 0).toNat) := by
     apply List.map_congr_left
     intro k member
     have bound : k < used.toNat := by simpa using member
-    rw [LRATChecker.array_getD_set_ne trail used.toNat k variable 0 (by omega)]
+    rw [LRATChecker.array_getD_set_ne trail used.toNat k var 0 (by omega)]
   rw [prefix]
   simp only [Nat.zero_add, List.map_cons, List.map_nil,
-    LRATChecker.array_getD_set_self trail used.toNat variable 0 room]
+    LRATChecker.array_getD_set_self trail used.toNat var 0 room]
 
 theorem trail_push (assign : Array UInt8) (trail : Array UInt32)
-    (variables used variable : UInt32) (value : UInt8)
+    (variables used var : UInt32) (value : UInt8)
     (state : TrailState assign trail variables used)
     (assignCapacity : variables.toNat ≤ assign.size) (trailCapacity : variables.toNat ≤ trail.size)
-    (inside : variable < variables) (fresh : assign.getD variable.toNat 0 = 0)
+    (inside : var < variables) (fresh : assign.getD var.toNat 0 = 0)
     (valueNonzero : value ≠ 0) :
-    TrailState (assign.setIfInBounds variable.toNat value)
-      (trail.setIfInBounds used.toNat variable) variables (used + 1) := by
-  have room := trail_fresh_room assign trail variables used variable state inside fresh
+    TrailState (assign.setIfInBounds var.toNat value)
+      (trail.setIfInBounds used.toNat var) variables (used + 1) := by
+  have room := trail_fresh_room assign trail variables used var state inside fresh
   have successor := counter_succ used variables room
   have rn := UInt32.lt_iff_toNat_lt.mp room
   have vn := UInt32.lt_iff_toNat_lt.mp inside
-  have entries := trail_push_indices trail used variable (by omega) successor
-  have absent : variable.toNat ∉ trailIndices trail 0 used.toNat := by
+  have entries := trail_push_indices trail used var (by omega) successor
+  have absent : var.toNat ∉ trailIndices trail 0 used.toNat := by
     intro member
     exact state.nonzero _ member fresh
   constructor
   · rw [entries, List.nodup_append]
     refine ⟨state.distinct, by simp, ?_⟩
     intro a member b singleton
-    have same : b = variable.toNat := List.mem_singleton.mp singleton
+    have same : b = var.toNat := List.mem_singleton.mp singleton
     subst b
     intro equal
     exact absent (equal ▸ member)
@@ -100,8 +100,8 @@ theorem trail_push (assign : Array UInt8) (trail : Array UInt32)
       rcases List.mem_append.mp member with old | new
       · have := state.domain v old; omega
       · have := List.mem_singleton.mp new; omega
-    rw [set_getD assign variable.toNat v value bound]
-    by_cases same : variable.toNat = v
+    rw [set_getD assign var.toNat v value bound]
+    by_cases same : var.toNat = v
     · simpa only [if_pos same] using valueNonzero
     · rw [if_neg same]
       rcases List.mem_append.mp member with old | new
@@ -109,9 +109,9 @@ theorem trail_push (assign : Array UInt8) (trail : Array UInt32)
       · exact False.elim (same (List.mem_singleton.mp new).symm)
   · intro v insideV nonzero
     rw [entries]
-    by_cases same : variable.toNat = v
+    by_cases same : var.toNat = v
     · exact List.mem_append.mpr (Or.inr (List.mem_singleton.mpr same.symm))
-    · rw [set_getD assign variable.toNat v value (by omega), if_neg same] at nonzero
+    · rw [set_getD assign var.toNat v value (by omega), if_neg same] at nonzero
       exact List.mem_append.mpr (Or.inl (state.covers v insideV nonzero))
 
 theorem undo_loop_fuel (fuel : Nat) (assign : Array UInt8) (trail : Array UInt32)
@@ -153,7 +153,7 @@ theorem undo_tracked_zero (fuel : Nat) (assign : Array UInt8) (trail : Array UIn
     rw [values v (by omega)]
     by_cases zero : assign.getD v 0 = 0
     · simp [zero]
-      · rw [if_pos (state.covers v inside zero)]
+    · rw [if_pos (state.covers v inside zero)]
 
 theorem trueValue_ne_zero (lit : UInt32) : trueValue lit ≠ 0 := by
   unfold trueValue
@@ -198,7 +198,7 @@ theorem target_tracks (fuel : Nat) (words : Array UInt32)
           simp only [lrat_rup.loop1, hi, decide_true, beq_self_eq_true, Bool.and_self,
             ite_true, wordAt, invalid, decide_false, Bool.false_eq_true, ite_false,
             Bool.not_true, Bool.and_false, bind, Option.bind, Option.pure_def] at run
-          exact next assign trail LRAT_ACCEPTED true used rfl rfl state run
+          exact next assign trail LRAT_ACCEPTED true used rfl rfl state (by simpa only [last] using run)
         | false =>
           simp only [lrat_rup.loop1, hi, decide_true, beq_self_eq_true, Bool.and_self,
             ite_true, wordAt, invalid, decide_false, Bool.false_eq_true, ite_false,
@@ -220,7 +220,7 @@ theorem target_tracks (fuel : Nat) (words : Array UInt32)
       rcases run with ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
       exact ⟨rfl, rfl, state⟩
 
-/-- Any selected unit is an unassigned declared variable. This is proved
+/-- Any selected unit is an unassigned declared var. This is proved
 from the actual scan, including duplicate literals and refused scans. -/
 theorem scan_fresh (fuel : Nat) (store : Array UInt32) (assign : Array UInt8)
     (start count variables status remaining unit j status' remaining' unit' j' : UInt32)
@@ -308,7 +308,7 @@ theorem hints_track (fuel : Nat) (words : Array UInt32)
             · simp only [empty, beq_self_eq_true, ite_true] at run
               by_cases last : h + 1 = hints_n
               · simp only [last, beq_self_eq_true, ite_true] at run
-                exact next assign trail LRAT_ACCEPTED true used rfl rfl state run
+                exact next assign trail LRAT_ACCEPTED true used rfl rfl state (by simpa only [last] using run)
               · simp only [beq_eq_false_iff_ne.mpr last, Bool.false_eq_true, ite_false] at run
                 exact next assign trail LRAT_MALFORMED false used rfl rfl state run
             · simp only [beq_eq_false_iff_ne.mpr empty, Bool.false_eq_true, ite_false] at run
@@ -339,10 +339,10 @@ theorem hints_track (fuel : Nat) (words : Array UInt32)
       rcases run with ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
       exact ⟨rfl, rfl, state⟩
 
-/-- Every completed production RUP call restores zero declared-variable
+/-- Every completed production RUP call restores zero declared-var
 scratch, including refused calls. Trail coverage is derived from execution,
 not supplied by the caller. The caller supplies only capacities, initial
-zero scratch, and the database's declared-variable invariant. -/
+zero scratch, and the database's declared-var invariant. -/
 theorem production_rup_restores_zero (fuel : Nat) (words : Array UInt32)
     (target_at target_n hints_at hints_n : UInt32) (starts lengths : Array UInt32)
     (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8) (trail : Array UInt32)
@@ -380,7 +380,7 @@ theorem production_rup_restores_zero (fuel : Nat) (words : Array UInt32)
         cases unused
         obtain ⟨as3, ts3, zeros⟩ := undo_tracked_zero fuel a2 t2 variables u2 a3 t3 inv2 (by omega) undoRun
         split at run <;>
-          simp only [undoRun, bind, Option.bind, Option.pure_def, Option.some.injEq, Prod.mk.injEq] at run <;>
+          (try simp only [undoRun, bind, Option.bind, Option.pure_def, Option.some.injEq, Prod.mk.injEq] at run) <;>
           rcases run with ⟨_, _, _, _, _, rfl, rfl⟩ <;>
           exact ⟨as3.trans (as2.trans as1), by rw [ts3, ts2, ts1], zeros⟩
 
