@@ -348,13 +348,14 @@ race_views: (l: Layout, m0: [*]u32, w0: []u32, n0: u32, m1: [*]u32, w1: []u32, n
 
 // race_in_oak owns the tables and built buffers around race_views.
 race_in_oak: (l: Layout, lw: Lower, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, n0: u32, n1: u32, n2: u32, variants: u32, out: [*]u32): () {
-  words1: u32 = variants > u32(1) ? { l.total } | { u32(1) }
-  words2: u32 = variants > u32(2) ? { l.total } | { u32(1) }
-  t0: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  words0: u32 = l.total + (variants > u32(1) ? { REPLAY_WORDS } | { u32(0) })
+  words1: u32 = variants > u32(1) ? { (l.total + REPLAY_WORDS) } | { u32(1) }
+  words2: u32 = variants > u32(2) ? { (l.total + REPLAY_WORDS) } | { u32(1) }
+  t0: c.Ptr = malloc(c.Size(words0 * u32(4)))
   t1: c.Ptr = malloc(c.Size(words1 * u32(4)))
   t2: c.Ptr = malloc(c.Size(words2 * u32(4)))
   unsafe {
-    tab0: Buffer[u32] = c.own[u32](t0, l.total)
+    tab0: Buffer[u32] = c.own[u32](t0, words0)
     tab1: Buffer[u32] = c.own[u32](t1, words1)
     tab2: Buffer[u32] = c.own[u32](t2, words2)
     built0: Buffer[u32] = c.own[u32](b0, lw.built_total)
@@ -395,7 +396,7 @@ race_bounded: (lw: Lower, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, n0: u32, n1: u32, n2:
     attempts = attempts + u32(1)
     cleared = cleared + (l.umask + l.cmask + u32(2)) * variants
     out[u32(517)] = cleared
-    out[u32(518)] = l.total * variants + u32(3) - variants
+    out[u32(518)] = (l.total + (variants > u32(1) ? { REPLAY_WORDS } | { u32(0) })) * variants + u32(3) - variants
     out[u32(519)] = attempts
     done = out[u32(0)] != STATUS_EXCEEDED || cap >= budget
     !done ? { cap = cap > budget / u32(4) ? { budget } | { cap * u32(4) } } | { }

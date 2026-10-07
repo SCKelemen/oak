@@ -230,6 +230,7 @@ import Oak.Rings
 import Oak.BinaryCodec
 import Oak.BddComplement
 import Oak.IndexCongruence
+import Oak.SolverScheduling
 import Oak.RupCheck
 import Oak.LRATBounds
 import Oak.LRATRUP
