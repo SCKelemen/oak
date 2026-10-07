@@ -147,7 +147,7 @@ theorem initial_loop_preserves (fuel : Nat) (words starts lengths : Array UInt32
                 exact headModel
               have nonempty : n ≠ 0 := by
                 intro zero
-                subst n
+                rw [zero] at clauseModel
                 simpa [LRATRUP.wordClause, RupCheck.SatisfiesClause] using clauseModel
               have nextState : InitialState words (starts.setIfInBounds c.toNat used)
                   (lengths.setIfInBounds c.toNat n) (alive.setIfInBounds c.toNat 1) nextStore
@@ -161,7 +161,7 @@ theorem initial_loop_preserves (fuel : Nat) (words starts lengths : Array UInt32
                   exact RupCheck.insert_preserves state.models clauseModel
                 · simp [state.noEmpty, nonempty]
               apply ih _ _ _ _ (at_ + 1 + n) (used + n) _ (c + 1) _ _ _ _ _ _ _ _
-                (by rw [UInt32.lt_iff_toNat_lt, nextCounter]; omega)
+                (by rw [UInt32.lt_iff_toNat_lt, UInt32.toNat_zero, nextCounter]; omega)
                 (by rw [nextCounter]; omega) nextState _ run
               intro clause member
               apply input clause
