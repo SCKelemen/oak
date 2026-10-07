@@ -82,11 +82,17 @@ The binary rules retain the [pinned Core reference](https://github.com/WebAssemb
 | `preflight_bound`, `assemble_success_bound` | The extracted first pass maintains its total-capacity invariant, and every successful assembly reports an extent within the original span |
 | `write_uleb_refuses`, `write_sleb_refuses`, `write_instruction_refuses`, `assemble_failure_atomic` | Rejected footprints and every returned whole-plan failure preserve the complete destination, including late invalid instructions |
 | `write_uleb_frame`, `write_sleb_frame` | Every returning extracted LEB writer preserves the array length and all bytes outside its reported extent |
+| `uleb_size_exact`, `sleb_size_exact` | The extracted sizing loops terminate with the canonical encoding length for every u64/i64; ten guard evaluations suffice |
+| `write_uleb_exact`, `write_sleb_exact` | The extracted public LEB writers terminate with exactly `WasmEncoding.encode` bytes and count when the footprint fits, or zero and the original storage otherwise; eleven guard evaluations suffice |
+| `writeBytes_get`, `writeBytes_suffix` | Pointwise buffer contents are exactly the encoding inside the admitted window and the original bytes outside; reading from the offset yields the encoding followed by the untouched suffix |
+| `write_uleb_decode`, `write_sleb_decode` | The independent `WasmLEB` decoder recovers every u64/i64 from the actual written buffer and returns the original suffix beyond the encoding |
 
 Encoding recursion decreases the bit-width budget; it is not an execution-fuel
 assumption. Sequence decoding uses a syntactic instruction count. The numeric law assumes already-evaluated integer operands; it does not prove
-local selection or the emitted control structure. These models do not assert
-runtime termination, execute general control flow, or prove guest memory safety. The target model also corrects the existing RISC-V default CPU names
+local selection or the emitted control structure. The encoding, numeric and
+target models do not execute general control flow or prove guest memory safety.
+The extracted LEB loops have the bounded termination proofs described below.
+The target model also corrects the existing RISC-V default CPU names
 and places unsupported-target refusal before explicit C-driver selection, as
 the current Go implementation does.
 
@@ -96,13 +102,29 @@ the current Go implementation does.
 subject to the compiler/extractor correspondence and modeling choices in
 [Lean extraction](95-extraction.md). The source is not duplicated by hand.
 Mutable spans become threaded arrays; the plan and destination must be disjoint.
-The universal writer/frame and preflight laws quantify over arbitrary extraction
+The original writer/frame and preflight laws quantify over arbitrary extraction
 fuel and returning runs. `none` denotes fuel exhaustion, not assembler failure.
-They do not yet prove sufficient fuel for every valid plan, byte content against
-`WasmEncoding`, or the complete instruction/sequence success frame. The
-`admitted_store` law separately discharges the in-bounds, nonwrapping address
-obligation for the LEB loops; the extractor's out-of-bounds-store behavior is
-not used as evidence of runtime safety.
+
+`WasmAssemblerBytes.lean` closes the LEB sizing and byte-content obligations.
+For every u64/i64, the sizing loops compute the length of `WasmEncoding.encode`
+with at least ten fuel units. With at least eleven units, each public LEB writer
+returns its complete result for every representable span length and every u32
+offset, including refusals. These bounds count guard evaluations in each
+extracted loop; they are not processor instruction counts or a sufficient
+budget for an entire assembly plan.
+
+The byte proof relates both extracted writers to one integer-based sequence,
+then proves that sequence equal to the canonical encoding. The public contract
+requires `dst.size < 2^32`; it proves the exact footprint admission check,
+returned byte count, complete buffer contents and unchanged-on-refusal result.
+In-bounds readback and the independent decoder then establish value recovery
+and preservation of the original suffix. The `admitted_store` law discharges
+the nonwrapping address obligation; the readback proof requires the full window
+to fit. No dropped out-of-range store is used to justify runtime safety.
+
+Instruction/sequence exact-byte refinement, sufficient fuel for whole plans,
+and their complete success frames remain open. The LEB proofs do not authorize
+a source-to-module verification claim.
 
 ## Production evidence and gates
 
@@ -126,7 +148,9 @@ not used as evidence of runtime safety.
   assembly routines with kernel-checked `decide` claims. It shares instruction,
   full-width LEB and transaction corpora with the compiled-Oak tests, comparing
   complete buffers and returned counts/status against the Go encoder. Fuel
-  exhaustion is explicitly distinct from ordinary refusal.
+  exhaustion is explicitly distinct from ordinary refusal. The LEB corpus uses
+  the proved bounds of ten sizing guards and eleven writer guards; instruction
+  and whole-plan checks retain their separate budget.
 - `TestE2ESelfHostedWasmTransactions`: the shared whole-plan corpus covers empty
   and mixed plans, exact fits, short storage, out-of-range offsets and late bad
   opcodes/immediates; every destination byte is checked.
@@ -150,7 +174,7 @@ the mechanically extracted Oak definitions under the extraction boundary above.
 
 | Boundary | Required next work |
 | --- | --- |
-| Implementation refinement | Extend the extracted Oak laws to termination/sufficient fuel, exact byte content, instruction/sequence success frames and model equivalence; prove Go encoder and exact module parser/type-validator correspondence |
+| Implementation refinement | Extend the exact LEB refinement to instruction/sequence byte content, whole-plan termination/sufficient fuel and success frames; prove Go encoder and exact module parser/type-validator correspondence |
 | Decoded semantics | Model values, operand/local/control stacks, calls, traps and module instantiation; connect every admitted numeric/control form |
 | Compiler correctness | Source/OptIR-to-decoded-Wasm refinement, edge-copy and structured/dispatch control proofs, certificate identity and authoritative admission |
 | Language/library coverage | Narrow integers, conversions and checked shifts; memory/aggregates/globals; explicit float/SIMD/atomic profiles; corresponding stdlib coverage |

@@ -89,6 +89,7 @@ sum_ab: (dst: [*]u32, a: []u32, b: []u32) -> () {
 main: (): i32 {
   xs: [11]u32 = [11]u32{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 }
   ys: [11]u32 = [11]u32{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+  summed: [11]u32
   zs: [5]u64 = [5]u64{ 15, 255, 4095, 65535, 1048575 }
   ws: [5]u64 = [5]u64{ 0, 0, 0, 0, 0 }
   fs: [3]f32 = [3]f32{ 0.5, 1.5, 2.0 }
@@ -100,18 +101,20 @@ main: (): i32 {
   bump(span(&ys), u32(1))
   mask64(span(&ws), view(&zs), u64(255))
   fadd_k(span(&gs), view(&fs), 2.0)
-  sum_ab(span(&ys), view(&xs), view(&ys))
+  // The zip's writable destination must be disjoint from both read-only inputs.
+  // bump above separately covers the legal single-span in-place map.
+  sum_ab(span(&summed), view(&xs), view(&ys))
   xor_mask(span(&cs), view(&bs), u8(255))
   fill16(span(&hs), u16(7))
-  // ys = ((x + 3) ^ 1) + 1 over 1..11 sums to 111, plus xs again: 177;
+  // ys = ((x + 3) ^ 1) + 1 over 1..11 sums to 111; summed adds xs again: 177;
   // ws sums to 1035; gs[2] is 2.0 * 2.0 + 0.5; cs[0] is 254, cs[18] is
   // 236, hs[8] is 7.
   drop: u32 = gs[2] == 4.5 ? u32(7) | u32(0)
   narrow: u32 = u32(cs[0]) + u32(cs[18]) + u32(hs[8])
   acc: u32 = u32(0)
   i: u32 = u32(0)
-  while i < len(ys) {
-    acc = acc + ys[i]
+  while i < len(summed) {
+    acc = acc + summed[i]
     i = i + u32(1)
   }
   j: u32 = u32(0)
@@ -192,6 +195,11 @@ func TestE2ENativeVectorMap(t *testing.T) {
 	if abnormal || code != (177+1035+497-7)%256 {
 		t.Fatalf("native: exit = (%d, abnormal=%v), want %d\n%s", code, abnormal, (177+1035+497-7)%256, joined)
 	}
+}
+
+// The reference fixture must remain valid on every host, even when ARM64
+// execution is unavailable. This also checks its borrow scopes and checksum.
+func TestE2ENativeVectorMapCReference(t *testing.T) {
 	if _, code, abnormal := buildAndRunFrom(t, "native_vector_map_c", New().WithSource("vecmap.oak", nativeVectorMapProgram)); abnormal || code != (177+1035+497-7)%256 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want %d", code, abnormal, (177+1035+497-7)%256)
 	}

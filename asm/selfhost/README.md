@@ -142,9 +142,11 @@ universal Lean encoding laws, production correspondence and independent engine
 tests. `Oak.WasmAssemblerExtracted` is generated from the complete Oak source;
 its laws prove buffer admission, preflight capacity, failure preservation,
 LEB writer frames, and the signed floor step. Formal CI checks extraction drift
-and Go/Oak/Lean agreement on shared corpora. The Oak implementation is a
-bootstrap kernel; exact-byte loop refinement, module writing, linking and
-source-to-module verification remain open.
+and Go/Oak/Lean agreement on shared corpora. `Oak.WasmAssemblerBytes` proves
+bounded termination, canonical sizes and exact bytes for both full-width LEB
+writers, plus independent decoder recovery from their actual output buffers.
+The Oak implementation is a bootstrap kernel; instruction/sequence byte
+refinement, module writing, linking and source-to-module verification remain open.
 
 ## Remaining M7/M8 work
 
