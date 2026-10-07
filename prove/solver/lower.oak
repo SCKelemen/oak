@@ -3431,56 +3431,69 @@ lower_theorem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, budget: u32, order: 
     ntraps: u32 = state(lw, w, LS_TRAPS)
     nterms: u32 = compact_terms(lw, w, b, state(lw, w, LS_TERMS), ntraps, full_claim)
     claim: u32 = state(lw, w, LS_RET)
-    // The order: does it apply, and the leaves' block placement.
-    ncontrol: u32 = order == ORDER_CONTROL ? { control_leaves(lw, w, b, nterms, leaves) } | { u32(0) }
-    applies: Bool = order == ORDER_INTERLEAVED ? { true } | {
-      order == ORDER_BLOCKS ? { n > u32(1) } | { ncontrol > u32(0) && ncontrol < leaves }
+    root_base: u32 = term_base + nterms * TERM_WORDS
+    r: u32 = 0
+    while r < ntraps {
+      b[root_base + r] = w[lw.traps_at + r]
+      r = r + u32(1)
     }
-    applies ? {
-      order == ORDER_INTERLEAVED ? { } | { leaf_blocks(lw, w, sx, leaves, order == ORDER_CONTROL) }
-      li: u32 = 0
-      while li < leaves {
-        base: u32 = HEADER_WORDS + li * LEAF_WORDS
-        pw: u32 = b[base]
-        bit: u32 = 0
-        while bit < u32(64) {
-          v: u32 = order == ORDER_INTERLEAVED ? { bit * stride + li } | { w[lw.argv_at + li * u32(3)] + bit * w[lw.argv_at + li * u32(3) + u32(1)] + w[lw.argv_at + li * u32(3) + u32(2)] }
-          b[base + u32(1) + bit] = bit < pw ? { v } | { NONE }
-          bit = bit + u32(1)
-        }
-        li = li + u32(1)
-      }
-      root_base: u32 = term_base + nterms * TERM_WORDS
-      r: u32 = 0
-      while r < ntraps {
-        b[root_base + r] = w[lw.traps_at + r]
-        r = r + u32(1)
-      }
-      b[root_base + ntraps] = claim
-      select_base: u32 = root_base + ntraps + u32(1)
-      slot: u32 = 0
-      while slot < SELECT_SLOTS_OUT {
-        bit: u32 = 0
-        while bit < u32(64) {
-          b[select_base + slot * u32(64) + bit] = (order == ORDER_INTERLEAVED && slot < u32(8)) ? { bit * stride + leaves + slot } | {
-            order == ORDER_INTERLEAVED ? { u32(64) * stride + (slot - u32(8)) * u32(64) + bit } | { u32(64) * stride + slot * u32(64) + bit }
-          }
-          bit = bit + u32(1)
-        }
-        slot = slot + u32(1)
-      }
-      b[u32(0)] = nterms
-      b[u32(1)] = leaves
-      b[u32(2)] = ntraps + u32(1)
-      b[u32(3)] = budget
-      b[u32(4)] = SELECT_SLOTS_OUT
-      b[u32(5)] = u32(0)
-      b[u32(6)] = u32(0)
-      b[u32(7)] = u32(0)
-      select_base + SELECT_SLOTS_OUT * u32(64)
-    } | {
-      fail_at(lw, w, REASON_ORDER)
-      u32(0)
-    }
+    b[root_base + ntraps] = claim
+    b[u32(0)] = nterms
+    b[u32(1)] = leaves
+    b[u32(2)] = ntraps + u32(1)
+    b[u32(3)] = budget
+    b[u32(4)] = SELECT_SLOTS_OUT
+    b[u32(5)] = u32(0)
+    b[u32(6)] = u32(0)
+    b[u32(7)] = u32(0)
+    ordered: u32 = reorder_problem(lw, w, b, sx, order)
+    ordered == u32(0) ? { fail_at(lw, w, REASON_ORDER) } | { }
+    ordered
   }
+}
+
+// reorder_problem changes the maps of an already lowered problem. No
+// expression lowering, compaction, or witness evaluation is repeated.
+reorder_problem: (lw: Lower, w: [*]u32, b: [*]u32, sx: []u32, order: u32): u32 {
+  nterms: u32 = b[u32(0)]
+  leaves: u32 = b[u32(1)]
+  ntraps: u32 = b[u32(2)] - u32(1)
+  term_base: u32 = HEADER_WORDS + leaves * LEAF_WORDS
+  root_base: u32 = term_base + nterms * TERM_WORDS
+  stride: u32 = leaves + u32(8)
+  n: u32 = fn_param_count(sx, syn_theorem(sx))
+  set_state(lw, w, LS_TERMS_AT, term_base)
+  // Change only variable maps; the term graph and roots are immutable.
+  ncontrol: u32 = order == ORDER_CONTROL ? { control_leaves(lw, w, b, nterms, leaves) } | { u32(0) }
+  applies: Bool = order == ORDER_INTERLEAVED ? { true } | {
+    order == ORDER_BLOCKS ? { n > u32(1) } | { ncontrol > u32(0) && ncontrol < leaves }
+  }
+  applies ? {
+    order == ORDER_INTERLEAVED ? { } | { leaf_blocks(lw, w, sx, leaves, order == ORDER_CONTROL) }
+    li: u32 = 0
+    while li < leaves {
+      base: u32 = HEADER_WORDS + li * LEAF_WORDS
+      pw: u32 = b[base]
+      bit: u32 = 0
+      while bit < u32(64) {
+        v: u32 = order == ORDER_INTERLEAVED ? { bit * stride + li } | { w[lw.argv_at + li * u32(3)] + bit * w[lw.argv_at + li * u32(3) + u32(1)] + w[lw.argv_at + li * u32(3) + u32(2)] }
+        b[base + u32(1) + bit] = bit < pw ? { v } | { NONE }
+        bit = bit + u32(1)
+      }
+      li = li + u32(1)
+    }
+    select_base: u32 = root_base + ntraps + u32(1)
+    slot: u32 = 0
+    while slot < SELECT_SLOTS_OUT {
+      bit: u32 = 0
+      while bit < u32(64) {
+        b[select_base + slot * u32(64) + bit] = (order == ORDER_INTERLEAVED && slot < u32(8)) ? { bit * stride + leaves + slot } | {
+          order == ORDER_INTERLEAVED ? { u32(64) * stride + (slot - u32(8)) * u32(64) + bit } | { u32(64) * stride + slot * u32(64) + bit }
+        }
+        bit = bit + u32(1)
+      }
+      slot = slot + u32(1)
+    }
+    select_base + SELECT_SLOTS_OUT * u32(64)
+  } | { u32(0) }
 }

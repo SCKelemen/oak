@@ -2,6 +2,7 @@ package asm
 
 import (
 	"fmt"
+	"math/bits"
 	"os"
 	"sort"
 	"strings"
@@ -124,13 +125,46 @@ func cloneWrites(log map[string][]*spanWrite) map[string][]*spanWrite {
 // against a constant write index folds, so straight-line code at literal
 // indices costs no conditional.
 func memoryAt(log []*spanWrite, index, base *term) *term {
+	if len(log) == 0 {
+		return base
+	}
 	value := base
 	index = truncate(index, 32)
+	memo, seen := map[*term]*linearForm{}, map[*term]bool{}
 	var form *linearForm
 	if len(log) > 0 {
-		form = index.linearAt(32)
+		form = index.linearAtMemo(32, memo, seen)
 	}
-	for _, w := range log {
+	type relation struct{ known, equal bool }
+	relations := map[*term]relation{}
+	relate := func(other *term) (bool, bool) {
+		if r, ok := relations[other]; ok {
+			return r.known, r.equal
+		}
+		known, equal := false, false
+		if index.kind == termConst && other.kind == termConst {
+			known, equal = true, index.value&mask(32) == other.value&mask(32)
+		} else if form != nil {
+			known, equal = linearFormsRelate(form, other.linearAtMemo(32, memo, seen))
+		}
+		relations[other] = relation{known, equal}
+		return known, equal
+	}
+	start := 0
+	for i := len(log) - 1; i >= 0; i-- {
+		w := log[i]
+		if w.memory == zeroMemory || (w.memory != "" && w.guard == nil) {
+			start = i
+			break
+		}
+		if w.memory == "" && w.guard == nil {
+			if known, equal := relate(w.index); known && equal {
+				start = i
+				break
+			}
+		}
+	}
+	for _, w := range log[start:] {
 		if w.memory == zeroMemory {
 			value = constTerm(0, base.width) // a zero-filled array: zero from here
 			continue
@@ -150,13 +184,7 @@ func memoryAt(log []*spanWrite, index, base *term) *term {
 		// equal or unequal by their constants alone — the arena's
 		// `base + k` addressing — which spares the diagrams an equality
 		// over the index bits for every write met by a read.
-		var known, equal bool
-		if index.kind == termConst && w.index.kind == termConst {
-			// Two constants (a witness run): compared outright.
-			known, equal = true, index.value&mask(32) == w.index.value&mask(32)
-		} else {
-			known, equal = indexRelation(form, w.index)
-		}
+		known, equal := relate(w.index)
 		if known && !equal {
 			continue
 		}
@@ -188,16 +216,35 @@ func indexRelation(form *linearForm, other *term) (known, equal bool) {
 	if form == nil {
 		return false, false
 	}
-	lb := other.linearAt(32)
-	if lb == nil || len(form.coeffs) != len(lb.coeffs) {
+	return linearFormsRelate(form, other.linearAt(form.width))
+}
+
+// Linear indices are congruences modulo 2^width, including overflow. After
+// cancelling common coefficients, every variable contribution is divisible
+// by 2^shift. Distinct constant residues prove disjointness without blasting
+// a word equality. No assumptions about arena regions or bounds are added.
+func linearFormsRelate(a, b *linearForm) (known, equal bool) {
+	if a == nil || b == nil || a.width != b.width || a.width < 1 || a.width > 64 {
 		return false, false
 	}
-	for name, c := range form.coeffs {
-		if lb.coeffs[name] != c {
-			return false, false
+	m := mask(a.width)
+	shift := a.width
+	for name, c := range a.coeffs {
+		shift = min(shift, bits.TrailingZeros64((c-b.coeffs[name])&m))
+	}
+	for name, c := range b.coeffs {
+		if _, exists := a.coeffs[name]; !exists {
+			shift = min(shift, bits.TrailingZeros64(c&m))
 		}
 	}
-	return true, form.constant == lb.constant
+	delta := (a.constant - b.constant) & m
+	if delta&mask(shift) != 0 {
+		return true, false
+	}
+	if shift == a.width {
+		return true, true
+	}
+	return false, false
 }
 
 // guardWrites conjoins cond onto the guard of every write in the slice.

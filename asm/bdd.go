@@ -300,9 +300,52 @@ func (b *bdd) apply(op, x, y int) int {
 	return r
 }
 
-// ite is if-then-else: (c ∧ t) ∨ (¬c ∧ e).
+// ite uses one ternary Shannon expansion, avoiding the two intermediate
+// conjunctions. Complement normalization gives each cache key one polarity.
+// Keys use c+4 in the operation field, disjoint from binary operations.
 func (b *bdd) ite(c, t, e int) int {
-	return b.apply(opOr, b.apply(opAnd, c, t), b.apply(opAnd, b.not(c), e))
+	if b.exceeded {
+		return bddFalse
+	}
+	if c == bddTrue {
+		return t
+	}
+	if c == bddFalse || t == e {
+		return e
+	}
+	if t == bddTrue && e == bddFalse {
+		return c
+	}
+	if t == bddFalse && e == bddTrue {
+		return c ^ 1
+	}
+	if c&1 != 0 {
+		c, t, e = c^1, e, t
+	}
+	flip := e & 1
+	t, e = t^flip, e^flip
+	if r, ok := b.memo.lookup(int32(c+4), int32(t), int32(e)); ok {
+		return int(r) ^ flip
+	}
+	v := min(b.variableOf(c), b.variableOf(t), b.variableOf(e))
+	cl, ch, tl, th, el, eh := c, c, t, t, e, e
+	if b.variableOf(c) == v {
+		cl, ch = b.low(c), b.high(c)
+	}
+	if b.variableOf(t) == v {
+		tl, th = b.low(t), b.high(t)
+	}
+	if b.variableOf(e) == v {
+		el, eh = b.low(e), b.high(e)
+	}
+	lo := b.ite(cl, tl, el)
+	hi := b.ite(ch, th, eh)
+	if b.exceeded {
+		return bddFalse
+	}
+	r := b.mk(v, lo, hi)
+	b.memo.insert(int32(c+4), int32(t), int32(e), int32(r))
+	return r ^ flip
 }
 
 // restrict is the cofactor of e at variable = value: the diagram with the

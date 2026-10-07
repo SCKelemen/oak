@@ -174,11 +174,11 @@ next_pow2: (n: u32): u32 {
 // layout_for sizes the buffer for a node budget and a term count: the unique
 // table twice the budget rounded up, an apply cache of the same size (a
 // smaller cache recomputes cofactors and costs more than its words), a
-// 32768-frame stack.
+// stack bounded by the node budget (at most 32768 frames).
 layout_for: (cap: u32, terms: u32): Layout {
   ucap: u32 = next_pow2(cap * u32(2))
   ccap: u32 = ucap
-  scap: u32 = 32768
+  scap: u32 = cap < u32(32768) ? { (cap == u32(0) ? { u32(1) } | { cap }) } | { u32(32768) }
   var_at: u32 = 0
   low_at: u32 = cap
   high_at: u32 = cap * u32(2)
@@ -451,13 +451,110 @@ bdd_apply: (l: Layout, mem: [*]u32, op: u32, x0: u32, y0: u32): u32 {
 // Negation is the complement bit: no node and no lookup.
 bdd_not: (l: Layout, mem: [*]u32, a: u32): u32 = a ^ u32(1)
 
-// ite is (c and t) or (not c and e), as the Go decider spells it.
+// The clause engine keeps its certificate-producing gates; the diagram
+// engine computes ITE directly, with the same normalization as asm/bdd.go.
 bdd_ite: (l: Layout, mem: [*]u32, c: u32, t: u32, e: u32): u32 = mem[l.state_at + STATE_MODE] == u32(1) ? { cnf_ite(l, mem, c, t, e) } | { diagram_ite(l, mem, c, t, e) }
 
-diagram_ite: (l: Layout, mem: [*]u32, c: u32, t: u32, e: u32): u32 {
-  ct: u32 = apply(l, mem, OP_AND, c, t)
-  nce: u32 = apply(l, mem, OP_AND, bdd_not(l, mem, c), e)
-  apply(l, mem, OP_OR, ct, nce)
+ite_terminal: (c: u32, t: u32, e: u32): u32 = c == BDD_TRUE ? { t } | { (c == BDD_FALSE || t == e) ? { e } | { (t == BDD_TRUE && e == BDD_FALSE) ? { c } | { (t == BDD_FALSE && e == BDD_TRUE) ? { c ^ u32(1) } | { NONE } } } }
+
+ite_push: (l: Layout, mem: [*]u32, sp: u32, c: u32, t: u32, e: u32): () {
+  f: u32 = l.stack_at + sp * FRAME_WORDS
+  mem[f] = c
+  mem[f + u32(1)] = t
+  mem[f + u32(2)] = e
+  mem[f + u32(3)] = u32(0)
+}
+
+ite_deliver: (l: Layout, mem: [*]u32, sp: u32, r: u32): () {
+  sp > u32(0) ? {
+    f: u32 = l.stack_at + (sp - u32(1)) * FRAME_WORDS
+    mem[f + u32(3)] == u32(1) ? { mem[f + u32(8)] = r } | { mem[f + u32(9)] = r }
+  } | { }
+}
+
+// A frame holds c,t,e,phase,v,ch,th,eh,lo,hi,flip. The cache's fourth
+// word is the result and its first word has tag 4, disjoint from apply
+// and restrict. Inputs use fewer than 28 bits, as in the binary cache.
+diagram_ite: (l: Layout, mem: [*]u32, c0: u32, t0: u32, e0: u32): u32 {
+  result: u32 = BDD_FALSE
+  sp: u32 = 1
+  ite_push(l, mem, u32(0), c0, t0, e0)
+  while sp > u32(0) {
+    exceeded(l, mem) ? { sp = u32(0)
+      result = BDD_FALSE } | {
+      f: u32 = l.stack_at + (sp - u32(1)) * FRAME_WORDS
+      phase: u32 = mem[f + u32(3)]
+      c: u32 = mem[f]
+      t: u32 = mem[f + u32(1)]
+      e: u32 = mem[f + u32(2)]
+      phase == u32(0) ? {
+        terminal: u32 = ite_terminal(c, t, e)
+        terminal != NONE ? {
+          sp = sp - u32(1)
+          result = terminal
+          ite_deliver(l, mem, sp, result)
+        } | {
+          (c & u32(1)) != u32(0) ? {
+            swap: u32 = t
+            t = e
+            e = swap
+            c = c ^ u32(1)
+          } | { }
+          flip: u32 = e & u32(1)
+          t = t ^ flip
+          e = e ^ flip
+          slot: u32 = l.cache_at + (hash3(c, t, e) & l.cmask) * u32(4)
+          key: u32 = u32(0x40000000) | c
+          (mem[slot] == key && mem[slot + u32(1)] == t && mem[slot + u32(2)] == e) ? {
+            result = mem[slot + u32(3)] ^ flip
+            sp = sp - u32(1)
+            ite_deliver(l, mem, sp, result)
+          } | {
+            vc: u32 = mem[l.var_at + (c >> u32(1))]
+            vt: u32 = mem[l.var_at + (t >> u32(1))]
+            ve: u32 = mem[l.var_at + (e >> u32(1))]
+            v: u32 = vc < vt ? { vc } | { vt }
+            v = ve < v ? { ve } | { v }
+            cl: u32 = vc == v ? { mem[l.low_at + (c >> u32(1))] ^ (c & u32(1)) } | { c }
+            tl: u32 = vt == v ? { mem[l.low_at + (t >> u32(1))] ^ (t & u32(1)) } | { t }
+            el: u32 = ve == v ? { mem[l.low_at + (e >> u32(1))] ^ (e & u32(1)) } | { e }
+            mem[f] = c
+            mem[f + u32(1)] = t
+            mem[f + u32(2)] = e
+            mem[f + u32(3)] = u32(1)
+            mem[f + u32(4)] = v
+            mem[f + u32(5)] = vc == v ? { mem[l.high_at + (c >> u32(1))] ^ (c & u32(1)) } | { c }
+            mem[f + u32(6)] = vt == v ? { mem[l.high_at + (t >> u32(1))] ^ (t & u32(1)) } | { t }
+            mem[f + u32(7)] = ve == v ? { mem[l.high_at + (e >> u32(1))] ^ (e & u32(1)) } | { e }
+            mem[f + u32(10)] = flip
+            sp >= l.stack_cap ? { mem[l.state_at + STATE_EXCEEDED] = u32(1) } | {
+              ite_push(l, mem, sp, cl, tl, el)
+              sp = sp + u32(1)
+            }
+          }
+        }
+      } | {
+        phase == u32(1) ? {
+          mem[f + u32(3)] = u32(2)
+          sp >= l.stack_cap ? { mem[l.state_at + STATE_EXCEEDED] = u32(1) } | {
+            ite_push(l, mem, sp, mem[f + u32(5)], mem[f + u32(6)], mem[f + u32(7)])
+            sp = sp + u32(1)
+          }
+        } | {
+          r: u32 = mk(l, mem, mem[f + u32(4)], mem[f + u32(8)], mem[f + u32(9)])
+          slot: u32 = l.cache_at + (hash3(c, t, e) & l.cmask) * u32(4)
+          mem[slot] = u32(0x40000000) | c
+          mem[slot + u32(1)] = t
+          mem[slot + u32(2)] = e
+          mem[slot + u32(3)] = r
+          result = r ^ mem[f + u32(10)]
+          sp = sp - u32(1)
+          ite_deliver(l, mem, sp, result)
+        }
+      }
+    }
+  }
+  result
 }
 
 // restrict_deliver hands a finished cofactor to the frame below the popped

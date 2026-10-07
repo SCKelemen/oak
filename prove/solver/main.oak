@@ -97,7 +97,14 @@ main_body: (): i32 {
     free(c.disown(mem))
   }
   failures = lrat_self_check() ? { failures } | { failures + u32(256) }
-  i32_bits_u32(failures)
+  failures = ite_self_check() ? { failures } | { failures + u32(512) }
+  failures = sat_heap_self_check() ? { failures } | { failures + u32(1024) }
+  failures = workspace_self_check() ? { failures } | { failures + u32(2048) }
+  failures == u32(0) ? { i32(0) } | {
+    write_u32(failures)
+    write_byte(u8(10))
+    i32(1)
+  }
 }
 
 // lrat_self_check runs the certificate checker (lrat.oak) on the four
@@ -110,7 +117,7 @@ lrat_words: (broken: Bool): [32]u32 {
   w[u32(1)] = u32(2)
   w[u32(2)] = u32(4)
   w[u32(3)] = u32(12)
-  w[u32(4)] = broken ? { u32(15) } | { u32(16) }
+  w[u32(4)] = broken ? { u32(13) } | { u32(14) }
   w[u32(5)] = u32(6)
   w[u32(6)] = u32(9)
   // Clauses 1..4: (1 2) (-1 2) (1 -2) (-1 -2); literal 2*(v-1)+polarity.
@@ -176,4 +183,129 @@ lrat_self_check: (): Bool {
   bad_view: []u32 = view(&bad_words)
   refused: u32 = lrat_check(subslice(bad_view, u32(0), u32(33)), span(&starts), span(&lengths), span(&alive), span(&store), span(&assign), span(&trail), span(&out))
   ok && refused == LRAT_NO_CONFLICT
+}
+
+// Exhaust all 16 Boolean functions over two variables in every ITE
+// position, with independent truth-table evaluation and cache reuse.
+ite_self_check: (): Bool {
+  l: Layout = layout_for(u32(64), u32(0))
+  raw: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  ok: Bool = true
+  unsafe {
+    arena: Buffer[u32] = c.own[u32](raw, l.total)
+    ok = ite_check_arena(l, span(&arena))
+    free(c.disown(arena))
+  }
+  ok
+}
+
+// Compare heap decisions with the former scan through activity changes,
+// lazy deletion, backtracking, and rescaling (which can create new ties).
+sat_heap_self_check: (): Bool {
+  l: SatLayout = sat_layout(u32(64), u32(1), u32(1), u32(0))
+  raw: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  ok: Bool = true
+  unsafe {
+    arena: Buffer[u32] = c.own[u32](raw, l.total)
+    ok = sat_heap_check_arena(l, span(&arena))
+    free(c.disown(arena))
+  }
+  ok
+}
+
+ite_check_arena: (l: Layout, mem: [*]u32): Bool {
+  ok: Bool = true
+  solver_init(l, mem)
+  functions: [16]u32
+  i: u32 = 0
+  while i < u32(16) {
+    low: u32 = mk(l, mem, u32(1), i & u32(1), (i >> u32(2)) & u32(1))
+    high: u32 = mk(l, mem, u32(1), (i >> u32(1)) & u32(1), (i >> u32(3)) & u32(1))
+    functions[i] = mk(l, mem, u32(0), low, high)
+    i = i + u32(1)
+  }
+  i = u32(0)
+  while i < u32(4096) && ok {
+    c: u32 = i & u32(15)
+    t: u32 = (i >> u32(4)) & u32(15)
+    e: u32 = (i >> u32(8)) & u32(15)
+    expected: u32 = (c & t) | ((c ^ u32(15)) & e)
+    ok = diagram_ite(l, mem, functions[c], functions[t], functions[e]) == functions[expected] && !exceeded(l, mem)
+    i = i + u32(1)
+  }
+  ok
+}
+
+sat_heap_check_arena: (l: SatLayout, mem: [*]u32): Bool {
+  ok: Bool = true
+  header: [8]u32
+  header[u32(0)] = LRAT_MAGIC
+  header[u32(1)] = u32(64)
+  ok = sat_init(l, mem, view(&header), u32(10), true)
+  step: u32 = 0
+  seed: u32 = 7
+  while step < u32(512) && ok {
+    step % u32(31) == u32(0) ? { sat_backtrack(l, mem, u32(0)) } | { }
+    seed = seed * u32(1664525) + u32(1013904223)
+    sat_bump(l, mem, seed % l.vars)
+    step % u32(47) == u32(0) ? {
+      sat_set(l, mem, ST_ACTIVITY_INC, u32(1073741825))
+      sat_bump(l, mem, (seed >> u32(8)) % l.vars)
+    } | { }
+    best: u32 = SAT_NONE
+    v: u32 = 0
+    while v < l.vars {
+      (mem[l.assign_at + v] == u32(0) && (best == SAT_NONE || mem[l.activity_at + v] > mem[l.activity_at + best])) ? { best = v } | { }
+      v = v + u32(1)
+    }
+    decided: Bool = sat_decide(l, mem)
+    ok = decided == (best != SAT_NONE)
+    decided ? { ok = ok && mem[l.trail_at + sat_state(l, mem, ST_TRAIL_LEN) - u32(1)] / u32(2) == best } | { }
+    step = step + u32(1)
+  }
+  ok
+}
+
+// A multiplier needs more than the initial node allowance. Require a
+// retry to prove it, refusal at a hard cap, and one attempt for unsupported
+// input. These exercise allocation, initialization, and witness-free teardown.
+workspace_self_check: (): Bool {
+  lw: Lower = lower_layout(u32(8), u32(2))
+  b0: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
+  b1: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
+  b2: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
+  p: [192]u32 = xor_problem(true)
+  t: u32 = HEADER_WORDS + u32(2) * LEAF_WORDS
+  p[t + u32(2) * TERM_WORDS + u32(1)] = BOP_MUL
+  p[t + u32(3) * TERM_WORDS + u32(1)] = BOP_MUL
+  unsafe {
+    built: Buffer[u32] = c.own[u32](b0, lw.built_total)
+    self_copy_words(span(&built), view(&p), u32(192))
+    released: c.Ptr = c.disown(built)
+  }
+  out: [520]u32
+  race_bounded(lw, b0, b1, b2, u32(192), u32(192), u32(192), u32(1), u32(65536), span(&out))
+  ok: Bool = out[u32(0)] == STATUS_PROVEN && out[u32(519)] > u32(1)
+  race_bounded(lw, b0, b1, b2, u32(192), u32(192), u32(192), u32(1), u32(4096), span(&out))
+  ok = ok && out[u32(0)] == STATUS_EXCEEDED && out[u32(519)] == u32(1)
+  p[t + u32(2) * TERM_WORDS + u32(1)] = u32(99)
+  unsafe {
+    built: Buffer[u32] = c.own[u32](b0, lw.built_total)
+    self_copy_words(span(&built), view(&p), u32(192))
+    released: c.Ptr = c.disown(built)
+  }
+  race_bounded(lw, b0, b1, b2, u32(192), u32(192), u32(192), u32(1), u32(65536), span(&out))
+  ok = ok && out[u32(0)] == STATUS_UNSUPPORTED && out[u32(519)] == u32(1)
+  free(b0)
+  free(b1)
+  free(b2)
+  ok
+}
+
+self_copy_words: (dest: [*]u32, source: []u32, n: u32): () {
+  i: u32 = 0
+  while i < n {
+    dest[i] = source[i]
+    i = i + u32(1)
+  }
 }

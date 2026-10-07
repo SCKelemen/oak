@@ -100,7 +100,9 @@ main: (): i32 {
   bump(span(&ys), u32(1))
   mask64(span(&ws), view(&zs), u64(255))
   fadd_k(span(&gs), view(&fs), 2.0)
-  sum_ab(span(&ys), view(&xs), view(&ys))
+  // The zipped input must be disjoint from its writable destination.
+  previous: [11]u32 = ys
+  sum_ab(span(&ys), view(&xs), view(&previous))
   xor_mask(span(&cs), view(&bs), u8(255))
   fill16(span(&hs), u16(7))
   // ys = ((x + 3) ^ 1) + 1 over 1..11 sums to 111, plus xs again: 177;
@@ -192,6 +194,10 @@ func TestE2ENativeVectorMap(t *testing.T) {
 	if abnormal || code != (177+1035+497-7)%256 {
 		t.Fatalf("native: exit = (%d, abnormal=%v), want %d\n%s", code, abnormal, (177+1035+497-7)%256, joined)
 	}
+}
+
+// Keep the shared fixture executable on hosts without AArch64 assembly.
+func TestNativeVectorMapC(t *testing.T) {
 	if _, code, abnormal := buildAndRunFrom(t, "native_vector_map_c", New().WithSource("vecmap.oak", nativeVectorMapProgram)); abnormal || code != (177+1035+497-7)%256 {
 		t.Fatalf("C backend: exit = (%d, abnormal=%v), want %d", code, abnormal, (177+1035+497-7)%256)
 	}
