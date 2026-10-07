@@ -95,3 +95,7 @@ projection. Its finite terminator boundary is not an architectural fetch
 loop. Padding execution, fetch/address/alignment faults, Arm's complete
 PostDecode/BranchTo machinery, link-time layout changes, and whole-executable
 correctness are not discharged here.
+
+Register-only SSA edge copies and conditional edge stubs are now covered by
+[ARM64 SSA edge-copy proofs](94-arm64-edge-copy-proofs.md), with X17 scratch
+clobbering and explicit allocation assumptions.
