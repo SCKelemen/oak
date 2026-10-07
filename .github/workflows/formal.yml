@@ -97,7 +97,7 @@ jobs:
 
       - name: Check RV64 encoding, layout, and execution proofs
         working-directory: spec/lean
-        run: lake build Oak.RiscVBranchEncoding Oak.RiscVCompressedBranchEncoding Oak.RiscVRelaxation Oak.RiscVMaterialization Oak.RiscVCallExecution Oak.RiscVDirectControl
+        run: lake build Oak.RiscVBranchEncoding Oak.RiscVCompressedBranchEncoding Oak.RiscVRelaxation Oak.RiscVMaterialization Oak.RiscVCallExecution Oak.RiscVDirectControl Oak.RiscVControlFlow
 
       - name: Build formal specification
         working-directory: spec/lean
@@ -146,6 +146,11 @@ jobs:
         env:
           OAK_REQUIRE_LINKER_LEAN: '1'
         run: go test ./compiler -run '^TestE2ESelfHostedPlacement$' -count=1 -v
+
+      - name: Check RV64 selector routing certificates
+        env:
+          OAK_REQUIRE_RV64_LEAN: '1'
+        run: go test ./machine -run '^TestRV64ControlFlowSelector' -count=1 -v
 
       - name: Check RV64 production decisions against Lean
         env:
