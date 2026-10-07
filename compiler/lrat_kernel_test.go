@@ -268,3 +268,55 @@ example (fuel : Nat) (words starts lengths : Array UInt32)
 		}
 	}
 }
+
+// Initialization must establish the proof's starting invariants from arbitrary
+// old buffer contents. Nonzero suffix sentinels also detect excess clearing.
+func TestLRATKernelDirtyInitialization(t *testing.T) {
+	source := `import(std)
+` + lratKernelSource(t) + `
+check_dirty: (words: []u32, expected: u32): () {
+  starts: [9]u32
+  lengths: [9]u32
+  alive: [9]u8
+  store: [16]u32
+  assign: [4]u8 = [4]u8{7, 7, 7, 7}
+  trail: [4]u32 = [4]u32{99, 99, 99, 99}
+  out: [3]u32
+  i: u32 = 0
+  while i < 9 {
+    starts[i] = 99
+    lengths[i] = 99
+    alive[i] = 7
+    i = i + 1
+  }
+  i = 0
+  while i < 16 { store[i] = 99; i = i + 1 }
+  status: u32 = lrat_check(words, span(&starts), span(&lengths), span(&alive), span(&store), span(&assign), span(&trail), span(&out))
+  assert(status == expected && out[0] == expected)
+  assert(assign[0] == 0 && assign[1] == 0)
+  assert(assign[2] == 7 && assign[3] == 7)
+  assert(alive[0] == 0 && alive[5] == 0 && alive[6] == 0 && alive[7] == 0)
+  assert(alive[8] == 7 && starts[8] == 99 && lengths[8] == 99)
+  status == 0 ? {
+    assert(alive[1] == 1 && alive[2] == 1 && alive[3] == 1 && alive[4] == 1)
+    assert(starts[1] == 0 && lengths[1] == 2)
+    assert(starts[2] == 2 && lengths[2] == 1)
+    assert(starts[3] == 3 && lengths[3] == 1)
+    assert(starts[4] == 4 && lengths[4] == 0)
+    assert(store[0] == 1 && store[1] == 3 && store[2] == 0 && store[3] == 2)
+    assert(store[4] == 99 && store[15] == 99)
+  } | { }
+}
+main: (): i32 {
+  valid: [22]u32 = [22]u32{1280459348, 2, 3, 7, 7, 7, 16, 0, 2, 1, 3, 1, 0, 1, 2, 0, 4, 0, 3, 2, 1, 3}
+  invalid: [22]u32 = [22]u32{1280459348, 2, 3, 7, 7, 7, 16, 0, 2, 1, 3, 1, 4, 1, 2, 0, 4, 0, 3, 2, 1, 3}
+  check_dirty(view(&valid), 0)
+  check_dirty(view(&invalid), 1)
+  0
+}
+`
+	_, code, abnormal := buildAndRunOutput(t, "lrat_dirty_initialization", source)
+	if abnormal || code != 0 {
+		t.Fatalf("dirty initialization exit (%d, %v)", code, abnormal)
+	}
+}

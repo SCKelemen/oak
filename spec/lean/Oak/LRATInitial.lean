@@ -153,7 +153,7 @@ theorem initial_loop_preserves (fuel : Nat) (words starts lengths : Array UInt32
                   (lengths.setIfInBounds c.toNat n) (alive.setIfInBounds c.toNat 1) nextStore
                   variables max_id store_words (at_ + 1 + n) end_ (used + n) (empty || (n == 0)) a := by
                 refine ⟨by simpa using state.startCapacity, by simpa using state.lengthCapacity,
-                  by simpa using state.aliveCapacity, by omega, state.wordCapacity,
+                  by simpa using state.aliveCapacity, by simpa only [size] using state.storeCapacity, state.wordCapacity,
                   ?_, ?_, stored, valid, ?_, ?_⟩
                 · rw [UInt32.le_iff_toNat_le, nextAt]; exact sourceBound
                 · rw [UInt32.le_iff_toNat_le, nextUsed]; exact destBound

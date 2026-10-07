@@ -257,11 +257,24 @@ assumes trail coverage. The dedicated LRAT CI gate checks these proofs for
 proof holes and runs the raw-record corpus with scratch-cleanup assertions,
 including successive additions and refusal after a successful addition.
 
-These are component proofs of the extracted production loops and writes;
-the caller's capacities, used-prefix invariant, and initial zero assignment
-scratch remain explicit hypotheses. The outer initial-clause traversal,
-complete step-parser refinement, and full-record/formula-binding composition
-are still open.
+`Oak.LRATInitial` composes the complete production initial-clause traversal
+with a separate decoder using natural-number cursors. Every model of the
+decoded input survives the traversal. Framing checks establish non-wrapping
+source and store bounds; literal validation establishes declared-variable
+validity; metadata capacities and the used-store invariant are preserved.
+The clause counter reaches exactly the declared count plus one, and a model
+of the input rules out setting the empty-clause flag during initialization.
+`production_initialization` connects this traversal to the actual live-table
+and assignment resets, deriving the empty starting database and zero scratch
+from completed executions rather than caller-supplied state invariants.
+The CI contract pins this theorem's assumptions and checks its axioms;
+compiled regressions start with dirty metadata, live bytes, store, assignment,
+and trail buffers and check both successful and refused initialization.
+
+These remain proofs of production components and the initialization phase.
+Entry-header capacity/framing guards are explicit hypotheses of the combined
+initialization theorem. Complete proof-record traversal, entry-header
+composition, and full-record/formula-binding composition are still open.
 
 At the clause
 boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists for raw
