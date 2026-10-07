@@ -772,13 +772,26 @@ def format_rfc3339_datetime (dst : Array UInt8) (z : OffsetDateTime) (fuel : Nat
       pure (r4, dst)))
   pure (r2, dst)
 
+def iso_decimal_overflows (value : UInt64) (digit : UInt64) (fuel : Nat) : Option (Bool) := do
+  pure (decide (value > (((18446744073709551615 : UInt64) - digit) / (10 : UInt64))))
+
+def iso_component_overflows (current : UInt64) (value : UInt64) (factor : UInt64) (fraction : UInt64) (limit : UInt64) (fuel : Nat) : Option (Bool) := do
+  let overflow : Bool := (decide (fraction > (limit - current)))
+  let overflow ← (if (!overflow) then (do
+      let overflow := (decide (value > (((limit - current) - fraction) / factor)))
+      pure overflow)
+    else (do
+      pure overflow))
+  pure overflow
+
 def parse_iso_components.loop2 (src : Array UInt8) (n : UInt32) (at_ : UInt32) (overflow : Bool) (value : UInt64) : Nat → Option (UInt32 × Bool × UInt64)
   | 0 => none
   | fuel + 1 => do
     let r2 ← is_digit (src.getD at_.toNat (0 : UInt8)) fuel
     if (((decide (at_ < n)) && r2) && (!overflow)) then do
       let digit : UInt64 := (((src.getD at_.toNat (0 : UInt8)) - (48 : UInt8)).toUInt64)
-      let overflow := (decide (value > (((18446744073709551615 : UInt64) - digit) / (10 : UInt64))))
+      let r3 ← iso_decimal_overflows value digit fuel
+      let overflow := r3
       let value ← (if (!overflow) then (do
           let value := ((value * (10 : UInt64)) + digit)
           pure value)
@@ -791,8 +804,8 @@ def parse_iso_components.loop2 (src : Array UInt8) (n : UInt32) (at_ : UInt32) (
 def parse_iso_components.loop3 (src : Array UInt8) (n : UInt32) (at_ : UInt32) (fraction : UInt64) (digits : UInt32) (scale : UInt64) : Nat → Option (UInt32 × UInt64 × UInt32 × UInt64)
   | 0 => none
   | fuel + 1 => do
-    let r3 ← is_digit (src.getD at_.toNat (0 : UInt8)) fuel
-    if (((decide (at_ < n)) && r3) && (decide (digits < (9 : UInt32)))) then do
+    let r4 ← is_digit (src.getD at_.toNat (0 : UInt8)) fuel
+    if (((decide (at_ < n)) && r4) && (decide (digits < (9 : UInt32)))) then do
       let fraction := (fraction + ((((src.getD at_.toNat (0 : UInt8)) - (48 : UInt8)).toUInt64) * scale))
       let scale := (scale / (10 : UInt64))
       let digits := (digits + (1 : UInt32))
@@ -822,8 +835,8 @@ def parse_iso_components.loop1 (src : Array UInt8) (fixed_only : Bool) (n : UInt
               let digits : UInt32 := (0 : UInt32)
               let scale : UInt64 := (100000000 : UInt64)
               let (at_, fraction, digits, scale) ← parse_iso_components.loop3 src n at_ fraction digits scale fuel
-              let r4 ← is_digit (src.getD at_.toNat (0 : UInt8)) fuel
-              let valid := ((valid && (decide (digits > (0 : UInt32)))) && ((decide (at_ >= n)) || (!r4)))
+              let r5 ← is_digit (src.getD at_.toNat (0 : UInt8)) fuel
+              let valid := ((valid && (decide (digits > (0 : UInt32)))) && ((decide (at_ >= n)) || (!r5)))
               pure (at_, valid, fractional, fraction))
             else (do
               pure (at_, valid, fractional, fraction)))
@@ -889,12 +902,8 @@ def parse_iso_components.loop1 (src : Array UInt8) (fixed_only : Bool) (n : UInt
                   let (months, days, nanos, any, rank, overflow) ← (if valid then (do
                       let current : UInt64 := (if (bucket == (0 : UInt32)) then months else (if (bucket == (1 : UInt32)) then days else nanos))
                       let limit : UInt64 := (if (bucket == (2 : UInt32)) then time_limit else cal_limit)
-                      let overflow := (decide (fraction > (limit - current)))
-                      let overflow ← (if (!overflow) then (do
-                          let overflow := (decide (value > (((limit - current) - fraction) / factor)))
-                          pure overflow)
-                        else (do
-                          pure overflow))
+                      let r6 ← iso_component_overflows current value factor fraction limit fuel
+                      let overflow := r6
                       let (months, days, nanos) ← (if (!overflow) then (do
                           let total : UInt64 := ((current + (value * factor)) + fraction)
                           let (months, days, nanos) ← (if (bucket == (0 : UInt32)) then (do
@@ -953,21 +962,21 @@ def parse_iso_components (src : Array UInt8) (fixed_only : Bool) (fuel : Nat) : 
       let valid : Bool := true
       let overflow : Bool := false
       let (at_, months, days, nanos, in_time, time_seen, any, week, rank, valid, overflow) ← parse_iso_components.loop1 src fixed_only n at_ months days nanos cal_limit time_limit in_time time_seen any week rank valid overflow fuel
-      let r5 ← (
+      let r7 ← (
         if overflow then (do
           pure (Result_Period_TimeError.Err TimeError.Overflowed))
         else (do
-          let r6 ← (
+          let r8 ← (
             if (((!valid) || (!any)) || (in_time && (!time_seen))) then (do
               pure (Result_Period_TimeError.Err TimeError.InvalidDuration))
             else (do
               let mn : Int32 := (((if negative then ((0 : UInt64) - months) else months).toUInt32).toInt32)
               let dy : Int32 := (((if negative then ((0 : UInt64) - days) else days).toUInt32).toInt32)
               let ns : Int64 := ((if negative then ((0 : UInt64) - nanos) else nanos).toInt64)
-              let r7 ← duration_nanos ns fuel
-              pure (Result_Period_TimeError.Ok ({ months := mn, days := dy, time := r7 } : Period))))
-          pure r6))
-      pure (r5, at_)))
+              let r9 ← duration_nanos ns fuel
+              pure (Result_Period_TimeError.Ok ({ months := mn, days := dy, time := r9 } : Period))))
+          pure r8))
+      pure (r7, at_)))
   pure r1
 
 def parse_iso_period (src : Array UInt8) (fuel : Nat) : Option (Result_Period_TimeError) := do

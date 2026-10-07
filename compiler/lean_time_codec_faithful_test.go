@@ -3,6 +3,7 @@ package compiler
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"math/rand"
 	"os"
 	"os/exec"
@@ -70,7 +71,7 @@ func TestLeanTimeCodecFaithful(t *testing.T) {
 			fmt.Sprintf("(format_%s %s %s 256)", c.kind, leanBytes(before), lv),
 			fmt.Sprintf("some (%s,%s)", result, leanBytes(after)), "format_"+c.kind)
 	}
-	cases := codecCorpus()
+	cases := append(codecCorpus(), codecComponentBoundaries()...)
 	for _, c := range cases {
 		parse(c)
 		if c.err == 0 {
@@ -391,6 +392,99 @@ func codecCorpus() []codecCase {
 	bad("iso_duration", 5, "P1D", "P0D", "P1M", "P1W", "P1DT1H")
 	return out
 }
+
+// Unit-scaled boundaries use unbounded arithmetic, independently of the
+// parser's division guard. Every valid case also formats and parses canonically.
+func codecComponentBoundaries() []codecCase {
+	var out []codecCase
+	appendCase := func(text string, magnitude *big.Int, negative bool, bucket int) {
+		limit := new(big.Int).SetUint64(math.MaxInt64)
+		if bucket < 2 {
+			limit.SetUint64(math.MaxInt32)
+		}
+		if negative {
+			limit.Add(limit, big.NewInt(1))
+		}
+		c := codecCase{kind: "iso_period", text: text}
+		if magnitude.Cmp(limit) > 0 {
+			c.err = 1
+		} else {
+			signed := new(big.Int).Set(magnitude)
+			if negative {
+				signed.Neg(signed)
+			}
+			switch bucket {
+			case 0:
+				c.value.months = int32(signed.Int64())
+			case 1:
+				c.value.days = int32(signed.Int64())
+			case 2:
+				c.value.duration = signed.Int64()
+			}
+			c.canonical = codecPeriodText(c.value)
+		}
+		out = append(out, c)
+		if bucket == 2 {
+			c.kind = "iso_duration"
+			out = append(out, c)
+		}
+	}
+	for _, u := range []struct {
+		unit   string
+		factor uint64
+		bucket int
+	}{
+		{"Y", 12, 0}, {"M", 1, 0}, {"W", 7, 1}, {"D", 1, 1},
+		{"H", 3600000000000, 2}, {"M", 60000000000, 2}, {"S", 1000000000, 2},
+	} {
+		for _, negative := range []bool{false, true} {
+			limit := uint64(math.MaxInt32)
+			if u.bucket == 2 {
+				limit = math.MaxInt64
+			}
+			sign := ""
+			if negative {
+				sign = "-"
+				limit++
+			}
+			pre := sign + "P"
+			if u.bucket == 2 {
+				pre += "T"
+			}
+			for _, n := range []uint64{limit/u.factor - 1, limit / u.factor, limit/u.factor + 1} {
+				magnitude := new(big.Int).Mul(new(big.Int).SetUint64(n), new(big.Int).SetUint64(u.factor))
+				appendCase(fmt.Sprintf("%s%d%s", pre, n, u.unit), magnitude, negative, u.bucket)
+			}
+		}
+	}
+	// Mixed units make each accumulator reach the limit, then exceed it by one.
+	for _, negative := range []bool{false, true} {
+		sign := ""
+		limit := uint64(math.MaxInt64)
+		calLimit := uint64(math.MaxInt32)
+		if negative {
+			sign = "-"
+			limit++
+			calLimit++
+		}
+		for _, n := range []uint64{limit - 1, limit, limit + 1} {
+			text := fmt.Sprintf("%sPT%dH%dM%d.%09dS", sign, n/3600000000000, (n/60000000000)%60, (n/1000000000)%60, n%1000000000)
+			appendCase(text, new(big.Int).SetUint64(n), negative, 2)
+		}
+		for _, n := range []uint64{calLimit - 1, calLimit, calLimit + 1} {
+			text := fmt.Sprintf("%sP%dY%dM", sign, n/12, n%12)
+			appendCase(text, new(big.Int).SetUint64(n), negative, 0)
+		}
+		// Distinguish the lexical UInt64 limit from the smaller signed unit limit.
+		max := new(big.Int).SetUint64(math.MaxUint64)
+		for _, delta := range []int64{-1, 0, 1, 10} {
+			n := new(big.Int).Add(max, big.NewInt(delta))
+			appendCase(sign+"PT"+n.String()+"S", new(big.Int).Mul(n, big.NewInt(1000000000)), negative, 2)
+		}
+	}
+	return out
+}
+
 func codecCapacityCases() []codecCase {
 	v := codecCivil(time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC))
 	v.off = 1439

@@ -168,8 +168,8 @@ covers that conversion path.
 its callees. `TestLeanStdlibExtract/time` checks drift. The legacy
 `offset_datetime_to_instant` bridge is excluded because checked-i64 intrinsics
 are outside the current extractor subset; it is covered by runtime tests.
-The temporal proof entry point, `TimeRFC3339RoundtripLaws.lean`, imports the
-calendar, decimal, fractional-clock, offset, and buffer layers:
+The temporal proof entry point, `TimePeriodLaws.lean`, imports the calendar,
+decimal, fractional-clock, offset, component-arithmetic, and buffer layers:
 
 - Constructor acceptance/rejection, civil structural roundtrip, invalid-input
   rejection, and formatter error atomicity are kernel-checked over the extraction.
@@ -218,6 +218,23 @@ calendar, decimal, fractional-clock, offset, and buffer layers:
   These composition proofs inherit the decimal/calendar native trust noted
   above; clock field bounds and numeric offset reconstruction also use
   `bv_decide` with the pinned native LRAT checker.
+- `TimeComponentLaws.lean` proves the private guards called by the extracted
+  period/duration parser equivalent to unbounded arithmetic. Decimal extension
+  rejects exactly values beyond UInt64's maximum. Component accumulation rejects
+  exactly sums `current + value * factor + fraction` above the selected limit,
+  assuming `current <= limit` and a positive factor. Accepted operations cannot
+  wrap and preserve the accumulator bound. These proofs are kernel checked,
+  without native decision certificates.
+- `TimeMagnitudeLaws.lean`, `TimePeriodArithmeticLaws.lean`, and
+  `TimePeriodSignLaws.lean` prove signed-magnitude reconstruction for every
+  Int32/Int64, including signed minima; exact hour/minute/second/nanosecond
+  decomposition; acceptance of canonical duration prefixes by the component
+  guards; and reconstruction of every field of a sign-coherent period.
+  The sign precondition is connected to the actual formatter's rejection guard.
+  Unit decomposition and prefix bounds are kernel checked; signed bit-vector
+  conversion facts use the pinned native LRAT checker. These are component
+  contracts, not yet complete period/duration text round-trip proofs. The
+  parser-wide loop invariants and decimal writer/reader composition remain open.
 - `TimeBufferLaws.lean` proves error atomicity and success frame properties for
   **all six new formatters**, for arbitrary destinations and extraction fuel.
   Every returned `Err` preserves the entire destination. Every returned `Ok n`
@@ -234,16 +251,19 @@ extrema. The day-addition oracle uses unbounded integers to avoid reproducing
 an overflow bug. This corpus checks executable correspondence on these inputs;
 it is not a proof of extraction or compiler correctness.
 
-`TestLeanTimeCodecFaithful` runs **1,782 shared checks** across the same three
+`TestLeanTimeCodecFaithful` runs **1,956 shared checks** across the same three
 execution paths. It compares every parsed field, exact error constructors,
 canonical text, returned lengths, and entire destination arrays. Go supplies
 independent civil/calendar spellings; a separate unsigned-magnitude oracle
-supplies period/duration spellings, including signed minima. Explicit cases
+supplies period/duration spellings, including signed minima. New unit-scaled
+limit cases use Go `math/big` totals independently of the parser division guards. Explicit cases
 cover the declared profile's restrictions instead of assuming Go accepts the
 same grammar. Coverage includes basic/ordinal/week dates, every supported
 fractional width, leading zeros down to one nanosecond, comma ISO fractions,
 every trailing-zero trim boundary, all three RFC
-zero-offset kinds, malformed/non-ASCII/NUL input, signed limits, and every
+zero-offset kinds, malformed/non-ASCII/NUL input, signed limits, unit-scaled
+boundaries, mixed-unit totals at and one past each signed limit, the UInt64
+lexical boundary, and every
 capacity from zero through two bytes beyond each documented maximum. The
 capacity sweep uses maximum-width values; other cases exercise shorter text
 and suffix preservation. This is finite executable evidence, not a universal
@@ -260,8 +280,9 @@ Open release gates, explicitly not implied by successful tests or extraction:
    proofs if the native-evaluator trust boundary is unacceptable. Prove
    ordinal/week conversion, the remaining calendar success laws, and duration
    carry arithmetic.
-2. Prove parser grammar soundness/completeness and checked-component overflow
-   equivalence. Extend canonical round-trip proofs to periods and durations. Establish
+2. Prove parser grammar soundness/completeness and the loop invariants that
+   establish the component guards' preconditions throughout parsing. Extend
+   canonical text round-trip proofs to periods and durations. Establish
    successful prefix contents, output bounds, and sufficient-fuel termination
    for those remaining formatters, and date round trips through larger
    destinations. Extend
