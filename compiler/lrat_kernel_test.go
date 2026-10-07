@@ -201,7 +201,7 @@ func TestLRATKernelTrailSoundness(t *testing.T) {
 		}
 		t.Skip("lake not on PATH; formal CI requires RUP scratch restoration")
 	}
-	source := `import Oak.LRATTrail
+	source := `import Oak.LRATInitial
 open Oak.LRATRUP
 example (fuel : Nat) (words : Array UInt32)
     (target_at target_n hints_at hints_n : UInt32) (starts lengths : Array UInt32)
@@ -219,6 +219,8 @@ example (fuel : Nat) (words : Array UInt32)
     variables max_id status starts' lengths' alive' store' assign' trail' assignCapacity trailCapacity zero valid run
 #print axioms Oak.LRATRUP.production_rup_restores_zero
 #print axioms Oak.LRATChecker.production_addition_state
+#print axioms Oak.LRATChecker.initial_loop_preserves
+#print axioms Oak.LRATChecker.initial_state_from_reset
 `
 	path := filepath.Join(t.TempDir(), "LRATTrailContract.lean")
 	if err := os.WriteFile(path, []byte(source), 0600); err != nil {
@@ -226,7 +228,7 @@ example (fuel : Nat) (words : Array UInt32)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	for _, args := range [][]string{{"build", "Oak.LRATTrail"}, {"env", "lean", path}} {
+	for _, args := range [][]string{{"build", "Oak.LRATInitial"}, {"env", "lean", path}} {
 		cmd := exec.CommandContext(ctx, lake, args...)
 		cmd.Dir = filepath.Join("..", "spec", "lean")
 		out, err := cmd.CombinedOutput()
