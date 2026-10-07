@@ -3,9 +3,8 @@ import Oak.SATModel
 /-!
 # Soundness of the extracted production SAT-model checker
 
-Validation status at introduction: this proof awaits its first successful
-Lean kernel build. `TestOakSATModelSoundnessLean` is mandatory in formal CI;
-the loop-refinement obligation stays open until that gate passes.
+`TestOakSATModelSoundnessLean` kernel-checks the public theorem contracts
+and rejects proof holes in the dedicated, mandatory SAT-model CI job.
 
 The hypotheses are execution of `sat_check_model` and representable Oak view
 lengths. The proof derives the assignment invariant, exact clause decoding,

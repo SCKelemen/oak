@@ -454,10 +454,11 @@ database. No decoder/scan correspondence or solver correctness premise is
 supplied. `production_model_not_rup` composes this result with RUP soundness:
 the same decoded formula cannot also have an accepted refutation. The
 formal CI contract checks these theorem signatures and rejects `sorryAx`.
-**Validation pending:** the proof source awaits its first successful Lean
-kernel build; the loop-refinement obligation remains open until the mandatory
-`TestOakSATModelSoundnessLean` gate passes. Compiled corpus tests alone do not
-establish this theorem.
+The dedicated **SAT model soundness** CI job kernel-checks the full proof
+and runs `TestOakSATModelSoundnessLean`, all 514 Oak/Lean comparisons, and
+forged-solver rejection independently of the rest of the formal build.
+This closes the framing/scan-loop soundness obligation for the extracted
+UInt32/Array checker; the finite corpus is additional implementation evidence.
 Extraction, native memory safety, compilation, and source lowering remain
 separate obligations.
 Tests also replace the untrusted solver with one that fabricates SAT and

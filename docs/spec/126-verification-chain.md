@@ -70,9 +70,10 @@ Its two size hypotheses are the UInt32 length domain of Oak views, not
 assumed parsing, scan soundness, or solver correctness. A second theorem
 rules out simultaneous accepted RUP evidence for that same decoded database.
 The formal-CI contract pins these hypotheses and checks for proof holes.
-**Validation pending:** these production soundness proofs await their first
-successful kernel build. The loop-refinement obligation remains open until
-the mandatory `TestOakSATModelSoundnessLean` gate passes.
+The dedicated **SAT model soundness** CI job kernel-checks these theorems
+and runs the mandatory `TestOakSATModelSoundnessLean` contract, all 514
+Oak/Lean comparisons, and forged-solver rejection. The framing/scan-loop
+soundness obligation is closed for the extracted UInt32/Array checker.
 Source lowering, extraction/compiler correctness, native memory safety,
 and ARM64/RV64 execution remain open parts of this chain. Fault injection
 verifies that a fabricated solver model is refused by the actual drivers
