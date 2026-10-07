@@ -124,6 +124,11 @@ func TestAArch64ControlFlowSelectorMatchesLean(t *testing.T) {
 			t.Fatalf("selector case %q was not exercised", shape)
 		}
 	}
+	checkAArch64SelectorLean(t, "AArch64ControlFlow", examples)
+}
+
+func checkAArch64SelectorLean(t *testing.T, module string, examples []string) {
+	t.Helper()
 	lake, err := exec.LookPath("lake")
 	if err != nil {
 		if os.Getenv("OAK_REQUIRE_ARM64_COND19_LEAN") != "" {
@@ -132,13 +137,14 @@ func TestAArch64ControlFlowSelectorMatchesLean(t *testing.T) {
 		t.Skip("lake not on PATH; ARM64 proof workflow requires this oracle")
 	}
 	root := filepath.Join("..", "spec", "lean")
-	build := exec.Command(lake, "build", "Oak.AArch64ControlFlow")
+	build := exec.Command(lake, "build", "Oak."+module)
 	build.Dir = root
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build control-flow proof: %v\n%s", err, out)
 	}
 	path := filepath.Join(t.TempDir(), "Selector.lean")
-	if err := os.WriteFile(path, []byte("import Oak.AArch64ControlFlow\nopen Oak.AArch64ControlFlow\n"+strings.Join(examples, "\n")+"\n"), 0600); err != nil {
+	header := "import Oak." + module + "\nopen Oak." + module + " Oak.AArch64ControlFlow\n"
+	if err := os.WriteFile(path, []byte(header+strings.Join(examples, "\n")+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	run := exec.Command(lake, "env", "lean", path)
@@ -146,7 +152,7 @@ func TestAArch64ControlFlowSelectorMatchesLean(t *testing.T) {
 	if out, err := run.CombinedOutput(); err != nil {
 		t.Fatalf("selector certificates: %v\n%s", err, out)
 	}
-	t.Logf("Lean checked %d production layout certificates and mutations", len(examples))
+	t.Logf("Lean checked %d production certificates and mutations", len(examples))
 }
 
 func aarch64BlockOrders(prefix, rest []int) [][]int {
