@@ -22,6 +22,10 @@ set_option autoImplicit false
 
 namespace Oak.SATModel
 
+private theorem two_nat : (2 : UInt32).toNat = 2 := by decide
+
+private theorem header_nat : LRAT_HEADER_WORDS.toNat = 8 := by decide
+
 private theorem counter_succ (i limit : UInt32) (h : i < limit) :
     (i + 1).toNat = i.toNat + 1 := by
   have := limit.toNat_lt
@@ -122,7 +126,7 @@ theorem literal_loop_sound (fuel : Nat) (formula values : Array UInt32)
           obtain ⟨_, witness⟩ := ih true _ (j + 1) finish run
           refine ⟨rfl, ?_⟩
           rcases witness with accumulated | existing
-          · rcases Bool.or_eq_true.mp accumulated with current | earlier
+          · rcases Bool.or_eq_true_iff.mp accumulated with current | earlier
             · right
               refine ⟨j, step, ?_⟩
               rw [wordAt]
@@ -213,13 +217,13 @@ theorem clause_loop_sound (fuel : Nat) (formula values : Array UInt32)
           cases scan : sat_check_model.loop3 formula values
               (decide (count ≤ formula.size.toUInt32 - body)) body count false 0 fuel with
           | none =>
-              simp only [sat_check_model.loop2, Bool.true_and, step, decide_true,
+              simp only [sat_check_model.loop2, two_nat, Bool.true_and, step, decide_true,
                 ite_true, header, ← countEq, ← bodyEq, scan,
                 bind, Option.bind, Option.pure_def, reduceCtorEq] at run
           | some result =>
               rcases result with ⟨scanValid, satisfied, endLiteral⟩
-              by_cases accepted : scanValid && satisfied = true
-              · obtain ⟨rfl, rfl⟩ := Bool.and_eq_true.mp accepted
+              by_cases accepted : (scanValid && satisfied) = true
+              · obtain ⟨rfl, rfl⟩ := Bool.and_eq_true_iff.mp accepted
                 obtain ⟨fitsWord, witness⟩ := literal_loop_sound fuel formula values
                   _ false body count 0 endLiteral scan
                 have fits : count ≤ formula.size.toUInt32 - body := of_decide_eq_true fitsWord
@@ -236,7 +240,7 @@ theorem clause_loop_sound (fuel : Nat) (formula values : Array UInt32)
                     ((rawClause formula body.toNat count.toNat).map literal) := by
                   apply witness_satisfies formula values body count room size
                   exact witness.resolve_left (by decide)
-                simp only [sat_check_model.loop2, Bool.true_and, step, decide_true,
+                simp only [sat_check_model.loop2, two_nat, Bool.true_and, step, decide_true,
                   ite_true, header, ← countEq, ← bodyEq, scan, Bool.and_self,
                   bind, Option.bind, Option.pure_def] at run
                 obtain ⟨_, endCount, clauses, decoded, holds⟩ :=
@@ -252,13 +256,13 @@ theorem clause_loop_sound (fuel : Nat) (formula values : Array UInt32)
                   rcases List.mem_cons.mp member with same | tail
                   · simpa [same] using current
                   · exact holds target tail
-              · have refused : scanValid && satisfied = false := Bool.eq_false_iff.mpr accepted
-                simp only [sat_check_model.loop2, Bool.true_and, step, decide_true,
+              · have refused : (scanValid && satisfied) = false := Bool.eq_false_iff.mpr accepted
+                simp only [sat_check_model.loop2, two_nat, Bool.true_and, step, decide_true,
                   ite_true, header, ← countEq, ← bodyEq, scan, refused,
                   Bool.false_eq_true, ite_false, bind, Option.bind, Option.pure_def] at run
                 have impossible := (ih false body (clause + 1) finish finalClause nextBound run).1
                 contradiction
-        · simp only [sat_check_model.loop2, Bool.true_and, step, decide_true,
+        · simp only [sat_check_model.loop2, two_nat, Bool.true_and, step, decide_true,
             ite_true, header, decide_false, Bool.false_eq_true, ite_false,
             bind, Option.bind, Option.pure_def] at run
           have impossible := (ih false at_ (clause + 1) finish finalClause nextBound run).1
@@ -269,7 +273,9 @@ theorem clause_loop_sound (fuel : Nat) (formula values : Array UInt32)
           rw [UInt32.lt_iff_toNat_lt] at step
           omega
         have returned : at_ = finish ∧ clause = finalClause := by
-          simpa [sat_check_model.loop2, step] using run
+          simpa only [sat_check_model.loop2, two_nat, Bool.true_and, step,
+            decide_false, Bool.false_eq_true, ite_false, Option.pure_def,
+            Option.some.injEq, Prod.mk.injEq, true_and] using run
         rcases returned with ⟨rfl, rfl⟩
         exact ⟨rfl, same, [], by simp [same, decodeClauses], by simp [ClausesHold]⟩
 
@@ -298,11 +304,11 @@ private theorem header_sound (formula values : Array UInt32)
   obtain ⟨⟨⟨⟨length, magic⟩, proof⟩, body⟩, variables⟩ := accepted
   have lengthNat : 8 ≤ formula.size := by
     simpa only [ge_iff_le, UInt32.le_iff_toNat_le, size_exact _ size,
-      LRAT_HEADER_WORDS] using length
+      header_nat] using length
   have bodyNat := congrArg UInt32.toNat body
   rw [UInt32.toNat_sub_of_le _ _ length, size_exact _ size] at bodyNat
   refine ⟨⟨lengthNat, magic, proof, ?_⟩, ?_⟩
-  · simpa only [LRAT_HEADER_WORDS] using bodyNat
+  · simpa only [header_nat] using bodyNat
   · rw [variables, size_exact _ valueSize]
 
 /-- Exact independent formula decoding, including its header and endpoint. -/
@@ -363,7 +369,7 @@ theorem production_model_sound (formula values : Array UInt32) (fuel : Nat)
         exact validValues k (by simp) (by simpa only [size_exact _ valueSize] using bound)
       · have exactDecode : decodeClauses formula 8 (formula.getD 2 0).toNat =
             some (clauses, formula.size) := by
-          simpa only [LRAT_HEADER_WORDS, Nat.sub_zero, endpoint, size_exact _ formulaSize] using decoded
+          simpa only [header_nat, UInt32.toNat_zero, Nat.sub_zero, endpoint, size_exact _ formulaSize] using decoded
         simp only [decodeFormula, if_pos framed, exactDecode, bind, Option.bind,
           Option.pure_def, ite_true]
 
