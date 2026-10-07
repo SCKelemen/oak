@@ -29,7 +29,7 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - name: Check universal branch model proofs
         working-directory: spec/lean
-        run: lake build Oak.AArch64ConditionalBranch Oak.AArch64BranchExecution Oak.AArch64ControlFlow Oak.AArch64ConditionProvenance Oak.AArch64EdgeCopies
+        run: lake build Oak.AArch64ConditionalBranch Oak.AArch64BranchExecution Oak.AArch64ControlFlow Oak.AArch64ConditionProvenance Oak.AArch64EdgeCopies Oak.AArch64SpillMemory
       - name: Check production encoding, relocation, and branch execution
         env:
           OAK_REQUIRE_ARM64_COND19_LEAN: '1'
@@ -37,4 +37,4 @@ jobs:
       - name: Check selector layouts and source-to-object control flow
         env:
           OAK_REQUIRE_ARM64_COND19_LEAN: '1'
-        run: go test ./machine ./compiler -run '^TestAArch64(ControlFlow|ConditionProvenance|EdgeCopies)' -count=1 -v
+        run: go test ./machine ./compiler -run '^TestAArch64(ControlFlow|ConditionProvenance|EdgeCopies|SpillMemory)' -count=1 -v
