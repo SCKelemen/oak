@@ -64,3 +64,7 @@ Allocation correctness, spills, memory, rematerialization, ABI obligations,
 whole-CFG simulation, architectural faults, and a universal proof of the Go
 scheduler remain separate work. The finite production checks do not establish
 universal compiler correspondence. No new source-to-ELF coverage is claimed.
+
+The load/store and physical-layout primitives are now covered separately by
+[ARM64 spill byte-memory proofs](94-arm64-spill-memory-proofs.md). Their
+composition with copy schedules remains an explicit next obligation.
