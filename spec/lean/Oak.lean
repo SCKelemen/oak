@@ -219,6 +219,7 @@ import Oak.RiscVBranchEncoding
 import Oak.RiscVCompressedBranchEncoding
 import Oak.RiscVRelaxation
 import Oak.RiscVMaterialization
+import Oak.RiscVCallExecution
 import Oak.RiscVMemory
 import Oak.SailRiscVBridge
 import Oak.Target

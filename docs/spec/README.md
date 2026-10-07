@@ -80,6 +80,7 @@ Use these terms precisely:
 - [94-rv64-compressed-control-proofs.md](94-rv64-compressed-control-proofs.md) — compressed RV64 branch/jump encoding proofs and production evidence
 - [94-rv64-relaxation-proofs.md](94-rv64-relaxation-proofs.md) — shrinking layout, range preservation, and relaxation termination proofs
 - [94-rv64-materialization-proofs.md](94-rv64-materialization-proofs.md) — signed literal expansion, register semantics, and emitted-byte correspondence
+- [94-rv64-call-execution-proofs.md](94-rv64-call-execution-proofs.md) — relocated call/address execution and indirect-jump register semantics
 - `112-protocols.md` — protocol declarations: machines, guards, projections, lowering, typestate, model checking
 - `113-literals.md` — literal sets: the `literals` declaration and the Teddy scanner it projects
 - `STATUS.md` — implementation and proof coverage matrix
