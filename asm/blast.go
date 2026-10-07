@@ -461,18 +461,6 @@ func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []
 }
 
 // linearFormsRelate is indexRelation over two forms already computed.
-func linearFormsRelate(a, b *linearForm) (known, equal bool) {
-	if a == nil || b == nil || len(a.coeffs) != len(b.coeffs) {
-		return false, false
-	}
-	for name, c := range a.coeffs {
-		if b.coeffs[name] != c {
-			return false, false
-		}
-	}
-	return true, a.constant == b.constant
-}
-
 // consistency is the functional-consistency constraint over the element
 // reads met so far (Ackermann's reduction): two reads of one span at equal
 // indices hold equal values, and a read at an index equal to a constant

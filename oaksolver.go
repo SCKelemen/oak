@@ -393,6 +393,13 @@ sat_report: (l: SatLayout, arena: [*]u32, status: u32, variables: u32): () {
   write_u32(sat_state(l, arena, ST_SUBSUMED))
   write_byte(u8(32))
   write_u32(sat_state(l, arena, ST_STRENGTHENED))
+  // Appended diagnostic fields: decisions, watch visits, blocker hits.
+  write_byte(u8(32))
+  write_u32(sat_state(l, arena, ST_DECISIONS))
+  write_byte(u8(32))
+  write_u32(sat_state(l, arena, ST_WATCH_VISITS))
+  write_byte(u8(32))
+  write_u32(sat_state(l, arena, ST_BLOCK_HITS))
   write_byte(u8(10))
   write_byte(u8(115))
   write_byte(u8(32))

@@ -43,3 +43,29 @@ theorem path_high (h l : Bool) : node true h l = h := rfl
 theorem path_low (h l : Bool) : node false h l = l := rfl
 
 end Oak.BddComplement
+
+namespace Oak.BddComplement
+
+/-- Direct ITE has the same meaning as the previous three operations. -/
+theorem ite_boolean (c t e : Bool) : node c t e = ((c && t) || (!c && e)) := by
+  cases c <;> cases t <;> cases e <;> rfl
+
+/-- Normalize a complemented condition by swapping the arms. -/
+theorem ite_condition_complement (c t e : Bool) : node (!c) t e = node c e t := by
+  cases c <;> rfl
+
+/-- Normalize the output polarity by complementing both arms. -/
+theorem ite_output_complement (c t e : Bool) : node c (!t) (!e) = !(node c t e) := by
+  cases c <;> rfl
+
+/-- The ternary Shannon step used by both implementations. -/
+theorem ite_shannon (v ch cl th tl eh el : Bool) :
+    node (node v ch cl) (node v th tl) (node v eh el) =
+    node v (node ch th eh) (node cl tl el) := by
+  cases v <;> rfl
+
+theorem ite_same (c t : Bool) : node c t t = t := by cases c <;> rfl
+theorem ite_identity (c : Bool) : node c true false = c := by cases c <;> rfl
+theorem ite_negation (c : Bool) : node c false true = !c := by cases c <;> rfl
+
+end Oak.BddComplement

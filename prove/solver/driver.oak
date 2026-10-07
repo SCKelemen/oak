@@ -405,6 +405,30 @@ lower_in_oak: (lw: Lower, work_raw: c.Ptr, built_raw: c.Ptr, sx: []u32, budget: 
   n
 }
 
+// Copy the shared lowered graph and rewrite only its variable-order maps.
+reorder_in_oak: (lw: Lower, work_raw: c.Ptr, source_raw: c.Ptr, dest_raw: c.Ptr, n: u32, sx: []u32, order: u32): u32 {
+  count: u32 = 0
+  unsafe {
+    work: Buffer[u32] = c.own[u32](work_raw, lw.total)
+    source: Buffer[u32] = c.own[u32](source_raw, lw.built_total)
+    dest: Buffer[u32] = c.own[u32](dest_raw, lw.built_total)
+    count = reorder_views(lw, span(&work), view(&source), span(&dest), n, sx, order)
+    r0: c.Ptr = c.disown(work)
+    r1: c.Ptr = c.disown(source)
+    r2: c.Ptr = c.disown(dest)
+  }
+  count == u32(0) ? { NONE - REASON_ORDER } | { count }
+}
+
+reorder_views: (lw: Lower, work: [*]u32, source: []u32, dest: [*]u32, n: u32, sx: []u32, order: u32): u32 {
+  i: u32 = 0
+  while i < n {
+    dest[i] = source[i]
+    i = i + u32(1)
+  }
+  reorder_problem(lw, work, dest, sx, order)
+}
+
 // witness_check runs the witness pass on the built problem and, on a
 // refutation, writes the verdict and the set leaf bits into witness.
 witness_check: (lw: Lower, w: [*]u32, b: [*]u32, witness: [*]u32): u32 {
