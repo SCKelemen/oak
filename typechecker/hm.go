@@ -165,6 +165,31 @@ func (sub Substitution) Apply(typ Type) Type {
 			Name:     t.Name,
 			TypeArgs: newArgs,
 		}
+	case *UnionType:
+		result := *t
+		result.Types = sub.applyTypeList(t.Types)
+		return &result
+	case *IntersectionType:
+		result := *t
+		result.Types = sub.applyTypeList(t.Types)
+		return &result
+	case *NarrowedADTVariantType:
+		result := *t
+		result.TypeArgs = sub.applyTypeList(t.TypeArgs)
+		return &result
+	case *BufferType:
+		result := *t
+		result.Element = sub.Apply(t.Element)
+		return &result
+	case *AtomicType:
+		result := *t
+		result.Element = sub.Apply(t.Element)
+		return &result
+	case *CFnType:
+		result := *t
+		result.Parameters = sub.applyTypeList(t.Parameters)
+		result.ReturnType = sub.Apply(t.ReturnType)
+		return &result
 	default:
 		return t // Unknown type, return as-is
 	}
@@ -312,34 +337,7 @@ func (u *Unifier) unifyVar(tv *TypeVar, t Type) Substitution {
 }
 
 func (u *Unifier) occursIn(tv *TypeVar, t Type) bool {
-	switch typ := t.(type) {
-	case *TypeVar:
-		return tv == typ
-	case *RecordType:
-		for _, fieldType := range typ.Fields {
-			if u.occursIn(tv, fieldType) {
-				return true
-			}
-		}
-	case *FunctionType:
-		for _, param := range typ.Parameters {
-			if u.occursIn(tv, param) {
-				return true
-			}
-		}
-		if u.occursIn(tv, typ.ReturnType) {
-			return true
-		}
-	case *ArrayType:
-		return u.occursIn(tv, typ.ElementType)
-	case *GenericType:
-		for _, arg := range typ.TypeArgs {
-			if u.occursIn(tv, arg) {
-				return true
-			}
-		}
-	}
-	return false
+	return walkTypeVariables(t, func(variable *TypeVar) bool { return variable == tv })
 }
 
 func (u *Unifier) unifyFunction(fn1, fn2 *FunctionType) Substitution {
@@ -590,63 +588,22 @@ func commitMonomorphicBindings(bindings Substitution) {
 
 func typeVarsIn(typ Type) []*TypeVar {
 	var variables []*TypeVar
-	seen := make(map[*TypeVar]bool)
-	var visit func(Type)
-	visit = func(current Type) {
-		switch t := current.(type) {
-		case *TypeVar:
-			if !seen[t] {
-				seen[t] = true
-				variables = append(variables, t)
-			}
-		case *RecordType:
-			for _, field := range t.Fields {
-				visit(field)
-			}
-		case *FunctionType:
-			for _, parameter := range t.Parameters {
-				visit(parameter)
-			}
-			visit(t.ReturnType)
-		case *ArrayType:
-			visit(t.ElementType)
-		case *GenericType:
-			for _, argument := range t.TypeArgs {
-				visit(argument)
-			}
-		}
-	}
-	visit(typ)
+	walkTypeVariables(typ, func(variable *TypeVar) bool {
+		variables = append(variables, variable)
+		return false
+	})
 	return variables
 }
 
 func findMonomorphicSubstitution(typ Type) Substitution {
 	var found Substitution
-	var visit func(Type)
-	visit = func(current Type) {
-		switch t := current.(type) {
-		case *TypeVar:
-			if found == nil && t.Monomorphic != nil {
-				found = t.Monomorphic
-			}
-		case *RecordType:
-			for _, field := range t.Fields {
-				visit(field)
-			}
-		case *FunctionType:
-			for _, parameter := range t.Parameters {
-				visit(parameter)
-			}
-			visit(t.ReturnType)
-		case *ArrayType:
-			visit(t.ElementType)
-		case *GenericType:
-			for _, argument := range t.TypeArgs {
-				visit(argument)
-			}
+	walkTypeVariables(typ, func(variable *TypeVar) bool {
+		if variable.Monomorphic != nil {
+			found = variable.Monomorphic
+			return true
 		}
-	}
-	visit(typ)
+		return false
+	})
 	return found
 }
 
@@ -660,32 +617,13 @@ func findMonomorphicGroup(typ Type) *monomorphicGroup {
 }
 
 func markMonomorphicTypeVars(typ Type, persistent Substitution, group *monomorphicGroup) {
-	var visit func(Type)
-	visit = func(current Type) {
-		switch t := current.(type) {
-		case *TypeVar:
-			if t.Monomorphic == nil {
-				t.Monomorphic = persistent
-				t.monomorphicGroup = group
-			}
-		case *RecordType:
-			for _, field := range t.Fields {
-				visit(field)
-			}
-		case *FunctionType:
-			for _, parameter := range t.Parameters {
-				visit(parameter)
-			}
-			visit(t.ReturnType)
-		case *ArrayType:
-			visit(t.ElementType)
-		case *GenericType:
-			for _, argument := range t.TypeArgs {
-				visit(argument)
-			}
+	walkTypeVariables(typ, func(variable *TypeVar) bool {
+		if variable.Monomorphic == nil {
+			variable.Monomorphic = persistent
+			variable.monomorphicGroup = group
 		}
-	}
-	visit(typ)
+		return false
+	})
 }
 
 func makeMonomorphicScheme(typ Type, constraints []Constraint) *TypeScheme {
@@ -798,28 +736,13 @@ func collectTypeVars(typ Type) []string {
 }
 
 func collectTypeVarsRec(typ Type, vars *[]string, visited map[*TypeVar]bool) {
-	switch t := typ.(type) {
-	case *TypeVar:
-		if !visited[t] {
-			visited[t] = true
-			*vars = append(*vars, t.Name)
+	walkTypeVariables(typ, func(variable *TypeVar) bool {
+		if !visited[variable] {
+			visited[variable] = true
+			*vars = append(*vars, variable.Name)
 		}
-	case *RecordType:
-		for _, fieldType := range t.Fields {
-			collectTypeVarsRec(fieldType, vars, visited)
-		}
-	case *FunctionType:
-		for _, param := range t.Parameters {
-			collectTypeVarsRec(param, vars, visited)
-		}
-		collectTypeVarsRec(t.ReturnType, vars, visited)
-	case *ArrayType:
-		collectTypeVarsRec(t.ElementType, vars, visited)
-	case *GenericType:
-		for _, arg := range t.TypeArgs {
-			collectTypeVarsRec(arg, vars, visited)
-		}
-	}
+		return false
+	})
 }
 
 // quantifiedSubstitution binds the actual TypeVar identities found in a scheme
@@ -833,40 +756,21 @@ func quantifiedSubstitution(typ Type, quantified []string, replacements map[stri
 
 	resolved := make(map[string]Type, len(quantified))
 	sub := make(Substitution)
-	var visit func(Type)
-	visit = func(current Type) {
-		switch current := current.(type) {
-		case *TypeVar:
-			if _, ok := wanted[current.Name]; !ok {
-				return
-			}
-			replacement, ok := resolved[current.Name]
-			if !ok {
-				replacement, ok = replacements[current.Name]
-				if !ok {
-					replacement = unifier.FreshTypeVar(current.Name)
-				}
-				resolved[current.Name] = replacement
-			}
-			sub[current] = replacement
-		case *RecordType:
-			for _, field := range current.Fields {
-				visit(field)
-			}
-		case *FunctionType:
-			for _, parameter := range current.Parameters {
-				visit(parameter)
-			}
-			visit(current.ReturnType)
-		case *ArrayType:
-			visit(current.ElementType)
-		case *GenericType:
-			for _, argument := range current.TypeArgs {
-				visit(argument)
-			}
+	walkTypeVariables(typ, func(current *TypeVar) bool {
+		if _, ok := wanted[current.Name]; !ok {
+			return false
 		}
-	}
-	visit(typ)
+		replacement, ok := resolved[current.Name]
+		if !ok {
+			replacement, ok = replacements[current.Name]
+			if !ok {
+				replacement = unifier.FreshTypeVar(current.Name)
+			}
+			resolved[current.Name] = replacement
+		}
+		sub[current] = replacement
+		return false
+	})
 	return sub
 }
 
