@@ -13,6 +13,39 @@ permissions:
   contents: read
 
 jobs:
+  sat-model:
+    name: SAT model soundness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install elan
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      # Run independently of the full specification: an unrelated proof
+      # failure must not hide the production checker and its theorem contract.
+      - name: Build production SAT-model soundness
+        working-directory: spec/lean
+        run: lake build Oak.SATModelSoundness
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Check self-hosted SAT-model admission, extraction, and soundness
+        env:
+          OAK_REQUIRE_SAT_MODEL_LEAN: '1'
+        run: go test . -run '^TestOakSATModel' -count=1 -timeout=10m -v
+
   lean:
     name: Lean 4
     runs-on: ubuntu-24.04
@@ -95,11 +128,6 @@ jobs:
         env:
           OAK_REQUIRE_CLAUSE_AGREEMENT_LEAN: '1'
         run: go test . -run '^TestClauseAgreement' -count=1 -v
-
-      - name: Check self-hosted SAT-model admission and extraction
-        env:
-          OAK_REQUIRE_SAT_MODEL_LEAN: '1'
-        run: go test . -run '^TestOakSATModel' -count=1 -v
 
       - name: Check extracted standard library against compiled and interpreted Oak
         env:

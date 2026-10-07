@@ -55,12 +55,17 @@ theorem accepted_literal {values : List UInt32} {word : UInt32}
     Oak.RupCheck.Holds (assignment values) (literal word) := by
   unfold acceptsLiteral at accepted
   cases found : values[(word / 2).toNat]? with
-  | none => simp [found] at accepted
+  | none => simp only [found, Bool.false_eq_true] at accepted
   | some value =>
+      -- Apply the lookup equation before general simplification rewrites
+      -- `(word / 2).toNat` to `word.toNat / 2`.
+      have matched : (sat_model_literal word value 0).getD false = true := by
+        simpa only [found] using accepted
       have checked : sat_model_literal word value 0 = some true := by
-        simpa [found, sat_model_literal] using accepted
+        simpa [sat_model_literal] using matched
       have sound := literal_value_sound word value 0 checked
-      simpa [Oak.RupCheck.Holds, assignment, literal, found] using sound
+      simpa only [Oak.RupCheck.Holds, assignment, literal, found,
+        Option.getD_some] using sound
 
 def acceptsClauses (values : List UInt32) (clauses : List (List UInt32)) : Bool :=
   clauses.all (fun clause => clause.any (acceptsLiteral values))

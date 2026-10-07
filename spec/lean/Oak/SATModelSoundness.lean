@@ -213,7 +213,9 @@ theorem clause_loop_sound (fuel : Nat) (formula values : Array UInt32)
           cases scan : sat_check_model.loop3 formula values
               (decide (count ≤ formula.size.toUInt32 - body)) body count false 0 fuel with
           | none =>
-              simp [sat_check_model.loop2, step, header, count, body, scan] at run
+              simp only [sat_check_model.loop2, Bool.true_and, step, decide_true,
+                ite_true, header, ← countEq, ← bodyEq, scan,
+                bind, Option.bind, Option.pure_def, reduceCtorEq] at run
           | some result =>
               rcases result with ⟨scanValid, satisfied, endLiteral⟩
               by_cases accepted : scanValid && satisfied = true
