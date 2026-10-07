@@ -71,9 +71,9 @@ func TestLeanWasmAssemblerFaithful(t *testing.T) {
 			t.Fatalf("lake %v: %v\n%s", args, err, out)
 		}
 	}
-	run("build", "Oak.WasmAssemblerLaws")
+	run("build", "Oak.WasmAssemblerBytes")
 	var source strings.Builder
-	const preamble = "import Oak.WasmAssemblerLaws\nopen Oak.WasmAssembler\nset_option maxRecDepth 8192\n"
+	const preamble = "import Oak.WasmAssemblerBytes\nopen Oak.WasmAssembler\nset_option maxRecDepth 8192\n"
 	claims := 0
 	pin := func(call string, want uint32, buffer []byte) {
 		fmt.Fprintf(&source, "example : %s = some (%d, %s) := by decide +kernel\n", call, want, wasmLeanArray(buffer))
@@ -101,13 +101,14 @@ func TestLeanWasmAssemblerFaithful(t *testing.T) {
 			pin(fmt.Sprintf("wasm_write_instruction (Array.replicate 16 165) %d %s 16", offset, ins), written, dst)
 		}
 	}
+	// Exercise the universal bounds: ten size guards, eleven writer guards.
 	for _, v := range selfhostWasmLEBValues() {
 		for _, signed := range []bool{false, true} {
 			kind, value, encoded := "uleb", fmt.Sprint(v), encoding.AppendUnsigned(nil, v)
 			if signed {
 				kind, value, encoded = "sleb", fmt.Sprintf("(%d)", int64(v)), encoding.AppendSigned(nil, int64(v))
 			}
-			fmt.Fprintf(&source, "example : wasm_%s_size %s 16 = some %d := by decide +kernel\n", kind, value, len(encoded))
+			fmt.Fprintf(&source, "example : wasm_%s_size %s 10 = some %d := by decide +kernel\n", kind, value, len(encoded))
 			claims++
 			for _, offset := range []uint32{2, uint32(25 - len(encoded)), math.MaxUint32} {
 				dst := bytes.Repeat([]byte{165}, 24)
@@ -116,7 +117,7 @@ func TestLeanWasmAssemblerFaithful(t *testing.T) {
 					copy(dst[offset:], encoded)
 					written = uint32(len(encoded))
 				}
-				pin(fmt.Sprintf("wasm_write_%s (Array.replicate 24 165) %d %s 16", kind, offset, value), written, dst)
+				pin(fmt.Sprintf("wasm_write_%s (Array.replicate 24 165) %d %s 11", kind, offset, value), written, dst)
 			}
 		}
 	}
