@@ -145,8 +145,12 @@ LEB writer frames, and the signed floor step. Formal CI checks extraction drift
 and Go/Oak/Lean agreement on shared corpora. `Oak.WasmAssemblerBytes` proves
 bounded termination, canonical sizes and exact bytes for both full-width LEB
 writers, plus independent decoder recovery from their actual output buffers.
-The Oak implementation is a bootstrap kernel; instruction/sequence byte
-refinement, module writing, linking and source-to-module verification remain open.
+`Oak.WasmAssemblerInstruction` proves complete scalar instruction sizing and
+exact-byte writing, including refusal and decoder recovery. `Oak.WasmAssemblerSequence`
+proves both extracted passes terminate on valid fitting plans with `plan.size + 11`
+fuel and produce the independent sequence bytes, preserving all other storage.
+The Oak implementation is a bootstrap kernel; universal termination of whole-plan
+refusal, module writing, linking and source-to-module verification remain open.
 
 ## Remaining M7/M8 work
 

@@ -5,6 +5,7 @@ import Oak.WasmInstruction
 import Oak.WasmNumeric
 import Oak.WasmAssemblerLaws
 import Oak.WasmAssemblerBytes
+import Oak.WasmAssemblerSequence
 import Oak.Effects
 import Oak.EffectRows
 import Oak.OptIRCallSummaryCertificate

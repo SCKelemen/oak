@@ -282,6 +282,14 @@ func selfhostWasmPlanCases() []selfhostWasmPlanCase {
 		{{Opcode: 0x01}, {Opcode: 0xff}},                                // late invalid opcode
 		{{Opcode: 0x42, Immediate: -65}, {Opcode: 0x20, Immediate: -1}}, // late invalid immediate
 	}
+	// Put a maximum-width operand after enough instructions to exceed the
+	// former fixed extraction budget; both production and Lean share this plan.
+	longPlan := make([]encoding.Instruction, 8)
+	for i := range longPlan {
+		longPlan[i] = encoding.Instruction{Opcode: 0x01}
+	}
+	longPlan[len(longPlan)-1] = encoding.Instruction{Opcode: 0x42, Immediate: math.MinInt64}
+	plans = append(plans, longPlan)
 	var cases []selfhostWasmPlanCase
 	for _, plan := range plans {
 		encoded, _ := encoding.Assemble(plan)
