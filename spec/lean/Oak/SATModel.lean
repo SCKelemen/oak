@@ -54,7 +54,8 @@ theorem accepted_literal {values : List UInt32} {word : UInt32}
     (accepted : acceptsLiteral values word = true) :
     Oak.RupCheck.Holds (assignment values) (literal word) := by
   unfold acceptsLiteral at accepted
-  cases found : values[(word / 2).toNat]? with
+  -- Match the Nat index produced by the UInt32 division simp rules.
+  cases found : values[word.toNat / 2]? with
   | none => simp [found] at accepted
   | some value =>
       have checked : sat_model_literal word value 0 = some true := by
