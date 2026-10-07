@@ -68,7 +68,7 @@ func TestAArch64SpillMemorySelectorLean(t *testing.T) {
 	}
 	examples = append(examples, "example : checkPair .x64 0 31 0 0xf90003e0#32 0xf94003ff#32 = false := by decide")
 	negative++
-	examples = append(examples, "example (s : State) : step 0xf90003e0#32 { s with sp := 1 } = none := by rfl", "example (s : State) : step 0xf9000be0#32 { s with sp := 0xfffffffffffffff0#64 } = none := by rfl")
+	examples = append(examples, "example (s : State) : step 0xf90003e0#32 { s with sp := 1 } = none := by rfl", "example (s : State) : step 0xf9000be0#32 { s with sp := 0xfffffffffffffff0#64 } = none := by simp [step, decode, safe, Kind.bytes]")
 	t.Logf("%d spill pairs, %d rejections, 9 universal emitted-byte round trips", positive, negative)
 	checkAArch64SelectorLean(t, "AArch64SpillMemory", examples)
 }
