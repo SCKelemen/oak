@@ -152,8 +152,10 @@ fuel and produce the independent sequence bytes, preserving all other storage.
 `Oak.WasmAssemblerTotal` extends the same bound to every invalid or non-fitting
 plan, proves exact success/refusal admission, and equates every result to the
 independent byte model with no returning-run assumption. The Oak implementation
-is a bootstrap kernel; module writing, linking, decoded execution semantics and
-source-to-module verification remain open.
+is a bootstrap kernel. The [decoded execution model](../../docs/spec/91-wasm-execution.md)
+now composes these byte proofs with 49 straight-line scalar forms and explicit
+traps. Control/call semantics, module writing, linking and source-to-module
+verification remain open.
 
 ## Remaining M7/M8 work
 
