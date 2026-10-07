@@ -57,7 +57,7 @@ theorem trail_push_indices (trail : Array UInt32) (used variable : UInt32)
   have prefix : (List.range' 0 used.toNat).map
       (fun k => ((trail.setIfInBounds used.toNat variable).getD k 0).toNat) =
       (List.range' 0 used.toNat).map (fun k => (trail.getD k 0).toNat) := by
-    apply List.map_congr_left.mpr
+    apply List.map_congr_left
     intro k member
     have bound : k < used.toNat := by simpa using member
     rw [LRATChecker.array_getD_set_ne trail used.toNat k variable 0 (by omega)]
@@ -385,3 +385,41 @@ theorem production_rup_restores_zero (fuel : Nat) (words : Array UInt32)
           exact ⟨as3.trans (as2.trans as1), by rw [ts3, ts2, ts1], zeros⟩
 
 end Oak.LRATRUP
+
+namespace Oak.LRATChecker
+
+/-- One accepted production addition preserves the live store and restores
+all scratch preconditions for the next addition. No trail-coverage premise
+is supplied: it is derived from the observed RUP execution. -/
+theorem production_addition_state (fuel : Nat) (words store : Array UInt32)
+    (starts lengths : Array UInt32) (alive : Array UInt8) (assign : Array UInt8) (trail : Array UInt32)
+    (variables max_id id used n lits_at hints_at hints_n : UInt32)
+    (rupStarts rupLengths : Array UInt32) (rupAlive : Array UInt8) (rupStore : Array UInt32)
+    (rupAssign : Array UInt8) (rupTrail : Array UInt32) (store' : Array UInt32) (j' : UInt32)
+    (assignCapacity : variables.toNat ≤ assign.size) (trailCapacity : variables.toNat ≤ trail.size)
+    (zero : ∀ v, v < variables.toNat → assign.getD v 0 = 0)
+    (stored : StoredBefore starts lengths alive used max_id)
+    (valid : LRATRUP.LiveVariables starts lengths alive store variables max_id)
+    (startCap : id.toNat < starts.size) (lengthCap : id.toNat < lengths.size)
+    (dest : used.toNat + n.toNat ≤ store.size) (dest32 : used.toNat + n.toNat < 4294967296)
+    (source : lits_at.toNat + n.toNat ≤ words.size) (source32 : lits_at.toNat + n.toNat < 4294967296)
+    (rup : lrat_rup words lits_at n hints_at hints_n starts lengths alive store assign trail variables max_id fuel =
+      some (LRAT_ACCEPTED, rupStarts, rupLengths, rupAlive, rupStore, rupAssign, rupTrail))
+    (copy : lrat_check.loop7 words rupStore used n lits_at 0 fuel = some (store', j')) :
+    StoredBefore (rupStarts.setIfInBounds id.toNat used) (rupLengths.setIfInBounds id.toNat n)
+      (rupAlive.setIfInBounds id.toNat 1) (used + n) max_id ∧
+    LRATRUP.LiveVariables (rupStarts.setIfInBounds id.toNat used) (rupLengths.setIfInBounds id.toNat n)
+      (rupAlive.setIfInBounds id.toNat 1) store' variables max_id ∧ store'.size = store.size ∧
+    rupAssign.size = assign.size ∧ rupTrail.size = trail.size ∧
+    (∀ v, v < variables.toNat → rupAssign.getD v 0 = 0) := by
+  obtain ⟨storedNext, validNext, storeSize⟩ := production_addition_invariants fuel words store starts lengths alive
+    assign trail variables max_id id used n lits_at hints_at hints_n rupStarts rupLengths rupAlive rupStore
+    rupAssign rupTrail store' j' stored valid startCap lengthCap dest dest32 source source32 rup copy
+  have restoreRun := rup
+  rw [rup_extraction_eq] at restoreRun
+  obtain ⟨assignSize, trailSize, zeroNext⟩ := LRATRUP.production_rup_restores_zero fuel words lits_at n hints_at hints_n
+    starts lengths alive store assign trail variables max_id LRAT_ACCEPTED rupStarts rupLengths rupAlive rupStore
+    rupAssign rupTrail assignCapacity trailCapacity zero valid restoreRun
+  exact ⟨storedNext, validNext, storeSize, assignSize, trailSize, zeroNext⟩
+
+end Oak.LRATChecker
