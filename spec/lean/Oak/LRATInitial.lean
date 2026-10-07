@@ -43,7 +43,8 @@ theorem initial_input_accepted (fuel : Nat) (words starts lengths : Array UInt32
     (run : lrat_check.loop3 words starts lengths alive store status variables count store_words
       at_ end_ used empty c fuel = some (starts', lengths', alive', store', LRAT_ACCEPTED, at', used', empty', c')) :
     status = LRAT_ACCEPTED := by
-  by_contra refused
+  apply Classical.byContradiction
+  intro refused
   cases fuel with
   | zero => simp [lrat_check.loop3] at run
   | succ fuel =>
@@ -94,16 +95,7 @@ theorem initial_loop_preserves (fuel : Nat) (words starts lengths : Array UInt32
       have nextCounter : (c + 1).toNat = c.toNat + 1 := by
         simpa only [UInt32.toNat_one] using add_exact c 1 (by simp only [UInt32.toNat_one]; omega)
       simp only [lrat_check.loop3, advance, decide_true, beq_self_eq_true, Bool.and_self, ite_true] at run
-      let n : UInt32 := if at_ < end_ then words.getD at_.toNat 0 else 0
-      change (do
-        let source ← lrat_fits (at_ + 1) n end_ fuel
-        let dest ← lrat_fits used n store_words fuel
-        let (s, l, v, t, status, cursor, u, e) ← (if ((decide (at_ < end_) && source) && dest) then (do
-          let (t, status, _) ← lrat_check.loop4 words store LRAT_ACCEPTED variables at_ used n 0 fuel
-          pure (starts.setIfInBounds c.toNat used, lengths.setIfInBounds c.toNat n,
-            alive.setIfInBounds c.toNat 1, t, status, at_ + 1 + n, used + n, empty || (n == 0)))
-          else pure (starts, lengths, alive, store, LRAT_MALFORMED, at_, used, empty))
-        lrat_check.loop3 words s l v t status variables count store_words cursor end_ u e (c + 1) fuel) = _ at run
+      generalize nDef : (if decide (at_ < end_) then words.getD at_.toNat 0 else (0 : UInt32)) = n at run
       cases sourceRun : lrat_fits (at_ + 1) n end_ fuel with
       | none => simp [sourceRun] at run
       | some source =>
@@ -142,7 +134,7 @@ theorem initial_loop_preserves (fuel : Nat) (words starts lengths : Array UInt32
                 nextStore LRAT_ACCEPTED j scanRun rfl
               have size := (copy_loop_spec fuel words store used n (at_ + 1) 0 nextStore j (by simp)
                 dst dst32 src src32 copy).2.1
-              have nValue : n = words.getD at_.toNat 0 := if_pos header
+              have nValue : n = words.getD at_.toNat 0 := by simpa [header] using nDef.symm
               have remaining : count.toNat + 1 - c.toNat = (count.toNat + 1 - (c + 1).toNat) + 1 := by
                 rw [nextCounter]; omega
               have decoded : initialClauses words at_.toNat (count.toNat + 1 - c.toNat) =
@@ -236,8 +228,47 @@ theorem initial_state_from_reset (fuel : Nat) (words starts lengths : Array UInt
     exact False.elim (live (zero id upper))
   · intro id upper lower live k hk
     exact False.elim (live (zero id.toNat (UInt32.le_iff_toNat_le.mp upper)))
-  · rw [initialized_database_empty starts lengths expected store max_id zero]
+  · rw [initialized_database_empty starts lengths _ store max_id zero]
     intro id clause impossible
     contradiction
+
+/-- Connect the actual live reset, scratch reset, and complete initial-clause
+traversal. Only entry capacities/framing and a model of the input CNF are
+supplied; database validity, model preservation, and zero scratch follow from
+execution. This is the initialization phase, not the full certificate theorem. -/
+theorem production_initialization (fuel : Nat) (words starts lengths : Array UInt32)
+    (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8)
+    (variables count max_id store_words at_ end_ : UInt32)
+    (reset : Array UInt8) (resetEnd : UInt32) (scratch : Array UInt8) (scratchEnd : UInt32)
+    (starts' lengths' : Array UInt32) (alive' : Array UInt8) (store' : Array UInt32)
+    (at' used' : UInt32) (empty' : Bool) (c' : UInt32)
+    (a : RupCheck.Assignment)
+    (startCap : max_id.toNat < starts.size) (lengthCap : max_id.toNat < lengths.size)
+    (aliveCap : max_id < alive.size.toUInt32) (storeCap : store_words.toNat ≤ store.size)
+    (assignCap : variables.toNat ≤ assign.size)
+    (wordCap : end_.toNat ≤ words.size) (cursor : at_ ≤ end_) (countBound : count ≤ max_id)
+    (input : ∀ clause ∈ initialClauses words at_.toNat count.toNat, RupCheck.SatisfiesClause a clause)
+    (liveRun : lrat_check.loop1 alive true max_id 0 fuel = some (reset, resetEnd))
+    (scratchRun : lrat_check.loop2 assign true variables 0 fuel = some (scratch, scratchEnd))
+    (run : lrat_check.loop3 words starts lengths reset store LRAT_ACCEPTED variables count store_words
+      at_ end_ 0 false 1 fuel = some (starts', lengths', alive', store', LRAT_ACCEPTED, at', used', empty', c')) :
+    InitialState words starts' lengths' alive' store' variables max_id store_words at' end_ used' empty' a ∧
+      c'.toNat = count.toNat + 1 ∧ scratch.size = assign.size ∧
+      (∀ v, v < variables.toNat → scratch.getD v 0 = 0) := by
+  have state := initial_state_from_reset fuel words starts lengths alive store variables max_id store_words
+    at_ end_ reset resetEnd a startCap lengthCap aliveCap storeCap wordCap cursor liveRun
+  have noWrap : count.toNat + 1 < 4294967296 := by
+    have := alive.size.toUInt32.toNat_lt
+    have := UInt32.lt_iff_toNat_lt.mp aliveCap
+    have := UInt32.le_iff_toNat_le.mp countBound
+    omega
+  obtain ⟨ready, done⟩ := initial_loop_preserves fuel words starts lengths reset store variables count max_id
+    store_words at_ end_ 0 false 1 starts' lengths' alive' store' at' used' empty' c' a countBound noWrap
+    (by decide) (by simp) state (by simpa using input) run
+  have enough := assignment_loop_fuel fuel assign variables 0 scratch scratchEnd (by simp) scratchRun
+  obtain ⟨expected, execution, size, zero, _⟩ := assignment_init_spec assign variables fuel assignCap (by simpa using enough)
+  rw [execution] at scratchRun
+  cases scratchRun
+  exact ⟨ready, done, size, zero⟩
 
 end Oak.LRATChecker

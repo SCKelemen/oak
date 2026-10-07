@@ -49,6 +49,11 @@ func TestLRATKernelRawWords(t *testing.T) {
 		[]uint32{0, 4, 1, 3, 2, 1, 2, 0, 5, 0, 2, 4, 3}, 3), 0)
 	add("refusal after successful addition", record(2, []uint32{2, 1, 3, 1, 0, 1, 2},
 		[]uint32{0, 4, 1, 3, 2, 1, 2, 0, 5, 0, 2, 4, 31}, 3), -1)
+	add("mixed-width initial clauses", record(2, []uint32{2, 1, 3, 1, 0, 1, 2},
+		[]uint32{0, 4, 0, 3, 2, 1, 3}, 3), 0)
+	add("invalid second initial clause", record(1, []uint32{1, 1, 1, 2}, nil, 2), -1)
+	add("truncated second initial clause", record(1, []uint32{1, 1, 2, 0}, nil, 2), -1)
+	add("extra initial length word", record(1, []uint32{1, 1, 0}, nil, 1), -1)
 	add("initial empty", record(0, []uint32{0}, nil, 1), 0)
 	add("empty deleted after derivation", record(1, []uint32{1, 1, 1, 0}, []uint32{0, 3, 0, 2, 1, 2, 1, 3, 1, 3}, 2), 0)
 	add("no empty", record(1, []uint32{1, 1}, nil, 1), -1)
@@ -197,9 +202,9 @@ func TestLRATKernelTrailSoundness(t *testing.T) {
 	lake, err := exec.LookPath("lake")
 	if err != nil {
 		if os.Getenv("OAK_REQUIRE_LRAT_TRAIL_LEAN") != "" {
-			t.Fatal("lake is required for the production RUP scratch-restoration gate")
+			t.Fatal("lake is required for the production LRAT proof gate")
 		}
-		t.Skip("lake not on PATH; formal CI requires RUP scratch restoration")
+		t.Skip("lake not on PATH; formal CI requires production LRAT proofs")
 	}
 	source := `import Oak.LRATInitial
 open Oak.LRATRUP
@@ -217,10 +222,33 @@ example (fuel : Nat) (words : Array UInt32)
       ∀ v, v < variables.toNat → assign'.getD v 0 = 0 :=
   production_rup_restores_zero fuel words target_at target_n hints_at hints_n starts lengths alive store assign trail
     variables max_id status starts' lengths' alive' store' assign' trail' assignCapacity trailCapacity zero valid run
+open Oak.LRATChecker in
+example (fuel : Nat) (words starts lengths : Array UInt32)
+    (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8)
+    (variables count max_id store_words at_ end_ : UInt32)
+    (reset : Array UInt8) (resetEnd : UInt32) (scratch : Array UInt8) (scratchEnd : UInt32)
+    (starts' lengths' : Array UInt32) (alive' : Array UInt8) (store' : Array UInt32)
+    (at' used' : UInt32) (empty' : Bool) (c' : UInt32) (a : Oak.RupCheck.Assignment)
+    (startCap : max_id.toNat < starts.size) (lengthCap : max_id.toNat < lengths.size)
+    (aliveCap : max_id < alive.size.toUInt32) (storeCap : store_words.toNat ≤ store.size)
+    (assignCap : variables.toNat ≤ assign.size)
+    (wordCap : end_.toNat ≤ words.size) (cursor : at_ ≤ end_) (countBound : count ≤ max_id)
+    (input : ∀ clause ∈ initialClauses words at_.toNat count.toNat, Oak.RupCheck.SatisfiesClause a clause)
+    (liveRun : lrat_check.loop1 alive true max_id 0 fuel = some (reset, resetEnd))
+    (scratchRun : lrat_check.loop2 assign true variables 0 fuel = some (scratch, scratchEnd))
+    (run : lrat_check.loop3 words starts lengths reset store Oak.LRATChecker.LRAT_ACCEPTED variables count store_words
+      at_ end_ 0 false 1 fuel = some (starts', lengths', alive', store', Oak.LRATChecker.LRAT_ACCEPTED, at', used', empty', c')) :
+    InitialState words starts' lengths' alive' store' variables max_id store_words at' end_ used' empty' a ∧
+      c'.toNat = count.toNat + 1 ∧ scratch.size = assign.size ∧
+      (∀ v, v < variables.toNat → scratch.getD v 0 = 0) :=
+  production_initialization fuel words starts lengths alive store assign variables count max_id store_words
+    at_ end_ reset resetEnd scratch scratchEnd starts' lengths' alive' store' at' used' empty' c' a
+    startCap lengthCap aliveCap storeCap assignCap wordCap cursor countBound input liveRun scratchRun run
 #print axioms Oak.LRATRUP.production_rup_restores_zero
 #print axioms Oak.LRATChecker.production_addition_state
 #print axioms Oak.LRATChecker.initial_loop_preserves
 #print axioms Oak.LRATChecker.initial_state_from_reset
+#print axioms Oak.LRATChecker.production_initialization
 `
 	path := filepath.Join(t.TempDir(), "LRATTrailContract.lean")
 	if err := os.WriteFile(path, []byte(source), 0600); err != nil {
@@ -233,10 +261,10 @@ example (fuel : Nat) (words : Array UInt32)
 		cmd.Dir = filepath.Join("..", "spec", "lean")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			t.Fatalf("Lean RUP scratch restoration: %v (%v)\n%s", err, ctx.Err(), out)
+			t.Fatalf("Lean production LRAT proofs: %v (%v)\n%s", err, ctx.Err(), out)
 		}
 		if strings.Contains(string(out), "sorryAx") {
-			t.Fatalf("RUP scratch restoration depends on a proof hole:\n%s", out)
+			t.Fatalf("production LRAT proof depends on a proof hole:\n%s", out)
 		}
 	}
 }
