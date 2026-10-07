@@ -13,10 +13,11 @@ streaming laws do not establish FIPS compression correctness. In particular,
 the AArch64 SHA extension path remains a recorded trusted implementation.
 No production-security or FIPS-validation claim follows from this increment.
 
-## Implemented in this increment
+## Implemented packages
 
 | Import | Exports | Meaning and failure contract |
 | --- | --- | --- |
+| `crypto/x25519` | `public_key(private_key, out)`, `shared(private_key, peer, out)` | RFC 7748 X25519; exact 32-byte inputs; short output or all-zero shared secret fails unchanged; successful output preserves suffix. See [X25519 contracts and proof obligations](crypto/X25519.md). |
 | `crypto/subtle` | `equal(a, b)` | Byte equality; lengths public. Unequal lengths return false. Equal lengths scan every byte in Oak source. No machine-level timing guarantee yet. |
 | `crypto/hmac` | `sum256(key, message, out)` | RFC 2104 HMAC-SHA-256. Writes 32 bytes; short output returns false without mutation; a larger output retains its suffix. |
 | `crypto/hmac` | `sum256_parts(key, a, b, c, out)` | Same MAC over `a ++ b ++ c`, without allocating the concatenation. Supports HKDF's previous-block/info/counter input. |
@@ -219,7 +220,7 @@ tools, not new release-runtime dependencies.
 | --- | --- |
 | C0 (this increment) | HMAC/HKDF implementation, RFC vectors, bounded API failures, three executable protocol models and strict result checking. Functional/machine proofs remain open. |
 | C1 | Entropy/secret storage and leakage semantics; SHA-256 compression and HMAC/HKDF refinement, including negative output/storage contracts. |
-| C2 | X25519 field/ladder/encoding implementation and proofs, RFC 7748/Wycheproof, typed secret -> HKDF; add compromise and key-confirmation protocol cases. |
+| C2 (in progress) | Portable X25519 field/ladder/encoding, RFC 7748 vectors, Go differential/field tests and byte-view HKDF composition implemented. Field/ladder/target proofs, Wycheproof, typed secrets and extended compromise/key-confirmation cases remain open; see [X25519](crypto/X25519.md). |
 | C3 | Ed25519, P-256 ECDSA/ECDH, SHA-512, AEAD; common certificate and Web PKI cryptographic dependencies with public vectors and target proofs. |
 | C4 | Strict DER/PEM/JWK/JWS, CSR/X.509, explicit verification policy; parser fuzzing and cross-implementation testing. |
 | C5 | ACME client and challenge lifecycle, then autocert/ARI; Pebble plus implementation refinement to the extended Tamarin models. |

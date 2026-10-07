@@ -43,7 +43,10 @@ fix the other.
 The new experimental crypto foundation is tracked separately in
 [CRYPTO.md](CRYPTO.md): HMAC-SHA-256 and HKDF-SHA-256 have RFC vectors and
 Go differential tests (`compiler/e2e_crypto_test.go`), and `crypto/subtle`
-has byte-equality tests. None yet has extraction/refinement, constant-time,
+has byte-equality tests. `crypto/x25519` adds RFC 7748 vectors, Go ECDH and
+field-arithmetic oracles, and HKDF composition tests
+(`compiler/e2e_crypto_x25519_test.go`); its [proof obligations](crypto/X25519.md)
+remain open. None yet has extraction/refinement, constant-time,
 secure-erasure, or ARM64/RV64 machine proof closure. The independent Tamarin
 DH/ACME models under `spec/tamarin/crypto` do not prove those implementations.
 
