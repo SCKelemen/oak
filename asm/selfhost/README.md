@@ -149,8 +149,11 @@ writers, plus independent decoder recovery from their actual output buffers.
 exact-byte writing, including refusal and decoder recovery. `Oak.WasmAssemblerSequence`
 proves both extracted passes terminate on valid fitting plans with `plan.size + 11`
 fuel and produce the independent sequence bytes, preserving all other storage.
-The Oak implementation is a bootstrap kernel; universal termination of whole-plan
-refusal, module writing, linking and source-to-module verification remain open.
+`Oak.WasmAssemblerTotal` extends the same bound to every invalid or non-fitting
+plan, proves exact success/refusal admission, and equates every result to the
+independent byte model with no returning-run assumption. The Oak implementation
+is a bootstrap kernel; module writing, linking, decoded execution semantics and
+source-to-module verification remain open.
 
 ## Remaining M7/M8 work
 
