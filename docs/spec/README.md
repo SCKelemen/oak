@@ -84,6 +84,7 @@ Use these terms precisely:
 - [94-rv64-materialization-proofs.md](94-rv64-materialization-proofs.md) — signed literal expansion, register semantics, and emitted-byte correspondence
 - [94-rv64-call-execution-proofs.md](94-rv64-call-execution-proofs.md) — relocated call/address execution and indirect-jump register semantics
 - [94-rv64-direct-control-proofs.md](94-rv64-direct-control-proofs.md) — direct branch/jump execution, verifier decisions, and compressed fall-through
+- [94-rv64-control-flow-proofs.md](94-rv64-control-flow-proofs.md) — selector routing certificates and all-state successor correctness
 - `112-protocols.md` — protocol declarations: machines, guards, projections, lowering, typestate, model checking
 - `113-literals.md` — literal sets: the `literals` declaration and the Teddy scanner it projects
 - `STATUS.md` — implementation and proof coverage matrix

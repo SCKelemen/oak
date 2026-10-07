@@ -225,6 +225,7 @@ import Oak.RiscVRelaxation
 import Oak.RiscVMaterialization
 import Oak.RiscVCallExecution
 import Oak.RiscVDirectControl
+import Oak.RiscVControlFlow
 import Oak.RiscVMemory
 import Oak.SailRiscVBridge
 import Oak.Target
