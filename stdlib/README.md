@@ -1029,7 +1029,10 @@ proofs. The temporal calendar adds exhaustive native Lean conversion checks,
 checked-arithmetic laws, universal canonical date/time/local-datetime/RFC3339
 round trips with fractional seconds and offset-kind preservation, valid-result
 contracts for date/time/local-datetime parsers, and kernel-checked buffer frame
-contracts for all six ISO/RFC formatters. Separate calendar and codec corpora
+contracts for all six ISO/RFC formatters. Period/duration component guards
+are proved equivalent to unbounded arithmetic under their loop preconditions;
+signed-magnitude reconstruction includes signed minima. Universal period/duration
+text round trips remain open. Separate calendar and codec corpora
 compare compiled Oak, interpreted Oak, and Lean on identical cases. The proofs'
 native-evaluator and bit-vector-checker trust boundaries are documented in
 [the temporal specification](../docs/spec/114-temporal.md).
