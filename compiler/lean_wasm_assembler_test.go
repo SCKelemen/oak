@@ -71,9 +71,9 @@ func TestLeanWasmAssemblerFaithful(t *testing.T) {
 			t.Fatalf("lake %v: %v\n%s", args, err, out)
 		}
 	}
-	run("build", "Oak.WasmAssemblerBytes")
+	run("build", "Oak.WasmAssemblerSequence")
 	var source strings.Builder
-	const preamble = "import Oak.WasmAssemblerBytes\nopen Oak.WasmAssembler\nset_option maxRecDepth 8192\n"
+	const preamble = "import Oak.WasmAssemblerSequence\nopen Oak.WasmAssembler\nset_option maxRecDepth 8192\n"
 	claims := 0
 	pin := func(call string, want uint32, buffer []byte) {
 		fmt.Fprintf(&source, "example : %s = some (%d, %s) := by decide +kernel\n", call, want, wasmLeanArray(buffer))
@@ -85,7 +85,7 @@ func TestLeanWasmAssemblerFaithful(t *testing.T) {
 			encoded, _ = encoding.Assemble([]encoding.Instruction{{Opcode: byte(tc.opcode), Immediate: tc.immediate}})
 		}
 		ins := fmt.Sprintf("({ opcode := %d, immediate := (%d) } : WasmInstruction)", tc.opcode, tc.immediate)
-		fmt.Fprintf(&source, "example : wasm_instruction_size %s 16 = some %d := by decide +kernel\n", ins, len(encoded))
+		fmt.Fprintf(&source, "example : wasm_instruction_size %s 10 = some %d := by decide +kernel\n", ins, len(encoded))
 		claims++
 		offsets := []uint32{2, math.MaxUint32}
 		if len(encoded) != 0 {
@@ -98,7 +98,7 @@ func TestLeanWasmAssemblerFaithful(t *testing.T) {
 				copy(dst[offset:], encoded)
 				written = uint32(len(encoded))
 			}
-			pin(fmt.Sprintf("wasm_write_instruction (Array.replicate 16 165) %d %s 16", offset, ins), written, dst)
+			pin(fmt.Sprintf("wasm_write_instruction (Array.replicate 16 165) %d %s 11", offset, ins), written, dst)
 		}
 	}
 	// Exercise the universal bounds: ten size guards, eleven writer guards.
@@ -123,9 +123,12 @@ func TestLeanWasmAssemblerFaithful(t *testing.T) {
 	}
 	for _, tc := range selfhostWasmPlanCases() {
 		status, size, dst := tc.expected()
-		fmt.Fprintf(&source, "example : wasm_assemble (Array.replicate %d 165) %d %s 16 = some (⟨%d, %d⟩, %s) := by decide +kernel\n", tc.capacity, tc.offset, tc.leanPlan(), status, size, wasmLeanArray(dst))
+		fmt.Fprintf(&source, "example : wasm_assemble (Array.replicate %d 165) %d %s %d = some (⟨%d, %d⟩, %s) := by decide +kernel\n", tc.capacity, tc.offset, tc.leanPlan(), len(tc.plan)+11, status, size, wasmLeanArray(dst))
 		claims++
 	}
+	// Whole-plan fuel includes one outer guard per instruction.
+	source.WriteString("example : wasm_assemble (Array.replicate 11 165) 0 #[{ opcode := 66, immediate := (-9223372036854775808) }] 11 = none := by decide +kernel\n")
+	claims++
 	// Fuel exhaustion is distinct from an ordinary, buffer-preserving refusal.
 	source.WriteString("example : wasm_assemble #[165] 0 #[] 0 = none := by decide +kernel\n")
 	// Bound the kernel process's memory and timeout per batch. Each claim is
