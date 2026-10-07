@@ -38,7 +38,7 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
       - name: Check implementation laws
         working-directory: spec/lean
-        run: lake build Oak.Stdlib.TimeCodecLaws
+        run: lake build Oak.Stdlib.TimeRFC3339RoundtripLaws
       - name: Check calendar and codec correspondence in compiled Oak, interpreted Oak, and Lean
         env:
           OAK_REQUIRE_TIME_LEAN: '1'

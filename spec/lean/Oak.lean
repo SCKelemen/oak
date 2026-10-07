@@ -173,7 +173,7 @@ import Oak.Stdlib.TensorExtracted
 import Oak.Stdlib.MathExtracted
 import Oak.Stdlib.FloatKernelsExtracted
 import Oak.Stdlib.RandomExtracted
-import Oak.Stdlib.TimeCodecLaws
+import Oak.Stdlib.TimeRFC3339RoundtripLaws
 import Oak.Stdlib.UuidExtracted
 import Oak.Stdlib.SortU32Extracted
 import Oak.Stdlib.UnicodeExtracted
