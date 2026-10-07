@@ -5,6 +5,7 @@ on:
     branches:
       - specification
       - docs/spec-consolidation
+      - codex/lrat-record-soundness
   pull_request:
     branches:
       - specification
