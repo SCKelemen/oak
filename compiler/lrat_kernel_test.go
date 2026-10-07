@@ -218,6 +218,7 @@ example (fuel : Nat) (words : Array UInt32)
   production_rup_restores_zero fuel words target_at target_n hints_at hints_n starts lengths alive store assign trail
     variables max_id status starts' lengths' alive' store' assign' trail' assignCapacity trailCapacity zero valid run
 #print axioms Oak.LRATRUP.production_rup_restores_zero
+#print axioms Oak.LRATChecker.production_addition_state
 `
 	path := filepath.Join(t.TempDir(), "LRATTrailContract.lean")
 	if err := os.WriteFile(path, []byte(source), 0600); err != nil {

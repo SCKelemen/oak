@@ -2,7 +2,7 @@ import Oak.LRATStore
 
 /-!
 Trail coverage for successive production RUP calls. The trail contains each
-assigned declared var once, so a fresh assignment has space in a trail
+assigned declared variable once, so a fresh assignment has space in a trail
 of `variables` entries and its counter cannot wrap. Rollback then restores
 the zero scratch required by the next addition's soundness theorem.
 -/
@@ -54,14 +54,14 @@ theorem trail_push_indices (trail : Array UInt32) (used var : UInt32)
       trailIndices trail 0 used.toNat ++ [var.toNat] := by
   unfold trailIndices
   rw [noWrap, List.range'_1_concat, List.map_append]
-  have prefix : (List.range' 0 used.toNat).map
+  have oldEntries : (List.range' 0 used.toNat).map
       (fun k => ((trail.setIfInBounds used.toNat var).getD k 0).toNat) =
       (List.range' 0 used.toNat).map (fun k => (trail.getD k 0).toNat) := by
     apply List.map_congr_left
     intro k member
     have bound : k < used.toNat := by simpa using member
     rw [LRATChecker.array_getD_set_ne trail used.toNat k var 0 (by omega)]
-  rw [prefix]
+  rw [oldEntries]
   simp only [Nat.zero_add, List.map_cons, List.map_nil,
     LRATChecker.array_getD_set_self trail used.toNat var 0 room]
 
@@ -198,7 +198,7 @@ theorem target_tracks (fuel : Nat) (words : Array UInt32)
           simp only [lrat_rup.loop1, hi, decide_true, beq_self_eq_true, Bool.and_self,
             ite_true, wordAt, invalid, decide_false, Bool.false_eq_true, ite_false,
             Bool.not_true, Bool.and_false, bind, Option.bind, Option.pure_def] at run
-          exact next assign trail LRAT_ACCEPTED true used rfl rfl state (by simpa only [last] using run)
+          exact next assign trail LRAT_ACCEPTED true used rfl rfl state run
         | false =>
           simp only [lrat_rup.loop1, hi, decide_true, beq_self_eq_true, Bool.and_self,
             ite_true, wordAt, invalid, decide_false, Bool.false_eq_true, ite_false,
@@ -220,7 +220,7 @@ theorem target_tracks (fuel : Nat) (words : Array UInt32)
       rcases run with ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩
       exact ⟨rfl, rfl, state⟩
 
-/-- Any selected unit is an unassigned declared var. This is proved
+/-- Any selected unit is an unassigned declared variable. This is proved
 from the actual scan, including duplicate literals and refused scans. -/
 theorem scan_fresh (fuel : Nat) (store : Array UInt32) (assign : Array UInt8)
     (start count variables status remaining unit j status' remaining' unit' j' : UInt32)
