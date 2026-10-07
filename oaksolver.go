@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/binary"
@@ -666,6 +667,11 @@ lrat_main: (): i32 {
 }
 
 stream_main: (): i32 {
+  flag: c.Ptr = c_getenv(c.cstr("OAK_SOLVER_CANCEL_FD\0"))
+  unsafe {
+    value: []u8 = c.borrow_string(flag)
+    stream_cancel_enabled = len(value) == u32(1) && value[u32(0)] == u8(51)
+  }
   slot: u32 = variant_slot()
   chunk_raw: c.Ptr = malloc(c.Size(CHUNK))
   header_bytes_raw: c.Ptr = malloc(c.Size(u32(16)))
@@ -752,6 +758,10 @@ solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, d
     name_words: u32 = (name_bytes + u32(3)) / u32(4)
     name_start: u32 = off
     off = off + name_words
+    stream_cancel_index = i
+    stream_cancelled = false
+    stream_cancel_ticks = u32(0)
+    !cancel_poll() ? {
     shift: u32 = nfiles > u32(0) ? { u32(3) } | { u32(0) }
     (nfiles > u32(0) && slot < u32(3)) ? {
       where: [4]u32
@@ -778,6 +788,9 @@ solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, d
         k = k + u32(1)
       }
     }
+    } | { }
+    // A winner must reach the parent before this slot starts the next job.
+    write_flush()
     i = i + u32(1)
   }
 }
@@ -918,14 +931,44 @@ func (th oakTheorem) slots(withSources bool) int {
 }
 
 func runOakSolver(theorems []oakTheorem, sources [][]byte, cases, budget int) ([]prove.SolverVerdict, error) {
-	withSources := len(sources) > 0
+	return runOakSolverContext(context.Background(), theorems, sources, cases, budget)
+}
+
+func runOakSolverContext(ctx context.Context, theorems []oakTheorem, sources [][]byte, cases, budget int) ([]prove.SolverVerdict, error) {
 	if len(theorems) == 0 {
 		return nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	solver, err := oakSolverBinary()
 	if err != nil {
 		return nil, err
 	}
+	return runOakSolverProcess(ctx, solver, theorems, sources, cases, budget)
+}
+
+func runOakSolverProcess(ctx context.Context, solver string, theorems []oakTheorem, sources [][]byte, cases, budget int) ([]prove.SolverVerdict, error) {
+	withSources := len(sources) > 0
+	if len(theorems) == 0 {
+		return nil, nil
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cancellation, err := os.CreateTemp("", "oak-cancel-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(cancellation.Name())
+	defer cancellation.Close()
+	if err := cancellation.Truncate(int64(len(theorems))); err != nil {
+		return nil, err
+	}
+	readCancellation, err := os.Open(cancellation.Name())
+	if err != nil {
+		return nil, err
+	}
+	defer readCancellation.Close()
 	encoded := encodeProblems(theorems, sources, cases, budget)
 	if os.Getenv("OAK_SOLVER_KEEP") != "" {
 		kept := filepath.Join(os.TempDir(), fmt.Sprintf("oak-problems-%d.bin", os.Getpid()))
@@ -945,9 +988,22 @@ func runOakSolver(theorems []oakTheorem, sources [][]byte, cases, budget int) ([
 	lines := make(chan line, 64)
 	var processes []*exec.Cmd
 	var readers sync.WaitGroup
+	// Also runs on partial startup failure. Readers cannot remain blocked on
+	// a full output channel after cancellation, and every child is reaped.
+	defer func() {
+		cancel()
+		for _, run := range processes {
+			_ = run.Process.Kill()
+		}
+		readers.Wait()
+		for _, run := range processes {
+			_ = run.Wait()
+		}
+	}()
 	for slot := 0; slot < slots; slot++ {
-		run := exec.Command(solver)
-		run.Env = append(os.Environ(), fmt.Sprintf("OAK_SOLVER_VARIANT=%d", slot))
+		run := exec.CommandContext(ctx, solver)
+		run.Env = append(os.Environ(), fmt.Sprintf("OAK_SOLVER_VARIANT=%d", slot), "OAK_SOLVER_CANCEL_FD=3")
+		run.ExtraFiles = []*os.File{readCancellation}
 		run.Stdin = bytes.NewReader(encoded)
 		run.Stderr = os.Stderr
 		out, err := run.StdoutPipe()
@@ -964,7 +1020,11 @@ func runOakSolver(theorems []oakTheorem, sources [][]byte, cases, budget int) ([
 			scanner := bufio.NewScanner(out)
 			scanner.Buffer(make([]byte, 0, 1<<16), 1<<24)
 			for scanner.Scan() {
-				lines <- line{slot, scanner.Text()}
+				select {
+				case lines <- line{slot, scanner.Text()}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}(slot, out)
 	}
@@ -974,6 +1034,10 @@ func runOakSolver(theorems []oakTheorem, sources [][]byte, cases, budget int) ([
 	}()
 	verdicts := make([]prove.SolverVerdict, len(theorems))
 	settled := make([]bool, len(theorems))
+	seen := make([][]bool, len(theorems))
+	for i := range seen {
+		seen[i] = make([]bool, slots)
+	}
 	answered := make([]int, len(theorems)) // applicable slots heard from
 	failing := make([]int, len(theorems))  // 2 exceeded, 3 unsupported among them
 	oakLoweringDone := make([]bool, len(theorems))
@@ -1007,6 +1071,10 @@ func runOakSolver(theorems []oakTheorem, sources [][]byte, cases, budget int) ([
 		if index < 0 || index >= len(theorems) || settled[index] || l.slot >= theorems[index].slots(withSources) {
 			continue
 		}
+		if seen[index][l.slot] {
+			continue
+		}
+		seen[index][l.slot] = true
 		answered[index]++
 		hasSyntax := withSources
 		isOak := hasSyntax && l.slot < oakOrders
@@ -1060,17 +1128,19 @@ func runOakSolver(theorems []oakTheorem, sources [][]byte, cases, budget int) ([
 				remaining--
 			}
 		}
+		if settled[index] {
+			// This selects a race result, not proof admission. All existing Go
+			// replay, certificate and model checks still run at their call sites.
+			if _, err := cancellation.WriteAt([]byte{1}, int64(index)); err != nil {
+				return nil, err
+			}
+		}
 		if remaining == 0 {
 			break
 		}
 	}
-	for _, run := range processes {
-		_ = run.Process.Kill()
-	}
-	for _, run := range processes {
-		_ = run.Wait()
-	}
-	for range lines {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if remaining != 0 {
 		if firstErr != nil {

@@ -518,7 +518,15 @@ solver and its driver are one fixed Oak program, built once through the
 backend and kept, and the pending theorems of a run are streamed to it on
 standard input, one process per order at the same time, each theorem
 taking the first verdict within the budget (the race the Go decider runs
-across goroutines, run across processes). A refuted theorem's counterexample is the path the solver
+across goroutines, run across processes). Settled jobs publish a per-theorem
+cancellation byte: losing workers skip that job or stop at a BDD polling
+point, then continue the batch. Output is flushed after each theorem.
+Cancellation selects no new evidence and preserves the Oak-lowering
+preference and all admission checks. Standalone multi-order races preserve
+their BDD stacks across 4,096-transition quanta; a bounded per-term result
+tape reconstructs the bit-vector scaffold without publishing partial bits
+([design, limits, and measurements](../notes/selfhost-scheduling-2026-10.md)).
+A refuted theorem's counterexample is the path the solver
 walks to the failing root, read back through the parameter bits. With
 `-cross go` (the default) the Go decider replays the winning order and
 must reach the same verdict with the same number of nodes, which the row

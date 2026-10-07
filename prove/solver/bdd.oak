@@ -162,6 +162,69 @@ STATE_MODE: u32 = 3
 STATE_CLAUSES_USED: u32 = 4
 STATE_CLAUSE_COUNT: u32 = 5
 STATE_CREATED: u32 = 6
+STATE_SCHEDULED: u32 = 7
+STATE_FUEL: u32 = 8
+STATE_PAUSED: u32 = 9
+STATE_SP: u32 = 10
+STATE_RESULT: u32 = 11
+STATE_CURSOR: u32 = 12
+STATE_RECORDED: u32 = 13
+STATE_TERM: u32 = 14
+STATE_STATUS: u32 = 15
+STATUS_RUNNING: u32 = 8
+// A single 64-bit term uses fewer than this many primitive operations.
+// Overflow declines with EXCEEDED; it can never produce a partial verdict.
+REPLAY_WORDS: u32 = 32768
+
+paused: (l: Layout, mem: [*]u32): Bool = mem[l.state_at + STATE_PAUSED] != u32(0)
+
+// A quantum counts explicit BDD stack transitions, not completed terms.
+// The bounded bit-vector scaffold is reconstructed from its result tape.
+work_tick: (l: Layout, mem: [*]u32): Bool {
+  available: Bool = true
+  mem[l.state_at + STATE_SCHEDULED] != u32(0) ? {
+    fuel: u32 = mem[l.state_at + STATE_FUEL]
+    available = fuel > u32(0)
+    available ? { mem[l.state_at + STATE_FUEL] = fuel - u32(1) } | {
+      mem[l.state_at + STATE_PAUSED] = u32(1)
+    }
+  } | { }
+  cancel_tick() ? {
+    available = false
+    mem[l.state_at + STATE_PAUSED] = u32(1)
+  } | { }
+  available
+}
+
+// Dispatch through a per-term transcript. Completed calls replay without
+// touching the node/cache/stack state; the first unfinished call resumes.
+// Calls after a pause are inert, and blast_term does not publish their bits.
+scheduled_op: (l: Layout, mem: [*]u32, kind: u32, a: u32, b: u32, c: u32): u32 {
+  result: u32 = BDD_FALSE
+  scheduled: Bool = mem[l.state_at + STATE_SCHEDULED] != u32(0)
+  cursor: u32 = mem[l.state_at + STATE_CURSOR]
+  recorded: u32 = mem[l.state_at + STATE_RECORDED]
+  !paused(l, mem) && !exceeded(l, mem) ? {
+    (scheduled && cursor < recorded) ? {
+      result = mem[l.total + cursor]
+      mem[l.state_at + STATE_CURSOR] = cursor + u32(1)
+    } | {
+      (scheduled && cursor >= REPLAY_WORDS) ? {
+        mem[l.state_at + STATE_EXCEEDED] = u32(1)
+      } | {
+        result = kind == u32(3) ? { diagram_ite(l, mem, a, b, c) } | {
+          kind == u32(4) ? { restrict_run(l, mem, a, b, c) } | { bdd_apply(l, mem, kind, a, b) }
+        }
+        (scheduled && !paused(l, mem) && !exceeded(l, mem)) ? {
+          mem[l.total + cursor] = result
+          mem[l.state_at + STATE_CURSOR] = cursor + u32(1)
+          mem[l.state_at + STATE_RECORDED] = cursor + u32(1)
+        } | { }
+      }
+    }
+  } | { }
+  result
+}
 
 next_pow2: (n: u32): u32 {
   p: u32 = 1
@@ -261,6 +324,11 @@ solver_init: (l: Layout, mem: [*]u32): () {
   mem[l.state_at + STATE_CLAUSES_USED] = u32(0)
   mem[l.state_at + STATE_CLAUSE_COUNT] = u32(0)
   mem[l.state_at + STATE_CREATED] = u32(0)
+  i = u32(7)
+  while i < u32(16) {
+    mem[l.state_at + i] = u32(0)
+    i = i + u32(1)
+  }
 }
 
 node_count: (l: Layout, mem: [*]u32): u32 = mem[l.state_at + STATE_COUNT]
@@ -368,13 +436,18 @@ push_frame: (l: Layout, mem: [*]u32, sp: u32, op: u32, x: u32, y: u32): () {
 // memoized in the cache, run with an explicit stack. A frame is (op, x, y,
 // phase, v, xh, yh, low result, high result): phase 0 has not looked at its
 // operands, phase 1 waits on the low cofactor, phase 2 on the high one.
-apply: (l: Layout, mem: [*]u32, op: u32, x0: u32, y0: u32): u32 = mem[l.state_at + STATE_MODE] == u32(1) ? { cnf_apply(l, mem, op, x0, y0) } | { bdd_apply(l, mem, op, x0, y0) }
+apply: (l: Layout, mem: [*]u32, op: u32, x0: u32, y0: u32): u32 = mem[l.state_at + STATE_MODE] == u32(1) ? { cnf_apply(l, mem, op, x0, y0) } | { mem[l.state_at + STATE_SCHEDULED] != u32(0) ? { scheduled_op(l, mem, op, x0, y0, u32(0)) } | { bdd_apply(l, mem, op, x0, y0) } }
 
 bdd_apply: (l: Layout, mem: [*]u32, op: u32, x0: u32, y0: u32): u32 {
   result: u32 = BDD_FALSE
   sp: u32 = 1
+  mem[l.state_at + STATE_SP] > u32(0) ? {
+    sp = mem[l.state_at + STATE_SP]
+    result = mem[l.state_at + STATE_RESULT]
+  } | {
   push_frame(l, mem, u32(0), op, x0, y0)
-  while sp > u32(0) {
+  }
+  while sp > u32(0) && work_tick(l, mem) {
     exceeded_now: Bool = mem[l.state_at + STATE_EXCEEDED] != u32(0)
     f: u32 = l.stack_at + (sp - u32(1)) * FRAME_WORDS
     phase: u32 = mem[f + u32(3)]
@@ -445,6 +518,8 @@ bdd_apply: (l: Layout, mem: [*]u32, op: u32, x0: u32, y0: u32): u32 {
       }
     }
   }
+  mem[l.state_at + STATE_SP] = stream_cancelled ? { u32(0) } | { sp }
+  mem[l.state_at + STATE_RESULT] = result
   result
 }
 
@@ -453,7 +528,7 @@ bdd_not: (l: Layout, mem: [*]u32, a: u32): u32 = a ^ u32(1)
 
 // The clause engine keeps its certificate-producing gates; the diagram
 // engine computes ITE directly, with the same normalization as asm/bdd.go.
-bdd_ite: (l: Layout, mem: [*]u32, c: u32, t: u32, e: u32): u32 = mem[l.state_at + STATE_MODE] == u32(1) ? { cnf_ite(l, mem, c, t, e) } | { diagram_ite(l, mem, c, t, e) }
+bdd_ite: (l: Layout, mem: [*]u32, c: u32, t: u32, e: u32): u32 = mem[l.state_at + STATE_MODE] == u32(1) ? { cnf_ite(l, mem, c, t, e) } | { mem[l.state_at + STATE_SCHEDULED] != u32(0) ? { scheduled_op(l, mem, u32(3), c, t, e) } | { diagram_ite(l, mem, c, t, e) } }
 
 ite_terminal: (c: u32, t: u32, e: u32): u32 = c == BDD_TRUE ? { t } | { (c == BDD_FALSE || t == e) ? { e } | { (t == BDD_TRUE && e == BDD_FALSE) ? { c } | { (t == BDD_FALSE && e == BDD_TRUE) ? { c ^ u32(1) } | { NONE } } } }
 
@@ -478,8 +553,13 @@ ite_deliver: (l: Layout, mem: [*]u32, sp: u32, r: u32): () {
 diagram_ite: (l: Layout, mem: [*]u32, c0: u32, t0: u32, e0: u32): u32 {
   result: u32 = BDD_FALSE
   sp: u32 = 1
+  mem[l.state_at + STATE_SP] > u32(0) ? {
+    sp = mem[l.state_at + STATE_SP]
+    result = mem[l.state_at + STATE_RESULT]
+  } | {
   ite_push(l, mem, u32(0), c0, t0, e0)
-  while sp > u32(0) {
+  }
+  while sp > u32(0) && work_tick(l, mem) {
     exceeded(l, mem) ? { sp = u32(0)
       result = BDD_FALSE } | {
       f: u32 = l.stack_at + (sp - u32(1)) * FRAME_WORDS
@@ -554,6 +634,8 @@ diagram_ite: (l: Layout, mem: [*]u32, c0: u32, t0: u32, e0: u32): u32 {
       }
     }
   }
+  mem[l.state_at + STATE_SP] = stream_cancelled ? { u32(0) } | { sp }
+  mem[l.state_at + STATE_RESULT] = result
   result
 }
 
@@ -576,13 +658,20 @@ restrict_deliver: (l: Layout, mem: [*]u32, sp: u32, r: u32): () {
 // high one — memoized in the apply cache under OP_RESTRICT with the
 // variable and value as the second key. Past the budget the false node
 // stands in, as everywhere.
-bdd_restrict: (l: Layout, mem: [*]u32, e0: u32, v: u32, value: u32): u32 {
+bdd_restrict: (l: Layout, mem: [*]u32, e0: u32, v: u32, value: u32): u32 = mem[l.state_at + STATE_SCHEDULED] != u32(0) ? { scheduled_op(l, mem, u32(4), e0, v, value) } | { restrict_run(l, mem, e0, v, value) }
+
+restrict_run: (l: Layout, mem: [*]u32, e0: u32, v: u32, value: u32): u32 {
   key: u32 = (v << u32(1)) | value
   result: u32 = e0
   sp: u32 = 1
+  mem[l.state_at + STATE_SP] > u32(0) ? {
+    sp = mem[l.state_at + STATE_SP]
+    result = mem[l.state_at + STATE_RESULT]
+  } | {
   mem[l.stack_at] = e0
   mem[l.stack_at + u32(1)] = u32(0)
-  while sp > u32(0) {
+  }
+  while sp > u32(0) && work_tick(l, mem) {
     f: u32 = l.stack_at + (sp - u32(1)) * FRAME_WORDS
     e: u32 = mem[f]
     phase: u32 = mem[f + u32(1)]
@@ -638,6 +727,8 @@ bdd_restrict: (l: Layout, mem: [*]u32, e0: u32, v: u32, value: u32): u32 {
       } }
     }
   }
+  mem[l.state_at + STATE_SP] = stream_cancelled ? { u32(0) } | { sp }
+  mem[l.state_at + STATE_RESULT] = result
   result
 }
 
@@ -1151,7 +1242,7 @@ blast_term: (l: Layout, mem: [*]u32, p: []u32, t: u32): Bool {
       out = add_bits(l, mem, count_leading_zeros(l, mem, x, w), all_ones(w), BDD_FALSE, w)
     } | { ok = false } } } } } } } } } } } } } }
   } } } } } } }
-  ok ? { store_bits(l, mem, t, out, w) } | { }
+  (ok && !paused(l, mem) && !exceeded(l, mem)) ? { store_bits(l, mem, t, out, w) } | { }
   ok
 }
 
@@ -1177,62 +1268,94 @@ solve: (l: Layout, mem: [*]u32, p: []u32): u32 {
   n: u32 = problem_terms(p)
   t: u32 = 0
   supported: Bool = true
-  while t < n && supported && !exceeded(l, mem) {
+  while t < n && supported && !exceeded(l, mem) && !stream_cancelled {
+    ignored_cancel: Bool = cancel_tick()
     supported = blast_term(l, mem, p, t)
     t = t + u32(1)
   }
-  !supported ? { STATUS_UNSUPPORTED } | { exceeded(l, mem) ? { STATUS_EXCEEDED } | { solve_roots(l, mem, p) } }
+  stream_cancelled ? { STATUS_CANCELLED } | { !supported ? { STATUS_UNSUPPORTED } | { exceeded(l, mem) ? { STATUS_EXCEEDED } | { solve_roots(l, mem, p) } } }
 }
 
 // The outcome of a race: the status, which variant decided (NONE when
 // none did), and its node count.
 Race: type = struct { status: u32, winner: u32, nodes: u32 }
 
-// solve_race decides one theorem serialized under up to three variable
-// orders, each in a buffer of its own, round-robin one term at a time:
-// the first variant to blast every term within the budget decides, and a
-// variant that exceeds the budget or meets an unsupported term drops out.
-// Term by term rather than whole, so a variant that is small under its
-// order is not made to wait for one that is exponential under another.
+// Scheduled callers own l.total + REPLAY_WORDS words.
+// Begin/resume never reallocates or clears a live attempt. Only completed
+// terms advance STATE_TERM. A zero quantum leaves the attempt untouched.
+solve_begin: (l: Layout, mem: [*]u32): () {
+  solver_init(l, mem)
+  mem[l.state_at + STATE_SCHEDULED] = u32(1)
+  mem[l.state_at + STATE_STATUS] = STATUS_RUNNING
+}
+
+solve_resume: (l: Layout, mem: [*]u32, p: []u32, quantum: u32): u32 {
+  status: u32 = mem[l.state_at + STATE_STATUS]
+  (status == STATUS_RUNNING && quantum > u32(0)) ? {
+    mem[l.state_at + STATE_FUEL] = quantum
+    mem[l.state_at + STATE_PAUSED] = u32(0)
+    t: u32 = mem[l.state_at + STATE_TERM]
+    terms: u32 = 0
+    while t < problem_terms(p) && status == STATUS_RUNNING && !paused(l, mem) && terms < quantum {
+      // Bound constant terms independently of recursive BDD transitions.
+      terms = terms + u32(1)
+      {
+        mem[l.state_at + STATE_CURSOR] = u32(0)
+        ok: Bool = blast_term(l, mem, p, t)
+        !ok ? { status = STATUS_UNSUPPORTED } | {
+          exceeded(l, mem) ? { status = STATUS_EXCEEDED } | {
+            !paused(l, mem) ? {
+              t = t + u32(1)
+              mem[l.state_at + STATE_TERM] = t
+              mem[l.state_at + STATE_RECORDED] = u32(0)
+            } | { }
+          }
+        }
+      }
+    }
+    (status == STATUS_RUNNING && t == problem_terms(p)) ? { status = solve_roots(l, mem, p) } | { }
+    stream_cancelled ? { status = STATUS_CANCELLED } | { }
+    mem[l.state_at + STATE_STATUS] = status
+  } | { }
+  status
+}
+
+// Each view gets a bounded quantum of BDD stack transitions. No result is
+// read until the complete term graph has finished. Dropped attempts retain
+// their final status and cannot be resumed into a verdict.
 solve_race: (l: Layout, m0: [*]u32, p0: []u32, m1: [*]u32, p1: []u32, m2: [*]u32, p2: []u32, variants: u32): Race {
-  solver_init(l, m0)
-  variants > u32(1) ? { solver_init(l, m1) } | { }
-  variants > u32(2) ? { solver_init(l, m2) } | { }
-  t0: u32 = 0
-  t1: u32 = 0
-  t2: u32 = 0
-  live0: Bool = true
-  live1: Bool = variants > u32(1)
-  live2: Bool = variants > u32(2)
-  unsupported: Bool = false
+  variants <= u32(1) ? {
+    status: u32 = solve(l, m0, p0)
+    Race { status: status, winner: (status == STATUS_PROVEN || status == STATUS_REFUTED) ? { u32(0) } | { NONE }, nodes: (status == STATUS_PROVEN || status == STATUS_REFUTED) ? { node_count(l, m0) } | { u32(0) } }
+  } | { solve_race_scheduled(l, m0, p0, m1, p1, m2, p2, variants) }
+}
+
+solve_race_scheduled: (l: Layout, m0: [*]u32, p0: []u32, m1: [*]u32, p1: []u32, m2: [*]u32, p2: []u32, variants: u32): Race {
+  solve_begin(l, m0)
+  variants > u32(1) ? { solve_begin(l, m1) } | { }
+  variants > u32(2) ? { solve_begin(l, m2) } | { }
+  s0: u32 = STATUS_RUNNING
+  s1: u32 = variants > u32(1) ? { STATUS_RUNNING } | { STATUS_EXCEEDED }
+  s2: u32 = variants > u32(2) ? { STATUS_RUNNING } | { STATUS_EXCEEDED }
   winner: u32 = NONE
-  while winner == NONE && (live0 || live1 || live2) {
-    live0 ? {
-      ok: Bool = blast_term(l, m0, p0, t0)
-      unsupported = unsupported || !ok
-      live0 = ok && !exceeded(l, m0)
-      t0 = t0 + u32(1)
-      winner = (live0 && t0 == problem_terms(p0)) ? { u32(0) } | { winner }
+  while winner == NONE && (s0 == STATUS_RUNNING || s1 == STATUS_RUNNING || s2 == STATUS_RUNNING) {
+    s0 == STATUS_RUNNING ? {
+      s0 = solve_resume(l, m0, p0, u32(4096))
+      (s0 == STATUS_PROVEN || s0 == STATUS_REFUTED) ? { winner = u32(0) } | { }
     } | { }
-    (live1 && winner == NONE) ? {
-      ok1: Bool = blast_term(l, m1, p1, t1)
-      unsupported = unsupported || !ok1
-      live1 = ok1 && !exceeded(l, m1)
-      t1 = t1 + u32(1)
-      winner = (live1 && t1 == problem_terms(p1)) ? { u32(1) } | { winner }
+    (s1 == STATUS_RUNNING && winner == NONE) ? {
+      s1 = solve_resume(l, m1, p1, u32(4096))
+      (s1 == STATUS_PROVEN || s1 == STATUS_REFUTED) ? { winner = u32(1) } | { }
     } | { }
-    (live2 && winner == NONE) ? {
-      ok2: Bool = blast_term(l, m2, p2, t2)
-      unsupported = unsupported || !ok2
-      live2 = ok2 && !exceeded(l, m2)
-      t2 = t2 + u32(1)
-      winner = (live2 && t2 == problem_terms(p2)) ? { u32(2) } | { winner }
+    (s2 == STATUS_RUNNING && winner == NONE) ? {
+      s2 = solve_resume(l, m2, p2, u32(4096))
+      (s2 == STATUS_PROVEN || s2 == STATUS_REFUTED) ? { winner = u32(2) } | { }
     } | { }
   }
-  winner == u32(0) ? { Race { status: solve_roots(l, m0, p0), winner: u32(0), nodes: node_count(l, m0) } } | {
-    winner == u32(1) ? { Race { status: solve_roots(l, m1, p1), winner: u32(1), nodes: node_count(l, m1) } } | {
-      winner == u32(2) ? { Race { status: solve_roots(l, m2, p2), winner: u32(2), nodes: node_count(l, m2) } } | {
-        Race { status: unsupported ? { STATUS_UNSUPPORTED } | { STATUS_EXCEEDED }, winner: NONE, nodes: u32(0) }
+  winner == u32(0) ? { Race { status: s0, winner: u32(0), nodes: node_count(l, m0) } } | {
+    winner == u32(1) ? { Race { status: s1, winner: u32(1), nodes: node_count(l, m1) } } | {
+      winner == u32(2) ? { Race { status: s2, winner: u32(2), nodes: node_count(l, m2) } } | {
+        Race { status: (s0 == STATUS_UNSUPPORTED || s1 == STATUS_UNSUPPORTED || s2 == STATUS_UNSUPPORTED) ? { STATUS_UNSUPPORTED } | { STATUS_EXCEEDED }, winner: NONE, nodes: u32(0) }
       }
     }
   }

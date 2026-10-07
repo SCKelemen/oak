@@ -65,10 +65,10 @@ main: (): i32 {
 
 main_body: (): i32 {
   l: Layout = layout_for(u32(4096), u32(8))
-  raw: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  raw: c.Ptr = malloc(c.Size((l.total + REPLAY_WORDS) * u32(4)))
   failures: u32 = 0
   unsafe {
-    mem: Buffer[u32] = c.own[u32](raw, l.total)
+    mem: Buffer[u32] = c.own[u32](raw, l.total + REPLAY_WORDS)
     solver_init(l, span(&mem))
     x: u32 = variable_node(l, span(&mem), u32(0))
     y: u32 = variable_node(l, span(&mem), u32(1))
@@ -100,6 +100,8 @@ main_body: (): i32 {
   failures = ite_self_check() ? { failures } | { failures + u32(512) }
   failures = sat_heap_self_check() ? { failures } | { failures + u32(1024) }
   failures = workspace_self_check() ? { failures } | { failures + u32(2048) }
+  failures = resume_self_check() ? { failures } | { failures + u32(4096) }
+  failures = resume_fairness_check() ? { failures } | { failures + u32(8192) }
   failures == u32(0) ? { i32(0) } | {
     write_u32(failures)
     write_byte(u8(10))
@@ -308,4 +310,118 @@ self_copy_words: (dest: [*]u32, source: []u32, n: u32): () {
     dest[i] = source[i]
     i = i + u32(1)
   }
+}
+
+// Compare every published bit and the exact node count with an uninterrupted
+// run. Quantum one forces pauses inside apply/ITE/restrict, not just terms.
+resume_check_problem: (l: Layout, mem: [*]u32, p: []u32): Bool {
+  expected: u32 = solve(l, mem, p)
+  nodes: u32 = node_count(l, mem)
+  bits: [512]u32
+  i: u32 = 0
+  (expected == STATUS_PROVEN || expected == STATUS_REFUTED) ? {
+    while i < problem_terms(p) {
+      bit: u32 = 0
+      while bit < term_width(p, i) {
+        bits[i * u32(64) + bit] = mem[l.bits_at + i * u32(64) + bit]
+        bit = bit + u32(1)
+      }
+      i = i + u32(1)
+    }
+  } | { }
+  quantum: u32 = 1
+  ok: Bool = true
+  while quantum <= u32(127) && ok {
+    solve_begin(l, mem)
+    ok = solve_resume(l, mem, p, u32(0)) == STATUS_RUNNING && node_count(l, mem) == u32(1)
+    status: u32 = STATUS_RUNNING
+    turns: u32 = 0
+    while status == STATUS_RUNNING && turns < u32(1000000) {
+      status = solve_resume(l, mem, p, quantum)
+      turns = turns + u32(1)
+    }
+    ok = ok && status == expected && node_count(l, mem) == nodes
+    // A completed or exhausted continuation is stable on further resumes.
+    ok = ok && solve_resume(l, mem, p, quantum) == expected
+    (expected == STATUS_PROVEN || expected == STATUS_REFUTED) ? {
+      i = u32(0)
+      while i < problem_terms(p) {
+        bit: u32 = 0
+        while bit < term_width(p, i) {
+          ok = ok && bits[i * u32(64) + bit] == mem[l.bits_at + i * u32(64) + bit]
+          bit = bit + u32(1)
+        }
+        i = i + u32(1)
+      }
+    } | { }
+    quantum = quantum == u32(1) ? { u32(2) } | { quantum == u32(2) ? { u32(7) } | { quantum == u32(7) ? { u32(127) } | { u32(128) } } }
+  }
+  ok
+}
+
+resume_self_check: (): Bool {
+  l: Layout = layout_for(u32(4096), u32(8))
+  raw: c.Ptr = malloc(c.Size((l.total + REPLAY_WORDS) * u32(4)))
+  ok: Bool = true
+  unsafe {
+    arena: Buffer[u32] = c.own[u32](raw, l.total + REPLAY_WORDS)
+    p: [192]u32 = xor_problem(true)
+    ok = resume_check_problem(l, span(&arena), view(&p))
+    p = xor_problem(false)
+    ok = ok && resume_check_problem(l, span(&arena), view(&p))
+    t: u32 = HEADER_WORDS + u32(2) * LEAF_WORDS
+    // Multiplication exercises long bit-vector scaffolds and many pauses.
+    p[t + u32(2) * TERM_WORDS + u32(1)] = BOP_MUL
+    p[t + u32(3) * TERM_WORDS + u32(1)] = BOP_MUL
+    ok = ok && resume_check_problem(l, span(&arena), view(&p))
+    // ITE with a nonconstant selector from a previously computed term.
+    p[t + u32(3) * TERM_WORDS] = KIND_ITE
+    p[t + u32(3) * TERM_WORDS + u32(3)] = u32(0)
+    p[t + u32(3) * TERM_WORDS + u32(4)] = u32(1)
+    p[t + u32(3) * TERM_WORDS + u32(5)] = u32(2)
+    ok = ok && resume_check_problem(l, span(&arena), view(&p))
+    p[t + u32(3) * TERM_WORDS] = KIND_QUANT
+    p[t + u32(3) * TERM_WORDS + u32(1)] = u32(0)
+    p[t + u32(3) * TERM_WORDS + u32(2)] = u32(1)
+    p[t + u32(3) * TERM_WORDS + u32(3)] = u32(2)
+    p[t + u32(3) * TERM_WORDS + u32(6)] = u32(0)
+    ok = ok && resume_check_problem(l, span(&arena), view(&p))
+    // Unsupported input never publishes a verdict.
+    invalid: [192]u32 = xor_problem(true)
+    invalid[t + u32(2) * TERM_WORDS + u32(1)] = NONE
+    ok = ok && resume_check_problem(l, span(&arena), view(&invalid))
+    small: Layout = layout_for(u32(2), u32(8))
+    ok = ok && resume_check_problem(small, span(&arena), view(&p))
+    // Cancellation is terminal and cannot publish a proof from partial bits.
+    solve_begin(l, span(&arena))
+    stream_cancelled = true
+    status: u32 = solve_resume(l, span(&arena), view(&p), u32(1))
+    stream_cancelled = false
+    ok = ok && status == STATUS_CANCELLED && solve_resume(l, span(&arena), view(&p), u32(4096)) == STATUS_CANCELLED
+    free(c.disown(arena))
+  }
+  ok
+}
+
+// An expensive first order must yield before monopolizing its node budget.
+resume_fairness_check: (): Bool {
+  l: Layout = layout_for(u32(4096), u32(8))
+  words: u32 = l.total + REPLAY_WORDS
+  raw0: c.Ptr = malloc(c.Size(words * u32(4)))
+  raw1: c.Ptr = malloc(c.Size(words * u32(4)))
+  ok: Bool = false
+  unsafe {
+    a0: Buffer[u32] = c.own[u32](raw0, words)
+    a1: Buffer[u32] = c.own[u32](raw1, words)
+    hard: [192]u32 = xor_problem(true)
+    t: u32 = HEADER_WORDS + u32(2) * LEAF_WORDS
+    hard[t + u32(2) * TERM_WORDS + u32(1)] = BOP_MUL
+    hard[t + u32(3) * TERM_WORDS + u32(1)] = BOP_MUL
+    easy: [192]u32 = xor_problem(true)
+    r: Race = solve_race(l, span(&a0), view(&hard), span(&a1), view(&easy), span(&a1), view(&easy), u32(2))
+    ok = r.status == STATUS_PROVEN && r.winner == u32(1) && node_count(l, span(&a0)) < l.cap
+    free(c.disown(a0))
+    free(c.disown(a1))
+  }
+  ok
 }
