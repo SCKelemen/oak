@@ -47,6 +47,8 @@ SatLayout: type = struct {
   seen_at: u32,
   phase_at: u32,
   activity_at: u32,
+  heap_at: u32,
+  heap_pos_at: u32,
   trail_at: u32,
   lim_at: u32,
   starts_at: u32,
@@ -55,6 +57,7 @@ SatLayout: type = struct {
   store_at: u32,
   watch_head_at: u32,
   watch_next_at: u32,
+  watch_block_at: u32,
   learnt_at: u32,
   probe_at: u32,
   hints_at: u32,
@@ -111,6 +114,10 @@ ST_RECORD_OVERFLOW: u32 = 30
 ST_PROBE_UNITS: u32 = 31 // units from probing: failed literals and both-polarity implications
 ST_SUBSUMED: u32 = 32
 ST_STRENGTHENED: u32 = 33
+ST_HEAP_LEN: u32 = 34
+ST_DECISIONS: u32 = 35
+ST_WATCH_VISITS: u32 = 36
+ST_BLOCK_HITS: u32 = 37
 ST_WORDS: u32 = 40
 
 // sat_layout sizes the arena for a variable count, a clause capacity
@@ -124,7 +131,9 @@ sat_layout: (vars: u32, clause_cap: u32, store_cap: u32, record_cap: u32): SatLa
   seen_at: u32 = reason_at + v
   phase_at: u32 = seen_at + v
   activity_at: u32 = phase_at + v
-  trail_at: u32 = activity_at + v
+  heap_at: u32 = activity_at + v
+  heap_pos_at: u32 = heap_at + v
+  trail_at: u32 = heap_pos_at + v
   lim_at: u32 = trail_at + v
   starts_at: u32 = lim_at + v + u32(1)
   lengths_at: u32 = starts_at + clause_cap
@@ -132,7 +141,8 @@ sat_layout: (vars: u32, clause_cap: u32, store_cap: u32, record_cap: u32): SatLa
   store_at: u32 = ids_at + clause_cap
   watch_head_at: u32 = store_at + store_cap
   watch_next_at: u32 = watch_head_at + u32(2) * v
-  learnt_at: u32 = watch_next_at + u32(2) * clause_cap
+  watch_block_at: u32 = watch_next_at + u32(2) * clause_cap
+  learnt_at: u32 = watch_block_at + u32(2) * clause_cap
   probe_at: u32 = learnt_at + v + u32(1)
   hints_at: u32 = probe_at + u32(3) * v
   hints_cap: u32 = u32(2) * v + u32(4)
@@ -149,9 +159,9 @@ sat_layout: (vars: u32, clause_cap: u32, store_cap: u32, record_cap: u32): SatLa
   SatLayout {
     vars: vars, clause_cap: clause_cap, store_cap: store_cap,
     assign_at: assign_at, level_at: level_at, reason_at: reason_at, seen_at: seen_at,
-    phase_at: phase_at, activity_at: activity_at, trail_at: trail_at, lim_at: lim_at,
+    phase_at: phase_at, activity_at: activity_at, heap_at: heap_at, heap_pos_at: heap_pos_at, trail_at: trail_at, lim_at: lim_at,
     starts_at: starts_at, lengths_at: lengths_at, ids_at: ids_at, store_at: store_at,
-    watch_head_at: watch_head_at, watch_next_at: watch_next_at,
+    watch_head_at: watch_head_at, watch_next_at: watch_next_at, watch_block_at: watch_block_at,
     learnt_at: learnt_at, probe_at: probe_at, hints_at: hints_at, hints_cap: hints_cap,
     remap_at: remap_at, lock_at: lock_at, cact_at: cact_at, touched_at: touched_at,
     occ_count_at: occ_count_at, occ_start_at: occ_start_at, occ_list_at: occ_list_at, elim_at: elim_at,
@@ -184,6 +194,7 @@ sat_watch: (l: SatLayout, mem: [*]u32, c: u32, k: u32): () {
   node: u32 = u32(2) * c + k
   mem[l.watch_next_at + node] = mem[l.watch_head_at + lit]
   mem[l.watch_head_at + lit] = node
+  mem[l.watch_block_at + node] = mem[l.store_at + mem[l.starts_at + c] + (u32(1) - k)]
 }
 
 // sat_add_learnt stores the clause in the learnt buffer (n literals) as
@@ -273,6 +284,13 @@ sat_init: (l: SatLayout, mem: [*]u32, words: []u32, budget: u32, quiet: Bool): B
     mem[l.reason_at + i] = SAT_NONE
     i = i + u32(1)
   }
+  i = u32(0)
+  while i < l.vars {
+    mem[l.heap_at + i] = i
+    mem[l.heap_pos_at + i] = i + u32(1)
+    i = i + u32(1)
+  }
+  sat_set(l, mem, ST_HEAP_LEN, l.vars)
   sat_set(l, mem, ST_ACTIVITY_INC, u32(1024))
   sat_set(l, mem, ST_CLAUSE_INC, u32(1024))
   sat_set(l, mem, ST_RESTART_LIMIT, u32(100))
@@ -512,13 +530,19 @@ sat_propagate: (l: SatLayout, mem: [*]u32): u32 {
     node: u32 = mem[l.watch_head_at + falsified]
     while node != SAT_NONE && conflict == SAT_NONE {
       next: u32 = mem[l.watch_next_at + node]
+      sat_set(l, mem, ST_WATCH_VISITS, sat_state(l, mem, ST_WATCH_VISITS) + u32(1))
+      blocker: u32 = mem[l.watch_block_at + node]
+      moved: Bool = false
+      mem[l.assign_at + blocker / u32(2)] == sat_lit_true(blocker) ? {
+        sat_set(l, mem, ST_BLOCK_HITS, sat_state(l, mem, ST_BLOCK_HITS) + u32(1))
+      } | {
       c: u32 = node / u32(2)
       k: u32 = node % u32(2)
       start: u32 = mem[l.starts_at + c]
       n: u32 = mem[l.lengths_at + c]
       other: u32 = mem[l.store_at + start + (u32(1) - k)]
+      mem[l.watch_block_at + node] = other
       other_value: u32 = mem[l.assign_at + other / u32(2)]
-      moved: Bool = false
       other_value == sat_lit_true(other) ? { } | {
         // Look for a replacement watch among the unwatched literals.
         j: u32 = 2
@@ -528,6 +552,9 @@ sat_propagate: (l: SatLayout, mem: [*]u32): u32 {
           value == u32(0) || value == sat_lit_true(candidate) ? {
             mem[l.store_at + start + j] = falsified
             mem[l.store_at + start + k] = candidate
+            // Keep both blockers equal to the other current watch. This
+            // preserves the scan engine's propagation and certificate order.
+            mem[l.watch_block_at + (node ^ u32(1))] = candidate
             // Unlink from the falsified literal's list, push onto the
             // candidate's.
             prev == SAT_NONE ? { mem[l.watch_head_at + falsified] = next } | { mem[l.watch_next_at + prev] = next }
@@ -541,12 +568,75 @@ sat_propagate: (l: SatLayout, mem: [*]u32): u32 {
           other_value == u32(0) ? { sat_enqueue(l, mem, other, c) } | { conflict = c }
         }
       }
+      }
       moved ? { } | { prev = node }
       node = next
     }
   }
   sat_set(l, mem, ST_QHEAD, qhead)
   conflict
+}
+
+// An indexed max heap, with smallest variable id breaking activity ties.
+// Positions are one-based; zero means absent. Assigned variables can stay
+// until popped, and backtracking reinserts only those already removed.
+sat_heap_before: (l: SatLayout, mem: [*]u32, a: u32, b: u32): Bool = mem[l.activity_at + a] > mem[l.activity_at + b] || (mem[l.activity_at + a] == mem[l.activity_at + b] && a < b)
+
+sat_heap_swap: (l: SatLayout, mem: [*]u32, a: u32, b: u32): () {
+  x: u32 = mem[l.heap_at + a]
+  y: u32 = mem[l.heap_at + b]
+  mem[l.heap_at + a] = y
+  mem[l.heap_at + b] = x
+  mem[l.heap_pos_at + x] = b + u32(1)
+  mem[l.heap_pos_at + y] = a + u32(1)
+}
+
+sat_heap_up: (l: SatLayout, mem: [*]u32, at: u32): () {
+  i: u32 = at
+  done: Bool = false
+  while i > u32(0) && !done {
+    p: u32 = (i - u32(1)) / u32(2)
+    sat_heap_before(l, mem, mem[l.heap_at + i], mem[l.heap_at + p]) ? {
+      sat_heap_swap(l, mem, i, p)
+      i = p
+    } | { done = true }
+  }
+}
+
+sat_heap_down: (l: SatLayout, mem: [*]u32, at: u32): () {
+  n: u32 = sat_state(l, mem, ST_HEAP_LEN)
+  i: u32 = at
+  done: Bool = false
+  while i < n / u32(2) && !done {
+    child: u32 = i * u32(2) + u32(1)
+    (child + u32(1) < n && sat_heap_before(l, mem, mem[l.heap_at + child + u32(1)], mem[l.heap_at + child])) ? { child = child + u32(1) } | { }
+    sat_heap_before(l, mem, mem[l.heap_at + child], mem[l.heap_at + i]) ? {
+      sat_heap_swap(l, mem, i, child)
+      i = child
+    } | { done = true }
+  }
+}
+
+sat_heap_insert: (l: SatLayout, mem: [*]u32, v: u32): () {
+  mem[l.heap_pos_at + v] == u32(0) ? {
+    n: u32 = sat_state(l, mem, ST_HEAP_LEN)
+    mem[l.heap_at + n] = v
+    mem[l.heap_pos_at + v] = n + u32(1)
+    sat_set(l, mem, ST_HEAP_LEN, n + u32(1))
+    sat_heap_up(l, mem, n)
+  } | { }
+}
+
+sat_heap_pop: (l: SatLayout, mem: [*]u32): u32 {
+  n: u32 = sat_state(l, mem, ST_HEAP_LEN)
+  n == u32(0) ? { SAT_NONE } | {
+    v: u32 = mem[l.heap_at]
+    sat_heap_swap(l, mem, u32(0), n - u32(1))
+    mem[l.heap_pos_at + v] = u32(0)
+    sat_set(l, mem, ST_HEAP_LEN, n - u32(1))
+    sat_heap_down(l, mem, u32(0))
+    v
+  }
 }
 
 // sat_bump raises a variable's activity, rescaling all when it grows large.
@@ -562,7 +652,15 @@ sat_bump: (l: SatLayout, mem: [*]u32, v: u32): () {
     }
     scaled: u32 = inc >> u32(16)
     sat_set(l, mem, ST_ACTIVITY_INC, scaled == u32(0) ? { u32(1) } | { scaled })
-  } | { }
+    n: u32 = sat_state(l, mem, ST_HEAP_LEN) / u32(2)
+    while n > u32(0) {
+      n = n - u32(1)
+      sat_heap_down(l, mem, n)
+    }
+  } | {
+    pos: u32 = mem[l.heap_pos_at + v]
+    pos > u32(0) ? { sat_heap_up(l, mem, pos - u32(1)) } | { }
+  }
 }
 
 // sat_mark_clause marks the variables of a clause for analysis: a variable
@@ -1393,6 +1491,7 @@ sat_backtrack: (l: SatLayout, mem: [*]u32, to: u32): () {
       mem[l.phase_at + v] = lit % u32(2)
       mem[l.assign_at + v] = u32(0)
       mem[l.reason_at + v] = SAT_NONE
+      sat_heap_insert(l, mem, v)
     }
     sat_set(l, mem, ST_TRAIL_LEN, n)
     sat_set(l, mem, ST_QHEAD, n)
@@ -1404,16 +1503,14 @@ sat_backtrack: (l: SatLayout, mem: [*]u32, to: u32): () {
 // its saved phase; false when every variable is assigned.
 sat_decide: (l: SatLayout, mem: [*]u32): Bool {
   best: u32 = SAT_NONE
-  best_activity: u32 = 0
-  v: u32 = 0
-  while v < l.vars {
-    mem[l.assign_at + v] == u32(0) && (best == SAT_NONE || mem[l.activity_at + v] > best_activity) ? {
-      best = v
-      best_activity = mem[l.activity_at + v]
-    } | { }
-    v = v + u32(1)
+  while best == SAT_NONE && sat_state(l, mem, ST_HEAP_LEN) > u32(0) {
+    candidate: u32 = sat_heap_pop(l, mem)
+    mem[l.assign_at + candidate] == u32(0) ? { best = candidate } | { }
   }
-  best != SAT_NONE ? { sat_assume(l, mem, u32(2) * best + mem[l.phase_at + best]) } | { }
+  best != SAT_NONE ? {
+    sat_set(l, mem, ST_DECISIONS, sat_state(l, mem, ST_DECISIONS) + u32(1))
+    sat_assume(l, mem, u32(2) * best + mem[l.phase_at + best])
+  } | { }
   best != SAT_NONE
 }
 

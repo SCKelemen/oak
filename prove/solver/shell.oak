@@ -347,18 +347,23 @@ race_views: (l: Layout, m0: [*]u32, w0: []u32, n0: u32, m1: [*]u32, w1: []u32, n
 }
 
 // race_in_oak owns the tables and built buffers around race_views.
-race_in_oak: (l: Layout, lw: Lower, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, n0: u32, n1: u32, n2: u32, variants: u32, out: [*]u32): () {
+race_in_oak: (l: Layout, lw: Lower, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, n0: u32, n1: u32, n2: u32, variants: u32, out: [*]u32): () {
+  words1: u32 = variants > u32(1) ? { l.total } | { u32(1) }
+  words2: u32 = variants > u32(2) ? { l.total } | { u32(1) }
+  t0: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  t1: c.Ptr = malloc(c.Size(words1 * u32(4)))
+  t2: c.Ptr = malloc(c.Size(words2 * u32(4)))
   unsafe {
     tab0: Buffer[u32] = c.own[u32](t0, l.total)
-    tab1: Buffer[u32] = c.own[u32](t1, l.total)
-    tab2: Buffer[u32] = c.own[u32](t2, l.total)
+    tab1: Buffer[u32] = c.own[u32](t1, words1)
+    tab2: Buffer[u32] = c.own[u32](t2, words2)
     built0: Buffer[u32] = c.own[u32](b0, lw.built_total)
     built1: Buffer[u32] = c.own[u32](b1, lw.built_total)
     built2: Buffer[u32] = c.own[u32](b2, lw.built_total)
     race_views(l, span(&tab0), view(&built0), n0, span(&tab1), view(&built1), n1, span(&tab2), view(&built2), n2, variants, out)
-    r0: c.Ptr = c.disown(tab0)
-    r1: c.Ptr = c.disown(tab1)
-    r2: c.Ptr = c.disown(tab2)
+    free(c.disown(tab0))
+    free(c.disown(tab1))
+    free(c.disown(tab2))
     r3: c.Ptr = c.disown(built0)
     r4: c.Ptr = c.disown(built1)
     r5: c.Ptr = c.disown(built2)
@@ -368,9 +373,55 @@ race_in_oak: (l: Layout, lw: Lower, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, b0: c.Ptr, 
 // Counts of the rows: decided, refuted, open.
 Counts: type = struct { decided: u32, refuted: u32, open: u32, failing: u32 }
 
-// decide_one decides one theorem (its raw function index) and prints its
-// row: the kind it printed.
-decide_one: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, rx: []u32, raw: Raw, fi: u32, cases: u32, budget: u32): u32 {
+// Small races have small tables and reset costs. Retry only an exhausted
+// race, increasing fourfold up to the caller's exact maximum. Terms are
+// sized from the lowered graph. Unsupported input never gains a verdict.
+// Diagnostic words 517..519 report cleared table entries, peak allocated
+// BDD words, and attempts. They are outside the 512-bit witness region.
+race_bounded: (lw: Lower, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, n0: u32, n1: u32, n2: u32, variants: u32, budget: u32, out: [*]u32): () {
+  terms: u32 = 0
+  unsafe {
+    built: Buffer[u32] = c.own[u32](b0, lw.built_total)
+    terms = problem_terms(view(&built))
+    released: c.Ptr = c.disown(built)
+  }
+  cap: u32 = budget < u32(4096) ? { budget } | { u32(4096) }
+  done: Bool = false
+  attempts: u32 = 0
+  cleared: u32 = 0
+  while !done {
+    l: Layout = layout_for(cap, terms)
+    race_in_oak(l, lw, b0, b1, b2, n0, n1, n2, variants, out)
+    attempts = attempts + u32(1)
+    cleared = cleared + (l.umask + l.cmask + u32(2)) * variants
+    out[u32(517)] = cleared
+    out[u32(518)] = l.total * variants + u32(3) - variants
+    out[u32(519)] = attempts
+    done = out[u32(0)] != STATUS_EXCEEDED || cap >= budget
+    !done ? { cap = cap > budget / u32(4) ? { budget } | { cap * u32(4) } } | { }
+  }
+  solver_stats_env() ? {
+    // c bdd <allocated bytes> <table clears> <attempts> <winning nodes>
+    write_byte(u8(99))
+    write_byte(u8(32))
+    write_byte(u8(98))
+    write_byte(u8(100))
+    write_byte(u8(100))
+    write_byte(u8(32))
+    write_u32(out[u32(518)] * u32(4))
+    write_byte(u8(32))
+    write_u32(out[u32(517)])
+    write_byte(u8(32))
+    write_u32(out[u32(519)])
+    write_byte(u8(32))
+    write_u32(out[u32(2)])
+    write_byte(u8(10))
+  } | { }
+
+}
+
+// decide_one decides one theorem and prints its row.
+decide_one: (le: Lem, ew: [*]u32, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, rx: []u32, raw: Raw, fi: u32, cases: u32, budget: u32): u32 {
   name: u32 = rf_word(rx, raw, fi, u32(0))
   rname: u32 = rstr(le, ew, rx, raw, name)
   kind: u32 = ROW_OPEN
@@ -385,7 +436,7 @@ decide_one: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr
   } | {
     unsafe {
       obuf: Buffer[u32] = c.own[u32](out_raw, ser.out_total)
-      kind = decide_serialized(le, ew, l, lw, ser, ser_raw, work_raw, b0, b1, b2, t0, t1, t2, rx, raw, name, view(&obuf), n_syn, cases, budget)
+      kind = decide_serialized(le, ew, lw, ser, ser_raw, work_raw, b0, b1, b2, rx, raw, name, view(&obuf), n_syn, cases, budget)
       released_o: c.Ptr = c.disown(obuf)
     }
   }
@@ -393,7 +444,7 @@ decide_one: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr
   kind
 }
 
-decide_serialized: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, rx: []u32, raw: Raw, name: u32, whole: []u32, n_syn: u32, cases: u32, budget: u32): u32 {
+decide_serialized: (le: Lem, ew: [*]u32, lw: Lower, ser: Ser, ser_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, rx: []u32, raw: Raw, name: u32, whole: []u32, n_syn: u32, cases: u32, budget: u32): u32 {
   sx: []u32 = subslice(whole, u32(0), n_syn)
   witness: [512]u32
   dom: [256]u64
@@ -436,17 +487,16 @@ decide_serialized: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw
     ap_close(le, ew)
   } | {
     // The bit level: the other orders when they apply, then the race.
-    scratch: [512]u32
-    n1: u32 = lower_in_oak(lw, work_raw, b1, sx, budget, u32(1), span(&scratch), false)
-    n2: u32 = lower_in_oak(lw, work_raw, b2, sx, budget, u32(2), span(&scratch), false)
+    n1: u32 = reorder_in_oak(lw, work_raw, b0, b1, n0, sx, ORDER_BLOCKS)
+    n2: u32 = reorder_in_oak(lw, work_raw, b0, b2, n0, sx, ORDER_CONTROL)
     has1: Bool = n1 < u32(0x80000000)
     has2: Bool = n2 < u32(0x80000000)
     // Variants are packed in order: the second slot takes order 2 when 1 does not apply.
     variants: u32 = u32(1) + (has1 ? { u32(1) } | { u32(0) }) + (has2 ? { u32(1) } | { u32(0) })
     out: [520]u32
     in_order: Bool = has1 || !has2
-    in_order ? { race_in_oak(l, lw, t0, t1, t2, b0, b1, b2, n0, has1 ? { n1 } | { n0 }, has2 ? { n2 } | { n0 }, variants, span(&out)) } | {
-      race_in_oak(l, lw, t0, t1, t2, b0, b2, b1, n0, n2, n0, variants, span(&out))
+    in_order ? { race_bounded(lw, b0, b1, b2, n0, has1 ? { n1 } | { n0 }, has2 ? { n2 } | { n0 }, variants, budget, span(&out)) } | {
+      race_bounded(lw, b0, b2, b1, n0, n2, n0, variants, budget, span(&out))
     }
     status: u32 = out[u32(0)]
     // A refutation stands only where the evaluation confirms it
@@ -513,6 +563,17 @@ decide_serialized: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw
     } }
   } } }
   kind
+}
+
+// Optional performance diagnostics, emitted as comment rows.
+solver_stats_env: (): Bool {
+  p: c.Ptr = c_getenv(c.cstr("OAK_SOLVER_STATS\0"))
+  set: Bool = false
+  unsafe {
+    value: []u8 = c.borrow_string(p)
+    set = len(value) > u32(0)
+  }
+  set
 }
 
 // trace_env: whether OAK_PROVE_TRACE is set.
@@ -656,7 +717,7 @@ words_of_prefix: (bytes: []u8, words: [*]u32, n: u32): () {
 // prove_rows decides every theorem of the parsed file into the row table,
 // folds the invariant obligations, explores the protocols, prints the rows
 // and the summary: the exit status.
-prove_rows: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, t0: c.Ptr, t1: c.Ptr, t2: c.Ptr, ex_raw: c.Ptr, rx: []u32, raw: Raw, cases: u32, budget: u32, source: []u8, source_len: u32, witness_on: Bool, compiler: []u8, wsrc: []u8, wbin: []u8): i32 {
+prove_rows: (le: Lem, ew: [*]u32, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, work_raw: c.Ptr, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, ex_raw: c.Ptr, rx: []u32, raw: Raw, cases: u32, budget: u32, source: []u8, source_len: u32, witness_on: Bool, compiler: []u8, wsrc: []u8, wbin: []u8): i32 {
   le_init(le, ew, raw)
   set_lst(le, ew, LN_NROWS, u32(0))
   theorems: u32 = 0
@@ -664,7 +725,7 @@ prove_rows: (le: Lem, ew: [*]u32, l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr
   while fi < raw.nfuncs {
     (rf_word(rx, raw, fi, u32(5)) & u32(2)) != u32(0) ? {
       theorems = theorems + u32(1)
-      kind: u32 = decide_one(le, ew, l, lw, ser, ser_raw, out_raw, work_raw, b0, b1, b2, t0, t1, t2, rx, raw, fi, cases, budget)
+      kind: u32 = decide_one(le, ew, lw, ser, ser_raw, out_raw, work_raw, b0, b1, b2, rx, raw, fi, cases, budget)
     } | { }
     fi = fi + u32(1)
   }
@@ -720,7 +781,6 @@ prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32, lean_path: []u
   rx: []u32 = subslice(arena, u32(0), n_raw)
   raw: Raw = raw_layout(rx)
   lowered_terms: u32 = 131072
-  l: Layout = layout_for(budget, lowered_terms)
   lw: Lower = lower_layout(lowered_terms, u32(64))
   ser: Ser = ser_layout(u32(65536), u32(131072))
   ser_raw: c.Ptr = malloc(c.Size(ser.total * u32(4)))
@@ -729,9 +789,6 @@ prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32, lean_path: []u
   b0: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
   b1: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
   b2: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
-  t0: c.Ptr = malloc(c.Size(l.total * u32(4)))
-  t1: c.Ptr = malloc(c.Size(l.total * u32(4)))
-  t2: c.Ptr = malloc(c.Size(l.total * u32(4)))
   le: Lem = lem_layout()
   le_raw: c.Ptr = malloc(c.Size(le.total * u32(4)))
   ex: Exp = exp_layout()
@@ -739,7 +796,7 @@ prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32, lean_path: []u
   code: i32 = 0
   unsafe {
     rows_buf: Buffer[u32] = c.own[u32](le_raw, le.total)
-    code = prove_rows(le, span(&rows_buf), l, lw, ser, ser_raw, out_raw, work_raw, b0, b1, b2, t0, t1, t2, ex_raw, rx, raw, cases, budget, source, source_len, witness_on, compiler, wsrc, wbin)
+    code = prove_rows(le, span(&rows_buf), lw, ser, ser_raw, out_raw, work_raw, b0, b1, b2, ex_raw, rx, raw, cases, budget, source, source_len, witness_on, compiler, wsrc, wbin)
     released_rows: c.Ptr = c.disown(rows_buf)
   }
   len(lean_path) > u32(1) ? {
@@ -761,9 +818,6 @@ prove_tables: (arena: []u32, n_raw: u32, cases: u32, budget: u32, lean_path: []u
   } | { }
   free(ex_raw)
   free(le_raw)
-  free(t0)
-  free(t1)
-  free(t2)
   free(b0)
   free(b1)
   free(b2)
