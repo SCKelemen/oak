@@ -137,6 +137,9 @@ func memoryAt(log []*spanWrite, index, base *term) *term {
 	}
 	type relation struct{ known, equal bool }
 	relations := map[*term]relation{}
+	bounds := map[*term]indexBounds{}
+	var readBounds indexBounds
+	boundsReady := false
 	relate := func(other *term) (bool, bool) {
 		if r, ok := relations[other]; ok {
 			return r.known, r.equal
@@ -146,6 +149,16 @@ func memoryAt(log []*spanWrite, index, base *term) *term {
 			known, equal = true, index.value&mask(32) == other.value&mask(32)
 		} else if form != nil {
 			known, equal = linearFormsRelate(form, other.linearAtMemo(32, memo, seen))
+		}
+		if !known {
+			if !boundsReady {
+				readBounds, boundsReady = boundsAt(index, 32, bounds), true
+			}
+			// The full word cannot be disjoint from any nonempty interval.
+			// Avoid walking every write's DAG for an unbounded read.
+			if (readBounds.lo != 0 || readBounds.hi != mask(32)) && readBounds.disjoint(boundsAt(other, 32, bounds)) {
+				known, equal = true, false
+			}
 		}
 		relations[other] = relation{known, equal}
 		return known, equal

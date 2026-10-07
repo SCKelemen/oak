@@ -478,6 +478,21 @@ machine-code backend.
 `oak build` checks theorems like any declaration and does not run the
 ladder; a theorem is never a build error for being open.
 
+Before bit blasting, the Go term lowering skips a memory write when its
+32-bit index is provably disjoint from the read. In addition to modular
+linear congruences, it uses inclusive unsigned intervals derived from known
+bits, non-wrapping addition/subtraction, and conditional joins. Width
+adaptation retains an interval only when it fits; uncertain wraparound
+falls back to known bits or the full word. The analysis is memoized per
+read and does not infer bounds from a span length or a guard. Existing
+local-array owners keep separate buffers distinct; derived views retain
+their owner's root and offset, so overlapping slices still alias.
+`Oak.IndexBounds` proves the interval arithmetic and guarded-write removal
+laws. Exhaustive small-word evaluation, word-boundary cases, and ARM64/RV64
+verifier fixtures check the Go implementation; the laws are not a formal
+refinement of that implementation. This optimization does not change the
+standalone Oak lowering or the certificate acceptance rules.
+
 The bit-level rung is decided by the solver written in Oak
 (`prove/solver/bdd.oak`, §7) by default: a theorem the exhaustive decider
 does not reach is lowered to the decider's terms and serialized under
