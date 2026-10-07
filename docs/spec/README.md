@@ -77,6 +77,7 @@ Use these terms precisely:
 - `93-simd.md` — portable SIMD vectors and architecture vector instruction functions
 - `94-assembler.md` — typed abstract assembly units and register types (normative design)
 - [94-arm64-control-flow-proofs.md](94-arm64-control-flow-proofs.md) — Boolean terminator layout, decoded branch transitions, and source-to-object witnesses
+- [94-arm64-condition-provenance.md](94-arm64-condition-provenance.md) — decoded CMP/CSET provenance composed with Boolean branch routing
 - [94-rv64-compressed-control-proofs.md](94-rv64-compressed-control-proofs.md) — compressed RV64 branch/jump encoding proofs and production evidence
 - [94-rv64-relaxation-proofs.md](94-rv64-relaxation-proofs.md) — shrinking layout, range preservation, and relaxation termination proofs
 - [94-rv64-materialization-proofs.md](94-rv64-materialization-proofs.md) — signed literal expansion, register semantics, and emitted-byte correspondence

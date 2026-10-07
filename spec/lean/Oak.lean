@@ -33,6 +33,7 @@ import Oak.AArch64CompareBranchEncoding
 import Oak.AArch64ConditionalBranch
 import Oak.AArch64BranchExecution
 import Oak.AArch64ControlFlow
+import Oak.AArch64ConditionProvenance
 import Oak.AArch64BreakpointEncoding
 import Oak.AArch64Barrier
 import Oak.AArch64Stage2Maintenance

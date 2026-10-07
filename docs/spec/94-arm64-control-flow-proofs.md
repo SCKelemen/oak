@@ -46,6 +46,10 @@ the low 32 bits of the selected register and tests nonzero; register 31 has
 the existing zero-register interpretation. Relating that register value to
 the source Bool is an explicit precondition of compiler-level composition.
 
+For full-width register comparisons, that precondition is now established by
+[comparison condition provenance](94-arm64-condition-provenance.md): the
+decoded CMP/CSET prefix computes the Bool before this routing theorem runs.
+
 ## Production correspondence
 
 `machine/aarch64_control_flow_lean_test.go` calls the actual terminator
@@ -80,7 +84,7 @@ failure in the required-oracle workflow.
 
 This is not a universal proof of the Go compiler. The model theorem is
 universal; the correspondence between production and model is checked on
-the stated finite corpus. Compiler transformations, condition computation,
+the stated finite corpus. Compiler transformations, general condition computation,
 register allocation, spill loads, edge copies, body effects, block-address
 uniqueness, and general whole-CFG simulation remain separate obligations.
 The theorem addresses empty-copy Boolean terminators; it does not claim
