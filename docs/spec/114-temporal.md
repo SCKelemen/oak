@@ -168,8 +168,8 @@ covers that conversion path.
 its callees. `TestLeanStdlibExtract/time` checks drift. The legacy
 `offset_datetime_to_instant` bridge is excluded because checked-i64 intrinsics
 are outside the current extractor subset; it is covered by runtime tests.
-The temporal proof entry point, `TimeCodecLaws.lean`, imports the calendar,
-decimal, and buffer layers:
+The temporal proof entry point, `TimeRFC3339RoundtripLaws.lean`, imports the
+calendar, decimal, fractional-clock, offset, and buffer layers:
 
 - Constructor acceptance/rejection, civil structural roundtrip, invalid-input
   rejection, and formatter error atomicity are kernel-checked over the extraction.
@@ -203,6 +203,21 @@ decimal, and buffer layers:
   is kernel checked; date/local-datetime validity inherits the Gregorian native
   certificates through ordinal/week parsing. These are valid-result contracts,
   not proofs of grammar soundness or completeness.
+- `TimeFractionLaws.lean` and `TimeFractionTrimLaws.lean` prove decimal
+  reconstruction and trailing-zero trimming for every valid nanosecond value.
+  These arithmetic arguments are kernel checked. `TimeCopyLaws.lean` proves
+  exact prefix copying and sufficient-fuel completion.
+- `TimeRoundtripLaws.lean`, `TimeTimestampLaws.lean`, and
+  `TimeRFC3339RoundtripLaws.lean` prove universal canonical round trips for
+  valid clocks, local datetimes, and RFC3339 offset datetimes. Destinations
+  must have at least 18, 29, or 35 bytes respectively, and fewer than 2^32 bytes
+  so the extracted UInt32 length is exact. Forty units of extraction fuel
+  suffice. Successful lengths are respectively 8–18, 19–29, and 20–35 bytes;
+  the entire unused suffix and destination size are preserved. RFC3339 returns
+  the original offset kind, keeping `Z`, `+00:00`, and `-00:00` distinct.
+  These composition proofs inherit the decimal/calendar native trust noted
+  above; clock field bounds and numeric offset reconstruction also use
+  `bv_decide` with the pinned native LRAT checker.
 - `TimeBufferLaws.lean` proves error atomicity and success frame properties for
   **all six new formatters**, for arbitrary destinations and extraction fuel.
   Every returned `Err` preserves the entire destination. Every returned `Ok n`
@@ -219,14 +234,15 @@ extrema. The day-addition oracle uses unbounded integers to avoid reproducing
 an overflow bug. This corpus checks executable correspondence on these inputs;
 it is not a proof of extraction or compiler correctness.
 
-`TestLeanTimeCodecFaithful` runs **1,320 shared checks** across the same three
+`TestLeanTimeCodecFaithful` runs **1,782 shared checks** across the same three
 execution paths. It compares every parsed field, exact error constructors,
 canonical text, returned lengths, and entire destination arrays. Go supplies
 independent civil/calendar spellings; a separate unsigned-magnitude oracle
 supplies period/duration spellings, including signed minima. Explicit cases
 cover the declared profile's restrictions instead of assuming Go accepts the
 same grammar. Coverage includes basic/ordinal/week dates, every supported
-fractional width, comma ISO fractions, trailing-zero removal, all three RFC
+fractional width, leading zeros down to one nanosecond, comma ISO fractions,
+every trailing-zero trim boundary, all three RFC
 zero-offset kinds, malformed/non-ASCII/NUL input, signed limits, and every
 capacity from zero through two bytes beyond each documented maximum. The
 capacity sweep uses maximum-width values; other cases exercise shorter text
@@ -245,10 +261,10 @@ Open release gates, explicitly not implied by successful tests or extraction:
    ordinal/week conversion, the remaining calendar success laws, and duration
    carry arithmetic.
 2. Prove parser grammar soundness/completeness and checked-component overflow
-   equivalence. Extend canonical round-trip proofs beyond dates to clocks,
-   local/RFC datetimes, periods, and durations. Establish successful prefix
-   contents, all output bounds, and sufficient-fuel termination for the remaining
-   formatters, including date round trips through larger destinations. Extend
+   equivalence. Extend canonical round-trip proofs to periods and durations. Establish
+   successful prefix contents, output bounds, and sufficient-fuel termination
+   for those remaining formatters, and date round trips through larger
+   destinations. Extend
    shared executable correspondence to civil-duration arithmetic.
 3. Extend extraction/refinement through checked instant conversion. Preserve
    proofs through compilation, ABI, instruction encoding, and linking on both

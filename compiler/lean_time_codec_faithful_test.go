@@ -299,6 +299,10 @@ func codecCorpus() []codecCase {
 	// Each supported fractional width, zero trimming, comma ISO fractions, and
 	// every zero-offset metadata spelling. Go is used only within its shared profile.
 	fractions := []string{"", ".0", ".000000000", ".1", ".12", ".123", ".1234", ".12345", ".123456", ".1234567", ".12345678", ".123456789", ".120000000"}
+	// Leading zeros and each trailing-zero trim boundary, down to one nanosecond.
+	for n := 1; n < 100000000; n *= 10 {
+		fractions = append(fractions, fmt.Sprintf(".%09d", n), fmt.Sprintf(".%09d", n+1))
+	}
 	for _, f := range fractions {
 		d, e := time.Parse("2006-01-02T15:04:05.999999999", "2024-02-29T23:59:59"+f)
 		if e != nil {

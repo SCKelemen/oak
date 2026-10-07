@@ -1026,7 +1026,8 @@ collections, `strings`, `json`, `hash`, `math`, `mx`, `url`, `path`,
 implementation tests against sequence models, Go's standard library,
 conformance files, or reference implementations; those are not refinement
 proofs. The temporal calendar adds exhaustive native Lean conversion checks,
-checked-arithmetic laws, universal canonical date round trips, valid-result
+checked-arithmetic laws, universal canonical date/time/local-datetime/RFC3339
+round trips with fractional seconds and offset-kind preservation, valid-result
 contracts for date/time/local-datetime parsers, and kernel-checked buffer frame
 contracts for all six ISO/RFC formatters. Separate calendar and codec corpora
 compare compiled Oak, interpreted Oak, and Lean on identical cases. The proofs'
