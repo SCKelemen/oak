@@ -1343,7 +1343,10 @@ component (`P1D` is distinct from `PT24H`). `parse_iso_duration` admits only the
 `PT` units that have an exact elapsed length. Their formatters use integer-only
 nanosecond precision, including the minimum signed duration. Month addition
 requires an explicit reject-or-clamp policy. Period addition applies months,
-then days, then the time component.
+then days, then the time component. Extracted-parser proofs establish bounded
+component accumulation, integer/fraction scanner arithmetic invariants, and
+sign coherence of successful period parses. Full period/duration text round-trip
+proofs remain open.
 
 `parse_rfc3339_datetime` and `format_rfc3339_datetime` preserve `Z`, `+00:00`, and
 `-00:00` as distinct offset kinds, including RFC 9557's update to their meaning.

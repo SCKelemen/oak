@@ -234,7 +234,26 @@ decimal, fractional-clock, offset, component-arithmetic, and buffer layers:
   Unit decomposition and prefix bounds are kernel checked; signed bit-vector
   conversion facts use the pinned native LRAT checker. These are component
   contracts, not yet complete period/duration text round-trip proofs. The
-  parser-wide loop invariants and decimal writer/reader composition remain open.
+  decimal writer/reader composition and grammar contracts remain open.
+- `TimeParserBoundsLaws.lean` proves the actual extracted main loop preserves
+  separate month/day and nanosecond limits, for arbitrary input and any fuel
+  that returns a state. Unit selection supplies positive factors; accepted
+  updates invoke the exact overflow contract, while rejected updates preserve
+  the accumulators. `TimeParserResultLaws.lean` connects this invariant to every
+  successful shared component parse and its sign-dependent magnitude limits.
+  Both modules are kernel checked without native certificates.
+- `TimeParserNumericLaws.lean` proves the actual integer scanner's accumulator
+  never decreases and its overflow flag is sticky. Its accepted decimal steps
+  use exact arithmetic. The fraction scanner maintains a weighted scale bound,
+  with exact multiply/add steps, at most nine digits, and a result strictly
+  below one second from its initial state. All these facts are kernel checked,
+  including the input digit range. They do not yet prove decimal text-value
+  correspondence, input-position bounds, or sufficient-fuel termination.
+- `TimeParserSignLaws.lean` proves every successful period parse satisfies the
+  formatter's uniform-sign precondition, including signed minima. The loop and
+  result composition use the bounds above; the final signed machine-conversion
+  fact uses the pinned native LRAT checker. This does not establish formatter
+  success, parser grammar completeness, or a serialized-text round trip.
 - `TimeBufferLaws.lean` proves error atomicity and success frame properties for
   **all six new formatters**, for arbitrary destinations and extraction fuel.
   Every returned `Err` preserves the entire destination. Every returned `Ok n`
@@ -280,8 +299,9 @@ Open release gates, explicitly not implied by successful tests or extraction:
    proofs if the native-evaluator trust boundary is unacceptable. Prove
    ordinal/week conversion, the remaining calendar success laws, and duration
    carry arithmetic.
-2. Prove parser grammar soundness/completeness and the loop invariants that
-   establish the component guards' preconditions throughout parsing. Extend
+2. Prove parser grammar soundness/completeness, input-position bounds,
+   sufficient-fuel termination, and exact decimal text-value correspondence.
+   The numeric scanner and main accumulator bounds are now established. Extend
    canonical text round-trip proofs to periods and durations. Establish
    successful prefix contents, output bounds, and sufficient-fuel termination
    for those remaining formatters, and date round trips through larger
