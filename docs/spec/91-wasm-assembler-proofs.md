@@ -205,12 +205,17 @@ holes or custom axioms. Finite Go/Oak/Lean agreement is not universal implementa
 refinement. The universal claims are for the named models and, where stated,
 the mechanically extracted Oak definitions under the extraction boundary above.
 
+The [decoded execution layer](91-wasm-execution.md) now gives typed operand/local
+semantics for 49 straight-line scalar forms and composes execution through the
+actual assembled bytes. Structured control and calls are explicitly unsupported
+in that model; byte correctness still does not imply module validity.
+
 ## Remaining parity obligations
 
 | Boundary | Required next work |
 | --- | --- |
 | Implementation refinement | Prove Go encoder and exact module parser/type-validator correspondence; discharge compiler/extractor correspondence beyond the stated modeling boundary |
-| Decoded semantics | Model values, operand/local/control stacks, calls, traps and module instantiation; connect every admitted numeric/control form |
+| Decoded semantics | Extend the proved byte-to-execution bridge and 49-form operand/local/trap model with control stacks, branches, calls, returns and module instantiation |
 | Compiler correctness | Source/OptIR-to-decoded-Wasm refinement, edge-copy and structured/dispatch control proofs, certificate identity and authoritative admission |
 | Language/library coverage | Narrow integers, conversions and checked shifts; memory/aggregates/globals; explicit float/SIMD/atomic profiles; corresponding stdlib coverage |
 | Modules and environment | Oak module writer and symbolic linking, layout/index/section-length proofs, declared browser/WASI imports and runtime contracts |

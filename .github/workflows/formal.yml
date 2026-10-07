@@ -137,6 +137,12 @@ jobs:
           OAK_REQUIRE_WASM_TESTS: '1'
         run: go test ./compiler -run '^TestE2ESelfHostedWasm' -count=1 -v
 
+      - name: Check decoded Wasm execution against Lean and independent engine
+        env:
+          OAK_REQUIRE_WASM_LEAN: '1'
+          OAK_REQUIRE_WASM_TESTS: '1'
+        run: go test ./compiler -run '^TestWasmExecution(Lean|Engine)$' -count=1 -timeout=20m -v
+
       - name: Check Wasm LEB production decisions against Lean
         env:
           OAK_REQUIRE_WASM_LEAN: '1'
