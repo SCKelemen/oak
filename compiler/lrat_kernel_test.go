@@ -1,12 +1,15 @@
 package compiler
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SCKelemen/oak/internal/lrat"
 )
@@ -42,6 +45,10 @@ func TestLRATKernelRawWords(t *testing.T) {
 	// (x) / (!x), followed by the empty-clause derivation.
 	valid := record(1, []uint32{1, 1, 1, 0}, []uint32{0, 3, 0, 2, 1, 2}, 2)
 	add("unit conflict", valid, 0)
+	add("successive additions", record(2, []uint32{2, 1, 3, 1, 0, 1, 2},
+		[]uint32{0, 4, 1, 3, 2, 1, 2, 0, 5, 0, 2, 4, 3}, 3), 0)
+	add("refusal after successful addition", record(2, []uint32{2, 1, 3, 1, 0, 1, 2},
+		[]uint32{0, 4, 1, 3, 2, 1, 2, 0, 5, 0, 2, 4, 31}, 3), -1)
 	add("initial empty", record(0, []uint32{0}, nil, 1), 0)
 	add("empty deleted after derivation", record(1, []uint32{1, 1, 1, 0}, []uint32{0, 3, 0, 2, 1, 2, 1, 3, 1, 3}, 2), 0)
 	add("no empty", record(1, []uint32{1, 1}, nil, 1), -1)
@@ -98,7 +105,7 @@ check_case: (words: []u32, out_n: u32): u32 {
   lengths: [32]u32
   alive: [32]u8
   store: [128]u32
-  assign: [8]u8
+  assign: [8]u8 = [8]u8{0, 0, 0, 0, 0, 0, 0, 0}
   trail: [8]u32
   out: [4]u32 = [4]u32{99, 99, 99, 99}
   status: u32 = 0
@@ -108,8 +115,16 @@ check_case: (words: []u32, out_n: u32): u32 {
   } | { }
   assert(out[3] == 99)
   out_n < 3 ? { assert(out[0] == 99 && out[1] == 99 && out[2] == 99) } | { assert(out[0] == status) }
+  // Every completed RUP call must undo scratch, even on refusal. The
+  // undeclared suffix starts zero and must never be touched either.
+  v: u32 = 0
+  while v < 8 {
+    assert(assign[v] == 0)
+    v = v + 1
+  }
   status
 }
+
 main: (): i32 {
 ` + fmt.Sprintf("data: [%d]u32 = %s\noffsets: [%d]u32 = %s\nsizes: [%d]u32 = %s\nouts: [%d]u32 = %s\n", len(data), oakU32Array(data), len(offsets), oakU32Array(offsets), len(sizes), oakU32Array(sizes), len(outs), oakU32Array(outs)) + `
   all: []u32 = view(&data)
@@ -175,5 +190,51 @@ func lratKernelExtract(t *testing.T, module string, roots []string) {
 	}
 	if string(committed) != extracted {
 		t.Fatalf("%s extraction drift; regenerate with OAK_LEAN_EXTRACT_UPDATE=1", module)
+	}
+}
+
+func TestLRATKernelTrailSoundness(t *testing.T) {
+	lake, err := exec.LookPath("lake")
+	if err != nil {
+		if os.Getenv("OAK_REQUIRE_LRAT_TRAIL_LEAN") != "" {
+			t.Fatal("lake is required for the production RUP scratch-restoration gate")
+		}
+		t.Skip("lake not on PATH; formal CI requires RUP scratch restoration")
+	}
+	source := `import Oak.LRATTrail
+open Oak.LRATRUP
+example (fuel : Nat) (words : Array UInt32)
+    (target_at target_n hints_at hints_n : UInt32) (starts lengths : Array UInt32)
+    (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8) (trail : Array UInt32)
+    (variables max_id status : UInt32) (starts' lengths' : Array UInt32)
+    (alive' : Array UInt8) (store' : Array UInt32) (assign' : Array UInt8) (trail' : Array UInt32)
+    (assignCapacity : variables.toNat ≤ assign.size) (trailCapacity : variables.toNat ≤ trail.size)
+    (zero : ∀ v, v < variables.toNat → assign.getD v 0 = 0)
+    (valid : LiveVariables starts lengths alive store variables max_id)
+    (run : lrat_rup words target_at target_n hints_at hints_n starts lengths alive store assign trail variables max_id fuel =
+      some (status, starts', lengths', alive', store', assign', trail')) :
+    assign'.size = assign.size ∧ trail'.size = trail.size ∧
+      ∀ v, v < variables.toNat → assign'.getD v 0 = 0 :=
+  production_rup_restores_zero fuel words target_at target_n hints_at hints_n starts lengths alive store assign trail
+    variables max_id status starts' lengths' alive' store' assign' trail' assignCapacity trailCapacity zero valid run
+#print axioms Oak.LRATRUP.production_rup_restores_zero
+#print axioms Oak.LRATChecker.production_addition_state
+`
+	path := filepath.Join(t.TempDir(), "LRATTrailContract.lean")
+	if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	for _, args := range [][]string{{"build", "Oak.LRATTrail"}, {"env", "lean", path}} {
+		cmd := exec.CommandContext(ctx, lake, args...)
+		cmd.Dir = filepath.Join("..", "spec", "lean")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Lean RUP scratch restoration: %v (%v)\n%s", err, ctx.Err(), out)
+		}
+		if strings.Contains(string(out), "sorryAx") {
+			t.Fatalf("RUP scratch restoration depends on a proof hole:\n%s", out)
+		}
 	}
 }

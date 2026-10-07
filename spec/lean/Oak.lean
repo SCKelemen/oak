@@ -239,6 +239,7 @@ import Oak.LRATRUPSoundness
 import Oak.LRATCheckerState
 import Oak.LRATRUPValidity
 import Oak.LRATStore
+import Oak.LRATTrail
 import Oak.LRATFormulaBinding
 import Oak.ClauseAgreement
 import Oak.SATModel

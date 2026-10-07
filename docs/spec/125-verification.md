@@ -217,8 +217,7 @@ target negation, the duplicate-aware clause scan, and the hint loop; it does
 not assume a supplied abstract propagation derivation. The scan's candidate
 counter is proved non-wrapping using its progress invariant.
 The full word-parser/database refinement must still establish these
-preconditions on every call, including preservation of tracked assignments
-for rollback, and compose acceptance with formula binding. Allocation/FFI
+preconditions on every call and compose acceptance with formula binding. Allocation/FFI
 semantics, extraction correctness, and compiled ARM64/RV64 executables remain
 separate kernel obligations.
 
@@ -247,12 +246,22 @@ also establishes those invariants. The production initial-clause framing
 guards imply the source/destination bounds and non-wrapping arithmetic used
 by these proofs.
 
+`Oak.LRATTrail` derives trail coverage from the actual target and hint loops.
+Each fresh assignment appends a distinct declared variable, which establishes
+trail capacity and rules out counter wrap. `production_rup_restores_zero`
+then proves every completed RUP call restores zero declared-variable scratch,
+including refused calls, while preserving assignment and trail sizes.
+`production_addition_state` combines this result with the store and
+live-variable invariants required by the next addition. Neither theorem
+assumes trail coverage. The dedicated LRAT CI gate checks these proofs for
+proof holes and runs the raw-record corpus with scratch-cleanup assertions,
+including successive additions and refusal after a successful addition.
+
 These are component proofs of the extracted production loops and writes;
-the caller's capacities, used-prefix invariant, and (for RUP entailment)
-zero assignment scratch remain explicit hypotheses. The outer initial-clause
-traversal, tracked-assignment preservation between RUP calls, complete
-step-parser refinement, and full-record/formula-binding composition are
-still open.
+the caller's capacities, used-prefix invariant, and initial zero assignment
+scratch remain explicit hypotheses. The outer initial-clause traversal,
+complete step-parser refinement, and full-record/formula-binding composition
+are still open.
 
 At the clause
 boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists for raw
