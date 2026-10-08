@@ -7,6 +7,8 @@ import Oak.WasmAssemblerLaws
 import Oak.WasmAssemblerBytes
 import Oak.WasmAssemblerTotal
 import Oak.WasmExecution
+import Oak.WasmControl
+import Oak.WasmCalls
 import Oak.Effects
 import Oak.EffectRows
 import Oak.OptIRCallSummaryCertificate
@@ -228,6 +230,7 @@ import Oak.RiscVMaterialization
 import Oak.RiscVCallExecution
 import Oak.RiscVDirectControl
 import Oak.RiscVControlFlow
+import Oak.RiscVComparison
 import Oak.RiscVMemory
 import Oak.SailRiscVBridge
 import Oak.Target
@@ -246,6 +249,10 @@ import Oak.LRATCheckerState
 import Oak.LRATRUPValidity
 import Oak.LRATStore
 import Oak.LRATTrail
+import Oak.LRATInitial
+import Oak.LRATRecord
+import Oak.LRATSteps
+import Oak.LRATRecordSoundness
 import Oak.LRATFormulaBinding
 import Oak.ClauseAgreement
 import Oak.SATModel

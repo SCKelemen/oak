@@ -476,6 +476,36 @@ fill-unrolled plans consumed `reset`'s bounded validation slots ahead of its
 known unrotated proof fallback, so that composition now refuses; the current
 baseline and candidate both keep the optimized proven `reset`.
 
+The 2026-10-08 final-spelling measurement found four exact add-immediate
+recomputations after allocation and scheduling. Post-schedule cleanup now drops
+only a repeated `add rD, rS, #imm` whose first site dominates the second and
+whose distinct source and destination registers are unchanged on every path;
+calls, cycles through either definition, and one-arm clobbers refuse. The
+verifier-gated child removes one selected instruction from stage-2 `translate`
+and three from `unmap_page`, both still proven, for 16 bytes less text/object.
+The isolated translate improves about 4–5% in interleaved host measurements;
+the end-to-end decoder cycle was already at Zig parity and remains there.
+
+The next 2026-10-08 lowering measurement uses the complete AArch64 add/sub
+immediate field, including `lsl #12`, for arithmetic, comparisons, and fixed
+array guards. The 49,152-entry stage-2 page arrays then compare their index
+directly instead of materializing `0xc000`. Six proven selected bodies lose 17
+instructions: `reset` four, `alloc_table` two, `walk_leaf` three, `map_page`
+two, `unmap_page` four, and `translate` two. Text shrinks 68 bytes and the
+Mach-O object 64 bytes with all 27 relocations and all eight OS conformance
+tests unchanged. Interleaved runtime samples overlap, so this increment claims
+the verified instruction/code-size reduction, not a timing improvement.
+
+A final single-use constant carrier remains in `translate`: `movz w4, #1`
+near entry and `mov w0, w4` on the success arm. The 2026-10-08 post-schedule
+increment retargets only a one-instruction constant with one whole-body write
+and read when its same-width copy reader is dominated and every intervening
+path is stable. The selected `proven` body falls 51→50 instructions and cost
+79.0→78.0; text drops 4 bytes and the aligned object 8 bytes, with 27 unchanged
+relocations and all eight OS conformance tests passing. Runtime samples overlap
+(4.26→4.24 ns/op mean), so this is recorded as a static win. General
+rematerialization still belongs in the virtual-register backend.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, and exact trip counts against register bounds.

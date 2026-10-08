@@ -94,3 +94,11 @@ func TestVerifyInstructionBreadth(t *testing.T) {
 		t.Fatalf("the byte indexed form renders as %q", text)
 	}
 }
+
+func TestVerifyShiftedCompareImmediate(t *testing.T) {
+	proven := verifyCase(t, "below_table: (v: u32) -> Bool", "v < u32(0xc000)",
+		"  bind w0 = v\n  cmp w0, #12, lsl #12\n  cset w0, lo\n  ret")
+	if proven.Kind != VerdictProven {
+		t.Fatalf("a shifted compare immediate must be proven, got %s: %s", proven.Kind, proven.Message)
+	}
+}

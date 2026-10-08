@@ -216,8 +216,9 @@ sufficient assignment capacity, and valid declared variables in live clauses. It
 target negation, the duplicate-aware clause scan, and the hint loop; it does
 not assume a supplied abstract propagation derivation. The scan's candidate
 counter is proved non-wrapping using its progress invariant.
-The full word-parser/database refinement must still establish these
-preconditions on every call and compose acceptance with formula binding. Allocation/FFI
+The whole-record theorem in `Oak.LRATRecordSoundness` establishes these
+preconditions on every call. Composition with the independent formula-binding
+gate remains a separate obligation. Allocation/FFI
 semantics, extraction correctness, and compiled ARM64/RV64 executables remain
 separate kernel obligations.
 
@@ -257,11 +258,51 @@ assumes trail coverage. The dedicated LRAT CI gate checks these proofs for
 proof holes and runs the raw-record corpus with scratch-cleanup assertions,
 including successive additions and refusal after a successful addition.
 
-These are component proofs of the extracted production loops and writes;
-the caller's capacities, used-prefix invariant, and initial zero assignment
-scratch remain explicit hypotheses. The outer initial-clause traversal,
-complete step-parser refinement, and full-record/formula-binding composition
-are still open.
+`Oak.LRATInitial` composes the complete production initial-clause traversal
+with a separate decoder using natural-number cursors. Every model of the
+decoded input survives the traversal. Framing checks establish non-wrapping
+source and store bounds; literal validation establishes declared-variable
+validity; metadata capacities and the used-store invariant are preserved.
+The clause counter reaches exactly the declared count plus one, and a model
+of the input rules out setting the empty-clause flag during initialization.
+`production_initialization` connects this traversal to the actual live-table
+and assignment resets, deriving the empty starting database and zero scratch
+from completed executions rather than caller-supplied state invariants.
+The CI contract pins this theorem's assumptions and checks its axioms;
+compiled regressions start with dirty metadata, live bytes, store, assignment,
+and trail buffers and check both successful and refused initialization.
+
+`Oak.LRATRecord` derives non-wrapping addition and deletion cursors from
+production framing predicates, including zero-length deletions. Accepted
+addition combines those bounds with the actual RUP and store-copy executions
+to preserve the model, live-store invariants, metadata and scratch capacities,
+and zero scratch. Deletion preserves that same state even after partial
+refusal. The outer loop cannot turn a refused entry status into acceptance.
+The new framing/transition theorems are included in the proof-hole gate;
+raw regressions cover maximal body/hint counts, deletion followed by addition,
+and refused records followed by otherwise valid records.
+
+`Oak.LRATSteps` proves model preservation through the complete outer step
+parser, including deletion, insertion, refused branches, and scratch
+restoration between additions. Under a model, neither traversal can set the
+historical empty-clause flag, including when an empty clause is later deleted.
+
+`Oak.LRATChecker.production_record_sound` (in `Oak.LRATRecordSoundness`) proves that
+acceptance by the complete extracted production `lrat_check` refutes its
+independently decoded initial formula. The theorem assumes only the actual
+accepted call: it derives capacities and non-wrapping bounds from the header,
+initialization from the executed reset loops, and store/scratch invariants
+through both outer traversals. It assumes neither a propagation trace nor a
+parser trace, and requires no external fuel or zero-scratch premise. The
+header/continuation factorization is proved equal to the original extraction.
+The LRAT CI gate pins this theorem's full contract and rejects dependencies
+on axioms other than Lean's foundational `propext`, `Classical.choice`, and
+`Quot.sound`.
+
+This establishes whole-record soundness for the extracted word checker.
+Universal composition with the independent expected-formula identity gate,
+extraction correctness, allocation/FFI semantics, and compiled ARM64/RV64
+executables remain separate obligations.
 
 At the clause
 boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists for raw

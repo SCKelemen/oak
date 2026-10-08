@@ -268,8 +268,23 @@ decimal, fractional-clock, offset, component-arithmetic, and buffer layers:
   stops before the nondigit unit, even with later text present. This requires
   a twenty-one-byte window, buffer size below `2^32`, and fuel at least 21.
   All new decimal, termination, buffer, and composition proofs are kernel
-  checked without native decision certificates. Fractional seconds, the outer
-  period/duration grammar, and complete period/duration text round trips remain
+  checked without native decision certificates.
+- `TimeFixedDecimalLaws.lean`, `TimeFixedWriterLaws.lean`, and the
+  `TimePeriodFraction*Laws.lean` modules establish fractional-second numeric
+  correspondence over the extracted implementation. The fixed-width writer
+  emits exact ASCII decimal values, including leading zeroes, while preserving
+  bytes outside its field. Trailing-zero removal preserves the scaled value
+  and terminates without exhausting a positive fraction's width. For every
+  nanosecond fraction from 1 through 999,999,999 and every UInt64 whole part,
+  `put_frac` emits one to nine fractional digits with no trailing zero; the
+  actual integer and fractional scanners recover both values. This composition
+  uses the emitted numeric field's end as the scanner limit; the general
+  fractional reader also accepts a following nondigit. A separate theorem
+  covers zero fractions, which emit only the integer field. The writer and
+  roundtrip contracts preserve buffer size and every byte outside the result,
+  with sufficient fuel and explicit capacity and pointer bounds. All these
+  proofs are kernel checked without native decision certificates. The outer
+  period/duration grammar and complete period/duration text round trips remain
   separate obligations.
 - `TimeBufferLaws.lean` proves error atomicity and success frame properties for
   **all six new formatters**, for arbitrary destinations and extraction fuel.
@@ -319,9 +334,9 @@ Open release gates, explicitly not implied by successful tests or extraction:
    ordinal/week conversion, the remaining calendar success laws, and duration
    carry arithmetic.
 2. Prove outer parser grammar soundness/completeness, input-position bounds,
-   sufficient-fuel termination, and fractional-second text-value correspondence.
-   The UInt64 integer writer/scanner bridge, numeric scanner safety, and main
-   accumulator bounds are established. Extend canonical text round-trip proofs to periods and durations. Establish
+   sufficient-fuel termination, and composition with unit delimiters.
+   The UInt64 integer and fractional-second writer/scanner bridges, numeric
+   scanner safety, and main accumulator bounds are established. Extend canonical text round-trip proofs to periods and durations. Establish
    successful prefix contents, output bounds, and sufficient-fuel termination
    for those remaining formatters, and date round trips through larger
    destinations. Extend
