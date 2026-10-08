@@ -19,6 +19,11 @@ func TestInferredPrimitiveExternalSourceRemainsUnsupported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Compile the real solver as required setup, outside the per-case decision
+	// deadline. Cold builds under the race detector can exceed that deadline.
+	if _, err := oakSolverBinary(); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name, source string
 		supported    bool
