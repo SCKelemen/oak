@@ -29,9 +29,9 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	leanBinary := flags.String("lean-binary", "lean", "the Lean executable -check runs")
 	cases := flags.Int("cases", prove.DefaultCases, "largest parameter domain the exhaustive decider enumerates")
 	conflicts := flags.Int("conflicts", OakSATBudget, "conflicts the certificate rung's solver may spend on one obligation (0: 200,000 or 100 per clause, whichever is larger)")
-	solver := flags.String("solver", "oak", "the decider: oak (the Go ladder with the solver written in Oak, prove/solver), self (the prover written in Oak end to end: the file to the rows), go, or sat (the Go ladder, then the certificate rung: an external SAT solver's LRAT certificate checked in Go and in Oak)")
+	solver := flags.String("solver", "oak", "the decider: oak (the Go ladder with the solver written in Oak, prove/solver), self (frontend-checked source, proof decisions in Oak), go, or sat (the Go ladder, then the certificate rung: an external SAT solver's LRAT certificate checked in Go and in Oak)")
 	cnfDir := flags.String("cnf", "", "write every bit-level obligation's clauses to this directory as DIMACS, one name.cnf per theorem")
-	cross := flags.String("cross", "go", "with -solver oak, the cross-check of every bit-level verdict: go (the Go decider under the same order must agree, node for node) or none")
+	cross := flags.String("cross", "go", "with -solver oak or self, compare proof decisions with Go (go) or skip comparison (none); source validation always runs")
 	witness := flags.Bool("witness", false, "also evaluate the exhaustively decided theorems in the compiled program")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -299,8 +299,9 @@ func lawSources(target string) [][]byte {
 }
 
 // selfProve runs the prover written in Oak on one law file: the solver
-// program in its shell mode (OAK_SOLVER_MODE=prove) reads the file, decides
-// every theorem, and prints the rows; with leanOut it also writes the Lean
+// program in its shell mode (OAK_SOLVER_MODE=prove) reads an unchanged
+// snapshot of the frontend-checked file, decides every theorem, and prints
+// the rows; with leanOut it also writes the Lean
 // projection (lean.oak). With crossCheck the Go ladder decides the same
 // file and every row's status must agree, and the Go extractor's
 // projection must match the written one byte for byte.
@@ -310,12 +311,28 @@ func selfProve(target string, cases, conflicts int, crossCheck bool, leanOut str
 		fmt.Fprintf(stderr, "oak prove: -solver self takes one law file, got %s\n", target)
 		return 2
 	}
-	binary, err := oakSolverBinary()
+	// Language validity is required even when proof-decision comparison is
+	// disabled. Check runs the compiler frontend, not the Go proof ladder.
+	// Keep the original path for diagnostics and the exact bytes for every
+	// later consumer; an editor save must not change what the shell proves.
+	source, err := os.ReadFile(target)
 	if err != nil {
 		fmt.Fprintf(stderr, "oak prove: %v\n", err)
 		return 2
 	}
-	absolute, err := filepath.Abs(target)
+	comp := compiler.New().WithSyntaxRewrite(prove.Obligations).WithSource(target, string(source))
+	model, err := comp.Check().Get()
+	if err != nil {
+		fmt.Fprintf(stderr, "oak prove: %v\n", err)
+		return 2
+	}
+	absolute, cleanup, err := snapshotLawSource(source)
+	if err != nil {
+		fmt.Fprintf(stderr, "oak prove: %v\n", err)
+		return 2
+	}
+	defer cleanup()
+	binary, err := oakSolverBinary()
 	if err != nil {
 		fmt.Fprintf(stderr, "oak prove: %v\n", err)
 		return 2
@@ -365,17 +382,7 @@ func selfProve(target string, cases, conflicts int, crossCheck bool, leanOut str
 	if !crossCheck {
 		return code
 	}
-	// The Go ladder on the same file, row by row.
-	source, err := os.ReadFile(target)
-	if err != nil {
-		fmt.Fprintf(stderr, "oak prove: %v\n", err)
-		return 2
-	}
-	model, err := compiler.New().WithSyntaxRewrite(prove.Obligations).WithSource(target, string(source)).Check().Get()
-	if err != nil {
-		fmt.Fprintf(stderr, "oak prove: %v\n", err)
-		return 2
-	}
+	// The Go ladder reuses the successfully checked model, row by row.
 	results, err := prove.Theorems(model, cases)
 	if err == nil {
 		// The same ladder the shell runs: the certificate rung follows the
@@ -429,7 +436,7 @@ func selfProve(target string, cases, conflicts int, crossCheck bool, leanOut str
 		for _, r := range results {
 			roots = append(roots, r.Name)
 		}
-		want, _, err := leanProjection(compiler.New().WithSyntaxRewrite(prove.Obligations).WithSource(target, string(source)), roots)
+		want, _, err := leanProjection(comp, roots)
 		if err != nil {
 			fmt.Fprintf(stderr, "oak prove: lean: %v\n", err)
 			return 2
@@ -447,6 +454,22 @@ func selfProve(target string, cases, conflicts int, crossCheck bool, leanOut str
 		}
 	}
 	return code
+}
+
+// snapshotLawSource gives the self-hosted shell the exact bytes checked by
+// the frontend, in a private temporary directory. The caller owns cleanup.
+func snapshotLawSource(source []byte) (string, func(), error) {
+	dir, err := os.MkdirTemp("", "oak-prove-source-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	path := filepath.Join(dir, "law.oak")
+	if err := os.WriteFile(path, source, 0o600); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return path, cleanup, nil
 }
 
 // leanDifference describes the first line where the projection written in
