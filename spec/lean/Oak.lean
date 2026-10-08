@@ -11,6 +11,7 @@ import Oak.BitwiseFunction
 import Oak.BitwiseModule
 import Oak.BitwiseSource
 import Oak.BitwiseSourceParity
+import Oak.BitwiseSourceLowering
 import Oak.AArch64BitwiseFunction
 import Oak.RiscVBitwiseFunction
 import Oak.MinimalELF

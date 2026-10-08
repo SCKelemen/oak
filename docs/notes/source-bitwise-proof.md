@@ -133,3 +133,27 @@ standard Lean logical axioms (`propext`, `Quot.sound`, and, where needed,
 oracle axioms, a circular compiler/source-correctness assumption, or an
 external ISA-correctness axiom. The absence of such axioms does not establish
 that the restricted models are the full external specifications.
+
+## Bridge to the existing typed source-expression semantics
+
+`Oak.BitwiseSourceLowering` translates the checked declaration body into the
+pre-existing `Oak.LoweringRefinement.Expr` model. It alpha-renames the two
+resolved parameter positions to `arg0` and `arg1`, assigns each the existing
+`.u32` type, and uses the existing `.bit` constructor and `evalX` interpreter.
+`grammar_to_existing` proves named source evaluation equals that interpreter;
+`means_iff_existing` retains original-byte grammar membership while replacing
+the local evaluator by existing typed-expression semantics. It is a genuine
+successful `some(result)` statement for every input pair. `evalX` does not
+consume call/loop fuel for a variable/bit expression, so the theorem works for
+every fuel, including zero; no equal-fault or exhaustion premise is used.
+
+This establishes semantic continuity after a precisely stated alpha-renaming.
+It does not establish a full-Oak parser-inclusion theorem, a refinement of the
+Go parser's name resolution, that the production lowering constructs this
+`Expr`, or universal compiler output correctness. The source grammar is still
+an independently specified canonical subset justified against the owning prose
+syntax rules. The missing whole-language inclusion relation is: a declaration
+admitted by this byte grammar, embedded into an arbitrary admissible Oak package
+context, is accepted and resolved identically by the whole-language grammar,
+name-resolution and elaboration semantics. Those complete semantics and their
+production implementation are not supplied by the small bridge.

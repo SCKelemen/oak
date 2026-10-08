@@ -121,9 +121,9 @@ func testBitwiseSourceParityLean(t *testing.T) {
 			t.Fatalf("lake %v: %v\n%s", args, err, output)
 		}
 	}
-	run("build", "Oak.BitwiseSourceParity")
+	run("build", "Oak.BitwiseSourceParity", "Oak.BitwiseSourceLowering")
 	var proof strings.Builder
-	proof.WriteString("import Oak.BitwiseSourceParity\nopen Oak Oak.BitwiseFunction\nset_option maxRecDepth 8192\n")
+	proof.WriteString("import Oak.BitwiseSourceParity\nimport Oak.BitwiseSourceLowering\nopen Oak Oak.BitwiseFunction\nset_option maxRecDepth 8192\n")
 	list := func(b []byte) string { return strings.Replace(wasmLeanArray(b), "#[", "[", 1) }
 	for _, tc := range []struct{ op, symbol string }{{"and", "&"}, {"or", "|"}, {"xor", "^"}} {
 		original := fmt.Sprintf("mix: (a: u32, b: u32): u32 = a %s b\n", tc.symbol)
@@ -152,6 +152,13 @@ func testBitwiseSourceParityLean(t *testing.T) {
   BitwiseSourceParity.armResult arm a = some (eval claim.op left right) ∧
   BitwiseSourceParity.rvResult rv (RiscVFramedBitwise.entry left right pc caller mem) mapped = some (eval claim.op left right) :=
   BitwiseSourceParity.accepted_all_input_success checked left right a ha hb pc caller mem mapped safe
+`)
+		proof.WriteString(`theorem existing_source_semantics (left right : BitVec 32) (fuel : Nat) :
+  BitwiseSource.Grammar source claim ∧
+  LoweringRefinement.evalX (BitwiseSourceLowering.toExpr claim)
+    (BitwiseSourceLowering.inputs left right) (fun _ => 0) fuel = some (eval claim.op left right) ∧
+  BitwiseModule.invokeModule claim.name wasm left right = .ok (eval claim.op left right) :=
+  BitwiseSourceLowering.accepted_module_existing (by decide +kernel : BitwiseSource.accepts source claim .wasm .wasmLocals wasm = true) left right fuel
 `)
 		fmt.Fprintf(&proof, "end Actual_%s\n", tc.op)
 		t.Logf("%s original source -> Wasm %d bytes, ARM %x, RV %x", tc.op, len(wasm.Bytes), arm, rv)
