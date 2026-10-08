@@ -24,3 +24,9 @@ name = "OakSailFramedComposition"
 
 [[lean_lib]]
 name = "OakSailFramedFullDispatch"
+
+[[lean_lib]]
+name = "OakSailFetchedCode"
+
+[[lean_lib]]
+name = "OakSourceSplitCompatibility"
