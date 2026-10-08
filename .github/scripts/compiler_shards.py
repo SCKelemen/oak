@@ -71,7 +71,7 @@ def main():
         raise SystemExit("expected one compiler shard: " + ", ".join(SHARDS))
     shard = sys.argv[1]
     inventory = subprocess.run(
-        ["go", "test", "./compiler", "-list", "^Test"],
+        ["go", "test", "-race", "./compiler", "-list", "^Test"],
         check=True, text=True, stdout=subprocess.PIPE,
     )
     names = [line for line in inventory.stdout.splitlines()
