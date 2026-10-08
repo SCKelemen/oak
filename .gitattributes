@@ -1,0 +1,4 @@
+# Preserve byte-identical raw outputs in the pinned exporter-defect evidence.
+spec/sail/repros/guarded_mutation/evidence/*RawDefs.lean whitespace=-blank-at-eof
+# Source-evaluator logs retain the compiler's exact colored diagnostics.
+spec/sail/repros/guarded_mutation/evidence/*-source.log whitespace=-blank-at-eol

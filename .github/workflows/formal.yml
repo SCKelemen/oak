@@ -169,6 +169,14 @@ jobs:
           OAK_REQUIRE_WASM_TESTS: '1'
         run: go test ./compiler -run '^TestWasm(Execution|Control|Calls)(Lean|Engine)$' -count=1 -timeout=20m -v
 
+      - name: Check actual source and compiled Wasm modules against restricted Core
+        env:
+          OAK_REQUIRE_WASM_LEAN: '1'
+        run: go test ./compiler -run '^TestWasmCoreSourceMatchesLean$' -count=1 -timeout=10m -v
+
+      - name: Audit restricted Wasm Core theorem axioms
+        run: python3 spec/wasm-core/audit.py
+
       - name: Check Wasm LEB production decisions against Lean
         env:
           OAK_REQUIRE_WASM_LEAN: '1'

@@ -1,0 +1,32 @@
+name = "oak-sail-concrete"
+defaultTargets = ["OakSailComposition", "OakSailFullDispatch", "OakSailFramedComposition", "OakSailFramedFullDispatch"]
+
+[[lean_lib]]
+name = "OakSailBridge"
+srcDir = "../lean-sail"
+
+[[require]]
+name = "Lean_RV64D"
+path = "../../external/rv64-lean433"
+
+[[lean_lib]]
+name = "OakSailComposition"
+
+[[require]]
+name = "oak-spec"
+path = "../lean"
+
+[[lean_lib]]
+name = "OakSailFullDispatch"
+
+[[lean_lib]]
+name = "OakSailFramedComposition"
+
+[[lean_lib]]
+name = "OakSailFramedFullDispatch"
+
+[[lean_lib]]
+name = "OakSailFetchedCode"
+
+[[lean_lib]]
+name = "OakSourceSplitCompatibility"

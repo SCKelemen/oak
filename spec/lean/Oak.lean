@@ -18,7 +18,6 @@ import Oak.MinimalELF
 import Oak.RiscVBitwiseELF
 import Oak.AArch64MinimalStartup
 import Oak.RiscVFramedBitwise
-
 import Oak.WasmControl
 import Oak.WasmCalls
 import Oak.Effects
@@ -316,3 +315,6 @@ import Oak.LoopArrayHomes
 import Oak.LoopResultHomes
 import Oak.Forwarding
 import Oak.ArrayValues
+
+import Oak.WasmCoreBitwiseProjection
+import Oak.WasmCoreSource

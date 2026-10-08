@@ -206,7 +206,6 @@ identity rejection are not claimed. `VerdictProven` and `TranslationVerified`
 behavior is unchanged. A native internal-decoder theorem alone does not check
 the external ISA semantics. These component results do not establish complete
 source-to-bytecode parity for any backend.
-
 ## Structured control
 
 `Oak.WasmControl` adds execution of `block`, `loop`, `if`, `else`, `end`, `br`,

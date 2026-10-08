@@ -58,6 +58,12 @@ on:
       - 'spec/lean/Oak/AArch64SysReg.lean'
       - 'spec/lean/Oak/AArch64ColdEntry.lean'
       - 'spec/lean-sail/**'
+      - 'spec/lean-sail433/**'
+      - 'spec/lean-sail429/**'
+      - 'spec/lean/Oak/ByteFields.lean'
+      - 'spec/lean/Oak/BitwiseSource.lean'
+      - 'spec/lean/Oak/RiscVFramedBitwise.lean'
+      - 'compiler/rv64_framed_bitwise_lean_test.go'
       - '.github/workflows/formal-sail.yml'
   pull_request:
     branches:
@@ -84,10 +90,10 @@ env:
   # Status): later models export vmem_types.sail with unbound `k_v`.
   SAIL_RISCV_COMMIT: 497209b9298bf11b040e000095fe24c51a598a1d
 
-# Cancel only automatic PR runs; keep manual reruns and other events independent.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
+
 
 jobs:
   sail:
@@ -178,6 +184,13 @@ jobs:
         env:
           OAK_REQUIRE_ORACLES: "1"
         run: go test ./asm -run '^TestSailArmSTR64Execution|^TestSailSTRExecution' -count=1 -v -timeout=10m
+
+      - name: Regenerate and check pinned ARM scalar execution
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: |
+          go test ./asm -run '^TestSailScalarExecution(RawPins|Regeneration|Lean|GuardedMutationAudit)$' -count=1 -v -timeout=15m
+          python3 spec/sail/audit_scalar.py
 
   lem-ram-traces:
     name: Arm Lem RAM request traces
@@ -330,6 +343,37 @@ jobs:
         env:
           OAK_REQUIRE_ORACLES: "1"
         run: go test ./asm -run 'TestRV64SailBridge' -count=1 -v
+
+      - name: Verify and prepare pinned RV64 sources for Lean 4.33
+        run: |
+          python3 spec/lean-sail433/prepare.py --generated external/sail-riscv/build/model/Lean_RV64D
+          python3 spec/lean-sail433/test_verify_export.py --generated external/sail-riscv/build/model/Lean_RV64D
+
+      - name: Check original-source, actual fetch and stepping in Lean 4.29
+        working-directory: spec/lean-sail429
+        env:
+          LEAN_NUM_THREADS: '2'
+        run: |
+          lake update
+          lake build OakSailFetchedFrame OakSailSteppedFrame OakSailSteppedChecks
+          python3 audit.py
+          python3 step-audit.py
+
+      - name: Pin actual compiler source and bytes to fetched/stepped theorems
+        env:
+          OAK_REQUIRE_RV64_LEAN: '1'
+        run: go test ./compiler -run '^TestRV64(Fetched|Stepped)BitwiseCompilerMatchesLean$' -count=1 -v
+
+      - name: Build bounded RV64 source and external execution composition
+        working-directory: spec/lean-sail433
+        env:
+          LEAN_NUM_THREADS: '2'
+        run: |
+          lake update
+          lake build OakSailComposition OakSailFullDispatch OakSailBridge.BitwiseDispatchAgreement OakSailFramedComposition OakSailFramedFullDispatch OakSourceSplitCompatibility OakSailFetchedCode
+
+      - name: Audit bounded RV64 external theorem closures
+        run: python3 spec/lean-sail433/audit.py
 
       # Publish only generated source and locked build inputs after all checks pass.
       # Never upload .lake caches, .git metadata, home directories, or credentials.
