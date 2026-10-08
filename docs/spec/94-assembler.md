@@ -6751,13 +6751,13 @@ differential tests pass. Runtime is not reported from the loaded host; static
 provenance is in
 `benchmarks/native/results/stage2-global-load-mask-elision-2026-09-17.json`.
 
-**Post-schedule cleanup (2026-09-17, broadened 2026-09-18, AArch64 lane).** Scheduling and the final
+**Post-schedule cleanup (2026-09-17, broadened 2026-09-18 and 2026-10-08, AArch64 lane).** Scheduling and the final
 scalar-global passes above can expose copies after the ordinary late cleanup
 has run. The separate `post-schedule-cleanup` candidate reruns the same
-block-local `cleanupItems` fixpoint on that final spelling. It adds no rewrite
-rule: the six rules, whole-function general-register liveness, control-flow
-boundaries, and refusal conditions specified by "Late copy and branch cleanup"
-remain unchanged. The 2026-09-18 ordered phase registers this transform after
+block-local `cleanupItems` fixpoint on that final spelling. The original pass
+added no rewrite rule: the six rules, whole-function general-register liveness,
+control-flow boundaries, and refusal conditions specified by "Late copy and
+branch cleanup" remained unchanged. The 2026-09-18 ordered phase registers this transform after
 ordinary `late-cleanup` and makes it eligible after cleanup. That order is what
 lets the one-way phase search reach the separately checked final child for
 unscheduled bodies and bodies without normalized scalar-global forwarding. Its
@@ -6803,6 +6803,25 @@ the bounded validation slots before `reset`'s established unrotated proof
 fallback, while refusing it preserves the same optimized proven body as the
 baseline. All eight OS conformance tests pass; exact provenance is in
 `benchmarks/native/results/stage2-alias-label-cleanup-2026-10-05.json`.
+
+The 2026-10-08 increment adds one deliberately narrow cross-block rule for the
+final spelling: an exact repeated `add rD, rS, #imm` disappears when the first
+add dominates the second, `rD` and `rS` are distinct same-width general
+registers, and neither register changes on any path between the two sites. A
+call, an unresolved edge, a write on one incoming path, a self-updating add, or
+any other arithmetic shape refuses. The pass repeats only after a removal and
+rebuilds its conservative item CFG each time. Selection remains seam-checked
+and verdict-gated; this local test acquires no proof authority.
+
+At compiler `07bca9f9` plus that rule, the fresh stage-2 OS pilot removes one
+instruction from selected `translate` (54→53, cost 80.5→79.5) and three from
+`unmap_page` (160→157, 259.5→256.5); both remain `proven`. Mach-O text and the
+object shrink 16 bytes, all 27 relocations remain, and all eight native
+conformance tests pass. Two interleaved host pairs put the isolated Oak
+translate at 4.24 ns/op against 4.40–4.47 ns/op before the rule (about 4–5%);
+the complete decoder cycle remains within host variance of both its baseline
+and Zig. Exact provenance is in
+`benchmarks/native/results/stage2-dominated-add-cleanup-2026-10-08.json`.
 
 **Dead callee-save trimming (2026-09-17, AArch64 lane).** Reallocation can
 make a parameter home in x19–x28 dead while the lowering's conservative frame

@@ -28,6 +28,78 @@ func TestPostScheduleCleanupForwardsFinalCopy(t *testing.T) {
 	}
 }
 
+func TestPostScheduleCleanupRemovesDominatedAddImmediate(t *testing.T) {
+	unit, errs := asm.ParseUnit("post.oakasm", `f: (base: u64, choose: Bool) -> u64 = {
+  bind x0 = base
+  bind w1 = choose
+  clobber x9, x10
+  add x9, x0, #24576
+  ldr x10, [x9, #100]
+  cbz w1, miss
+  add x9, x0, #24576
+  ldr x0, [x9, #112]
+  ret
+miss:
+  mov x0, xzr
+  ret
+}
+`)
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	fn := unit.Functions[0]
+	if removed := postScheduleCleanup(fn); removed != 1 {
+		t.Fatalf("dominated recomputation cleanup removed %d, want one:\n%s", removed, Describe(fn))
+	}
+	if text := Describe(fn); strings.Count(text, "add x9, x0, #24576") != 1 {
+		t.Fatalf("dominated repeated add-immediate remains:\n%s", text)
+	}
+	if removed := postScheduleCleanup(fn); removed != 0 {
+		t.Fatalf("recomputation cleanup is not idempotent: removed %d again", removed)
+	}
+}
+
+func TestPostScheduleCleanupKeepsUnstableAddImmediate(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "source changes on one incoming path",
+			body: "  add x9, x0, #24576\n  cbz w1, join\n  add x0, x0, #1\njoin:\n  add x9, x0, #24576\n  mov x0, x9\n  ret",
+		},
+		{
+			name: "destination changes on one incoming path",
+			body: "  add x9, x0, #24576\n  cbz w1, join\n  mov x9, x10\njoin:\n  add x9, x0, #24576\n  mov x0, x9\n  ret",
+		},
+		{
+			name: "self increment",
+			body: "  mov x9, x0\n  add x9, x9, #8\n  add x9, x9, #8\n  mov x0, x9\n  ret",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			unit, errs := asm.ParseUnit("post.oakasm", "f: (base: u64, choose: Bool) -> u64 = {\n  bind x0 = base\n  bind w1 = choose\n  clobber x9, x10\n"+test.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatal(errs)
+			}
+			fn := unit.Functions[0]
+			if removed := postScheduleRecomputationCleanup(fn); removed != 0 {
+				t.Fatalf("unstable recomputation removed %d instructions:\n%s", removed, Describe(fn))
+			}
+		})
+	}
+
+	call := &asm.Function{Arch: asm.ArchArm64, Items: []asm.Item{
+		ins("add", xr(9), xr(0), asm.Immediate{Value: 24576}),
+		ins("bl", asm.Symbol{Name: "callee"}),
+		ins("add", xr(9), xr(0), asm.Immediate{Value: 24576}),
+		ins("ret"),
+	}}
+	if removed := postScheduleRecomputationCleanup(call); removed != 0 {
+		t.Fatalf("recomputation across a call removed %d instructions:\n%s", removed, Describe(call))
+	}
+}
+
 func TestPostScheduleCleanupRemovesAliasLabelBranch(t *testing.T) {
 	unit, errs := asm.ParseUnit("post.oakasm", "f: () -> u32 = {\n  clobber w9\n  b target\nalias:\ntarget:\n  mov w0, w9\n  ret\n}\n")
 	if len(errs) != 0 {

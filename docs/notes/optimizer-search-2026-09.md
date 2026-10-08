@@ -476,6 +476,16 @@ fill-unrolled plans consumed `reset`'s bounded validation slots ahead of its
 known unrotated proof fallback, so that composition now refuses; the current
 baseline and candidate both keep the optimized proven `reset`.
 
+The 2026-10-08 final-spelling measurement found four exact add-immediate
+recomputations after allocation and scheduling. Post-schedule cleanup now drops
+only a repeated `add rD, rS, #imm` whose first site dominates the second and
+whose distinct source and destination registers are unchanged on every path;
+calls, cycles through either definition, and one-arm clobbers refuse. The
+verifier-gated child removes one selected instruction from stage-2 `translate`
+and three from `unmap_page`, both still proven, for 16 bytes less text/object.
+The isolated translate improves about 4–5% in interleaved host measurements;
+the end-to-end decoder cycle was already at Zig parity and remains there.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, and exact trip counts against register bounds.
