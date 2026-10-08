@@ -79,13 +79,15 @@ func TestInferredValueNativeLowering(t *testing.T) {
 			if !foundOR {
 				t.Fatal("inferred value function has no native bitwise OR instruction")
 			}
-			// The verifier currently reports inferred locals as trusted because
-			// their source annotation is absent. Object generation is not proof.
+			// Source-derived primitive inference now enters the existing
+			// semantic comparison; object generation alone is not proof.
 			verdict, ok := model.NativeVerdicts["or_mask"]
 			if !ok {
 				t.Fatal("missing native verification verdict")
 			}
-			t.Logf("or_mask native verdict: %s (%s)", verdict.Kind, verdict.Message)
+			if verdict.Kind != asm.VerdictProven {
+				t.Fatalf("or_mask native verdict: %s (%s)", verdict.Kind, verdict.Message)
+			}
 			if output, err := comp.EmitNative(asm.ELF).Get(); err != nil || len(output.Object) == 0 {
 				t.Fatalf("inferred bitwise native object: %v", err)
 			}

@@ -5533,6 +5533,10 @@ var oakComparisons = map[string][2]string{
 // signedness (i8/i16/i32/i64 compare signed, everything else unsigned),
 // and the span/view parameters with their element widths.
 type oakLowering struct {
+	primitiveScope    map[string]ast.Expression // exact lexical source types, inference only
+	inferredLocalSeen bool
+	inferenceBlocked  bool // monotonic: legacy explicit shadow/rebinding occurred
+
 	// expandCallApplications recovers body-level proofs after machine inlining.
 	expandCallApplications bool
 	// returnSlot names the local the body builds in the result area
@@ -6078,6 +6082,7 @@ func (lo *oakLowering) aggregateValue(expr ast.Expression, typ *oakType) (*oakVa
 		}
 		return nil, fmt.Sprintf("the call %s as an aggregate value", e.String()), false
 	case *ast.BlockExpression:
+		defer lo.enterPrimitiveScope()()
 		if e.Block == nil || len(e.Block.Statements) == 0 {
 			return nil, "an empty block as an aggregate value", false
 		}
@@ -7342,8 +7347,22 @@ func (lo *oakLowering) matchArms(match *ast.MatchExpression, visit func(index in
 	unbindArm := func() {}
 	bindLocal := func(name string, local *oakLocal) {
 		prior, had := lo.locals[name]
-		bindArm = func() { lo.locals[name] = local }
+		priorType, hadType := lo.primitiveScope[name]
+		bindArm = func() {
+			lo.locals[name] = local
+			if lo.primitiveScope == nil {
+				lo.primitiveScope = map[string]ast.Expression{}
+			}
+			// Payload and whole-value pattern bindings stay outside inferred
+			// primitive authority, including when they shadow an outer name.
+			lo.primitiveScope[name] = nil
+		}
 		unbindArm = func() {
+			if hadType {
+				lo.primitiveScope[name] = priorType
+			} else {
+				delete(lo.primitiveScope, name)
+			}
 			if had {
 				lo.locals[name] = prior
 				return
@@ -7577,9 +7596,42 @@ func (lo *oakLowering) hasAggregates() bool {
 // from its initializer (an array without one is zero-filled, as both
 // backends fill it).
 func (lo *oakLowering) declareLocal(s *ast.VariableDeclaration) (string, bool) {
-	if s.Type == nil {
-		return "a local without a type", false
+	// Explicit-only legacy lowering includes compiler-generated parameter
+	// copies (tail recursion). Keep that existing behavior, but never widen
+	// it into inferred authority: a shadow before inference blocks all later
+	// inference; a shadow after inference refuses this lowering immediately.
+	// These flags intentionally survive lexical scope exit and inlined calls.
+	if _, exists := lo.primitiveScope[s.Name.Value]; exists {
+		if s.Type == nil || lo.inferredLocalSeen {
+			return "a local shadowing a source binding", false
+		}
+		lo.inferenceBlocked = true
 	}
+	if s.Type == nil {
+		if lo.inferenceBlocked {
+			return "an inferred local after a shadowed source binding", false
+		}
+		typ, ok := lo.inferredLocalType(s.Value)
+		if !ok {
+			return "an inferred local without an unambiguous source primitive type", false
+		}
+		// Preserve the source AST, including its absent annotation.
+		copy := *s
+		copy.Type = typ
+		s = &copy
+		lo.inferredLocalSeen = true
+	}
+	reason, ok := lo.declareTypedLocal(s)
+	if ok {
+		if lo.primitiveScope == nil {
+			lo.primitiveScope = map[string]ast.Expression{}
+		}
+		lo.primitiveScope[s.Name.Value] = s.Type
+	}
+	return reason, ok
+}
+
+func (lo *oakLowering) declareTypedLocal(s *ast.VariableDeclaration) (string, bool) {
 	if isBorrowType(s.Type) && s.Value != nil {
 		return lo.declareSpanLocal(s)
 	}
@@ -7998,6 +8050,8 @@ const (
 // condition folds to a constant unrolls (a data-dependent condition is
 // outside the subset), and the final expression statement is the result.
 func (lo *oakLowering) lowerBlock(block *ast.BlockStatement, width int) (*term, string, bool) {
+	defer lo.enterPrimitiveScope()()
+
 	if block == nil || len(block.Statements) == 0 {
 		return nil, "an empty block", false
 	}
@@ -8342,6 +8396,8 @@ func (x *pathExecutor) summarizeCounted(shape loopShape, exit Instruction, state
 
 // lowerLoopBody executes one iteration of a loop body.
 func (lo *oakLowering) lowerLoopBody(body *ast.BlockStatement) (string, bool) {
+	defer lo.enterPrimitiveScope()()
+
 	lo.work++
 	if lo.work > loweringWorkBudget {
 		return "a loop beyond the verifier's unrolling budget (the body's loops and its callees' in all)", false
@@ -9240,6 +9296,8 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 		}
 	}
 	saved := lo.locals
+	savedPrimitiveScope := lo.primitiveScope
+	lo.primitiveScope = sourcePrimitiveScope(callee)
 	savedFloats := lo.floats
 	savedSpans, savedAlias := lo.spans, lo.spanAlias
 	savedOffset, savedLen := lo.spanOffset, lo.spanLen
@@ -9258,6 +9316,7 @@ func (lo *oakLowering) enterCall(callee *ast.FunctionStatement, call *ast.Invoca
 	}
 	lo.inlining[name] = true
 	return func() {
+		lo.primitiveScope = savedPrimitiveScope
 		lo.floats = savedFloats
 		lo.spans, lo.spanAlias = savedSpans, savedAlias
 		lo.spanOffset, lo.spanLen = savedOffset, savedLen
@@ -9369,7 +9428,12 @@ func (lo *oakLowering) lowerGuard(name string, guard Guard, arg ast.Expression, 
 	}
 	saved := lo.locals
 	lo.locals = map[string]*oakLocal{"value": {value: value, width: baseWidth, signed: signed}}
+	savedPrimitiveScope := lo.primitiveScope
+	// A refinement predicate cannot borrow the caller's lexical type scope.
+	// Its implicit value binding is outside the inferred primitive fragment.
+	lo.primitiveScope = map[string]ast.Expression{"value": nil}
 	holds, reason, ok := lo.lowerCondition(guard.Predicate)
+	lo.primitiveScope = savedPrimitiveScope
 	lo.locals = saved
 	if !ok {
 		return nil, fmt.Sprintf("a construction of %s whose predicate contains %s", name, reason), false
@@ -10149,6 +10213,8 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 // value of a binder is the quantifier's trap: the obligation is decided
 // over the binder as a free leaf.
 func (lo *oakLowering) lowerQuantifier(expr *ast.QuantifierExpression) (*term, string, bool) {
+	defer lo.enterPrimitiveScope()()
+
 	if expr.Body == nil || expr.Body.Block == nil {
 		return nil, "a quantifier without a body", false
 	}
@@ -10175,6 +10241,9 @@ func (lo *oakLowering) lowerQuantifier(expr *ast.QuantifierExpression) (*term, s
 		}
 	}
 	for _, binder := range expr.Binders {
+		// Quantified inferred bindings are outside this bounded fragment.
+		// Hide an outer same-named source binding rather than borrowing its type.
+		lo.primitiveScope[binder.Name.Value] = nil
 		width, signed, isScalar := contractBits(binder.Type)
 		if typeText(binder.Type) == "Bool" {
 			width, signed, isScalar = 1, false, true
@@ -10219,6 +10288,7 @@ func (lo *oakLowering) lowerCondition(expr ast.Expression) (*term, string, bool)
 	// type_refs): its statements run, and its last expression is the
 	// condition, as aggregateValue reads a block.
 	if block, isBlock := expr.(*ast.BlockExpression); isBlock && block.Block != nil && len(block.Block.Statements) > 0 {
+		defer lo.enterPrimitiveScope()()
 		stmts := block.Block.Statements
 		last, isExpr := stmts[len(stmts)-1].(*ast.ExpressionStatement)
 		if !isExpr || last.Expression == nil {
@@ -12097,6 +12167,8 @@ func (lo *oakLowering) writtenCells() map[string]*term {
 // lowerUnitBody lowers the statements of a body with no result: the
 // package state it writes is what the verdict compares.
 func (lo *oakLowering) lowerUnitBody(body ast.Expression) (string, bool) {
+	defer lo.enterPrimitiveScope()()
+
 	block, isBlock := body.(*ast.BlockExpression)
 	if !isBlock || block.Block == nil {
 		return "a unit body that is not a block", false
@@ -12346,6 +12418,7 @@ func newLowering(sig *ast.FunctionStatement) *oakLowering {
 	// aggregateValue) — writes into a map; the dbs pilot's `-native` panic
 	// was a nil map on the result path (docs/notes/dbs-feedback-2026-09.md).
 	lowering := &oakLowering{params: map[string]int{}, signed: map[string]bool{}, spans: map[string]spanContract{}, fresh: map[string]int{}, floats: map[string]int{}, locals: map[string]*oakLocal{}, writableSpans: map[string]bool{}, rootContracts: map[string]spanContract{}}
+	lowering.primitiveScope = sourcePrimitiveScope(sig)
 	for _, param := range sig.Parameters {
 		if elem, _, isSpan := spanShape(param.Type); isSpan {
 			if isWritableSpan(param.Type) {
