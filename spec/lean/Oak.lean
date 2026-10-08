@@ -248,6 +248,7 @@ import Oak.LRATCheckerState
 import Oak.LRATRUPValidity
 import Oak.LRATStore
 import Oak.LRATTrail
+import Oak.LRATInitial
 import Oak.LRATFormulaBinding
 import Oak.ClauseAgreement
 import Oak.SATModel

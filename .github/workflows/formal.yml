@@ -5,7 +5,7 @@ on:
     branches:
       - specification
       - docs/spec-consolidation
-      - codex/lrat-record-soundness
+      - codex/lrat-initialization
   pull_request:
     branches:
       - specification
@@ -67,7 +67,7 @@ jobs:
       # Track the complete LRAT proof independently of unrelated formal modules.
       - name: Build production LRAT state and scratch proofs
         working-directory: spec/lean
-        run: lake build Oak.LRATTrail
+        run: lake build Oak.LRATInitial
 
       - name: Set up Go
         uses: actions/setup-go@v5
