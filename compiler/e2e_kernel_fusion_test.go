@@ -11,15 +11,15 @@ import (
 // The two stages become one launch; the host runs the same two calls.
 const kernelFusionProgram = `package main
 
-kernel scale: (gid: u32, x: []f32, y: [*]f32): () = {
+scale: (gid: u32, x: []f32, y: [*]f32): () (kernel) = {
   gid < len(x) && gid < len(y) ? { y[gid] = x[gid] * 2.0 }
 }
 
-kernel shift: (gid: u32, y: [*]f32, out: [*]f32): () = {
+shift: (gid: u32, y: [*]f32, out: [*]f32): () (kernel) = {
   gid < len(y) && gid < len(out) ? { out[gid] = y[gid] + 1.0 }
 }
 
-kernel scale_shift: (gid: u32, x: []f32, y: [*]f32, out: [*]f32): () = {
+scale_shift: (gid: u32, x: []f32, y: [*]f32, out: [*]f32): () (kernel) = {
   scale(gid, x, y)
   shift(gid, y, out)
 }
@@ -69,7 +69,7 @@ func TestE2EKernelFusion(t *testing.T) {
 	kernelNamed(t, result, "scale")
 	// Isolating ordinary helpers from lane state must preserve a kernel
 	// helper's ability to fuse another kernel at the same position.
-	nested := strings.Replace(kernelFusionProgram, "main: (): i32", `kernel wrapped: (gid: u32, x: []f32, y: [*]f32, out: [*]f32): () = {
+	nested := strings.Replace(kernelFusionProgram, "main: (): i32", `wrapped: (gid: u32, x: []f32, y: [*]f32, out: [*]f32): () (kernel) = {
   scale_shift(gid, x, y, out)
 }
 
@@ -78,10 +78,10 @@ main: (): i32`, 1)
 		t.Fatalf("nested fusion: %v", err)
 	}
 	for name, c := range map[string][2]string{
-		"another position": {"kernel a: (gid: u32, y: [*]f32): () = {\n  gid < len(y) ? { y[gid] = 1.0 }\n}\nkernel b: (gid: u32, y: [*]f32): () = {\n  a(gid + 1, y)\n}\n", "pass gid as its first argument"},
-		"mixed shapes":     {"kernel a: (gid: u32, y: [*]f32): () = {\n  gid < len(y) ? { y[gid] = 1.0 }\n}\nkernel b: (gid: u32, y: [*]f32, z: [*]f32): () = {\n  k: u32 = 0\n  while k < 4 {\n    i: u32 = gid * 4 + k\n    i < len(z) ? { z[i] = 2.0 }\n    k = k + 1\n  }\n  a(gid, y)\n}\nkernel c: (gid: u32, y: [*]f32, z: [*]f32): () = {\n  k: u32 = 0\n  while k < 8 {\n    i: u32 = gid * 8 + k\n    i < len(z) ? { z[i] = 2.0 }\n    k = k + 1\n  }\n  b(gid, y, z)\n}\n", "one shape"},
-		"group callee":     {"kernel a: (gid: u32, y: [*]f32): () = {\n  i: u32 = gid * 4 + lane(4)\n  i < len(y) ? { y[i] = 1.0 }\n}\nkernel b: (gid: u32, y: [*]f32): () = {\n  a(gid, y)\n}\n", "group kernel"},
-		"self fusion":      {"kernel a: (gid: u32, y: [*]f32): () = {\n  a(gid, y)\n}\n", "into itself"},
+		"another position": {"a: (gid: u32, y: [*]f32): () (kernel) = {\n  gid < len(y) ? { y[gid] = 1.0 }\n}\nb: (gid: u32, y: [*]f32): () (kernel) = {\n  a(gid + 1, y)\n}\n", "pass gid as its first argument"},
+		"mixed shapes":     {"a: (gid: u32, y: [*]f32): () (kernel) = {\n  gid < len(y) ? { y[gid] = 1.0 }\n}\nb: (gid: u32, y: [*]f32, z: [*]f32): () (kernel) = {\n  k: u32 = 0\n  while k < 4 {\n    i: u32 = gid * 4 + k\n    i < len(z) ? { z[i] = 2.0 }\n    k = k + 1\n  }\n  a(gid, y)\n}\nc: (gid: u32, y: [*]f32, z: [*]f32): () (kernel) = {\n  k: u32 = 0\n  while k < 8 {\n    i: u32 = gid * 8 + k\n    i < len(z) ? { z[i] = 2.0 }\n    k = k + 1\n  }\n  b(gid, y, z)\n}\n", "one shape"},
+		"group callee":     {"a: (gid: u32, y: [*]f32): () (kernel) = {\n  i: u32 = gid * 4 + lane(4)\n  i < len(y) ? { y[i] = 1.0 }\n}\nb: (gid: u32, y: [*]f32): () (kernel) = {\n  a(gid, y)\n}\n", "group kernel"},
+		"self fusion":      {"a: (gid: u32, y: [*]f32): () (kernel) = {\n  a(gid, y)\n}\n", "into itself"},
 	} {
 		src := "package main\n\n" + c[0] + "\nmain: (): i32 = 0\n"
 		root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": src})

@@ -84,7 +84,7 @@ func TestE2ERealizedTypestateOverRegionRecord(t *testing.T) {
 // writes after its multiplies stay after them.
 func TestKernelsPreserveStatementOrder(t *testing.T) {
 	src := `
-kernel ordered: (gid: u32, x: []f32, y: []f32, out: [*]f32): () = {
+ordered: (gid: u32, x: []f32, y: []f32, out: [*]f32): () (kernel) = {
   gid < len(out) && gid < len(x) && gid < len(y) ? {
     a: f32 = x[gid]
     p: f32 = a * a

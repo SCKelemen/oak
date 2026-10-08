@@ -65,7 +65,7 @@ const kernelLayoutProgram = `package main
 
 t := import("tensor")
 
-kernel matvec[R]: (gid: u32, w: t.RowMajor2[R], x: []f32, out: [*]f32): () = {
+matvec[R]: (gid: u32, w: t.RowMajor2[R], x: []f32, out: [*]f32): () (kernel) = {
   gid < w.rows && gid < len(out) && len(x) == w.cols ? {
     acc: f32 = 0.0
     n: u32 = w.cols

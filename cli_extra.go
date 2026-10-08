@@ -168,16 +168,21 @@ func fmtCommand(args []string) int {
 			continue
 		}
 		formatted := canonicalWhitespace(original)
+		changed := !bytes.Equal(formatted, original)
+		// Stdout is also a source artifact: never emit a whitespace rewrite
+		// that changes a multiline string literal (or any other syntax).
+		if changed {
+			if err := sameSyntax(file, original, formatted); err != nil {
+				fmt.Fprintf(os.Stderr, "oak fmt: %s left alone: %v\n", file, err)
+				status = 1
+				continue
+			}
+		}
 		if !write && !list {
 			os.Stdout.Write(formatted)
 			continue
 		}
-		if bytes.Equal(formatted, original) {
-			continue
-		}
-		if err := sameSyntax(file, original, formatted); err != nil {
-			fmt.Fprintf(os.Stderr, "oak fmt: %s left alone: %v\n", file, err)
-			status = 1
+		if !changed {
 			continue
 		}
 		if list {

@@ -115,7 +115,7 @@ var statementSurfaceEvidence = map[string][]surfaceEvidence{
 var contextualStatementEvidence = map[string][]surfaceEvidence{
 	"open":     {native("e2e_modules_test.go", "TestE2EModulesOpenImport", "open import")},
 	"operator": {native("e2e_reduce_order_test.go", "TestE2EOrderScopes", "operator(+)")},
-	"kernel":   {native("e2e_kernels_test.go", "TestE2EKernelsRunOnTheHost", "kernel ")},
+	"kernel":   {parseOnly("surface_contract_test.go", "TestSurfaceRemovedKernelPrefix", "move kernel after the signature", "the former prefix is a migration diagnostic; the callable suffix has executable kernel evidence")},
 	"export":   {native("e2e_c_exports_test.go", "TestE2EExportsFromAnyPackage", "export(\"")},
 	"module":   {native("e2e_modules_test.go", "TestE2EModulesNestedModules", "module ")},
 	"order":    {native("e2e_reduce_order_test.go", "TestE2EOrderScopes", "order tree")},
@@ -293,5 +293,12 @@ func TestE2ESurfaceReturnRoute(t *testing.T) {
 	code, abnormal := buildAndRun(t, "surface_return", "f: (x: i32): i32 { x == 0 ? { return 42 }\n x }\nmain: (): i32 = f(0)\n")
 	if abnormal || code != 42 {
 		t.Fatalf("exit=(%d,%v), want 42", code, abnormal)
+	}
+}
+
+func TestSurfaceRemovedKernelPrefix(t *testing.T) {
+	_, err := New().WithSource("old-kernel.oak", "kernel touch: (gid: u32): () = {}").Parse().Get()
+	if err == nil || !strings.Contains(err.Error(), "move kernel after the signature") {
+		t.Fatalf("want migration diagnostic, got %v", err)
 	}
 }

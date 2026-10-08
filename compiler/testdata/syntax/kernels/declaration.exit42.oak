@@ -1,4 +1,4 @@
-kernel touch: (gid: u32): () = {}
+touch: (gid: u32): () (kernel) = {}
 main: (): i32 {
   42
 }

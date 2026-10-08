@@ -84,9 +84,13 @@ func buildAndRunFrom(t *testing.T, name string, comp Compilation, ccFlags ...str
 	ctx, cancel := context.WithTimeout(context.Background(), runDeadline)
 	defer cancel()
 	run := exec.CommandContext(ctx, binPath)
-	var captured strings.Builder
+	var captured, capturedStderr strings.Builder
 	run.Stdout = &captured
+	run.Stderr = &capturedStderr
 	err = run.Run()
+	if err != nil && capturedStderr.Len() != 0 {
+		t.Logf("compiled program %s stderr:\n%s", name, capturedStderr.String())
+	}
 	if ctx.Err() == context.DeadlineExceeded {
 		t.Fatalf("compiled program %s did not finish within %s (killed)", name, runDeadline)
 	}

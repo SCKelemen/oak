@@ -248,7 +248,7 @@ func eraseRegionType(expr ast.Expression, regions map[string]bool, records map[s
 				if head == "Span" {
 					marker = "*"
 				}
-				return &ast.IndexExpression{Token: e.Token, Left: element, Index: &ast.Identifier{Token: e.Token, Value: marker}}, region
+				return &ast.IndexExpression{TypeForm: ast.IndexArrayType, Token: e.Token, Left: element, Index: &ast.Identifier{Token: e.Token, Value: marker}}, region
 			}
 			return e, ""
 		}
@@ -310,7 +310,7 @@ func eraseRegionType(expr ast.Expression, regions map[string]bool, records map[s
 func rebuildApplication(original *ast.IndexExpression, head string, args []ast.Expression) ast.Expression {
 	var result ast.Expression = &ast.Identifier{Token: original.Token, Value: head}
 	for _, arg := range args {
-		result = &ast.IndexExpression{Token: original.Token, Left: result, Index: arg}
+		result = &ast.IndexExpression{TypeForm: ast.IndexGenericType, Token: original.Token, Left: result, Index: arg}
 	}
 	return result
 }
