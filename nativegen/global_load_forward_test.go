@@ -98,3 +98,64 @@ func TestForwardGlobalLoadRefusals(t *testing.T) {
 		t.Fatalf("mismatched address materialization forwarded %d times", n)
 	}
 }
+
+func TestForwardDominatedZeroGlobalLoadAcrossJoin(t *testing.T) {
+	items := append(globalAddressPair(17, "cell"),
+		ins("str", xr(31), asm.Memory{Base: xr(17)}),
+		ins("cbz", wr(0), asm.Symbol{Name: "join"}),
+		ins("add", xr(10), xr(1), asm.Immediate{Value: 1}),
+		asm.Label{Name: "join"},
+		ins("ldr", xr(10), asm.Memory{Base: xr(17)}),
+		ins("str", xr(10), asm.Memory{Base: xr(17)}),
+		ins("ret"),
+	)
+	fn := globalAddressFunction(items)
+	fn.Globals = map[string]asm.Global{"cell": {Type: "u64", Bits: 64}}
+	if n := forwardGlobalLoads(fn); n != 1 {
+		t.Fatalf("forwarded %d dominated loads, want one:\n%s", n, Describe(fn))
+	}
+	if text := Describe(fn); strings.Contains(text, "ldr x10") || !strings.Contains(text, "mov x10, xzr") {
+		t.Fatalf("dominated zero load was not forwarded:\n%s", text)
+	}
+	if n := postScheduleCleanup(fn); n != 1 {
+		t.Fatalf("post-schedule cleanup removed %d zero carriers, want one:\n%s", n, Describe(fn))
+	}
+	if text := Describe(fn); strings.Contains(text, "mov x10, xzr") || strings.Count(text, "str xzr, [x17]") != 2 {
+		t.Fatalf("forwarded zero carrier was not retargeted into the store:\n%s", text)
+	}
+}
+
+func TestForwardDominatedZeroGlobalLoadRefusals(t *testing.T) {
+	makeFunction := func(between ...asm.Item) *asm.Function {
+		items := append(globalAddressPair(17, "cell"), ins("str", xr(31), asm.Memory{Base: xr(17)}))
+		items = append(items, between...)
+		items = append(items, ins("ldr", xr(10), asm.Memory{Base: xr(17)}), ins("ret"))
+		fn := globalAddressFunction(items)
+		fn.Globals = map[string]asm.Global{"cell": {Type: "u64", Bits: 64}}
+		return fn
+	}
+	for name, fn := range map[string]*asm.Function{
+		"intervening store": makeFunction(ins("str", xr(2), asm.Memory{Base: xr(3)})),
+		"call":              makeFunction(ins("bl", asm.Symbol{Name: "callee"})),
+		"base clobber":      makeFunction(ins("mov", xr(17), xr(2))),
+	} {
+		t.Run(name, func(t *testing.T) {
+			before := Describe(fn)
+			if n := forwardDominatedZeroGlobalLoads(fn); n != 0 || Describe(fn) != before {
+				t.Fatalf("unsafe dominated load forwarded %d times:\n%s", n, Describe(fn))
+			}
+		})
+	}
+
+	bypass := globalAddressFunction(append(globalAddressPair(17, "cell"),
+		ins("cbz", wr(0), asm.Symbol{Name: "join"}),
+		ins("str", xr(31), asm.Memory{Base: xr(17)}),
+		asm.Label{Name: "join"},
+		ins("ldr", xr(10), asm.Memory{Base: xr(17)}),
+		ins("ret"),
+	))
+	bypass.Globals = map[string]asm.Global{"cell": {Type: "u64", Bits: 64}}
+	if n := forwardDominatedZeroGlobalLoads(bypass); n != 0 {
+		t.Fatalf("non-dominating store forwarded %d loads:\n%s", n, Describe(bypass))
+	}
+}

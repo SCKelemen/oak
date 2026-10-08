@@ -6708,6 +6708,8 @@ unsigned mask of the stored register; a word or doubleword reload becomes a
 move, or disappears when its destination is the stored register. The store
 always remains. Indexed, offset, writeback, signed, conditional, atomic,
 aggregate, undeclared, width-mismatched, and non-adjacent shapes refuse.
+The post-schedule rule below separately admits one final-spelling exception:
+an exact dominated reload of a 64-bit scalar global already stored as zero.
 
 The local observation is `Oak.Forwarding.narrow_load_after_store` or
 `full_load_after_store`; the retained store still passes the independent seam
@@ -6827,10 +6829,11 @@ and Zig. Exact provenance is in
 The second 2026-10-08 increment adds a deliberately narrow rematerialization
 rule for already colored assembly. A standalone `movz`, `movn`, immediate
 `mov`, or zero-register `mov` is retargeted to its only same-width copy reader
-and its carrier definition disappears only when that physical register has
-exactly one write and one read in the whole body, the definition dominates the
-reader, and no call or clobber lies on any path between them. Multiple reads,
-a second definition anywhere, a bypass path, an unresolved edge, a
+and its carrier definition disappears only when it has one reader in that
+definition's reachable live range, the definition dominates the reader, and
+no call or clobber lies on any path between them. The CFG walk stops at later
+register kills and rejects a cycle back to the definition. Multiple reads, a
+second definition on an incoming path, a bypass path, an unresolved edge, a
 multi-instruction `movz`/`movk` constant, or an ordinary register source
 refuses. This is not general colored-assembly value reconstruction; that work
 remains with virtual-register MachineIR. The rule has no authority of its own:
@@ -6843,6 +6846,25 @@ object 8 bytes, all 27 relocations remain, and all eight OS conformance tests
 pass. Interleaved translate samples average 4.26→4.24 ns/op, too small to claim
 beyond the static reduction. Exact provenance is in
 `benchmarks/native/results/stage2-single-use-constant-2026-10-08.json`.
+
+The third 2026-10-08 increment carries one exact zero value through final
+control flow. After the established zero-store cleanup has produced
+`str xzr, [xA]`, a later `ldr xD, [xA]` becomes `mov xD, xzr` only when the
+store dominates it, the matching `adrp`/`add :lo12:` authenticates a declared
+non-aggregate 64-bit global, and every path between is free of calls, system
+calls, all memory writes, and changes to `xA`. Other widths and values,
+aggregates, bypass paths, unresolved edges, or any possible intervening write
+refuse. The whole-body verifier remains the only selection authority.
+
+Stage-2 `translate` keeps 50 instructions but loses its failure-path reload of
+`trans_result`: selected loads fall 5→4, estimated stalls 15→12, and static
+cost 78.0→73.5. The body remains `proven` with zero verdict-cache hits; text,
+object size, and all 27 relocations are unchanged, and all eight OS conformance
+tests pass. Interleaved runtime samples moved in both directions under a large
+host-frequency shift, so no timing improvement is claimed. Bypassing the now
+redundant shared store requires a separate branch-threading/unreachable-block
+transform. Exact provenance is in
+`benchmarks/native/results/stage2-dominated-zero-global-load-2026-10-08.json`.
 
 **Dead callee-save trimming (2026-09-17, AArch64 lane).** Reallocation can
 make a parameter home in x19–x28 dead while the lowering's conservative frame
