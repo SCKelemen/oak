@@ -8,14 +8,15 @@ import Oak.WasmAssemblerBytes
 import Oak.WasmAssemblerTotal
 import Oak.WasmExecution
 import Oak.BitwiseFunction
+import Oak.BitwiseModule
+import Oak.BitwiseSource
+import Oak.BitwiseSourceParity
 import Oak.AArch64BitwiseFunction
 import Oak.RiscVBitwiseFunction
 import Oak.MinimalELF
 import Oak.RiscVBitwiseELF
 import Oak.AArch64MinimalStartup
 import Oak.RiscVFramedBitwise
-import Oak.BitwiseModule
-import Oak.BitwiseSource
 import Oak.Effects
 import Oak.EffectRows
 import Oak.OptIRCallSummaryCertificate

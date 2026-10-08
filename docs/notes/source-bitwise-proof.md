@@ -88,3 +88,48 @@ function/ELF loading, entry selection, ABI/memory assumptions and external ISA
 refinement remain separate obligations, not consequences of this Wasm source
 binding. Existing native equality certificates consume abstract declarations
 and do not become source-authoritative merely because this module exists.
+
+## Unified three-target claim matrix
+
+`Oak.BitwiseSourceParity.accepted_all_input_success` composes the shared source
+checker with all three admitted target profiles. There is one common input
+pair and one full 32-bit mathematical result; no comparison of traps or OS exit
+statuses is substituted for successful function return.
+
+| Boundary | Wasm | ARM64 | RV64 |
+| --- | --- | --- | --- |
+| Source admission | Same canonical original-byte grammar and named-parameter evaluation | Same | Same |
+| Original identity | Entire original byte list checked against claimed name, parameters and operation | Same source claim, plus complete native body bytes | Same source claim, plus complete native body bytes |
+| Successful internal semantics | Full named module load and typed function invocation returns `.ok (eval op left right)` | Exact 8-byte logical-W operation plus RET returns successfully; observed W0 is the full u32 result | Exact 36-byte production wrapper returns successfully; observed low 32 bits of a0 are the full u32 result |
+| Calling precondition | Two i32 locals, zero extra locals, validated restricted module | Initial W0/W1 low 32 bits equal the input pair; high halves unconstrained | LP64D sign-extension adapter; initial caller/frame state satisfies `frameSafe` |
+| Memory precondition | Profile has no memory/import/start section | Profile has no memory access | SP at least 96 and aligned to 16; the complete 96-byte frame externally asserted mapped readable/writable; flat little-endian data memory and instruction/data separation |
+| Actual production byte pin | Real `EmitWasm` final module from exactly the admitted source | Real `EmitNative(ELF)` result, named `oak_mix` symbol's entire 8-byte extent | Real `EmitNative(ELF)` result, named `oak_mix` symbol's entire 36-byte extent, LP64D flags, no unresolved relocation in extent |
+| Name/container boundary | The Lean loader parses the complete module and selects the source name's export | Go ELF extraction is tested, not proved; native symbol/name/address lookup and subsequent loading are external | Same unproved ELF extraction/loading boundary |
+| External semantics boundary | Refinement to WebAssembly Core and real loader/engine remains unproved | Refinement from restricted model to external ISA and concrete fetched state remains separate | Concrete fetched Sail/ISA state, decoder/return/memory/permissions refinement remains separate |
+| Proof versus test | Admission-to-success is universal over accepted sources/modules and all input pairs; actual compiler/literal correspondence is tested | Universal accepted-body success under explicit register preconditions; compiler artifact correspondence is tested | Universal accepted-body success under explicit ABI/frame preconditions; compiler artifact correspondence is tested |
+
+The RV64 frame premise is essential. The theorem does not claim ARM64/Wasm and
+RV64 have identical requirements, stack behavior, memory effects, or total
+machine states. It establishes the same source/result semantics once each
+lane's stated preconditions are satisfied. Native entry selection, real
+instruction fetch, and loader/ISA agreements cannot be inferred from body
+parity. The imported native theorems separately record their register and
+memory effects; the parity conclusion intentionally observes only the result.
+
+`compiler/source_bitwise_parity_test.go` passes the **identical original source**
+`mix: (a: u32, b: u32): u32 = a OP b` plus LF to all three production paths.
+It does not append a `main`, change the signature to an arrow, or regenerate an
+AST. For each operation it serializes the source, complete Wasm module and
+complete extracted native bodies into Lean literals, checks combined admission
+in the kernel, and instantiates the all-input theorem. It runs as a subtest of
+the already required `OAK_REQUIRE_WASM_LEAN` execution lane; no new optional CI
+job or weakened gate is introduced. ELF extraction is explicitly executable
+evidence, not a kernel proof of container/name correspondence.
+
+Axiom audits of `parse_sound`, `grammar_evaluation`,
+`accepted_source_to_module`, and `accepted_all_input_success` report only
+standard Lean logical axioms (`propext`, `Quot.sound`, and, where needed,
+`Classical.choice`). These statements do not depend on `sorryAx`, native
+oracle axioms, a circular compiler/source-correctness assumption, or an
+external ISA-correctness axiom. The absence of such axioms does not establish
+that the restricted models are the full external specifications.
