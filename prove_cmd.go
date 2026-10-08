@@ -36,6 +36,20 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
+	// Invalid selectors must not silently choose a different solver or
+	// disable comparison. Validate before reading source or producing output.
+	switch *solver {
+	case "oak", "go", "sat", "self":
+	default:
+		fmt.Fprintf(stderr, "oak prove: invalid -solver value %q; want oak, go, sat, or self\n", *solver)
+		return 2
+	}
+	switch *cross {
+	case "go", "none":
+	default:
+		fmt.Fprintf(stderr, "oak prove: invalid -cross value %q; want go or none\n", *cross)
+		return 2
+	}
 	if flags.NArg() > 1 || (*check && *leanOut == "") {
 		fmt.Fprintln(stderr, "usage: oak prove [-lean out.lean [-check [-lean-binary lean]]] [-cases N] [-witness] [-solver oak|go|sat|self] [-cross go|none] [-cnf dir] [-conflicts N] [dir|file.oak]")
 		return 2

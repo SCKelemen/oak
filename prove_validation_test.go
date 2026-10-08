@@ -126,3 +126,44 @@ func TestProveFrontendDoesNotDecideTheorems(t *testing.T) {
 		t.Fatalf("frontend decided a well-typed theorem: %v", err)
 	}
 }
+
+// Unknown mode selectors are usage errors, never aliases for Go or for
+// disabled comparison. Even a missing input must not be read first.
+func TestProveRejectsInvalidModesBeforeSource(t *testing.T) {
+	for _, flag := range []string{"-solver", "-cross"} {
+		for _, value := range []string{"bogus", "GO", ""} {
+			for _, input := range []string{"missing", "valid"} {
+				t.Run(flag+"/"+value+"/"+input, func(t *testing.T) {
+					dir := t.TempDir()
+					file := filepath.Join(dir, "law.oak")
+					if input == "valid" {
+						if err := os.WriteFile(file, []byte("law: theorem (a: u32) { a == a }\n"), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					scratch := filepath.Join(dir, "scratch")
+					if err := os.Mkdir(scratch, 0700); err != nil {
+						t.Fatal(err)
+					}
+					t.Setenv("TMPDIR", scratch)
+					lean, cnf := filepath.Join(dir, "out.lean"), filepath.Join(dir, "cnf")
+					var out, errs bytes.Buffer
+					code := proveCommand([]string{flag, value, "-lean", lean, "-witness", "-cnf", cnf, file}, &out, &errs)
+					want := "invalid " + flag + " value"
+					if code != 2 || out.Len() != 0 || !strings.Contains(errs.String(), want) {
+						t.Fatalf("exit %d, stdout %q, stderr %q; want %q", code, out.String(), errs.String(), want)
+					}
+					for _, path := range []string{lean, cnf} {
+						if _, err := os.Stat(path); !os.IsNotExist(err) {
+							t.Fatalf("unexpected output %s: %v", path, err)
+						}
+					}
+					entries, err := os.ReadDir(scratch)
+					if err != nil || len(entries) != 0 {
+						t.Fatalf("invalid mode started solver/witness work: %v, %v", entries, err)
+					}
+				})
+			}
+		}
+	}
+}
