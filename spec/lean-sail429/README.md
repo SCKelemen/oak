@@ -102,3 +102,10 @@ The reviewed fetched-word layer is composed with the generated nine-step
 control path in `OakSailSteppedFrame`. See [STEPS.md](STEPS.md) for its additional
 initial-state profile, exact PC/counter updates, required audits and remaining
 outer-loop/ELF boundary. Per-word fetch theorems retain their original scope.
+
+## Bounded clocked callback extension
+
+[CLOCK.md](CLOCK.md) describes actual clock ticks composed with the exact
+generated loop callback under an explicit timer profile. Its finite iterator
+is separate from the original opaque full loop; no full-loop execution or
+termination claim is inferred.

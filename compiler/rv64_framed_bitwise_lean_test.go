@@ -35,6 +35,12 @@ func TestRV64SteppedBitwiseCompilerMatchesLean(t *testing.T) {
 	testRV64BitwiseCompilerPins(t, "OakSailSteppedFrame")
 }
 
+// Check original source and complete function bytes against the explicitly
+// bounded iteration of the kernel-identified generated platform callback.
+func TestRV64ClockedBitwiseCompilerMatchesLean(t *testing.T) {
+	testRV64BitwiseCompilerPins(t, "OakSailClockedSource")
+}
+
 func testRV64BitwiseCompilerPins(t *testing.T, module string) {
 	t.Helper()
 	fetched := module != "Oak.RiscVFramedBitwise"
