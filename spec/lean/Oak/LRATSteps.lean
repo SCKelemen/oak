@@ -1,4 +1,4 @@
-import Oak.LRATInitial
+import Oak.LRATRecord
 
 /-! Model preservation through the production outer proof-step parser. -/
 set_option autoImplicit false
@@ -91,23 +91,6 @@ theorem addition_step_model (fuel : Nat) (words starts lengths : Array UInt32)
   intro nz
   simp [nz, LRATRUP.wordClause, RupCheck.SatisfiesClause] at entailed
 
-theorem steps_accepted_input (fuel : Nat) (words starts lengths : Array UInt32)
-    (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8) (trail : Array UInt32)
-    (status additions deletions variables max_id store_words at_ end_ used : UInt32) (empty : Bool) (last : UInt32)
-    (s l : Array UInt32) (v : Array UInt8) (t : Array UInt32) (x : Array UInt8) (y : Array UInt32)
-    (adds dels at' used' : UInt32) (empty' : Bool) (last' : UInt32)
-    (run : lrat_check.loop5 words starts lengths alive store assign trail status additions deletions variables max_id store_words at_ end_ used empty last fuel =
-      some (s, l, v, t, x, y, LRAT_ACCEPTED, adds, dels, at', used', empty', last')) :
-    status = LRAT_ACCEPTED := by
-  by_cases accepted : status = LRAT_ACCEPTED
-  · exact accepted
-  · cases fuel with
-    | zero => simp [lrat_check.loop5] at run
-    | succ fuel =>
-      simp only [lrat_check.loop5, beq_eq_false_iff_ne.mpr accepted, Bool.and_false,
-        Bool.false_eq_true, ite_false, Option.pure_def, Option.some.injEq, Prod.mk.injEq] at run
-      exact run.2.2.2.2.2.2.1
-
 /-- A model cannot survive an accepted outer step traversal that observes an
 empty clause. This invariant includes restored scratch at every recursion. -/
 theorem steps_loop_models (fuel : Nat) (words : Array UInt32)
@@ -140,15 +123,15 @@ theorem steps_loop_models (fuel : Nat) (words : Array UInt32)
             | some result =>
               rcases result with ⟨nextAlive, nextStatus, nextD⟩
               simp only [scan] at run
-              have accepted := steps_accepted_input (run := run)
+              have accepted := record_input_accepted (run := run)
               subst nextStatus
               exact ih (state := deletion_step_model fuel words starts lengths alive store assign trail variables max_id store_words used at_
                 (words.getD (at_ + 2).toNat 0) a state nextAlive LRAT_ACCEPTED nextD scan) (notEmpty := notEmpty) (run := run)
           · simp only [shape, ite_false] at run
-            have impossible := steps_accepted_input (run := run)
+            have impossible := record_input_accepted (run := run)
             split at impossible <;> contradiction
         · simp only [show (3 : UInt32).toNat = 3 from rfl, header, ite_false] at run
-          have impossible := steps_accepted_input (run := run)
+          have impossible := record_input_accepted (run := run)
           contradiction
       · simp only [deletion, ite_false] at run
         by_cases addition : words.getD at_.toNat 0 = 0
@@ -191,24 +174,24 @@ theorem steps_loop_models (fuel : Nat) (words : Array UInt32)
                             rs rl ra rt rx ry rup nextStore nextJ copy
                           exact ih (state := nextState) (notEmpty := by simp only [notEmpty, Bool.false_or, beq_eq_false_iff_ne]; exact nonempty) (run := run)
                       · simp only [room, ite_false] at run
-                        have impossible := steps_accepted_input (run := run)
+                        have impossible := record_input_accepted (run := run)
                         contradiction
                     · simp only [accepted, ite_false] at run
-                      exact False.elim (accepted (steps_accepted_input (run := run)))
+                      exact False.elim (accepted (record_input_accepted (run := run)))
                 · simp only [ordered, ite_false] at run
-                  have impossible := steps_accepted_input (run := run)
+                  have impossible := record_input_accepted (run := run)
                   contradiction
               · simp only [hints, ite_false] at run
-                have impossible := steps_accepted_input (run := run)
+                have impossible := record_input_accepted (run := run)
                 contradiction
             · simp only [literals, ite_false, false_and, false_and] at run
-              have impossible := steps_accepted_input (run := run)
+              have impossible := record_input_accepted (run := run)
               contradiction
           · simp only [show (3 : UInt32).toNat = 3 from rfl, header, ite_false] at run
-            have impossible := steps_accepted_input (run := run)
+            have impossible := record_input_accepted (run := run)
             contradiction
         · simp only [addition, ite_false] at run
-          have impossible := steps_accepted_input (run := run)
+          have impossible := record_input_accepted (run := run)
           contradiction
     · simp only [lrat_check.loop5, enter, decide_false, Bool.false_and, Bool.false_eq_true,
         ite_false, Option.pure_def, Option.some.injEq, Prod.mk.injEq, true_and] at run

@@ -1,241 +1,187 @@
-import Oak.LRATSteps
+import Oak.LRATInitial
 
-/-! Whole-record soundness of the extracted production word checker. -/
+/-!
+Production proof-record transition invariants. The actual framing predicates
+supply non-wrapping cursors and copy ranges. Deletion and accepted RUP/copy
+transitions preserve every current model, live-store validity, capacities,
+and zero scratch. The outer record-loop induction remains separate.
+-/
+
 set_option autoImplicit false
 namespace Oak.LRATChecker
 
-theorem option_ite {α : Type} (p : Prop) [Decidable p] (a b : α) :
-    (if p then some a else some b) = some (if p then a else b) := by
-  split <;> rfl
+private theorem three_nat : (3 : UInt32).toNat = 3 := by decide
 
-/-- Models of the independent natural-cursor input decoder. -/
-def InitialModels (words : Array UInt32) (count at_ : Nat) (a : RupCheck.Assignment) : Prop :=
-  ∀ clause ∈ initialClauses words at_ count, RupCheck.SatisfiesClause a clause
+/-- The fixed header and variable deletion body advance within the endpoint,
+including an empty deletion body. Neither machine addition can wrap. -/
+theorem deletion_record_bounds (fuel : Nat) (at_ k end_ : UInt32)
+    (header : lrat_fits at_ 3 end_ fuel = some true)
+    (body : lrat_fits (at_ + 3) k end_ fuel = some true) :
+    (at_ + 3 + k).toNat = at_.toNat + 3 + k.toNat ∧
+      at_ < at_ + 3 + k ∧ at_ + 3 + k ≤ end_ := by
+  have head := (fits_iff at_ 3 end_ fuel).mp header
+  have tail := (fits_iff (at_ + 3) k end_ fuel).mp body
+  have limit := end_.toNat_lt
+  simp only [three_nat] at head
+  have start : (at_ + 3).toNat = at_.toNat + 3 := by
+    simpa only [three_nat] using add_exact at_ 3 (by simp only [three_nat]; omega)
+  have finish := add_exact (at_ + 3) k (by omega)
+  refine ⟨by omega, ?_, ?_⟩
+  · rw [UInt32.lt_iff_toNat_lt]; omega
+  · rw [UInt32.le_iff_toNat_le]; omega
 
-structure HeaderData where
-  ok : Bool
-  variables : UInt32
-  clause_count : UInt32
-  literal_end : UInt32
-  step_words : UInt32
-  max_id : UInt32
-  store_words : UInt32
+structure AdditionBounds (words store : Array UInt32) (at_ n m used store_words end_ : UInt32) : Prop where
+  source : (at_ + 3).toNat + n.toNat ≤ words.size
+  source32 : (at_ + 3).toNat + n.toNat < 4294967296
+  dest : used.toNat + n.toNat ≤ store.size
+  dest32 : used.toNat + n.toNat < 4294967296
+  cursorExact : (at_ + 3 + n + 1 + m).toNat = at_.toNat + 3 + n.toNat + 1 + m.toNat
+  advance : at_ < at_ + 3 + n + 1 + m
+  cursorBound : at_ + 3 + n + 1 + m ≤ end_
+  usedBound : used + n ≤ store_words
 
-/-- Pure projection of the production header checks. -/
-def parseHeader (words starts lengths : Array UInt32) (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32) : HeaderData :=
-  let ok : Bool := (((decide ((words.size.toUInt32) >= LRAT_HEADER_WORDS)) && ((words.getD (0 : UInt32).toNat (0 : UInt32)) == LRAT_MAGIC)) && (decide ((out.size.toUInt32) >= (3 : UInt32))))
-  let variables : UInt32 := (if ok then (words.getD (1 : UInt32).toNat (0 : UInt32)) else (0 : UInt32))
-  let clause_count : UInt32 := (if ok then (words.getD (2 : UInt32).toNat (0 : UInt32)) else (0 : UInt32))
-  let literal_words : UInt32 := (if ok then (words.getD (3 : UInt32).toNat (0 : UInt32)) else (0 : UInt32))
-  let step_words : UInt32 := (if ok then (words.getD (4 : UInt32).toNat (0 : UInt32)) else (0 : UInt32))
-  let max_id : UInt32 := (if ok then (words.getD (5 : UInt32).toNat (0 : UInt32)) else (0 : UInt32))
-  let store_words : UInt32 := (if ok then (words.getD (6 : UInt32).toNat (0 : UInt32)) else (0 : UInt32))
-  let r1 := decide (LRAT_HEADER_WORDS.toNat + literal_words.toNat ≤ words.size.toUInt32.toNat)
-  let ok := (ok && r1)
-  let literal_end : UInt32 := (if ok then (LRAT_HEADER_WORDS + literal_words) else (0 : UInt32))
-  let r2 := decide (literal_end.toNat + step_words.toNat ≤ words.size.toUInt32.toNat)
-  let ok := (ok && r2)
-  let ok := (ok && ((literal_end + step_words) == (words.size.toUInt32)))
-  let ok := (((ok && (decide ((starts.size.toUInt32) > max_id))) && (decide ((lengths.size.toUInt32) > max_id))) && (decide ((alive.size.toUInt32) > max_id)))
-  let ok := (((ok && (decide ((store.size.toUInt32) >= store_words))) && (decide ((assign.size.toUInt32) >= variables))) && (decide ((trail.size.toUInt32) >= variables)))
-  let ok := (ok && (decide (clause_count <= max_id)))
-  ⟨ok, variables, clause_count, literal_end, step_words, max_id, store_words⟩
+/-- All ranges consumed by an accepted addition come from the production
+header, literal-body, hint-count-word, hint-body, and store checks. -/
+theorem addition_record_bounds (fuel : Nat) (words store : Array UInt32)
+    (at_ n m used store_words end_ : UInt32)
+    (wordCapacity : end_.toNat ≤ words.size) (storeCapacity : store_words.toNat ≤ store.size)
+    (header : lrat_fits at_ 3 end_ fuel = some true)
+    (literals : lrat_fits (at_ + 3) n end_ fuel = some true)
+    (countWord : at_ + 3 + n < end_)
+    (hints : lrat_fits (at_ + 3 + n + 1) m end_ fuel = some true)
+    (space : lrat_fits used n store_words fuel = some true) :
+    AdditionBounds words store at_ n m used store_words end_ := by
+  have head := (fits_iff at_ 3 end_ fuel).mp header
+  have lits := (fits_iff (at_ + 3) n end_ fuel).mp literals
+  have tail := (fits_iff (at_ + 3 + n + 1) m end_ fuel).mp hints
+  have capacity := (fits_iff used n store_words fuel).mp space
+  have limit := end_.toNat_lt
+  have storeLimit := store_words.toNat_lt
+  simp only [three_nat] at head
+  have start : (at_ + 3).toNat = at_.toNat + 3 := by
+    simpa only [three_nat] using add_exact at_ 3 (by simp only [three_nat]; omega)
+  have litEnd := add_exact (at_ + 3) n (by omega)
+  have hn := UInt32.lt_iff_toNat_lt.mp countWord
+  have hintStart := LRATRUP.counter_succ (at_ + 3 + n) end_ countWord
+  have finish := add_exact (at_ + 3 + n + 1) m (by omega)
+  have nextUsed := add_exact used n (by omega)
+  refine ⟨by omega, by omega, by omega, by omega, by omega, ?_, ?_, ?_⟩
+  · rw [UInt32.lt_iff_toNat_lt]; omega
+  · rw [UInt32.le_iff_toNat_le]; omega
+  · rw [UInt32.le_iff_toNat_le]; omega
 
-/-- The production continuation after its header checks. -/
-def checkerBody (words starts lengths : Array UInt32) (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32) (h : HeaderData) (fuel : Nat) :
-    Option (UInt32 × Array UInt32 × Array UInt32 × Array UInt8 × Array UInt32 × Array UInt8 × Array UInt32 × Array UInt32) := do
-  let ok := h.ok
-  let variables := h.variables
-  let clause_count := h.clause_count
-  let literal_end := h.literal_end
-  let step_words := h.step_words
-  let max_id := h.max_id
-  let store_words := h.store_words
-  let additions : UInt32 := 0
-  let deletions : UInt32 := 0
-  let status := (if ok then LRAT_ACCEPTED else LRAT_CAPACITY)
-  let i : UInt32 := (0 : UInt32)
-  let (alive, _i) ← lrat_check.loop1 alive ok max_id i fuel
-  let i := (0 : UInt32)
-  let (assign, _i) ← lrat_check.loop2 assign ok variables i fuel
-  let at_ : UInt32 := LRAT_HEADER_WORDS
-  let end_ : UInt32 := literal_end
-  let used : UInt32 := (0 : UInt32)
-  let empty : Bool := false
-  let c : UInt32 := (1 : UInt32)
-  let (starts, lengths, alive, store, status, at_, used, empty, _c) ← lrat_check.loop3 words starts lengths alive store status variables clause_count store_words at_ end_ used empty c fuel
-  let status ← (if ((status == LRAT_ACCEPTED) && (at_ != end_)) then (do
-      let status := LRAT_MALFORMED
-      pure status)
-    else (do
-      pure status))
-  let last : UInt32 := clause_count
-  let at_ := end_
-  let end_ := (if ok then (end_ + step_words) else (0 : UInt32))
-  let (starts, lengths, alive, store, assign, trail, status, additions, deletions, _at_, _used, empty, _last) ← lrat_check.loop5 words starts lengths alive store assign trail status additions deletions variables max_id store_words at_ end_ used empty last fuel
-  let status ← (if ((status == LRAT_ACCEPTED) && (!empty)) then (do
-      let status := LRAT_NO_EMPTY
-      pure status)
-    else (do
-      pure status))
-  let out ← (if (decide ((out.size.toUInt32) >= (3 : UInt32))) then (do
-      let out := out.setIfInBounds (0 : UInt32).toNat status
-      let out := out.setIfInBounds (1 : UInt32).toNat additions
-      let out := out.setIfInBounds (2 : UInt32).toNat deletions
-      pure out)
-    else (do
-      pure out))
-  pure (status, starts, lengths, alive, store, assign, trail, out)
+/-- Shared induction state for proof records under a putative input model. -/
+structure RecordState (words starts lengths : Array UInt32) (alive : Array UInt8)
+    (store : Array UInt32) (assign : Array UInt8) (trail : Array UInt32)
+    (variables max_id store_words at_ end_ used : UInt32) (empty : Bool)
+    (a : RupCheck.Assignment) : Prop where
+  database : InitialState words starts lengths alive store variables max_id store_words at_ end_ used empty a
+  assignCapacity : variables.toNat ≤ assign.size
+  trailCapacity : variables.toNat ≤ trail.size
+  zero : ∀ v, v < variables.toNat → assign.getD v 0 = 0
 
-theorem checker_eq_body (words starts lengths : Array UInt32) (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32) (fuel : Nat) :
-    lrat_check words starts lengths alive store assign trail out fuel =
-      checkerBody words starts lengths alive store assign trail out
-        (parseHeader words starts lengths alive store assign trail out) fuel := by
-  simp only [lrat_check, checkerBody, parseHeader, fits_spec, bind, Option.bind, Option.pure_def]
-  rfl
+/-- A production deletion preserves the complete record invariant, including
+on partial refusal; the caller's status handling still decides continuation. -/
+theorem deletion_record_state (fuel : Nat) (words starts lengths : Array UInt32)
+    (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8) (trail : Array UInt32)
+    (variables max_id store_words at_ end_ used k status : UInt32) (empty : Bool)
+    (alive' : Array UInt8) (status' d' : UInt32) (a : RupCheck.Assignment)
+    (state : RecordState words starts lengths alive store assign trail variables max_id store_words at_ end_ used empty a)
+    (header : lrat_fits at_ 3 end_ fuel = some true)
+    (body : lrat_fits (at_ + 3) k end_ fuel = some true)
+    (run : lrat_check.loop6 words alive status max_id at_ k 0 fuel = some (alive', status', d')) :
+    RecordState words starts lengths alive' store assign trail variables max_id store_words (at_ + 3 + k) end_ used empty a := by
+  obtain ⟨_, _, cursor⟩ := deletion_record_bounds fuel at_ k end_ header body
+  obtain ⟨size, subset⟩ := deletion_loop_subset fuel words alive status max_id at_ k 0 alive' status' d' run
+  refine ⟨?_, state.assignCapacity, state.trailCapacity, state.zero⟩
+  refine ⟨state.database.startCapacity, state.database.lengthCapacity,
+    by simpa only [size] using state.database.aliveCapacity,
+    state.database.storeCapacity, state.database.wordCapacity, cursor, state.database.usedBound,
+    ?_, ?_, ?_, state.database.noEmpty⟩
+  · intro id lower upper live
+    exact state.database.stored id lower upper (subset id live)
+  · exact deletion_preserves_variables fuel words starts lengths alive store status variables max_id at_ k 0
+      alive' status' d' run state.database.valid
+  · exact deletion_preserves_models fuel words starts lengths alive store status max_id at_ k 0
+      alive' status' d' run a state.database.models
 
-structure HeaderValid (words starts lengths : Array UInt32) (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32) (h : HeaderData) : Prop where
-  variables_eq : h.variables = words.getD 1 0
-  count_eq : h.clause_count = words.getD 2 0
-  startBound : 8 ≤ h.literal_end.toNat
-  literalCapacity : h.literal_end.toNat ≤ words.size
-  fullCapacity : (h.literal_end + h.step_words).toNat ≤ words.size
-  startsCapacity : h.max_id.toNat < starts.size
-  lengthsCapacity : h.max_id.toNat < lengths.size
-  aliveCapacity : h.max_id < alive.size.toUInt32
-  storeCapacity : h.store_words.toNat ≤ store.size
-  assignCapacity : h.variables.toNat ≤ assign.size
-  trailCapacity : h.variables.toNat ≤ trail.size
-  countBound : h.clause_count ≤ h.max_id
-  maxBound : h.max_id.toNat < 4294967295
-
-theorem parseHeader_valid (words starts lengths : Array UInt32) (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32)
-    (good : (parseHeader words starts lengths alive store assign trail out).ok = true) :
-    HeaderValid words starts lengths alive store assign trail out (parseHeader words starts lengths alive store assign trail out) := by
-  simp only [parseHeader, Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq] at good
-  simp only [and_assoc] at good
-  obtain ⟨ws, magic, os, litfit, stepfit, whole, sc, lc, ac, stc, asc, trc, cc⟩ := good
-  simp only [ws, magic, os, and_self, ite_true] at litfit stepfit whole sc lc ac stc asc trc cc
-  simp only [litfit, and_self, ite_true] at stepfit whole
-  simp only [parseHeader, Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq,
-    ws, magic, os, litfit, and_self, ite_true]
-  have wordMod : words.size.toUInt32.toNat ≤ words.size := Nat.mod_le _ _
-  have startMod : starts.size.toUInt32.toNat ≤ starts.size := Nat.mod_le _ _
-  have lengthMod : lengths.size.toUInt32.toNat ≤ lengths.size := Nat.mod_le _ _
-  have storeMod : store.size.toUInt32.toNat ≤ store.size := Nat.mod_le _ _
-  have assignMod : assign.size.toUInt32.toNat ≤ assign.size := Nat.mod_le _ _
-  have trailMod : trail.size.toUInt32.toNat ≤ trail.size := Nat.mod_le _ _
-  have sum : (LRAT_HEADER_WORDS + words.getD 3 0).toNat = 8 + (words.getD 3 0).toNat := by
-    apply add_exact
-    exact Nat.lt_of_le_of_lt litfit words.size.toUInt32.toNat_lt
-  constructor
-  · rfl
-  · rfl
-  · change 8 ≤ (LRAT_HEADER_WORDS + words.getD 3 0).toNat
-    rw [sum]; omega
-  · change (LRAT_HEADER_WORDS + words.getD 3 0).toNat ≤ words.size
-    rw [sum]; exact Nat.le_trans litfit wordMod
-  · rw [whole]; exact wordMod
-  · exact Nat.lt_of_lt_of_le (UInt32.lt_iff_toNat_lt.mp sc) startMod
-  · exact Nat.lt_of_lt_of_le (UInt32.lt_iff_toNat_lt.mp lc) lengthMod
-  · exact ac
-  · exact Nat.le_trans (UInt32.le_iff_toNat_le.mp stc) storeMod
-  · exact Nat.le_trans (UInt32.le_iff_toNat_le.mp asc) assignMod
-  · exact Nat.le_trans (UInt32.le_iff_toNat_le.mp trc) trailMod
-  · exact cc
-  · change (words.getD 5 0).toNat < 4294967295
-    change words.getD 5 0 < alive.size.toUInt32 at ac
-    have := UInt32.lt_iff_toNat_lt.mp ac
-    have := alive.size.toUInt32.toNat_lt
+/-- Accepted production addition with the actual parser framing checks,
+RUP execution, and store copy preserves all record-loop invariants. -/
+theorem addition_record_state (fuel : Nat) (words starts lengths : Array UInt32)
+    (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8) (trail : Array UInt32)
+    (variables max_id store_words at_ end_ used id last n m : UInt32) (empty : Bool)
+    (rupStarts rupLengths : Array UInt32) (rupAlive : Array UInt8) (rupStore : Array UInt32)
+    (rupAssign : Array UInt8) (rupTrail : Array UInt32) (store' : Array UInt32) (j' : UInt32)
+    (a : RupCheck.Assignment)
+    (state : RecordState words starts lengths alive store assign trail variables max_id store_words at_ end_ used empty a)
+    (order : id > last) (upper : id ≤ max_id)
+    (header : lrat_fits at_ 3 end_ fuel = some true)
+    (literals : lrat_fits (at_ + 3) n end_ fuel = some true)
+    (countWord : at_ + 3 + n < end_)
+    (hints : lrat_fits (at_ + 3 + n + 1) m end_ fuel = some true)
+    (space : lrat_fits used n store_words fuel = some true)
+    (rup : lrat_rup words (at_ + 3) n (at_ + 3 + n + 1) m starts lengths alive store assign trail variables max_id fuel =
+      some (LRAT_ACCEPTED, rupStarts, rupLengths, rupAlive, rupStore, rupAssign, rupTrail))
+    (copy : lrat_check.loop7 words rupStore used n (at_ + 3) 0 fuel = some (store', j')) :
+    RecordState words (rupStarts.setIfInBounds id.toNat used) (rupLengths.setIfInBounds id.toNat n)
+      (rupAlive.setIfInBounds id.toNat 1) store' rupAssign rupTrail variables max_id store_words
+      (at_ + 3 + n + 1 + m) end_ (used + n) (empty || (n == 0)) a := by
+  have bounds := addition_record_bounds fuel words store at_ n m used store_words end_
+    state.database.wordCapacity state.database.storeCapacity header literals countWord hints space
+  have positive : 0 < id := by
+    rw [UInt32.lt_iff_toNat_lt, UInt32.toNat_zero]
+    have := UInt32.lt_iff_toNat_lt.mp order
     omega
+  have un := UInt32.le_iff_toNat_le.mp upper
+  have capS := Nat.lt_of_le_of_lt un state.database.startCapacity
+  have capL := Nat.lt_of_le_of_lt un state.database.lengthCapacity
+  have capA := Nat.lt_of_le_of_lt un state.database.aliveCapacity
+  obtain ⟨sameS, sameL, sameA, sameStore⟩ := rup_database_unchanged fuel words (at_ + 3) n (at_ + 3 + n + 1) m
+    starts lengths alive store assign trail variables max_id LRAT_ACCEPTED rupStarts rupLengths rupAlive rupStore rupAssign rupTrail rup
+  subst rupStarts rupLengths rupAlive rupStore
+  obtain ⟨stored, valid, storeSize, assignSize, trailSize, zero⟩ := production_addition_state fuel words store starts lengths alive
+    assign trail variables max_id id used n (at_ + 3) (at_ + 3 + n + 1) m starts lengths alive store rupAssign rupTrail store' j'
+    state.assignCapacity state.trailCapacity state.zero state.database.stored state.database.valid capS capL
+    bounds.dest bounds.dest32 bounds.source bounds.source32 rup copy
+  have models := production_addition_preserves_models fuel words store starts lengths alive assign trail variables max_id
+    id used n (at_ + 3) (at_ + 3 + n + 1) m starts lengths alive store rupAssign rupTrail store' j'
+    state.database.stored state.database.valid state.assignCapacity state.zero positive upper capS capL capA
+    bounds.dest bounds.dest32 bounds.source bounds.source32 rup copy a state.database.models
+  have nonempty : n ≠ 0 := by
+    have execution := rup
+    rw [rup_extraction_eq] at execution
+    have clause := LRATRUP.production_rup_entails fuel words (at_ + 3) n (at_ + 3 + n + 1) m starts lengths alive store
+      assign trail variables max_id state.assignCapacity state.zero state.database.valid starts lengths alive store
+      rupAssign rupTrail execution a state.database.models
+    intro emptyClause
+    rw [emptyClause] at clause
+    simpa [LRATRUP.wordClause, RupCheck.SatisfiesClause] using clause
+  refine ⟨?_, by simpa only [assignSize] using state.assignCapacity,
+    by simpa only [trailSize] using state.trailCapacity, zero⟩
+  exact ⟨by simpa using state.database.startCapacity, by simpa using state.database.lengthCapacity,
+    by simpa using state.database.aliveCapacity, by simpa only [storeSize] using state.database.storeCapacity,
+    state.database.wordCapacity, bounds.cursorBound, bounds.usedBound, stored, valid, models,
+    by simp [state.database.noEmpty, nonempty]⟩
 
-theorem checkerBody_accepted_header (words starts lengths : Array UInt32) (alive : Array UInt8)
-    (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32) (h : HeaderData) (fuel : Nat)
-    (s l : Array UInt32) (v : Array UInt8) (t : Array UInt32) (x : Array UInt8) (y o : Array UInt32)
-    (run : checkerBody words starts lengths alive store assign trail out h fuel = some (LRAT_ACCEPTED, s, l, v, t, x, y, o)) :
-    h.ok = true := by
-  cases good : h.ok with
-  | true => rfl
-  | false =>
-    cases fuel with
-    | zero => simp [checkerBody, good, lrat_check.loop1] at run
-    | succ fuel =>
-      simp [checkerBody, good, lrat_check.loop1, lrat_check.loop2, lrat_check.loop3, lrat_check.loop5,
-        LRAT_ACCEPTED, LRAT_CAPACITY, option_ite] at run
-
-theorem checkerBody_no_model (words starts lengths : Array UInt32) (alive : Array UInt8)
-    (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32) (h : HeaderData) (fuel : Nat)
-    (validHeader : HeaderValid words starts lengths alive store assign trail out h)
-    (s l : Array UInt32) (v : Array UInt8) (t : Array UInt32) (x : Array UInt8) (y o : Array UInt32)
-    (run : checkerBody words starts lengths alive store assign trail out h fuel = some (LRAT_ACCEPTED, s, l, v, t, x, y, o))
-    (a : RupCheck.Assignment) (input : InitialModels words h.clause_count.toNat 8 a) : False := by
-  have good := checkerBody_accepted_header (run := run)
-  unfold checkerBody at run
-  simp only [good, ite_true] at run
-  cases liveRun : lrat_check.loop1 alive true h.max_id 0 fuel with
-  | none => simp [liveRun] at run
-  | some pair =>
-    rcases pair with ⟨live, liveEnd⟩
-    simp only [liveRun, bind, Option.bind, Option.pure_def] at run
-    cases assignRun : lrat_check.loop2 assign true h.variables 0 fuel with
-    | none => simp [assignRun] at run
-    | some pair =>
-      rcases pair with ⟨scratch, scratchEnd⟩
-      simp only [assignRun] at run
-      cases initialRun : lrat_check.loop3 words starts lengths live store LRAT_ACCEPTED h.variables h.clause_count h.store_words
-          LRAT_HEADER_WORDS h.literal_end 0 false 1 fuel with
-      | none => simp [initialRun] at run
-      | some initial =>
-        rcases initial with ⟨is, il, iv, it, istatus, iat, iused, iempty, ic⟩
-        simp only [initialRun, option_ite] at run
-        generalize statusDef : (if ((istatus == LRAT_ACCEPTED) && (iat != h.literal_end)) then LRAT_MALFORMED else istatus) = parserStatus at run
-        cases stepRun : lrat_check.loop5 words is il iv it scratch trail parserStatus 0 0 h.variables h.max_id h.store_words
-            h.literal_end (h.literal_end + h.step_words) iused iempty h.clause_count fuel with
-        | none => simp [stepRun] at run
-        | some result =>
-          rcases result with ⟨fs, fl, fv, ft, fx, fy, fstatus, fadds, fdels, fat, fused, fempty, flast⟩
-          simp only [stepRun] at run
-          have finish : fstatus = LRAT_ACCEPTED ∧ fempty = true := by
-            cases fempty <;> by_cases accepted : fstatus = LRAT_ACCEPTED <;>
-              simp only [accepted, beq_iff_eq, Bool.not_false, Bool.not_true, Bool.and_true, Bool.and_false,
-                Bool.false_eq_true, ite_false, ite_true] at run <;>
-              split at run <;> simp_all [LRAT_NO_EMPTY, LRAT_ACCEPTED]
-          obtain ⟨rfl, rfl⟩ := finish
-          have ps := steps_accepted_input (run := stepRun)
-          rw [ps] at stepRun statusDef
-          have initialAccepted : istatus = LRAT_ACCEPTED := by
-            split at statusDef
-            · contradiction
-            · exact statusDef
-          subst istatus
-          obtain ⟨decoded, _, scratchSize, scratchZero⟩ := production_initialization fuel words starts lengths alive store assign
-            h.variables h.clause_count h.max_id h.store_words 8 h.literal_end live liveEnd scratch scratchEnd
-            is il iv it iat iused iempty ic a validHeader.startsCapacity validHeader.lengthsCapacity
-            validHeader.aliveCapacity validHeader.storeCapacity validHeader.assignCapacity validHeader.literalCapacity
-            (by rw [UInt32.le_iff_toNat_le]; exact validHeader.startBound) validHeader.countBound input liveRun assignRun initialRun
-          have state : StepModel is il iv it scratch trail h.variables h.max_id h.store_words iused a :=
-            ⟨⟨decoded.startCapacity, decoded.lengthCapacity, decoded.aliveCapacity, decoded.storeCapacity,
-              UInt32.le_iff_toNat_le.mp decoded.usedBound, decoded.stored, decoded.valid, decoded.models⟩,
-              by rw [scratchSize]; exact validHeader.assignCapacity, validHeader.trailCapacity, scratchZero⟩
-          have impossible := (steps_loop_models fuel words h.variables h.max_id h.store_words (h.literal_end + h.step_words) a
-            validHeader.fullCapacity is il iv it scratch trail 0 0 h.literal_end iused iempty h.clause_count state decoded.noEmpty
-            fs fl fv ft fx fy fadds fdels fat fused true flast stepRun).2
-          contradiction
-
-/-- Every accepted call to the extracted production checker refutes its
-independently decoded initial formula. All parser, store, and scratch
-preconditions are derived from the call itself. -/
-theorem production_record_sound (words starts lengths : Array UInt32) (alive : Array UInt8)
-    (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32) (fuel : Nat)
-    (s l : Array UInt32) (v : Array UInt8) (t : Array UInt32) (x : Array UInt8) (y o : Array UInt32)
-    (run : lrat_check words starts lengths alive store assign trail out fuel = some (LRAT_ACCEPTED, s, l, v, t, x, y, o)) :
-    ¬ ∃ a, InitialModels words (words.getD 2 0).toNat 8 a := by
-  rw [checker_eq_body] at run
-  have good := checkerBody_accepted_header (run := run)
-  have header := parseHeader_valid words starts lengths alive store assign trail out good
-  intro ⟨a, model⟩
-  apply checkerBody_no_model (validHeader := header) (run := run) (a := a)
-  rw [header.count_eq]
-  exact model
+/-- Once the outer proof loop is refused, it cannot exit with acceptance.
+All parameters are implicit so parser branches can use the observed run. -/
+theorem record_input_accepted {fuel : Nat} {words starts lengths : Array UInt32}
+    {alive : Array UInt8} {store : Array UInt32} {assign : Array UInt8} {trail : Array UInt32}
+    {status additions deletions variables max_id store_words at_ end_ used : UInt32} {empty : Bool} {last : UInt32}
+    {starts' lengths' : Array UInt32} {alive' : Array UInt8} {store' : Array UInt32}
+    {assign' : Array UInt8} {trail' : Array UInt32}
+    {additions' deletions' at' used' : UInt32} {empty' : Bool} {last' : UInt32}
+    (run : lrat_check.loop5 words starts lengths alive store assign trail status additions deletions variables max_id
+      store_words at_ end_ used empty last fuel =
+      some (starts', lengths', alive', store', assign', trail', LRAT_ACCEPTED, additions', deletions', at', used', empty', last')) :
+    status = LRAT_ACCEPTED := by
+  apply Classical.byContradiction
+  intro refused
+  cases fuel with
+  | zero => simp [lrat_check.loop5] at run
+  | succ fuel =>
+    simp only [lrat_check.loop5, beq_eq_false_iff_ne.mpr refused, Bool.and_false, Bool.false_eq_true,
+      ite_false, Option.pure_def, Option.some.injEq, Prod.mk.injEq] at run
+    exact refused run.2.2.2.2.2.2.1
 
 end Oak.LRATChecker
