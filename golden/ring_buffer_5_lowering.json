@@ -93,7 +93,7 @@
       "type": "VariableDeclaration",
       "data": {
         "name": "events",
-        "type": "((Ring.u8)[8])"
+        "type": "Ring[u8, 8]"
       },
       "position": {
         "line": 8,
