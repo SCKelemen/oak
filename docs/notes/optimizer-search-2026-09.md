@@ -498,13 +498,23 @@ the verified instruction/code-size reduction, not a timing improvement.
 
 A final single-use constant carrier remains in `translate`: `movz w4, #1`
 near entry and `mov w0, w4` on the success arm. The 2026-10-08 post-schedule
-increment retargets only a one-instruction constant with one whole-body write
-and read when its same-width copy reader is dominated and every intervening
-path is stable. The selected `proven` body falls 51→50 instructions and cost
+increment retargets only a one-instruction constant with one reader in its
+reachable live range when its same-width copy reader is dominated and every
+intervening path is stable. The selected `proven` body falls 51→50 instructions and cost
 79.0→78.0; text drops 4 bytes and the aligned object 8 bytes, with 27 unchanged
 relocations and all eight OS conformance tests passing. Runtime samples overlap
 (4.26→4.24 ns/op mean), so this is recorded as a static win. General
 rematerialization still belongs in the virtual-register backend.
+
+That cleanup canonicalizes `trans_result = 0` to `str xzr`, exposing a final
+failure-path reload of the same 64-bit scalar global. A narrow dominated-zero
+forwarding rule replaces the reload only when the global address is exact and
+every path is call-free, store-free, and base-stable. `translate` stays at 50
+instructions but drops from five loads to four, modeled stalls 15→12, and cost
+78.0→73.5, still `proven`; object/text size and all 27 relocations are
+unchanged, and all eight conformance tests pass. Runtime was noise-dominated.
+Removing the shared store on that failure arm is branch threading, not memory
+forwarding, and remains separate.
 
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
