@@ -10,6 +10,8 @@ import Oak.WasmExecution
 import Oak.BitwiseFunction
 import Oak.AArch64BitwiseFunction
 import Oak.RiscVBitwiseFunction
+import Oak.MinimalELF
+import Oak.RiscVBitwiseELF
 import Oak.Effects
 import Oak.EffectRows
 import Oak.OptIRCallSummaryCertificate
