@@ -10,11 +10,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/stdlib"
 )
 
-// Compare actual Oak results against a separate arbitrary-precision oracle,
-// then ask Lean's kernel to check the same concrete decisions against the
-// model whose universal placement laws are proved in Oak.LinkerLayout.
+// Compare actual Oak results against a separate arbitrary-precision oracle.
+// Formal CI also mechanically extracts native_place from the same type-checked
+// Oak source and asks Lean's kernel to check every concrete result against both
+// that extracted definition and the proved Oak.LinkerLayout model. This closes
+// source-drift for the placement kernel, but remains bounded correspondence;
+// the universal laws continue to live in Oak.LinkerLayout.
 func TestE2ESelfHostedPlacement(t *testing.T) {
 	type input struct {
 		base                              uint64
@@ -35,15 +40,19 @@ func TestE2ESelfHostedPlacement(t *testing.T) {
 	for i := 0; i < 128; i++ {
 		inputs = append(inputs, input{rng.Uint64(), rng.Uint32(), rng.Uint32(), 1 << uint(i%13), rng.Uint32()})
 	}
-	var oak strings.Builder
+
+	var core strings.Builder
 	for _, name := range []string{"native.oak", "objects.oak"} {
 		data, err := os.ReadFile(filepath.Join("..", "asm", "selfhost", name))
 		if err != nil {
 			t.Fatal(err)
 		}
-		oak.Write(data)
-		oak.WriteByte('\n')
+		core.Write(data)
+		core.WriteByte('\n')
 	}
+
+	var oak strings.Builder
+	oak.WriteString(core.String())
 	oak.WriteString(`putchar: (ch: c.Int): c.Int = c.extern("putchar")
 emit: (word: u32): () {
   i: u32 = 0
@@ -60,8 +69,20 @@ main: (): i32 {
 	if code != 0 || abnormal || len(out) != 12*len(inputs) {
 		t.Fatalf("Oak placement exit (%d,%v), bytes %d, want %d", code, abnormal, len(out), 12*len(inputs))
 	}
+
+	extracted, err := New().WithSource("linker-placement.oak", stdlib.Prelude+"\n"+core.String()).
+		EmitLeanRoots("Oak.LinkerPlacementExtracted", []string{"NativePlacement", "native_place"}).Get()
+	if err != nil {
+		t.Fatalf("extract native_place: %v", err)
+	}
+	if strings.Contains(extracted, "sorry") {
+		t.Fatal("linker placement extraction contains sorry")
+	}
+
 	var lean strings.Builder
-	lean.WriteString("import Oak.LinkerLayout\nopen Oak.LinkerLayout\n")
+	lean.WriteString("import Oak.LinkerLayout\n")
+	lean.WriteString(extracted)
+	lean.WriteString("\nopen Oak.LinkerLayout\n")
 	limit := new(big.Int).Lsh(big.NewInt(1), 64)
 	for i, c := range inputs {
 		r := []byte(out[i*12 : (i+1)*12])
@@ -88,7 +109,9 @@ main: (): i32 {
 		if status == 0 {
 			result = fmt.Sprintf("some (%d, %d)", start, stop)
 		}
-		fmt.Fprintf(&lean, "example : place %d %d %d %d %d = %s := by decide\n", c.base, c.cursor, c.size, c.alignment, c.capacity, result)
+		fmt.Fprintf(&lean, "example : place %d %d %d %d %d = %s := by decide +kernel\n", c.base, c.cursor, c.size, c.alignment, c.capacity, result)
+		fmt.Fprintf(&lean, "example : Oak.LinkerPlacementExtracted.native_place %d %d %d %d %d 16 = some ({ status := %d, start := %d, end_ := %d } : Oak.LinkerPlacementExtracted.NativePlacement) := by decide +kernel\n",
+			c.base, c.cursor, c.size, c.alignment, c.capacity, status, start, stop)
 	}
 	t.Logf("%d compiled Oak placement decisions match the independent oracle", len(inputs))
 	lake := findLake()
@@ -115,6 +138,7 @@ main: (): i32 {
 	run := exec.Command(lake, "env", "lean", driver)
 	run.Dir = root
 	if out, err := run.CombinedOutput(); err != nil {
-		t.Fatalf("Lean correspondence: %v\n%s", err, out)
+		t.Fatalf("Lean source/model correspondence: %v\n%s", err, out)
 	}
+	t.Logf("kernel checked %d extracted-source and %d model placement claims", len(inputs), len(inputs))
 }
