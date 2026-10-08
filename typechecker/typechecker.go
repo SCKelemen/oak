@@ -4653,6 +4653,11 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 			return
 		}
 		if stmt.Value == nil {
+			if path, callable := tc.zeroContainsCallable(varType); callable {
+				tc.addTypeDiagnostic(stmt.Name, CodeCallableInitializer,
+					fmt.Sprintf("variable %s: callable storage %s%s requires an explicit initializer; functions have no zero value", stmt.Name.Value, stmt.Name.Value, path))
+				return
+			}
 			// A zero-initialized binding whose type holds a refinement is
 			// admitted only when zero satisfies the predicate: nothing else
 			// may produce a refined value (typechecker/refinements.go).
