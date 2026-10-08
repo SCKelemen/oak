@@ -2,7 +2,7 @@ package repl
 
 // Lean statements for a session's obligations (docs/spec/83-modules.md
 // section 10, docs/spec/85-discipline.md). The compiler records what it
-// could not discharge; this file states each record as a Lean theorem over
+// could not discharge; this file states each open record as a named proposition over
 // the formal models in spec/lean so the programmer proves it there:
 //
 //   - OAK-D0103 (unbounded loop): the loop is translated into Oak.Loops —
@@ -36,7 +36,8 @@ import (
 // LeanObligations renders every open obligation of the session as a Lean
 // file importing the governing models. The result elaborates under the
 // repository's `lake build`; theorems whose discharge needs a programmer's
-// argument carry `sorry` with the discharge skeleton in a comment.
+// argument are Prop-valued definitions, not admitted proofs. The explicit
+// OAK-OBLIGATION marker keeps them visible as open in :lean check.
 func (s *Session) LeanObligations() (string, error) {
 	model, err := compiler.New().
 		WithSessionSources(s.ModuleDir, map[string]string{"repl.oak": s.Source()}).
@@ -47,7 +48,7 @@ func (s *Session) LeanObligations() (string, error) {
 	}
 	var out strings.Builder
 	out.WriteString("import Oak.Loops\nimport Oak.Discipline\nimport Oak.Regions\n\n")
-	out.WriteString("/-! Obligations of an Oak REPL session, stated by `:lean`. Each theorem is one\nrecorded assumption the compiler could not discharge; proving it here discharges\nit. Generated — edit the proofs, regenerate the statements. -/\n\n")
+	out.WriteString("/-! Obligations of an Oak REPL session, stated by `:lean`. Each open Prop definition\nnames a recorded assumption; it supplies no proof. Prove it separately, or refute\nthe claim and justify a corrected scope. Generated — regenerate the statements. -/\n\n")
 	out.WriteString("namespace Oak.Session\n\n")
 	count := 0
 
@@ -70,9 +71,9 @@ func (s *Session) LeanObligations() (string, error) {
 			fmt.Fprintf(&out, "-- uninterpreted functions (constrain F with hypotheses): %s\n", legend(translation.functions))
 		}
 		fmt.Fprintf(&out, "def %s : Oak.Loops.Loop :=\n  { guard := %s,\n    body := [%s],\n    writes := [%s] }\n\n", name, translation.guard, strings.Join(translation.assigns, ",\n            "), strings.Join(translation.writes, ",\n              "))
-		fmt.Fprintf(&out, "theorem %s_terminates : ∀ (F : Oak.Loops.Funs) (s : Oak.Loops.State), Oak.Loops.Terminates F %s s := by\n", name, name)
-		fmt.Fprintf(&out, "  -- Discharge: intro F; exact Oak.Loops.ranking_terminates F %s (fun s => <rank>) (by intro s h; <decrease>)\n", name)
-		out.WriteString("  sorry\n\n")
+		fmt.Fprintf(&out, "-- OAK-OBLIGATION %s_terminates: open\ndef %s_terminates : Prop :=\n  ∀ (F : Oak.Loops.Funs) (s : Oak.Loops.State), Oak.Loops.Terminates F %s s\n", name, name, name)
+		fmt.Fprintf(&out, "-- Possible discharge in a separate theorem: intro F; exact Oak.Loops.ranking_terminates F %s (fun s => <rank>) (by intro s h; <decrease>)\n", name)
+		out.WriteString("\n")
 	}
 
 	// OAK-D0102: tail-only cycles, discharged by the recorded certificate.
@@ -122,7 +123,7 @@ func (s *Session) LeanObligations() (string, error) {
 			}
 		default:
 			fmt.Fprintf(&out, "-- `%s` is %s, `%s` is %s; constrain the symbolic region(s) and prove.\n", data.RequestedName, describeFact(data.Requested), data.ExistingName, describeFact(data.Existing))
-			fmt.Fprintf(&out, "theorem %s_disjoint (requested existing : Oak.Regions.Region)%s :\n    Oak.Regions.Disjoint requested existing := by\n  sorry\n\n", name, factHypotheses(data))
+			fmt.Fprintf(&out, "-- OAK-OBLIGATION %s_disjoint: open\ndef %s_disjoint : Prop :=\n  ∀ (requested existing : Oak.Regions.Region)%s,\n    Oak.Regions.Disjoint requested existing\n\n", name, name, factHypotheses(data))
 		}
 	}
 
@@ -152,9 +153,21 @@ func writeOperatorLaws(out *strings.Builder, model *compiler.SemanticModel) int 
 	roots := map[string]bool{}
 	for _, law := range laws {
 		roots[law.Function] = true
+		// An identity element is part of the proposition even when the
+		// operator body never calls it. Extract its definition as well.
+		if law.Law == "identity" {
+			switch element := law.Argument.(type) {
+			case *ast.Identifier:
+				roots[element.Value] = true
+			case *ast.InvocationExpression:
+				if fn, ok := element.Function.(*ast.Identifier); ok && len(element.Arguments) == 0 {
+					roots[fn.Value] = true
+				}
+			}
+		}
 	}
 	extracted, err := leancg.Emit(model.Tree.Root, model.TypeChecker, "Defs", roots)
-	out.WriteString("/-! Declared operator laws: each is the author's claim, stated here over the\nextracted definition so it can be proved. A regrouping backend relies on the\nlaw; a `sorry` left standing means the program's grouping is being trusted. -/\n\n")
+	out.WriteString("/-! Declared operator laws: each is the author's claim, stated here over the\nextracted definition so it can be proved. A regrouping backend relies on the\nlaw; an open proposition supplies no proof and leaves that grouping trusted. -/\n\n")
 	if err != nil {
 		fmt.Fprintf(out, "-- The operator functions are outside the extracted subset (%s); the laws are\n-- stated informally.\n\n", err)
 	} else {
@@ -201,14 +214,14 @@ func writeOperatorLaws(out *strings.Builder, model *compiler.SemanticModel) int 
 			element := law.Argument.String()
 			fmt.Fprintf(out, "-- theorem %s_left : ∀ a, %s = a\n-- theorem %s_right : ∀ a, %s = a\n\n", name, app(element, "a"), name, app("a", element))
 		case law.Law == "associative":
-			fmt.Fprintf(out, "theorem %s (a b c : Defs.%s) (fuel : Nat) :\n    (Defs.%s a b fuel >>= fun ab => Defs.%s ab c fuel) = (Defs.%s b c fuel >>= fun bc => Defs.%s a bc fuel) := by\n  sorry\n\n", name, typ, fn, fn, fn, fn)
+			fmt.Fprintf(out, "-- OAK-OBLIGATION %s: open\ndef %s : Prop :=\n  ∀ (a b c : Defs.%s) (fuel : Nat),\n    (Defs.%s a b fuel >>= fun ab => Defs.%s ab c fuel) = (Defs.%s b c fuel >>= fun bc => Defs.%s a bc fuel)\n\n", name, name, typ, fn, fn, fn, fn)
 		case law.Law == "commutative":
-			fmt.Fprintf(out, "theorem %s (a b : Defs.%s) (fuel : Nat) :\n    Defs.%s a b fuel = Defs.%s b a fuel := by\n  sorry\n\n", name, typ, fn, fn)
+			fmt.Fprintf(out, "-- OAK-OBLIGATION %s: open\ndef %s : Prop :=\n  ∀ (a b : Defs.%s) (fuel : Nat),\n    Defs.%s a b fuel = Defs.%s b a fuel\n\n", name, name, typ, fn, fn)
 		case law.Law == "idempotent":
-			fmt.Fprintf(out, "theorem %s (a : Defs.%s) (fuel : Nat) :\n    Defs.%s a a fuel = some a := by\n  sorry\n\n", name, typ, fn)
+			fmt.Fprintf(out, "-- OAK-OBLIGATION %s: open\ndef %s : Prop :=\n  ∀ (a : Defs.%s) (fuel : Nat),\n    Defs.%s a a fuel = some a\n\n", name, name, typ, fn)
 		default: // identity, with an extracted element
-			fmt.Fprintf(out, "theorem %s_left (a : Defs.%s) (fuel : Nat) :\n    (Defs.%s fuel >>= fun e => Defs.%s e a fuel) = some a := by\n  sorry\n\n", name, typ, element, fn)
-			fmt.Fprintf(out, "theorem %s_right (a : Defs.%s) (fuel : Nat) :\n    (Defs.%s fuel >>= fun e => Defs.%s a e fuel) = some a := by\n  sorry\n\n", name, typ, element, fn)
+			fmt.Fprintf(out, "-- OAK-OBLIGATION %s_left: open\ndef %s_left : Prop :=\n  ∀ (a : Defs.%s) (fuel : Nat),\n    (Defs.%s fuel >>= fun e => Defs.%s e a fuel) = some a\n\n", name, name, typ, element, fn)
+			fmt.Fprintf(out, "-- OAK-OBLIGATION %s_right: open\ndef %s_right : Prop :=\n  ∀ (a : Defs.%s) (fuel : Nat),\n    (Defs.%s fuel >>= fun e => Defs.%s a e fuel) = some a\n\n", name, name, typ, element, fn)
 			stated++
 		}
 		stated++

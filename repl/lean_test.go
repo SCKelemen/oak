@@ -10,7 +10,8 @@ import (
 
 // sessionObligationsFile is the checked-in rendering of exampleSession's
 // obligations; the Lean CI job elaborates it (and Oak/SessionObligationsProved
-// discharges its statements), so the REPL's emitter is checked by Lean.
+// proves two and SessionObligationsRefuted refutes three universal claims),
+// so the REPL's emitter is checked without admitting the open obligations.
 const sessionObligationsFile = "../spec/lean/Oak/SessionObligations.lean"
 
 // exampleSession records one obligation of each stated kind: an unbounded
@@ -107,7 +108,7 @@ func TestLeanObligationsReportUntranslatableLoops(t *testing.T) {
 	}
 	// The inner loop is itself an obligation and is translatable; only it
 	// gets a definition — the outer loop is reported, never approximated.
-	if strings.Count(text, "def loop_spin") != 1 {
+	if strings.Count(text, " : Oak.Loops.Loop :=") != 1 {
 		t.Fatalf("exactly the inner loop must be translated:\n%s", text)
 	}
 	empty := NewSession(t.TempDir())
@@ -188,8 +189,8 @@ func TestLeanObligationsStateOperatorLaws(t *testing.T) {
 	for _, want := range []string{
 		"namespace Defs",
 		"def add (a : Vec) (b : Vec) (fuel : Nat) : Option (Vec)",
-		"theorem law_add_associative (a b c : Defs.Vec) (fuel : Nat) :\n    (Defs.add a b fuel >>= fun ab => Defs.add ab c fuel) = (Defs.add b c fuel >>= fun bc => Defs.add a bc fuel) := by\n  sorry",
-		"theorem law_add_commutative (a b : Defs.Vec) (fuel : Nat) :\n    Defs.add a b fuel = Defs.add b a fuel := by\n  sorry",
+		"-- OAK-OBLIGATION law_add_associative: open\ndef law_add_associative : Prop :=\n  ∀ (a b c : Defs.Vec) (fuel : Nat),\n    (Defs.add a b fuel >>= fun ab => Defs.add ab c fuel) = (Defs.add b c fuel >>= fun bc => Defs.add a bc fuel)",
+		"-- OAK-OBLIGATION law_add_commutative: open\ndef law_add_commutative : Prop :=\n  ∀ (a b : Defs.Vec) (fuel : Nat),\n    Defs.add a b fuel = Defs.add b a fuel",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
@@ -220,9 +221,9 @@ func TestLeanStatesIdentityAndIdempotent(t *testing.T) {
 	}
 	for _, want := range []string{
 		"declares `identity(hist_zero())`",
-		"theorem law_merge_identity_left (a : Defs.Hist) (fuel : Nat) :\n    (Defs.hist_zero fuel >>= fun e => Defs.merge e a fuel) = some a := by\n  sorry",
-		"theorem law_merge_identity_right (a : Defs.Hist) (fuel : Nat) :\n    (Defs.hist_zero fuel >>= fun e => Defs.merge a e fuel) = some a := by\n  sorry",
-		"theorem law_merge_idempotent (a : Defs.Hist) (fuel : Nat) :\n    Defs.merge a a fuel = some a := by\n  sorry",
+		"-- OAK-OBLIGATION law_merge_identity_left: open\ndef law_merge_identity_left : Prop :=\n  ∀ (a : Defs.Hist) (fuel : Nat),\n    (Defs.hist_zero fuel >>= fun e => Defs.merge e a fuel) = some a",
+		"-- OAK-OBLIGATION law_merge_identity_right: open\ndef law_merge_identity_right : Prop :=\n  ∀ (a : Defs.Hist) (fuel : Nat),\n    (Defs.hist_zero fuel >>= fun e => Defs.merge a e fuel) = some a",
+		"-- OAK-OBLIGATION law_merge_idempotent: open\ndef law_merge_idempotent : Prop :=\n  ∀ (a : Defs.Hist) (fuel : Nat),\n    Defs.merge a a fuel = some a",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
@@ -244,8 +245,8 @@ func TestLeanStatesLawsOnPlainFunctions(t *testing.T) {
 	}
 	for _, want := range []string{
 		"`join` on `u32` declares `associative`",
-		"theorem law_join_associative (a b c : Defs.u32) (fuel : Nat) :\n    (Defs.join a b fuel >>= fun ab => Defs.join ab c fuel) = (Defs.join b c fuel >>= fun bc => Defs.join a bc fuel) := by\n  sorry",
-		"theorem law_join_commutative (a b : Defs.u32) (fuel : Nat) :\n    Defs.join a b fuel = Defs.join b a fuel := by\n  sorry",
+		"-- OAK-OBLIGATION law_join_associative: open\ndef law_join_associative : Prop :=\n  ∀ (a b c : Defs.u32) (fuel : Nat),\n    (Defs.join a b fuel >>= fun ab => Defs.join ab c fuel) = (Defs.join b c fuel >>= fun bc => Defs.join a bc fuel)",
+		"-- OAK-OBLIGATION law_join_commutative: open\ndef law_join_commutative : Prop :=\n  ∀ (a b : Defs.u32) (fuel : Nat),\n    Defs.join a b fuel = Defs.join b a fuel",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
