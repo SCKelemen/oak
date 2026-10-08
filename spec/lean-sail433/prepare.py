@@ -74,6 +74,7 @@ def main() -> None:
     report = {"scope": "Exact source-copy verification of provenance-pinned upstream export",
               "upstream_artifact": provenance["artifact"],
               "upstream_provenance": provenance["provenance"],
+              "support_source": provenance["support_source"],
               "source_toolchain": OLD_TOOLCHAIN, "build_toolchain": NEW_TOOLCHAIN,
               "declared_sail_revision": SAIL_REV,
               "model_sources": model_manifest, "sail_sources": sail_manifest}

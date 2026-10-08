@@ -192,5 +192,10 @@
     "Sail/Sail.lean": "4a32822b287f6890bb9e527fca865a2b9751b2aed200be805c479ca6687b670f",
     "lakefile.toml": "b211177c7f8fceca1808c6a6f15471ce5d8c168f5873b276ef5caee44be834b7"
   },
-  "scope": "Exact generated source identity from a verified GitHub Actions artifact, not a proof of the Sail exporter."
+  "scope": "Exact generated source identity from a verified GitHub Actions artifact, not a proof of the Sail exporter.",
+  "support_source": {
+    "commit": "079463134b9c50450b8393e1566a09fc492a34d9",
+    "provenance": "Revision declared by the verified export lock/provenance. Sail library/configuration hashes below were computed from upstream git blobs at this revision and compared byte-for-byte with the local checkout; these files are not members of the export artifact.",
+    "repository": "https://github.com/rems-project/lean-sail"
+  }
 }

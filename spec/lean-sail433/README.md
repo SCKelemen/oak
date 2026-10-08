@@ -34,8 +34,11 @@ The required Sail CI lane retains its pinned source checkout/generation and
 original 4.29 checks, then runs this preparation, the bounded 4.33 targets, and
 `audit.py`. `export-provenance.json` records upstream artifact 11540095028 from
 run 37749261545, its outer ZIP digest, original pins, all 164 model/configuration
-file hashes, and all 9 pinned Sail support/configuration hashes. `verify_export.py`
-requires those exact source inventories and bytes before preparation, including
+file hashes. The separate `support_source` record pins the 9 Sail library/configuration
+files to upstream lean-sail git revision `079463134b9c50450b8393e1566a09fc492a34d9`;
+those hashes were taken from that commit and checked against the local checkout,
+not extracted from the model ZIP. `verify_export.py` requires both exact source
+inventories and bytes before preparation, including
 on a restored build cache. It does not depend on an expiring artifact download
 at CI runtime or claim exporter correctness. Updating external sources requires
 an explicit provenance/hash review, not merely editing a version string.

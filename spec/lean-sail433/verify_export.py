@@ -13,6 +13,8 @@ from pathlib import Path
 
 def verify_export(generated: Path, sail: Path) -> dict:
     pins = json.loads((Path(__file__).parent / "export-provenance.json").read_text())
+    if pins["support_source"]["commit"] != pins["provenance"]["lean_sail_commit"]:
+        raise RuntimeError("Support revision disagrees with export provenance")
     for root, files, label in [(generated, pins["model_files"], "model"),
                                (sail, pins["sail_files"], "Sail support")]:
         actual = {p.relative_to(root).as_posix() for p in root.rglob("*.lean")
@@ -28,6 +30,7 @@ def verify_export(generated: Path, sail: Path) -> dict:
                 raise RuntimeError(f"Missing/non-regular {label} input: {path}")
             if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
                 raise RuntimeError(f"Provenance source hash mismatch: {path}")
-    print(f"Verified artifact {pins['artifact']['id']} provenance: "
-          f"{len(pins['model_files'])} model/config and {len(pins['sail_files'])} support/config hashes")
+    print(f"Verified artifact {pins['artifact']['id']}: {len(pins['model_files'])} model/config hashes; "
+          f"separately pinned support git revision {pins['support_source']['commit']}: "
+          f"{len(pins['sail_files'])} library/config hashes")
     return pins
