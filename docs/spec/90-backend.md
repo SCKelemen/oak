@@ -407,14 +407,19 @@ passes them through untouched.
 
 Naming an operation must not cost a call. A private (not `pub`), named,
 non-generic, non-method function with an Oak body that calls no user-defined
-function, contains no loop, and spans at most twelve source lines is emitted
+function, contains no loop, is used only by direct calls, and spans at most
+twelve source lines is emitted
 as a forced-inline helper (`OAK_INLINE`: C99 `extern inline` with the
 always-inline attribute) in both its prototype and definition. The C
 compiler then inlines every call at every optimization level, including
 `-O0`, rather than by heuristic, while the external definition is still
 emitted so the symbol remains available to linkers and assembly inspection. Exported, extern, and asm-backed functions
 keep external linkage; recursive and looping functions are never marked, so
-the C compiler is never asked to inline what it cannot. The judgment is the
+the C compiler is never asked to inline what it cannot. A function used as
+a value (its address is taken, including as an argument, local initializer,
+or aggregate member) is not forced inline: an indirect call need not have a
+compile-time-known target. Direct source inlining and ordinary C optimization
+remain available. The shape judgment is the
 discipline analyzer's call-graph and loop walk (`InlineHelperShape`), so the
 backend and the recursion policy share one authority.
 
@@ -459,9 +464,9 @@ a helper that writes through a span parameter
 is inlined only where nothing else in the statement is evaluated; a helper
 whose locals or copied arguments are not scalars, or whose tail holds a
 block, stays a call where the C form would need a block in an expression.
-A call the pass leaves is still a call to a forced-inline helper, so the
-generated code is never slower than before — only sometimes still
-checked. The semantic model, the language server, the Lean emitters, and
+A direct call the pass leaves is still eligible for a forced-inline helper
+when the C-side conditions above hold; address-taken functions retain an
+ordinary callable definition. The semantic model, the language server, the Lean emitters, and
 the prover see the program as written. An expression body (`f: (…): T =
 expr`) is the one-statement block it denotes, as a candidate and as a
 caller (it becomes a block when statements are hoisted into it), and the
@@ -516,7 +521,7 @@ The first source and native rules are:
 | `reuse-record-base-carriers` | `share-record-bases` proved useful and the first computed destination is preserved through every replacement read | the child candidate independently passes the seam checker and receives a non-trusted whole-body verdict | the first destination carries the base when no otherwise-unused scratch exists |
 | `reuse-remaining-record-base-carriers` | the one-group carrier child proved useful and another distinct repeated base group remains; each iteration recomputes the acyclic CFG and liveness after removing at least one materialization | the fixed-point child independently passes the seam checker and receives a non-trusted whole-body verdict | all independently admitted carrier groups are reused while the established one-group body remains a fallback |
 | `reschedule-record-base-carriers` | the carrier child was useful and its late rewrites expose a schedule whose modeled stalls strictly decrease | the separately materialized child independently passes the seam checker and receives a non-trusted whole-body verdict | the final dependence graph is rescheduled without changing the instruction vocabulary; a neutral reorder keeps the byte-stable parent |
-| `post-schedule-cleanup` | ordinary late cleanup is active, fill unrolling is not, and the ordered phase registers this child after `late-cleanup`; exact repeated add-immediates additionally require dominance and all-path source/destination stability; a constant carrier requires one whole-body write and read, a same-width copy reader, dominance, and the same all-path stability | the separately materialized child passes the seam checker and receives a non-trusted whole-body verdict | final copies, branches to adjacent alias labels, unchanged dominated address recomputations, and a single-use one-instruction constant carrier disappear, while the earlier cleaned parent remains selectable and fill plans retain their bounded validation fallback |
+| `post-schedule-cleanup` | ordinary late cleanup is active, fill unrolling is not, and the ordered phase registers this child after `late-cleanup`; exact repeated add-immediates require dominance and all-path source/destination stability; a constant carrier requires one reader in the definition's reachable live range; dominated zero-global reloads require exact scalar provenance and call-free, store-free, base-stable paths | the separately materialized child passes the seam checker and receives a non-trusted whole-body verdict | final copies, branches to adjacent alias labels, unchanged dominated address recomputations, single-use one-instruction constant carriers, and one final scalar-global reload disappear, while the earlier cleaned parent remains selectable and fill plans retain their bounded validation fallback |
 | `trim-callee-saves` | AArch64 reallocation leaves an exactly matched lowering-generated callee-save home dead | the edited ABI scaffold passes the seam checker and whole-body verifier | dead register homes and only their matching save/restore traffic disappear |
 | `elide-empty-frame` | callee-save trimming leaves one call-free, stack-free AArch64 body between equal canonical adjustments | the frameless body passes the seam checker and whole-body verifier | the two adjustments disappear and the declared frame becomes zero |
 

@@ -935,6 +935,18 @@ Slot(x & u16(7))` must construct (returning the bare `u16` is refused), and
 a caller may index through the call directly — `TABLE[low(x)]` is proven,
 because any expression of a refined type is below the bound.
 
+Function values have no zero value. A binding whose storage contains a
+function, directly or through owned record fields, nonempty owned arrays,
+or sum payloads, requires an explicit initializer (`OAK-T0801`). This rule
+also applies after alias resolution and generic specialization. Sum storage
+is checked conservatively across all payload alternatives; use an explicit
+constructor to choose an empty alternative. An empty owned array or a
+borrowed view/span constructs no element values. Declaring a callable field
+in a type does not construct storage and is permitted; constructing the
+record must supply the field. Function definitions and forward references
+are unaffected. Assigning a function later does not excuse a missing
+initializer: the checker does not implement definite-assignment analysis.
+
 A binding declared without an initializer (`state: Sha256State`) is
 zero-initialized, so it is admitted only when zero satisfies every
 refinement its type holds, field by field (`OAK-T0602` otherwise: `the
