@@ -112,3 +112,24 @@ func TestAArch64SpillMemoryLayoutLean(t *testing.T) {
 	}
 	checkAArch64SelectorLean(t, "AArch64SpillMemory", examples)
 }
+
+// Check transitive proof dependencies, not just the presence of proof text:
+// a downstream theorem can inherit an axiom from a shared helper or simp lemma.
+func TestAArch64SpillMemoryKernelAxioms(t *testing.T) {
+	checkAArch64SelectorLean(t, "AArch64SpillMemory", []string{`
+open Lean Elab Command
+run_cmd do
+  let env ← getEnv
+  let mut checked := 0
+  for (name, info) in env.constants.toList do
+    if name.toString.startsWith "Oak.AArch64SpillMemory." && info.isTheorem then
+      checked := checked + 1
+      let axioms ← collectAxioms name
+      for axiomName in axioms do
+        unless ["propext", "Classical.choice", "Quot.sound"].contains axiomName.toString do
+          throwError "{name} depends on nonstandard axiom {axiomName}"
+  -- There are thirteen public laws, plus generated equation/simp theorems.
+  unless checked ≥ 13 do
+    throwError "spill-memory axiom audit did not find all public laws"
+`}, "Lean")
+}
