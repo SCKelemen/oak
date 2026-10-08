@@ -110,7 +110,7 @@ main: (): i32 {
 			result = fmt.Sprintf("some (%d, %d)", start, stop)
 		}
 		fmt.Fprintf(&lean, "example : place %d %d %d %d %d = %s := by decide +kernel\n", c.base, c.cursor, c.size, c.alignment, c.capacity, result)
-		fmt.Fprintf(&lean, "example : Oak.LinkerPlacementExtracted.native_place %d %d %d %d %d 16 = some ({ status := %d, start := %d, end := %d } : Oak.LinkerPlacementExtracted.NativePlacement) := by decide +kernel\n",
+		fmt.Fprintf(&lean, "example : Oak.LinkerPlacementExtracted.native_place %d %d %d %d %d 16 = some ({ status := %d, start := %d, «end» := %d } : Oak.LinkerPlacementExtracted.NativePlacement) := by decide +kernel\n",
 			c.base, c.cursor, c.size, c.alignment, c.capacity, status, start, stop)
 	}
 	t.Logf("%d compiled Oak placement decisions match the independent oracle", len(inputs))
