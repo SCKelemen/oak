@@ -368,81 +368,12 @@ func (p *Parser) parseStatement() ast.Statement {
 		// - Name: type = ... -> type definition (ADT type)
 		// - Name[E, Unit]: type = ... -> generic type definition
 		if p.peekTokenIs(token.COLON_ASSIGN) {
-			// Check if this is a type definition shorthand: Color := Red | Blue | Green
-			// We need to peek ahead to see if it's followed by IDENT | IDENT pattern
-			// Save the name for potential type definition
-			name := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-			// Consume := to check what follows
-			p.nextToken() // consume :=, now currentToken is :=
-			// Check if next token is IDENT followed by PIPE (variant list pattern)
-			if p.peekTokenIs(token.IDENT) {
-				// We need to check if the token after the IDENT is PIPE
-				// We can't peek two ahead, so we'll advance and check
-				p.nextToken() // advance to IDENT (first token of value)
-				if p.peekTokenIs(token.PIPE) {
-					// This is a type definition shorthand: Color := Red | Blue | Green
-					// Convert to: Color: type = Red | Blue | Green
-					// Parse as ADT type definition
-					adt := &ast.ADTType{Token: name.Token, Name: name}
-					adt.Variants = []*ast.ADTVariant{}
-
-					// Parse first variant (we're already on it)
-					variant := p.parseADTVariant()
-					if variant == nil {
-						return nil
-					}
-					adt.Variants = append(adt.Variants, variant)
-
-					// Parse remaining variants
-					for p.peekTokenIs(token.PIPE) {
-						p.nextToken() // consume |
-						p.nextToken() // next constructor name
-						variant := p.parseADTVariant()
-						if variant == nil {
-							return nil
-						}
-						adt.Variants = append(adt.Variants, variant)
-					}
-
-					return adt
-				}
-				// Not a type definition, parse as variable declaration from current position
-				// currentToken is already at the first token of the value expression (e.g., IDENT for ABCD)
-				stmt := &ast.VariableDeclaration{Token: name.Token}
-				stmt.Name = name
-				stmt.Value = p.parseExpression(LOWEST)
-				stmt.Type = nil
+			// := always declares an inferred value. In particular, a | b is
+			// an ordinary bitwise expression, never an ADT declaration.
+			if stmt := p.parseShortVariableDeclaration(); stmt != nil {
 				return stmt
 			}
-			// Not starting with IDENT (value is not an identifier, e.g., x := 1 or x := { ... })
-			// At line 242, we advanced to :=, so currentToken is :=
-			// peekToken should be the first token of the value expression (e.g., INT for 1)
-			// We need to advance past := to get to the value expression
-			if !p.currentTokenIs(token.COLON_ASSIGN) {
-				// This shouldn't happen - we should be at := here
-				// But if we're not, maybe we're already at the value?
-				if p.currentTokenIs(token.INT) || p.currentTokenIs(token.STRING) || p.currentTokenIs(token.LBRACE) || p.currentTokenIs(token.IDENT) {
-					// We're already at the value, don't advance
-				} else {
-					p.addErrorAtCurrentToken(fmt.Sprintf("expected := or value expression, got %s", p.currentToken.TokenKind))
-					return nil
-				}
-			} else {
-				// We're at :=, peekToken should be the value expression token
-				// Advance past := to the value
-				// nextToken() sets currentToken = peekToken, so peekToken should already be the value
-				if p.peekToken.TokenKind == token.EOF {
-					p.addErrorAtCurrentToken("expected value expression after :=")
-					return nil
-				}
-				p.nextToken() // advance past := to the value
-				// After nextToken(), currentToken should be the first token of the value
-			}
-			stmt := &ast.VariableDeclaration{Token: name.Token}
-			stmt.Name = name
-			stmt.Value = p.parseExpression(LOWEST)
-			stmt.Type = nil
-			return stmt
+			return nil
 		} else if p.peekTokenIs(token.COLON) {
 			// Centralize IDENT ":" ... handling
 			return p.parseIdentLedStatement()
@@ -5583,9 +5514,15 @@ func (p *Parser) parseShortVariableDeclaration() *ast.VariableDeclaration {
 		return nil
 	}
 
-	// expectPeek advanced past :=, so currentToken is now := (COLON_ASSIGN)
-	// We need to advance one more time to get to the first token of the value expression
-	p.nextToken() // advance past := to first token of value expression
+	if p.peekTokenIs(token.EOF) || p.peekTokenIs(token.SEMI) || p.peekTokenIs(token.RBRACE) {
+		p.addErrorAtCurrentToken("expected value expression after :=")
+		return nil
+	}
+	if p.peekTokenIs(token.PIPE) {
+		p.addErrorAtCurrentToken("expected value expression after :=; declare an ADT with Name: type = | Variant | ...")
+		return nil
+	}
+	p.nextToken() // first token of the value expression
 	stmt.Value = p.parseExpression(LOWEST)
 	stmt.Type = nil // Type inference
 
