@@ -84,6 +84,11 @@ env:
   # Status): later models export vmem_types.sail with unbound `k_v`.
   SAIL_RISCV_COMMIT: 497209b9298bf11b040e000095fe24c51a598a1d
 
+# Cancel only automatic PR runs; keep manual reruns and other events independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
+
 jobs:
   sail:
     name: Sail bridges and oracles
