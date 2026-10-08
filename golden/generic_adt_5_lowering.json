@@ -724,7 +724,7 @@
             "type": "u32"
           }
         ],
-        "return_type": "(Option.u32)"
+        "return_type": "Option[u32]"
       },
       "position": {
         "line": 8,
@@ -747,7 +747,7 @@
                     "type": "VariableDeclaration",
                     "data": {
                       "name": "found",
-                      "type": "(Option.u32)",
+                      "type": "Option[u32]",
                       "value": {
                         "type": "InvocationExpression",
                         "data": {

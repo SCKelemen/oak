@@ -33,7 +33,21 @@ theorem store_outside (n : Nat) (mem : Memory) (addr a : Nat) (v : BitVec 64)
 
 theorem load_store (k : Kind) (mem : Memory) (addr : Nat) (v : BitVec 64) :
     normalize k (loadBytes k.bytes (storeBytes k.bytes mem addr v) addr) = normalize k v := by
-  cases k <;> simp [Kind.bytes, loadBytes, storeBytes, normalize, Nat.add_assoc] <;> bv_decide
+  -- Reconstruct each byte at the bit level. All cases are checked by the
+  -- kernel; no native evaluation or external bit-vector decision is trusted.
+  cases k <;> simp [Kind.bytes, loadBytes, storeBytes, normalize, Nat.add_assoc]
+  all_goals
+    ext i hi
+    have ranges : i < 8 ∨ (8 ≤ i ∧ i < 16) ∨ (16 ≤ i ∧ i < 24) ∨
+        (24 ≤ i ∧ i < 32) ∨ (32 ≤ i ∧ i < 40) ∨ (40 ≤ i ∧ i < 48) ∨
+        (48 ≤ i ∧ i < 56) ∨ (56 ≤ i ∧ i < 64) := by omega
+    rcases ranges with h | h | h | h | h | h | h | h
+    all_goals
+      simp (disch := omega) [BitVec.getElem_setWidth, BitVec.getElem_ushiftRight,
+        BitVec.getElem_shiftLeft, BitVec.getElem_or, BitVec.getElem_signExtend,
+        BitVec.msb_setWidth]
+      all_goals simp_all +arith [BitVec.getMsbD, BitVec.getLsbD_eq_getElem]
+      all_goals grind
 
 theorem load_disjoint (n m : Nat) (mem : Memory) (a b : Nat) (v : BitVec 64)
     (h : a+n ≤ b ∨ b+m ≤ a) :
@@ -143,7 +157,12 @@ theorem checked_slot_safe (frame : Nat) (slots : List Slot) (slot : Slot) (s : S
 
 theorem normalize_idempotent (k : Kind) (v : BitVec 64) :
     normalize k (normalize k v) = normalize k v := by
-  cases k <;> simp only [normalize] <;> bv_decide
+  have truncate_signExtend {n m : Nat} (x : BitVec n) (h : n ≤ m) :
+      (x.signExtend m).setWidth n = x := by
+    ext i hi
+    simp [BitVec.getElem_setWidth, BitVec.getElem_signExtend, hi,
+      show i < m by omega]
+  cases k <;> simp (disch := omega) [normalize, truncate_signExtend]
 
 theorem writeReg_self (regs : Registers) (r : BitVec 5) (v : BitVec 64) (h : r ≠ 31#5) :
     writeReg regs r v r = v := by simp [writeReg, h]
