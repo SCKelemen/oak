@@ -18,7 +18,9 @@ not limited to a particular module fixture or an empty store.
 **This is not a verified SpecTec importer or an independently mechanized proof
 that this transcription/representation is equivalent to the official full Core
 relations.** The original manual transcription boundary remains. No production
-certificate, verified label, runtime verdict, or CI workflow uses this change.
+certificate, verified label, or runtime verdict uses this change. The required
+formal CI lane checks actual source/compiler artifacts with `source_to_core`
+and enforces a standard-logical-axiom allowlist with `audit.py`.
 Production Go parser/compiler correctness and runtime implementation correctness
 are separate boundaries.
 

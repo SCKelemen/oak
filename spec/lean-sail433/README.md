@@ -1,6 +1,6 @@
 # Concrete RV64 decoder/body projection in one Lean kernel
 
-This optional project uses Lean 4.33.1 for both Oak and the pinned generated
+This bounded project uses Lean 4.33.1 for both Oak and the pinned generated
 Sail model. It does not compose incompatible 4.29/4.33 compiled proofs by trust.
 The existing `../lean-sail` project and its 4.29 pin remain unchanged.
 
@@ -19,17 +19,26 @@ lake build OakSailComposition OakSailFullDispatch OakSailBridge.BitwiseDispatchA
 python3 audit.py
 ```
 
-The preparation script accepts a previously verified export; it does not
-regenerate Sail or attest that export's provenance. It checks the input's
-original toolchain and declared lean-sail pin, records every copied source's
-SHA256, and verifies byte-identical source copies. Only the copies' toolchain
+The preparation script verifies the input against the separately recorded
+upstream artifact provenance and exact source hashes; it does not regenerate
+Sail or prove generation correct. It also checks the original toolchain and
+declared lean-sail pin, records every copied source's SHA256, and verifies
+byte-identical source copies. Only the copies' toolchain
 and dependency paths change. No 4.29 `.olean` files are copied or consumed.
 The project also needs the source/body/framed proof stack in `../lean`.
 
-For this local review, the same project was checked against the separately
-reviewed `source-bitwise` worktree at `dd75f76f0aef54a9b03b1d24bc2d176bbf4ac8d1`,
-using an ignored `lakefile.local.toml` whose sole difference is the Oak package
-path. Both packages and this composition used 4.33.1.
+The integration uses the committed default `lakefile.toml` and the source/body
+prerequisites in `../lean`; no `lakefile.local.toml` override is needed.
+
+The required Sail CI lane retains its pinned source checkout/generation and
+original 4.29 checks, then runs this preparation, the bounded 4.33 targets, and
+`audit.py`. `export-provenance.json` records upstream artifact 11540095028 from
+run 37749261545, its outer ZIP digest, original pins, all 164 model/configuration
+file hashes, and all 9 pinned Sail support/configuration hashes. `verify_export.py`
+requires those exact source inventories and bytes before preparation, including
+on a restored build cache. It does not depend on an expiring artifact download
+at CI runtime or claim exporter correctness. Updating external sources requires
+an explicit provenance/hash review, not merely editing a version string.
 
 ## What is proved
 

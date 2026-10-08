@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Copy an already-provenance-verified RV64 export into isolated Lean 4.33 projects.
 
-This is not a generator or a provenance attestation. It verifies the input
-project's declared pins and exact source-copy equality, and copies no .olean
-files. The existing source-artifact bootstrap supplies export provenance.
+This is not a generator or a proof of the exporter. It first verifies exact
+source/configuration hashes against the recorded upstream artifact provenance,
+then checks declared pins and exact source-copy equality. It copies no .olean
+files. The existing CI source checkout/generation path is retained.
 """
 import argparse
 import hashlib
 import json
 from pathlib import Path
+from verify_export import verify_export
 
 SAIL_REV = "079463134b9c50450b8393e1566a09fc492a34d9"
 OLD_TOOLCHAIN = "leanprover/lean4:v4.29.0"
@@ -50,6 +52,7 @@ def main() -> None:
     args = parser.parse_args()
     generated = args.generated.resolve()
     sail = (args.sail or generated / ".lake/packages/Sail").resolve()
+    provenance = verify_export(generated, sail)
     if (generated / "lean-toolchain").read_text().strip() != OLD_TOOLCHAIN:
         raise RuntimeError("Expected the pinned Lean 4.29 RV64 input export")
     packages = json.loads((generated / "lake-manifest.json").read_text())["packages"]
@@ -68,7 +71,9 @@ def main() -> None:
     checked_write(sail_dest / "lakefile.toml", (sail / "lakefile.toml").read_bytes())
     for dest in (model_dest, sail_dest):
         checked_write(dest / "lean-toolchain", (NEW_TOOLCHAIN + "\n").encode())
-    report = {"scope": "Exact source-copy verification; input export provenance is external",
+    report = {"scope": "Exact source-copy verification of provenance-pinned upstream export",
+              "upstream_artifact": provenance["artifact"],
+              "upstream_provenance": provenance["provenance"],
               "source_toolchain": OLD_TOOLCHAIN, "build_toolchain": NEW_TOOLCHAIN,
               "declared_sail_revision": SAIL_REV,
               "model_sources": model_manifest, "sail_sources": sail_manifest}

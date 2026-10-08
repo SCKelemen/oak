@@ -58,6 +58,7 @@ on:
       - 'spec/lean/Oak/AArch64SysReg.lean'
       - 'spec/lean/Oak/AArch64ColdEntry.lean'
       - 'spec/lean-sail/**'
+      - 'spec/lean-sail433/**'
       - '.github/workflows/formal-sail.yml'
   pull_request:
     branches:
@@ -173,6 +174,13 @@ jobs:
         env:
           OAK_REQUIRE_ORACLES: "1"
         run: go test ./asm -run '^TestSailArmSTR64Execution|^TestSailSTRExecution' -count=1 -v -timeout=10m
+
+      - name: Regenerate and check pinned ARM scalar execution
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: |
+          go test ./asm -run '^TestSailScalarExecution(RawPins|Regeneration|Lean)$' -count=1 -v -timeout=15m
+          python3 spec/sail/audit_scalar.py
 
   lem-ram-traces:
     name: Arm Lem RAM request traces
@@ -325,3 +333,19 @@ jobs:
         env:
           OAK_REQUIRE_ORACLES: "1"
         run: go test ./asm -run 'TestRV64SailBridge' -count=1 -v
+
+      - name: Verify and prepare pinned RV64 sources for Lean 4.33
+        run: |
+          python3 spec/lean-sail433/prepare.py --generated external/sail-riscv/build/model/Lean_RV64D
+          python3 spec/lean-sail433/test_verify_export.py --generated external/sail-riscv/build/model/Lean_RV64D
+
+      - name: Build bounded RV64 source and external execution composition
+        working-directory: spec/lean-sail433
+        env:
+          LEAN_NUM_THREADS: '2'
+        run: |
+          lake update
+          lake build OakSailComposition OakSailFullDispatch OakSailBridge.BitwiseDispatchAgreement
+
+      - name: Audit bounded RV64 external theorem closures
+        run: python3 spec/lean-sail433/audit.py
