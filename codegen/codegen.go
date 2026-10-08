@@ -1811,7 +1811,7 @@ func (cg *CodeGenerator) emitCoreIndex(call *ast.InvocationExpression, tc *typec
 	info := cg.localContainerOf(seq)
 	// A proven access (typechecker/extents.go) needs no runtime check: the
 	// fact that bounds it dominates this position.
-	if tc.IndexProven(call.Token) {
+	if tc != nil && tc.IndexProven(call.Token) {
 		switch info.kind {
 		case containerView, containerSpan:
 			cg.output.WriteString("( ")
@@ -3146,6 +3146,13 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			// goes through the checked-lvalue helper when the container is
 			// known, so element access is never unchecked.
 			info := cg.localContainerOf(e.Left)
+			if info.kind == containerView || info.kind == containerSpan {
+				// Typed literal bodies may reach this emitter without the
+				// core_index rewrite. A view is a struct, not a C pointer;
+				// use the same checked access as an ordinary lowered read.
+				cg.emitCoreIndex(&ast.InvocationExpression{Token: e.Token, Arguments: []ast.Expression{e.Left, e.Index}}, tc)
+				return
+			}
 			if info.kind == containerOwnedArray {
 				cg.emitExpressionFragment(e.Left, tc)
 				if tc != nil && tc.IndexProven(e.Token) {
