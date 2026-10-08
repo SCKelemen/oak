@@ -7,8 +7,17 @@ package typechecker
 // The visited set is local to this walk; it must never cache mutable inference
 // state across substitutions or monomorphic transactions.
 func walkTypeVariables(root Type, visit func(*TypeVar) bool) bool {
-	pending := []Type{root}
-	seen := make(map[Type]bool)
+	// Keep ordinary small signatures allocation-free apart from the caller's
+	// result. The bounded linear identity set spills to a map for larger
+	// graphs; the bound is fixed, so traversal remains linear in graph size.
+	if variable, ok := root.(*TypeVar); ok {
+		return variable != nil && visit(variable)
+	}
+	var initial [32]Type
+	pending := append(initial[:0], root)
+	var smallSeen [16]Type
+	smallCount := 0
+	var seen map[Type]bool
 	pushReverse := func(types []Type) {
 		for i := len(types) - 1; i >= 0; i-- {
 			pending = append(pending, types[i])
@@ -27,10 +36,33 @@ func walkTypeVariables(root Type, visit func(*TypeVar) bool) bool {
 		default:
 			continue
 		}
-		if seen[current] {
-			continue
+		if seen != nil {
+			if seen[current] {
+				continue
+			}
+			seen[current] = true
+		} else {
+			duplicate := false
+			for i := 0; i < smallCount; i++ {
+				if smallSeen[i] == current {
+					duplicate = true
+					break
+				}
+			}
+			if duplicate {
+				continue
+			}
+			if smallCount < len(smallSeen) {
+				smallSeen[smallCount] = current
+				smallCount++
+			} else {
+				seen = make(map[Type]bool, 2*len(smallSeen))
+				for _, previous := range smallSeen {
+					seen[previous] = true
+				}
+				seen[current] = true
+			}
 		}
-		seen[current] = true
 		switch t := current.(type) {
 		case *TypeVar:
 			if t != nil && visit(t) {
