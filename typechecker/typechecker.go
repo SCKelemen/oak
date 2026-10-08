@@ -153,7 +153,7 @@ func (t *UnitType) Equals(other Type) bool {
 	}
 	// Unit equals empty record {}
 	if otherRecord, ok := other.(*RecordType); ok {
-		return len(otherRecord.Fields) == 0
+		return len(otherRecord.Fields) == 0 && !(otherRecord.Struct && otherRecord.Name != "")
 	}
 	return false
 }
@@ -301,7 +301,12 @@ func (t *RecordType) String() string {
 }
 
 func (t *RecordType) Equals(other Type) bool {
-	// Empty record {} is equivalent to Unit
+	// A nominal zero-field struct retains its identity.
+	if t.Struct && t.Name != "" && len(t.Fields) == 0 {
+		otherRecord, ok := other.(*RecordType)
+		return ok && otherRecord.Struct && otherRecord.Name == t.Name
+	}
+	// Empty semantic records are compatible with Unit.
 	if len(t.Fields) == 0 {
 		if _, ok := other.(*UnitType); ok {
 			return true
