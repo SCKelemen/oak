@@ -1345,8 +1345,10 @@ nanosecond precision, including the minimum signed duration. Month addition
 requires an explicit reject-or-clamp policy. Period addition applies months,
 then days, then the time component. Extracted-parser proofs establish bounded
 component accumulation, integer/fraction scanner arithmetic invariants, and
-sign coherence of successful period parses. Full period/duration text round-trip
-proofs remain open.
+sign coherence of successful period parses. The UInt64 decimal writer/scanner
+bridge is proved for every value, including termination, 1–20 output digits,
+buffer preservation, and stopping at unit delimiters. Full period/duration text
+round-trip proofs remain open.
 
 `parse_rfc3339_datetime` and `format_rfc3339_datetime` preserve `Z`, `+00:00`, and
 `-00:00` as distinct offset kinds, including RFC 9557's update to their meaning.
