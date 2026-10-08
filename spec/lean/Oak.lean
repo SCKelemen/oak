@@ -13,6 +13,7 @@ import Oak.RiscVBitwiseFunction
 import Oak.MinimalELF
 import Oak.RiscVBitwiseELF
 import Oak.AArch64MinimalStartup
+import Oak.RiscVFramedBitwise
 import Oak.Effects
 import Oak.EffectRows
 import Oak.OptIRCallSummaryCertificate

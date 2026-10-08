@@ -168,6 +168,11 @@ jobs:
           OAK_REQUIRE_RV64_LEAN: '1'
         run: go test ./asm -run '^TestRV64((LocalBranches|CompressedBranches)MatchLean|(Relaxation|Materialization|CallExecution|DirectControl|BitwiseFunction|BitwiseELF)MatchesLean)$' -count=1 -v
 
+      - name: Check RV64 compiler bitwise bytes against Lean
+        env:
+          OAK_REQUIRE_RV64_LEAN: '1'
+        run: go test ./compiler -run '^TestRV64FramedBitwiseCompilerMatchesLean$' -count=1 -v
+
       - name: Check solver formula binding in Go, Oak, and Lean
         env:
           OAK_REQUIRE_LRAT_BINDING_LEAN: '1'
