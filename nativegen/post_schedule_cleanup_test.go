@@ -150,6 +150,14 @@ func TestPostScheduleCleanupKeepsUnsafeConstantCarriers(t *testing.T) {
 			name: "caller-saved carrier crosses call",
 			body: "  movz w9, #1\n  bl callee\n  mov w0, w9\n  ret",
 		},
+		{
+			name: "carrier crosses system call",
+			body: "  movz w9, #1\n  svc #0\n  mov w0, w9\n  ret",
+		},
+		{
+			name: "cycle reaches definition",
+			body: "loop:\n  movz w4, #1\n  cbnz w0, loop\n  mov w0, w4\n  ret",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			unit, errs := asm.ParseUnit("post.oakasm", "f: (choose: Bool) -> u32 = {\n  bind w0 = choose\n  clobber w4, w9\n"+test.body+"\n}\n")
@@ -185,6 +193,31 @@ func TestSingleInstructionConstantVocabulary(t *testing.T) {
 		if _, _, ok := singleInstructionConstant(instruction); ok {
 			t.Errorf("non-constant instruction admitted: %#v", instruction)
 		}
+	}
+}
+
+func TestPostScheduleCleanupRetargetsSingleUseZeroStore(t *testing.T) {
+	fn := &asm.Function{Arch: asm.ArchArm64, Items: []asm.Item{
+		ins("add", xr(10), xr(1), asm.Immediate{Value: 1}),
+		ins("mov", xr(10), xr(31)),
+		asm.Label{Name: "join"},
+		ins("str", xr(10), asm.Memory{Base: xr(14)}),
+		ins("ret"),
+	}}
+	if removed := postScheduleSingleUseConstantCleanup(fn); removed != 1 {
+		t.Fatalf("single-use zero cleanup removed %d, want one:\n%s", removed, Describe(fn))
+	}
+	if text := Describe(fn); strings.Contains(text, "mov x10, xzr") || !strings.Contains(text, "str xzr, [x14]") {
+		t.Fatalf("single-use zero was not retargeted into its store:\n%s", text)
+	}
+
+	alias := &asm.Function{Arch: asm.ArchArm64, Items: []asm.Item{
+		ins("mov", xr(10), xr(31)),
+		ins("str", xr(10), asm.Memory{Base: xr(10)}),
+		ins("ret"),
+	}}
+	if removed := postScheduleSingleUseConstantCleanup(alias); removed != 0 {
+		t.Fatalf("address/data alias lost its address (%d removed):\n%s", removed, Describe(alias))
 	}
 }
 

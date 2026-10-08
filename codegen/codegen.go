@@ -1811,7 +1811,7 @@ func (cg *CodeGenerator) emitCoreIndex(call *ast.InvocationExpression, tc *typec
 	info := cg.localContainerOf(seq)
 	// A proven access (typechecker/extents.go) needs no runtime check: the
 	// fact that bounds it dominates this position.
-	if tc.IndexProven(call.Token) {
+	if tc != nil && tc.IndexProven(call.Token) {
 		switch info.kind {
 		case containerView, containerSpan:
 			cg.output.WriteString("( ")
@@ -2091,6 +2091,7 @@ const inlineHelperLines = 12
 // extern/asm-backed functions keep external linkage.
 func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 	cg.inlineHelpers = make(map[string]bool)
+	valueUses := functionValueUses(program)
 	functions := make(map[string]*ast.FunctionStatement)
 	for _, stmt := range program.Statements {
 		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil && fn.Receiver == nil {
@@ -2099,7 +2100,7 @@ func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 	}
 	for name, fn := range functions {
 		if fn.Receiver != nil || fn.ExternSymbol != "" || fn.AsmBacked || fn.NativeBacked || fn.Body == nil ||
-			fn.Exported || len(fn.TypeParams) > 0 || name == "main" {
+			fn.Exported || len(fn.TypeParams) > 0 || name == "main" || valueUses[name] {
 			continue
 		}
 		if fn.EndToken.Line <= 0 || fn.EndToken.Line-fn.Token.Line > inlineHelperLines {
@@ -2122,7 +2123,7 @@ func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 	for _, name := range codecHotHelpers {
 		fn := functions[name]
 		if fn == nil || fn.Body == nil || fn.Receiver != nil || fn.ExternSymbol != "" || fn.AsmBacked ||
-			fn.NativeBacked || len(fn.TypeParams) > 0 {
+			fn.NativeBacked || len(fn.TypeParams) > 0 || valueUses[name] {
 			continue
 		}
 		if _, isMember := cg.trampolineMember[name]; isMember {
@@ -2305,9 +2306,14 @@ func (cg *CodeGenerator) emitVariadicCall(fn *ast.FunctionStatement, call *ast.I
 	fixed := len(fn.Parameters) - 1
 	lastParam := fn.Parameters[fixed]
 	elementType := cg.parseTypeExpression(lastParam.Type)
-	viewType := cg.emitViewType(elementType)
-
 	cg.output.WriteString(cg.cFunctionName(fn.Name.Value))
+	cg.emitVariadicArguments(fixed, elementType, call, tc)
+}
+
+// emitVariadicArguments is shared by direct and indirect calls: the C ABI
+// receives one view for the tail, regardless of the source callee spelling.
+func (cg *CodeGenerator) emitVariadicArguments(fixed int, elementType string, call *ast.InvocationExpression, tc *typechecker.TypeChecker) {
+	viewType := cg.emitViewType(elementType)
 	cg.output.WriteString("( ")
 	for i := 0; i < fixed && i < len(call.Arguments); i++ {
 		if i > 0 {
@@ -2373,10 +2379,13 @@ func ownedArrayParameter(typeExpr ast.Expression, cg *CodeGenerator) (element st
 func (cg *CodeGenerator) cFunctionPointer(fn *ast.FunctionTypeExpression, name string) string {
 	parameters := make([]string, 0, len(fn.Parameters))
 	for _, parameter := range fn.Parameters {
-		parameters = append(parameters, cg.parseTypeExpression(parameter))
+		parameters = append(parameters, strings.TrimSpace(cg.cParameter(parameter, "")))
 	}
 	if len(parameters) == 0 {
 		parameters = append(parameters, "void")
+	}
+	if result, nested := fn.Return.(*ast.FunctionTypeExpression); nested {
+		return cg.cFunctionPointer(result, fmt.Sprintf("(*%s)(%s)", name, strings.Join(parameters, ", ")))
 	}
 	return fmt.Sprintf("%s (*%s)(%s)", cg.parseTypeExpression(fn.Return), name, strings.Join(parameters, ", "))
 }
@@ -3137,6 +3146,13 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 			// goes through the checked-lvalue helper when the container is
 			// known, so element access is never unchecked.
 			info := cg.localContainerOf(e.Left)
+			if info.kind == containerView || info.kind == containerSpan {
+				// Typed literal bodies may reach this emitter without the
+				// core_index rewrite. A view is a struct, not a C pointer;
+				// use the same checked access as an ordinary lowered read.
+				cg.emitCoreIndex(&ast.InvocationExpression{Token: e.Token, Arguments: []ast.Expression{e.Left, e.Index}}, tc)
+				return
+			}
 			if info.kind == containerOwnedArray {
 				cg.emitExpressionFragment(e.Left, tc)
 				if tc != nil && tc.IndexProven(e.Token) {
@@ -3302,11 +3318,14 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		if cg.emitFloatIntrinsicCall(e, tc) {
 			return
 		}
-		if ident, ok := e.Function.(*ast.Identifier); ok {
+		if ident, ok := e.Function.(*ast.Identifier); ok && !cg.isLocalName(ident.Value) {
 			if fn, isVariadicCallee := cg.variadicCallee(ident.Value); isVariadicCallee {
 				cg.emitVariadicCall(fn, e, tc)
 				return
 			}
+		}
+		if cg.emitIndirectVariadicCall(e, tc) {
+			return
 		}
 		if ident, ok := e.Function.(*ast.Identifier); ok {
 			// assert_eq / assert_ne name both values on failure; the checker
@@ -4378,6 +4397,7 @@ func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement,
 
 // emitVariableDeclaration emits a variable declaration
 func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, tc *typechecker.TypeChecker) {
+	stmt = cg.inferredCallableDeclaration(stmt, tc)
 	if stmt.Value != nil {
 		if value := cg.sequence(stmt.Value, tc); value != stmt.Value {
 			sequenced := *stmt
