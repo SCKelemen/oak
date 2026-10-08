@@ -335,7 +335,7 @@ func (p *Parser) parseStatement() ast.Statement {
 		// `operator(SYM) name: (a: T, b: U): R = ...` binds SYM for a left
 		// operand of type T (docs/spec/10-syntax.md section 14); `operator`
 		// is contextual, so `operator := 1` stays an ordinary binding.
-		if p.currentToken.Literal == "operator" && p.peekTokenIs(token.LPAREN) {
+		if p.currentToken.Literal == "operator" && p.operatorMarkerAhead() {
 			return p.parseOperatorDeclaration()
 		}
 		// `kernel name: (gid: u32, ...): () = ...` declares a compute kernel
@@ -347,7 +347,7 @@ func (p *Parser) parseStatement() ast.Statement {
 		// `export("symbol") pub name: (...)` gives a pub function a C ABI
 		// symbol (docs/spec/92-ffi.md section 2.9); `export` is contextual,
 		// so `export := 1` stays an ordinary binding.
-		if p.currentToken.Literal == "export" && p.peekTokenIs(token.LPAREN) && p.lookaheadSignificant(2).TokenKind == token.STRING {
+		if p.currentToken.Literal == "export" && p.peekTokenIs(token.LPAREN) && p.lookaheadSignificant(2).TokenKind == token.STRING && p.lookaheadSignificant(3).TokenKind == token.RPAREN && p.exportDeclarationAhead() {
 			return p.parseExportDeclaration()
 		}
 		// `module name { ... }` declares a nested module (section 3.5);
@@ -368,81 +368,12 @@ func (p *Parser) parseStatement() ast.Statement {
 		// - Name: type = ... -> type definition (ADT type)
 		// - Name[E, Unit]: type = ... -> generic type definition
 		if p.peekTokenIs(token.COLON_ASSIGN) {
-			// Check if this is a type definition shorthand: Color := Red | Blue | Green
-			// We need to peek ahead to see if it's followed by IDENT | IDENT pattern
-			// Save the name for potential type definition
-			name := &ast.Identifier{Token: p.currentToken, Value: p.currentToken.Literal}
-			// Consume := to check what follows
-			p.nextToken() // consume :=, now currentToken is :=
-			// Check if next token is IDENT followed by PIPE (variant list pattern)
-			if p.peekTokenIs(token.IDENT) {
-				// We need to check if the token after the IDENT is PIPE
-				// We can't peek two ahead, so we'll advance and check
-				p.nextToken() // advance to IDENT (first token of value)
-				if p.peekTokenIs(token.PIPE) {
-					// This is a type definition shorthand: Color := Red | Blue | Green
-					// Convert to: Color: type = Red | Blue | Green
-					// Parse as ADT type definition
-					adt := &ast.ADTType{Token: name.Token, Name: name}
-					adt.Variants = []*ast.ADTVariant{}
-
-					// Parse first variant (we're already on it)
-					variant := p.parseADTVariant()
-					if variant == nil {
-						return nil
-					}
-					adt.Variants = append(adt.Variants, variant)
-
-					// Parse remaining variants
-					for p.peekTokenIs(token.PIPE) {
-						p.nextToken() // consume |
-						p.nextToken() // next constructor name
-						variant := p.parseADTVariant()
-						if variant == nil {
-							return nil
-						}
-						adt.Variants = append(adt.Variants, variant)
-					}
-
-					return adt
-				}
-				// Not a type definition, parse as variable declaration from current position
-				// currentToken is already at the first token of the value expression (e.g., IDENT for ABCD)
-				stmt := &ast.VariableDeclaration{Token: name.Token}
-				stmt.Name = name
-				stmt.Value = p.parseExpression(LOWEST)
-				stmt.Type = nil
+			// := always declares an inferred value. In particular, a | b is
+			// an ordinary bitwise expression, never an ADT declaration.
+			if stmt := p.parseShortVariableDeclaration(); stmt != nil {
 				return stmt
 			}
-			// Not starting with IDENT (value is not an identifier, e.g., x := 1 or x := { ... })
-			// At line 242, we advanced to :=, so currentToken is :=
-			// peekToken should be the first token of the value expression (e.g., INT for 1)
-			// We need to advance past := to get to the value expression
-			if !p.currentTokenIs(token.COLON_ASSIGN) {
-				// This shouldn't happen - we should be at := here
-				// But if we're not, maybe we're already at the value?
-				if p.currentTokenIs(token.INT) || p.currentTokenIs(token.STRING) || p.currentTokenIs(token.LBRACE) || p.currentTokenIs(token.IDENT) {
-					// We're already at the value, don't advance
-				} else {
-					p.addErrorAtCurrentToken(fmt.Sprintf("expected := or value expression, got %s", p.currentToken.TokenKind))
-					return nil
-				}
-			} else {
-				// We're at :=, peekToken should be the value expression token
-				// Advance past := to the value
-				// nextToken() sets currentToken = peekToken, so peekToken should already be the value
-				if p.peekToken.TokenKind == token.EOF {
-					p.addErrorAtCurrentToken("expected value expression after :=")
-					return nil
-				}
-				p.nextToken() // advance past := to the value
-				// After nextToken(), currentToken should be the first token of the value
-			}
-			stmt := &ast.VariableDeclaration{Token: name.Token}
-			stmt.Name = name
-			stmt.Value = p.parseExpression(LOWEST)
-			stmt.Type = nil
-			return stmt
+			return nil
 		} else if p.peekTokenIs(token.COLON) {
 			// Centralize IDENT ":" ... handling
 			return p.parseIdentLedStatement()
@@ -1800,6 +1731,45 @@ var operatorSymbols = map[token.TokenKind]string{
 	token.EQL: "==", token.NEQL: "!=", token.LCHEV: "<", token.LEQ: "<=", token.RCHEV: ">", token.GEQ: ">=",
 }
 
+// operatorMarkerAhead recognizes the closed symbol form, not arbitrary
+// calls to a function named operator. No legal value expression consists
+// solely of one of these binary symbols, so ordinary calls remain calls.
+func (p *Parser) operatorMarkerAhead() bool {
+	if !p.peekTokenIs(token.LPAREN) || p.lookaheadSignificant(3).TokenKind != token.RPAREN {
+		return false
+	}
+	symbol := p.lookaheadSignificant(2).TokenKind
+	if _, bound := operatorSymbols[symbol]; bound {
+		return true
+	}
+	// Invalid symbol markers still get the targeted binding diagnostic.
+	// None of these tokens is a complete argument expression on its own.
+	switch symbol {
+	case token.LAND, token.LOR, token.AMP, token.PIPE, token.CARET, token.SHL, token.SHR, token.BANG:
+		return true
+	}
+	return false
+}
+
+// An export marker must precede a declaration. Keep the dedicated missing-pub
+// diagnostic for a declaration without pub, while a standalone export call is
+// an ordinary expression statement.
+func (p *Parser) exportDeclarationAhead() bool {
+	next := p.lookaheadSignificant(4)
+	if next.TokenKind == token.PUB {
+		return true
+	}
+	// A plain call can be followed by a declaration on the next line.
+	// Only pub continues an export marker across that statement boundary.
+	if next.Line > p.lookaheadSignificant(3).EndLine {
+		return false
+	}
+	if next.TokenKind == token.FN {
+		return true
+	}
+	return next.TokenKind == token.IDENT && (p.lookaheadSignificant(5).TokenKind == token.COLON || p.lookaheadSignificant(5).TokenKind == token.LBRACK)
+}
+
 // parseOperatorDeclaration parses `operator(SYM)` followed by a function
 // declaration and records the bound symbol on it.
 func (p *Parser) parseOperatorDeclaration() ast.Statement {
@@ -1832,10 +1802,11 @@ func (p *Parser) parseOperatorDeclaration() ast.Statement {
 	return fn
 }
 
-// parseKernelDeclaration parses the `kernel` marker followed by a function
-// declaration (docs/spec/56-kernels.md section 1).
+// parseKernelDeclaration diagnoses the removed prefix and consumes its declaration
+// for recovery. Kernels use the callable suffix (kernel).
 func (p *Parser) parseKernelDeclaration() ast.Statement {
 	marker := p.currentToken
+	p.addErrorAtToken(&marker, "kernel declarations use name: (params): () (kernel) = body; move kernel after the signature")
 	p.nextToken()
 	stmt := p.parseStatement()
 	if stmt == nil {
@@ -2136,6 +2107,13 @@ func (p *Parser) parseInterfaceType() *ast.InterfaceType {
 		return nil
 	}
 
+	return p.parseInterfaceTypeFromName(it.Name, it.TypeParams)
+}
+
+// parseInterfaceTypeFromName shares the canonical and compatibility interface
+// body grammar. currentToken is INTERFACE after the name and colon.
+func (p *Parser) parseInterfaceTypeFromName(name *ast.Identifier, params []*ast.TypeParameter) *ast.InterfaceType {
+	it := &ast.InterfaceType{Token: name.Token, Name: name, TypeParams: params}
 	if !p.expectPeek(token.ASSIGN) {
 		return nil
 	}
@@ -2488,9 +2466,10 @@ func (p *Parser) parseTypePrimary() ast.Expression {
 			var result ast.Expression = ident
 			for _, arg := range typeArgs {
 				result = &ast.IndexExpression{
-					Token: p.currentToken,
-					Left:  result,
-					Index: arg,
+					TypeForm: ast.IndexGenericType,
+					Token:    p.currentToken,
+					Left:     result,
+					Index:    arg,
 				}
 			}
 			return result
@@ -3449,10 +3428,11 @@ func (p *Parser) parseArrayType() ast.Expression {
 		// We do NOT advance past it here - let the caller handle token positioning.
 		// Return as IndexExpression with "*" identifier for span
 		return &ast.IndexExpression{
-			Token: p.currentToken,
-			Left:  elementType,
-			Index: &ast.Identifier{Token: p.currentToken, Value: "*"},
-			Align: align,
+			TypeForm: ast.IndexArrayType,
+			Token:    p.currentToken,
+			Left:     elementType,
+			Index:    &ast.Identifier{Token: p.currentToken, Value: "*"},
+			Align:    align,
 		}
 	}
 
@@ -3473,10 +3453,11 @@ func (p *Parser) parseArrayType() ast.Expression {
 			return nil
 		}
 		return &ast.IndexExpression{
-			Token: p.currentToken,
-			Left:  elementType,
-			Index: &ast.Identifier{Token: p.currentToken, Value: ""},
-			Align: align,
+			TypeForm: ast.IndexArrayType,
+			Token:    p.currentToken,
+			Left:     elementType,
+			Index:    &ast.Identifier{Token: p.currentToken, Value: ""},
+			Align:    align,
 		}
 	}
 
@@ -3484,7 +3465,7 @@ func (p *Parser) parseArrayType() ast.Expression {
 	// a literal at instantiation (docs/spec/20-types.md section 11.0). Type
 	// position has no literal ambiguity, so the length is an ordinary
 	// expression up to the closing bracket.
-	if (p.currentTokenIs(token.IDENT) || p.currentTokenIs(token.INT)) && p.peekTokenIsArithmetic() {
+	if p.currentTokenIs(token.LPAREN) || ((p.currentTokenIs(token.IDENT) || p.currentTokenIs(token.INT)) && p.peekTokenIsArithmetic()) {
 		length := p.parseExpression(LOWEST)
 		if length == nil || !p.expectPeek(token.RBRACK) {
 			return nil
@@ -3495,9 +3476,10 @@ func (p *Parser) parseArrayType() ast.Expression {
 			return nil
 		}
 		return &ast.IndexExpression{
-			Token: p.currentToken,
-			Left:  elementType,
-			Index: length,
+			TypeForm: ast.IndexArrayType,
+			Token:    p.currentToken,
+			Left:     elementType,
+			Index:    length,
 		}
 	}
 
@@ -3512,9 +3494,10 @@ func (p *Parser) parseArrayType() ast.Expression {
 			return nil
 		}
 		return &ast.IndexExpression{
-			Token: p.currentToken,
-			Left:  elementType,
-			Index: lengthParam,
+			TypeForm: ast.IndexArrayType,
+			Token:    p.currentToken,
+			Left:     elementType,
+			Index:    lengthParam,
 		}
 	}
 
@@ -3553,9 +3536,10 @@ func (p *Parser) parseArrayType() ast.Expression {
 		// We do NOT advance past it here - let the caller handle token positioning.
 		// Return as IndexExpression with empty identifier for slice
 		return &ast.IndexExpression{
-			Token: p.currentToken,
-			Left:  elementType,
-			Index: &ast.Identifier{Token: p.currentToken, Value: ""},
+			TypeForm: ast.IndexArrayType,
+			Token:    p.currentToken,
+			Left:     elementType,
+			Index:    &ast.Identifier{Token: p.currentToken, Value: ""},
 		}
 	}
 
@@ -3579,9 +3563,10 @@ func (p *Parser) parseArrayType() ast.Expression {
 		// We do NOT advance past it here - let the caller handle token positioning.
 		// Return as IndexExpression with size as IntegerLiteral
 		return &ast.IndexExpression{
-			Token: p.currentToken,
-			Left:  elementType,
-			Index: size,
+			TypeForm: ast.IndexArrayType,
+			Token:    p.currentToken,
+			Left:     elementType,
+			Index:    size,
 		}
 	}
 
@@ -3844,7 +3829,7 @@ func (p *Parser) parseTypedArrayLiteralWithToken(bracketToken token.Token, size 
 	} else {
 		index = size
 	}
-	arrayType := &ast.IndexExpression{Token: bracketToken, Left: elementType, Index: index}
+	arrayType := &ast.IndexExpression{Token: bracketToken, Left: elementType, Index: index, TypeForm: ast.IndexArrayType}
 
 	if !p.expectPeek(token.LBRACE) {
 		return nil
@@ -3925,57 +3910,15 @@ func (p *Parser) parseFunctionStatement() *ast.FunctionStatement {
 		return nil
 	}
 
-	stmt.Parameters = p.parseFunctionParameters()
-
-	// Accept both:
-	// - fn name(...): Type = body
-	// - fn name(...) -> Type { body } / fn name(...) -> Type expr
-	if !p.peekTokenIs(token.COLON) && !p.peekTokenIs(token.ARROW) {
-		p.addErrorAtPeekToken("expected ':' or '->' before function return type")
+	parsed := p.parseFunctionDefinitionWithStyle(stmt.Name, true)
+	if parsed == nil {
 		return nil
 	}
-	p.nextToken() // consume : or ->
-	p.nextToken() // advance to type token (string, i32, etc.)
-	stmt.ReturnType = p.parseTypeExpression()
-	// parseTypeExpression advances past the type, so currentToken should be after the type
-	// Check for supported function body forms:
-	// - = expr
-	// - { ... }
-	// - trailing expression (single-expression body)
-	if p.peekTokenIs(token.ASSIGN) {
-		// Expression body: fn name(...): Type = expr. `= {` opens a block
-		// body, as in the declaration form (docs/spec/10-syntax.md §3): a
-		// whole-body record literal must use its named form.
-		p.nextToken() // consume =
-		p.nextToken() // advance to body
-		if p.currentTokenIs(token.LBRACE) {
-			stmt.Body = p.parseBlockExpression()
-		} else {
-			stmt.Body = p.parseExpression(LOWEST)
-		}
-	} else if p.peekTokenIs(token.LBRACE) {
-		// Block body: fn name(...): Type { ... }
-		p.nextToken() // consume {
-		stmt.Body = p.parseBlockExpression()
-	} else {
-		// Single-expression body without "=" or braces:
-		// fn add(a: i32, b: i32) -> i32 a + b
-		p.nextToken()
-		stmt.Body = p.parseExpression(LOWEST)
-	}
-
-	// Set end token to the last token of the body
-	// For expressions, this is the expression's last token
-	// For blocks, we'd need to track the closing brace
-	stmt.EndToken = p.currentToken
-	if block, isBlock := stmt.Body.(*ast.BlockExpression); isBlock {
-		p.lowerReturns(block.Block, stmt.ReturnType, true)
-	}
-	return stmt
+	parsed.Token, parsed.TypeParams, parsed.Receiver = stmt.Token, stmt.TypeParams, stmt.Receiver
+	return parsed
 }
 
-// Function parameters: name: Type, name2: Type2
-
+// parseFunctionParameters parses parameters in literals and interface methods.
 func (p *Parser) parseFunctionParameters() []*ast.FunctionParameter {
 	params, ok := p.parseDelimited[*ast.FunctionParameter](token.LPAREN, token.RPAREN, token.COMMA, false, func() (*ast.FunctionParameter, bool) {
 		param := &ast.FunctionParameter{
@@ -4796,6 +4739,27 @@ func (p *Parser) callableDefinitionAhead() bool {
 // function definition. currentToken is '(' of the parameter list. Grouped
 // names share one type: (a, b: i32, c: u8). The last group may be variadic.
 func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.FunctionStatement {
+	return p.parseFunctionDefinitionWithStyle(name, false)
+}
+
+// The legacy fn form admits an unmarked expression body, including (x + 1)
+// and (kernel). Recognize its new clause only when a definition or another
+// callable clause follows, so an existing parenthesized value stays a value.
+func (p *Parser) kernelClauseAhead() bool {
+	if p.lookaheadSignificant(2).Literal != "kernel" || p.lookaheadSignificant(3).TokenKind != token.RPAREN {
+		return false
+	}
+	next := p.lookaheadSignificant(4)
+	if next.TokenKind == token.ASSIGN || next.TokenKind == token.LBRACE {
+		return true
+	}
+	return next.TokenKind == token.IDENT && (next.Literal == "effects" || next.Literal == "forbids" || next.Literal == "laws" || next.Literal == "dispatch")
+}
+
+// parseFunctionDefinitionWithStyle is the shared signature/clause/body grammar.
+// The fn compatibility entry requires a result annotation and additionally
+// permits its historical bare expression body; declaration form stays unchanged.
+func (p *Parser) parseFunctionDefinitionWithStyle(name *ast.Identifier, legacy bool) *ast.FunctionStatement {
 	stmt := &ast.FunctionStatement{Token: name.Token, Name: name}
 
 	// Parse parameter groups.
@@ -4861,6 +4825,10 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 	stmt.Parameters = params
 
 	// Return annotation: ':' or '->'.
+	if legacy && !p.peekTokenIs(token.COLON) && !p.peekTokenIs(token.ARROW) {
+		p.addErrorAtPeekToken("expected ':' or '->' before function return type")
+		return nil
+	}
 	if p.peekTokenIs(token.COLON) || p.peekTokenIs(token.ARROW) {
 		p.nextToken()
 		p.nextToken()
@@ -4870,10 +4838,31 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 		}
 	}
 
+	// Callable declaration clause, not a return-type attribute. Keep the
+	// vocabulary closed: no general attributes are introduced here.
+	if p.peekTokenIs(token.LPAREN) && (!legacy || p.kernelClauseAhead()) {
+		p.nextToken()
+		if !p.expectPeek(token.IDENT) {
+			return nil
+		}
+		if p.currentToken.Literal != "kernel" {
+			p.addErrorAtCurrentToken("the clause after a callable signature is (kernel)")
+			return nil
+		}
+		if !p.expectPeek(token.RPAREN) {
+			return nil
+		}
+		stmt.Kernel = true
+		if p.peekTokenIs(token.LPAREN) {
+			p.addErrorAtPeekToken("a function declares one (kernel) clause")
+			return nil
+		}
+	}
+
 	// Effect clauses (docs/spec/60-effects-allocation.md section 2), in
 	// either order, each at most once: effects { A.B, ... } forbids { ... }.
 	// `effects` and `forbids` are contextual: only this position reads them.
-	for p.peekTokenIs(token.IDENT) && (p.peekToken.Literal == "effects" || p.peekToken.Literal == "forbids") {
+	for p.peekTokenIs(token.IDENT) && (p.peekToken.Literal == "effects" || p.peekToken.Literal == "forbids") && (!legacy || p.lookaheadSignificant(2).TokenKind == token.LBRACE) {
 		p.nextToken()
 		keyword := p.currentToken.Literal
 		if (keyword == "effects" && stmt.EffectsDeclared) || (keyword == "forbids" && stmt.Forbids != nil) {
@@ -4893,7 +4882,7 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 
 	// Operator laws (docs/spec/10-syntax.md section 14a): `laws { associative,
 	// commutative }`, contextual like the effect clauses, at most once.
-	if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "laws" {
+	if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "laws" && (!legacy || p.lookaheadSignificant(2).TokenKind == token.LBRACE) {
 		p.nextToken()
 		if stmt.Laws != nil {
 			p.addErrorAtCurrentToken("a function declares one laws clause")
@@ -4935,7 +4924,7 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 	// Processor-feature realizations (docs/spec/93-simd.md section 6):
 	// `dispatch { sve: f_sve, rvv: f_rvv }`, contextual like the other
 	// clauses, at most once; each slot a feature name and a function name.
-	if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "dispatch" {
+	if p.peekTokenIs(token.IDENT) && p.peekToken.Literal == "dispatch" && (!legacy || p.lookaheadSignificant(2).TokenKind == token.LBRACE) {
 		p.nextToken()
 		if stmt.Dispatch != nil {
 			p.addErrorAtCurrentToken("a function declares one dispatch clause")
@@ -4983,6 +4972,9 @@ func (p *Parser) parseFunctionDefinitionFromName(name *ast.Identifier) *ast.Func
 	} else if p.peekTokenIs(token.LBRACE) {
 		p.nextToken()
 		stmt.Body = p.parseBlockExpression()
+	} else if legacy && !p.peekTokenIs(token.EOF) && !p.peekTokenIs(token.SEMI) && !p.peekTokenIs(token.RBRACE) {
+		p.nextToken()
+		stmt.Body = p.parseExpression(LOWEST)
 	} else {
 		// Definition-less declaration: the typed interface of a function
 		// whose body an asm translation unit provides
@@ -5120,6 +5112,13 @@ func (p *Parser) parseIdentLedStatement() ast.Statement {
 			fn.TypeParams = typeParams
 		}
 		return fn
+	}
+
+	if p.currentTokenIs(token.INTERFACE) {
+		if decl := p.parseInterfaceTypeFromName(name, typeParams); decl != nil {
+			return decl
+		}
+		return nil
 	}
 
 	if p.currentTokenIs(token.TYPE) {
@@ -5515,9 +5514,15 @@ func (p *Parser) parseShortVariableDeclaration() *ast.VariableDeclaration {
 		return nil
 	}
 
-	// expectPeek advanced past :=, so currentToken is now := (COLON_ASSIGN)
-	// We need to advance one more time to get to the first token of the value expression
-	p.nextToken() // advance past := to first token of value expression
+	if p.peekTokenIs(token.EOF) || p.peekTokenIs(token.SEMI) || p.peekTokenIs(token.RBRACE) {
+		p.addErrorAtCurrentToken("expected value expression after :=")
+		return nil
+	}
+	if p.peekTokenIs(token.PIPE) {
+		p.addErrorAtCurrentToken("expected value expression after :=; declare an ADT with Name: type = | Variant | ...")
+		return nil
+	}
+	p.nextToken() // first token of the value expression
 	stmt.Value = p.parseExpression(LOWEST)
 	stmt.Type = nil // Type inference
 

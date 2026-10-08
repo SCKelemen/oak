@@ -219,21 +219,21 @@ func (s *synth) wildcardArm(body ast.Expression) *ast.MatchArm {
 func (s *synth) app(name string, args ...ast.Expression) ast.Expression {
 	var result ast.Expression = s.id(name)
 	for _, arg := range args {
-		result = &ast.IndexExpression{Token: s.tok(token.LBRACK, "["), Left: result, Index: arg}
+		result = &ast.IndexExpression{TypeForm: ast.IndexGenericType, Token: s.tok(token.LBRACK, "["), Left: result, Index: arg}
 	}
 	return result
 }
 
 func (s *synth) view(element ast.Expression) ast.Expression {
-	return &ast.IndexExpression{Token: s.tok(token.LBRACK, "["), Left: element, Index: s.id("")}
+	return &ast.IndexExpression{TypeForm: ast.IndexArrayType, Token: s.tok(token.LBRACK, "["), Left: element, Index: s.id("")}
 }
 
 func (s *synth) span(element ast.Expression) ast.Expression {
-	return &ast.IndexExpression{Token: s.tok(token.LBRACK, "["), Left: element, Index: s.id("*")}
+	return &ast.IndexExpression{TypeForm: ast.IndexArrayType, Token: s.tok(token.LBRACK, "["), Left: element, Index: s.id("*")}
 }
 
 func (s *synth) array(length int64, element ast.Expression) ast.Expression {
-	return &ast.IndexExpression{Token: s.tok(token.LBRACK, "["), Left: element, Index: s.intLit(length)}
+	return &ast.IndexExpression{TypeForm: ast.IndexArrayType, Token: s.tok(token.LBRACK, "["), Left: element, Index: s.intLit(length)}
 }
 
 // rebuildType copies a type expression written in the program (a name, a
@@ -258,7 +258,7 @@ func (s *synth) rebuildType(expr ast.Expression) (ast.Expression, bool) {
 		if !ok {
 			return nil, false
 		}
-		return &ast.IndexExpression{Token: s.tok(token.LBRACK, "["), Left: left, Index: index}, true
+		return &ast.IndexExpression{TypeForm: t.TypeForm, Align: t.Align, Token: s.tok(token.LBRACK, "["), Left: left, Index: index}, true
 	}
 	return nil, false
 }

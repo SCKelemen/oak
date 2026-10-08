@@ -1,0 +1,5 @@
+Color: type = Red | Green | Blue
+main: (): i32 {
+  color: Color = .Green
+  color ? | .Red => 1 | .Green => 42 | .Blue => 2
+}

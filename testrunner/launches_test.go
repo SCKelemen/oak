@@ -16,10 +16,10 @@ func TestLaunchTargets(t *testing.T) {
 	files := map[string]string{
 		"kernels.oak": `package main
 clamp_relu: (x: f32): f32 = x < 0.0 ? 0.0 | x
-kernel relu: (gid: u32, x: []f32, y: [*]f32): () = {
+relu: (gid: u32, x: []f32, y: [*]f32): () (kernel) = {
   gid < len(y) ? { y[gid] = clamp_relu(x[gid]) }
 }
-kernel axpy: (gid: u32, a: f32, x: []f32, y: [*]f32, tile: u32): () = {
+axpy: (gid: u32, a: f32, x: []f32, y: [*]f32, tile: u32): () (kernel) = {
   base: u32 = gid * tile
   k: u32 = 0
   while k < tile {

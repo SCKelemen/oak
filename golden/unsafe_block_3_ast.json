@@ -4,7 +4,7 @@
       "type": "VariableDeclaration",
       "data": {
         "name": "buf",
-        "type": "(u8[16])"
+        "type": "[16]u8"
       },
       "position": {
         "line": 2,
@@ -16,7 +16,7 @@
     {
       "type": "Unknown",
       "data": {
-        "string": "unsafe a: (u8.*) = span((\u0026buf))b: (u8.*) = span((\u0026buf))"
+        "string": "unsafe a: [*]u8 = span((\u0026buf))b: [*]u8 = span((\u0026buf))"
       }
     }
   ],

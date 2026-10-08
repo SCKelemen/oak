@@ -13,14 +13,14 @@ import (
 // Ask 5.25: every lane stores successive elements in its own row, without
 // making every lane walk the entire row. The incomplete tail is untouched.
 const kernelStridedStoresProgram = `
-kernel strided: (gid: u32, out: [*]u32, cols: u32): () = {
+strided: (gid: u32, out: [*]u32, cols: u32): () (kernel) = {
   s: u32 = 0
   while s < cols / 4 {
     out[gid * cols + s * 4 + lane(4)] = gid * 100 + s * 4 + lane(4) + 1
     s = s + 1
   }
 }
-kernel aliased: (gid: u32, out: [*]u32, cols: u32): () = {
+aliased: (gid: u32, out: [*]u32, cols: u32): () (kernel) = {
   base: u32 = cols * gid
   l: u32 = lane(4)
   s: u32 = 0
@@ -84,7 +84,7 @@ func TestKernelStridedIndependence(t *testing.T) {
 		"reordered":       "lane(4) + (4 * s + 12 * gid)",
 	} {
 		t.Run(name, func(t *testing.T) {
-			src := `kernel k: (gid: u32, out: [*]u32): () = {
+			src := `k: (gid: u32, out: [*]u32): () (kernel) = {
   s: u32 = 0
   while s < 12 / 4 {
     out[` + index + `] = lane(4)
@@ -108,7 +108,7 @@ main: (): i32 = 0
 }
 
 func TestKernelStridedIndependenceRejections(t *testing.T) {
-	base := `kernel k: (gid: u32, out: [*]u32, cols: u32, other: u32): () = {
+	base := `k: (gid: u32, out: [*]u32, cols: u32, other: u32): () (kernel) = {
   l: u32 = lane(4)
   s: u32 = 0
   while s < cols / 4 {

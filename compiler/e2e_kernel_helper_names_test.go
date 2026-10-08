@@ -19,7 +19,7 @@ thread: (v: f32): f32 = v * 2.0
 thread_: (v: f32): f32 = v + 1.0
 apply: (x: f32, y: f32, f: (f32, f32) -> f32 effects { }): f32 = f(x, y)
 
-kernel helper_names: (gid: u32, x: []f32, out: [*]f32): () = {
+helper_names: (gid: u32, x: []f32, out: [*]f32): () (kernel) = {
   gid < len(x) && gid < len(out) ? {
     a: f32 = apply(x[gid], 2.0, plus)
     b: f32 = apply(x[gid], 2.0, minus)

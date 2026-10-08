@@ -95,7 +95,7 @@
                             {
                               "type": "Unknown",
                               "data": {
-                                "string": "(s.i) = u8(7)"
+                                "string": "(s[i]) = u8(7)"
                               }
                             },
                             {
@@ -402,7 +402,7 @@
         "parameters": [
           {
             "name": "s",
-            "type": "(u8.*)"
+            "type": "[*]u8"
           }
         ],
         "return_type": "i32"
@@ -428,7 +428,7 @@
                     "type": "VariableDeclaration",
                     "data": {
                       "name": "data",
-                      "type": "(u8[4])"
+                      "type": "[4]u8"
                     },
                     "position": {
                       "line": 13,
@@ -441,7 +441,7 @@
                     "type": "VariableDeclaration",
                     "data": {
                       "name": "s",
-                      "type": "(u8.*)",
+                      "type": "[*]u8",
                       "value": {
                         "type": "InvocationExpression",
                         "data": {

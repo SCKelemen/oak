@@ -23,6 +23,7 @@ const (
 
 var syntaxContracts = map[string]syntaxContract{
 	"declarations/typed.exit42.oak":                  {Status: syntaxCanonical, Spec: "10-syntax.md §2"},
+	"declarations/inferred_or.exit42.oak":            {Status: syntaxCanonical, Spec: "10-syntax.md §§2,3b"},
 	"declarations/inferred.exit42.oak":               {Status: syntaxCanonical, Spec: "10-syntax.md §2"},
 	"declarations/semicolon_block.exit42.oak":        {Status: syntaxCanonical, Spec: "10-syntax.md §5"},
 	"packages/package.parse.oak":                     {Status: syntaxCanonical, Spec: "10-syntax.md package declarations", NoNativeReason: "package declaration selects compilation identity and has no standalone process behavior"},
@@ -61,13 +62,14 @@ var syntaxContracts = map[string]syntaxContract{
 	"adts/dot_variant.exit42.oak":                    {Status: syntaxCanonical, Spec: "10-syntax.md §6"},
 	"adts/qualified_dot.exit42.oak":                  {Status: syntaxCanonical, Spec: "10-syntax.md §6"},
 	"adts/brace_legacy.parse.oak":                    {Status: syntaxCompatibility, Spec: "10-syntax.md §6", NoNativeReason: "brace-delimited ADT declaration is historical parser compatibility", CompatibilityNote: "canonical multiline ADTs use layout with leading pipes"},
-	"adts/shorthand_legacy.parse.oak":                {Status: syntaxCompatibility, Spec: "10-syntax.md §6", NoNativeReason: "Name := A | B shorthand is historical parser compatibility", CompatibilityNote: "canonical ADTs use Name: type = ..."},
+	"adts/pipeless.exit42.oak":                       {Status: syntaxCanonical, Spec: "10-syntax.md §6"},
 	"adts/type_keyword_legacy.parse.oak":             {Status: syntaxCompatibility, Spec: "10-syntax.md §6", NoNativeReason: "keyword-prefixed type Name: type = ... is a parser compatibility entry point", CompatibilityNote: "canonical declarations are Name: type = ..."},
 	"adts/indexed.check.oak":                         {Status: syntaxCanonical, Spec: "10-syntax.md §6", NoNativeReason: "this case establishes indexed constructor-result typing; runtime GADT specialization is tested separately"},
 	"records/semantic.check.oak":                     {Status: syntaxCanonical, Spec: "10-syntax.md §8", NoNativeReason: "semantic record shape intentionally does not promise byte representation"},
 	"records/struct.exit42.oak":                      {Status: syntaxCanonical, Spec: "10-syntax.md §8"},
 	"records/extensible.parse.oak":                   {Status: syntaxCanonical, Spec: "05-ergonomics-and-cost.md extensible records", NoNativeReason: "row-polymorphic record syntax is a semantic typing surface rather than a standalone runtime representation"},
 	"records/composition.parse.oak":                  {Status: syntaxCompatibility, Spec: "10-syntax.md §9", NoNativeReason: "record composition is accepted definition-time syntax without a standalone runtime observation", CompatibilityNote: "kept while the shared & token remains accepted for record composition"},
+	"interfaces/declaration.parse.oak":               {Status: syntaxCanonical, Spec: "10-syntax.md §9", NoNativeReason: "interface declaration is a compile-time constraint, with instantiated execution tested separately"},
 	"interfaces/keyword_legacy.parse.oak":            {Status: syntaxCompatibility, Spec: "10-syntax.md §9", NoNativeReason: "keyword-prefixed interface Name: interface = ... is a parser compatibility route", CompatibilityNote: "canonical source uses Name: interface = ..."},
 	"types/array_forms.parse.oak":                    {Status: syntaxCanonical, Spec: "10-syntax.md §1", NoNativeReason: "type-form inventory has no independent runtime behavior"},
 	"types/generic_application.check.oak":            {Status: syntaxCanonical, Spec: "10-syntax.md §1", NoNativeReason: "generic application typing is the observation; executable generic instantiations have separate native cases"},
@@ -77,7 +79,7 @@ var syntaxContracts = map[string]syntaxContract{
 }
 
 var syntaxFamilies = map[string][]string{
-	"declarations":             {"declarations/typed.exit42.oak", "declarations/inferred.exit42.oak", "declarations/semicolon_block.exit42.oak"},
+	"declarations":             {"declarations/typed.exit42.oak", "declarations/inferred.exit42.oak", "declarations/inferred_or.exit42.oak", "declarations/semicolon_block.exit42.oak"},
 	"package and import":       {"packages/package.parse.oak", "packages/import.parse.oak"},
 	"function declarations":    {"functions/declaration_colon.exit42.oak", "functions/declaration_arrow.exit42.oak", "functions/colonless.exit42.oak", "functions/fn_form.exit42.oak", "functions/layout_body.exit42.oak"},
 	"function values":          {"functions/function_literal.parse.oak"},
@@ -88,9 +90,9 @@ var syntaxFamilies = map[string][]string{
 	"integer literals":         {"literals/decimal.exit42.oak", "literals/hex.exit42.oak", "literals/binary.exit42.oak", "literals/radix.exit42.oak", "literals/radix_separator.exit42.oak", "literals/unicode_radix.exit242.oak"},
 	"literals":                 {"expressions/string.exit42.oak", "arrays/contextual_literal.exit42.oak", "arrays/typed_literal_legacy.parse.oak", "expressions/record_literal.parse.oak", "expressions/struct_literal.parse.oak"},
 	"arrays and slices":        {"arrays/contextual_literal.exit42.oak", "arrays/slice.exit42.oak", "arrays/slice_open_low.exit42.oak", "arrays/slice_open_high.exit42.oak", "arrays/slice_all.exit42.oak", "arrays/typed_literal_legacy.parse.oak", "types/array_forms.parse.oak"},
-	"ADTs":                     {"adts/dot_variant.exit42.oak", "adts/qualified_dot.exit42.oak", "adts/brace_legacy.parse.oak", "adts/shorthand_legacy.parse.oak", "adts/type_keyword_legacy.parse.oak", "adts/indexed.check.oak"},
+	"ADTs":                     {"adts/dot_variant.exit42.oak", "adts/qualified_dot.exit42.oak", "adts/brace_legacy.parse.oak", "adts/pipeless.exit42.oak", "adts/type_keyword_legacy.parse.oak", "adts/indexed.check.oak"},
 	"records":                  {"records/semantic.check.oak", "records/struct.exit42.oak", "records/extensible.parse.oak", "records/composition.parse.oak"},
-	"interfaces":               {"interfaces/keyword_legacy.parse.oak"},
+	"interfaces":               {"interfaces/declaration.parse.oak", "interfaces/keyword_legacy.parse.oak"},
 	"primitive compatibility":  {"types/lowercase_bool.parse.oak"},
 	"unsafe boundary":          {"unsafe/block.check.oak"},
 	"REPL tooling":             {"repl/exit.parse.oak"},

@@ -11,7 +11,7 @@ import (
 // shape. On the host the body runs once per lane per position.
 const kernelLanesProgram = `package main
 
-kernel scale: (gid: u32, x: []f32, out: [*]f32): () = {
+scale: (gid: u32, x: []f32, out: [*]f32): () (kernel) = {
   i: u32 = gid * 4 + lane(4)
   i < len(out) && i < len(x) ? { out[i] = x[i] * 2.0 }
 }
@@ -65,7 +65,7 @@ func TestE2EKernelLanes(t *testing.T) {
 // the phases lane by lane and agrees with the device.
 const kernelArenaProgram = `package main
 
-kernel reverse_blocks: (gid: u32, x: []f32, out: [*]f32): () = {
+reverse_blocks: (gid: u32, x: []f32, out: [*]f32): () (kernel) = {
   tile: [4]f32 (threadgroup)
   i: u32 = gid * 4 + lane(4)
   v: f32 = 0.0
@@ -129,12 +129,12 @@ func TestE2EKernelArenaBarrier(t *testing.T) {
 // The placement rules (OAK-K0101).
 func TestKernelLaneRejections(t *testing.T) {
 	for name, c := range map[string][2]string{
-		"lane in a helper":      {"helper: (): u32 = lane(4)\nkernel k: (gid: u32, out: [*]f32): () = {\n  i: u32 = gid * 4 + helper()\n  i < len(out) ? { out[i] = 1.0 }\n}\n", "belongs to a kernel body"},
-		"barrier in a loop":     {"kernel k: (gid: u32, out: [*]f32): () = {\n  i: u32 = gid * 4 + lane(4)\n  k2: u32 = 0\n  while k2 < 2 {\n    barrier()\n    k2 = k2 + 1\n  }\n  i < len(out) ? { out[i] = 1.0 }\n}\n", "top level"},
-		"two group sizes":       {"kernel k: (gid: u32, out: [*]f32): () = {\n  i: u32 = gid * 4 + lane(4)\n  j: u32 = lane(8)\n  i + j < len(out) ? { out[i] = 1.0 }\n}\n", "one group size"},
-		"arena without a group": {"kernel k: (gid: u32, out: [*]f32): () = {\n  tile: [4]f32 (threadgroup)\n  gid < len(out) ? { out[gid] = tile[0] }\n}\n", "declares its group through lane(G)"},
-		"unannotated private":   {"kernel k: (gid: u32, x: []f32, out: [*]f32): () = {\n  i: u32 = gid * 4 + lane(4)\n  v := x[0]\n  barrier()\n  i < len(out) ? { out[i] = v }\n}\n", "needs a type annotation"},
-		"lane past the tile":    {"kernel k: (gid: u32, out: [*]f32): () = {\n  i: u32 = gid * 8 + lane(4)\n  i < len(out) ? { out[i] = 1.0 }\n}\n", "positions could overlap"},
+		"lane in a helper":      {"helper: (): u32 = lane(4)\nk: (gid: u32, out: [*]f32): () (kernel) = {\n  i: u32 = gid * 4 + helper()\n  i < len(out) ? { out[i] = 1.0 }\n}\n", "belongs to a kernel body"},
+		"barrier in a loop":     {"k: (gid: u32, out: [*]f32): () (kernel) = {\n  i: u32 = gid * 4 + lane(4)\n  k2: u32 = 0\n  while k2 < 2 {\n    barrier()\n    k2 = k2 + 1\n  }\n  i < len(out) ? { out[i] = 1.0 }\n}\n", "top level"},
+		"two group sizes":       {"k: (gid: u32, out: [*]f32): () (kernel) = {\n  i: u32 = gid * 4 + lane(4)\n  j: u32 = lane(8)\n  i + j < len(out) ? { out[i] = 1.0 }\n}\n", "one group size"},
+		"arena without a group": {"k: (gid: u32, out: [*]f32): () (kernel) = {\n  tile: [4]f32 (threadgroup)\n  gid < len(out) ? { out[gid] = tile[0] }\n}\n", "declares its group through lane(G)"},
+		"unannotated private":   {"k: (gid: u32, x: []f32, out: [*]f32): () (kernel) = {\n  i: u32 = gid * 4 + lane(4)\n  v := x[0]\n  barrier()\n  i < len(out) ? { out[i] = v }\n}\n", "needs a type annotation"},
+		"lane past the tile":    {"k: (gid: u32, out: [*]f32): () (kernel) = {\n  i: u32 = gid * 8 + lane(4)\n  i < len(out) ? { out[i] = 1.0 }\n}\n", "positions could overlap"},
 	} {
 		src := "package main\n\n" + c[0] + "\nmain: (): i32 = 0\n"
 		root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": src})

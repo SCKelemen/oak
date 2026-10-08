@@ -104,7 +104,7 @@ helper: (value: u32): u32 = {
   gid: u32 = value + 1
   gid
 }
-kernel k: (gid: u32, out: [*]u32): () = {
+k: (gid: u32, out: [*]u32): () (kernel) = {
 ` + body + `
 }
 main: (): i32 = 0
@@ -119,21 +119,21 @@ main: (): i32 = 0
 
 const kernelUniformStoresProgram = `
 helper: (x: u32): u32 = x + 7
-kernel uniform: (gid: u32, out: [*]u32): () = {
+uniform: (gid: u32, out: [*]u32): () (kernel) = {
   unused: u32 = lane(4)
   gid < len(out) ? { out[gid] = helper(gid) }
 }
-kernel selected: (gid: u32, out: [*]u32): () = {
+selected: (gid: u32, out: [*]u32): () (kernel) = {
   value: u32 = lane(4) + 3
   lane(4) == 0 && gid < len(out) ? { out[gid] = value }
 }
-kernel reversed: (gid: u32, out: [*]u32): () = {
+reversed: (gid: u32, out: [*]u32): () (kernel) = {
   value: u32 = lane(4) + 5
   gid < len(out) ? {
     0 == lane(4) ? { out[gid] = value }
   }
 }
-kernel otherwise: (gid: u32, out: [*]u32): () = {
+otherwise: (gid: u32, out: [*]u32): () (kernel) = {
   value: u32 = lane(4) + 9
   lane(4) != 0 ? {} | {
     gid < len(out) ? { out[gid] = value }

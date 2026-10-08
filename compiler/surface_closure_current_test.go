@@ -67,15 +67,13 @@ var parseStatementContextualRoute = regexp.MustCompile(`p\.currentToken\.Literal
 
 var statementHelperWitnesses = map[string]string{
 	"parseADTType":                              "adts/type_keyword_legacy.parse.oak",
-	"parseADTVariant":                           "adts/shorthand_legacy.parse.oak",
 	"parseAssignmentStatement":                  "declarations/typed.exit42.oak",
 	"parseBlockStatement":                       "blocks/bare.exit42.oak",
 	"parseDeferStatement":                       "control/defer.exit42.oak",
 	"parseDiscardStatement":                     "declarations/discard.exit42.oak",
 	"parseExportDeclaration":                    "modules/export.parse.oak",
-	"parseExpression":                           "declarations/inferred.exit42.oak",
 	"parseExpressionStatementOrIndexAssignment": "expressions/address_of.exit42.oak",
-	"parseFunctionDefinitionFromName":            "functions/colonless.exit42.oak",
+	"parseFunctionDefinitionFromName":           "functions/colonless.exit42.oak",
 	"parseFunctionStatement":                    "functions/fn_form.exit42.oak",
 	"parseIdentLedStatement":                    "declarations/typed.exit42.oak",
 	"parseImportStatement":                      "packages/import.parse.oak",
@@ -89,6 +87,7 @@ var statementHelperWitnesses = map[string]string{
 	"parsePubDeclaration":                       "modules/pub.exit42.oak",
 	"parseREPLCommand":                          "repl/exit.parse.oak",
 	"parseReturnStatement":                      "control/return.exit42.oak",
+	"parseShortVariableDeclaration":             "declarations/inferred_or.exit42.oak",
 	"parseSelectiveImport":                      "modules/selective_import.parse.oak",
 	"parseUnsafeBlock":                          "unsafe/block.check.oak",
 	"parseWhileStatement":                       "functions/variadic.exit42.oak",
@@ -283,8 +282,9 @@ func TestIdentifierLedContextualDeclarationsHaveCorpusEvidence(t *testing.T) {
 }
 
 func TestFunctionContextualClausesHaveCorpusEvidence(t *testing.T) {
+	// Canonical and fn declarations delegate their clauses to this shared grammar.
 	requireKeywordClosure(t,
-		parserFunctionBodyForClosure(t, "parseFunctionDefinitionFromName"),
+		parserFunctionBodyForClosure(t, "parseFunctionDefinitionWithStyle"),
 		functionContextualKeyword,
 		functionClauseWitnesses,
 		"function clause",

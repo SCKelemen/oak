@@ -5920,11 +5920,11 @@ func typeExpressionFor(t Type, tok token.Token) ast.Expression {
 		}
 		switch {
 		case t.IsSlice:
-			return &ast.IndexExpression{Token: tok, Left: element, Index: &ast.Identifier{Token: tok, Value: ""}}
+			return &ast.IndexExpression{TypeForm: ast.IndexArrayType, Align: t.Align, Token: tok, Left: element, Index: &ast.Identifier{Token: tok, Value: ""}}
 		case t.IsSpan:
-			return &ast.IndexExpression{Token: tok, Left: element, Index: &ast.Identifier{Token: tok, Value: "*"}}
+			return &ast.IndexExpression{TypeForm: ast.IndexArrayType, Align: t.Align, Token: tok, Left: element, Index: &ast.Identifier{Token: tok, Value: "*"}}
 		default:
-			return &ast.IndexExpression{Token: tok, Left: element, Index: &ast.IntegerLiteral{Token: tok, Value: t.Length}}
+			return &ast.IndexExpression{TypeForm: ast.IndexArrayType, Align: t.Align, Token: tok, Left: element, Index: &ast.IntegerLiteral{Token: tok, Value: t.Length}}
 		}
 	}
 	return nil
@@ -6000,7 +6000,7 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ..
 				if expectedArray.IsSlice || expectedArray.IsSpan {
 					expr.Type = shape
 				} else {
-					expr.Type = &ast.IndexExpression{Token: expr.Token, Left: typeExpressionFor(expectedArray.ElementType, expr.Token), Index: &ast.IntegerLiteral{Token: expr.Token, Value: int64(len(expr.Elements))}}
+					expr.Type = &ast.IndexExpression{TypeForm: ast.IndexArrayType, Token: expr.Token, Left: typeExpressionFor(expectedArray.ElementType, expr.Token), Index: &ast.IntegerLiteral{Token: expr.Token, Value: int64(len(expr.Elements))}}
 				}
 			}
 		}
@@ -6022,7 +6022,7 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ..
 				}
 				// Create IndexExpression for []Type (empty index means slice)
 				sliceTypeExpr := &ast.IndexExpression{
-					Token: expr.Token,
+					TypeForm: ast.IndexArrayType, Token: expr.Token,
 					Left:  elementTypeIdent,
 					Index: &ast.Identifier{Token: expr.Token, Value: ""}, // empty string = slice
 				}
