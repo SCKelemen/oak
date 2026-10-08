@@ -1,0 +1,656 @@
+{
+  "repository": "SCKelemen/oak",
+  "target_branch": "specification",
+  "local_branch": "integration/source-byte-proofs",
+  "base_and_published_prerequisites": {
+    "specification": {
+      "commit": "5e4a01946da653dd41936b20545b791358bbadb7",
+      "tree": "cd934487e94de36ad7a934d1cec1669cf20547b0",
+      "parents": [
+        "b5f149efa692ea201d715b05c86efba27358f6d8"
+      ],
+      "subject": "perf(native): retarget single-use constants"
+    },
+    "pr683": {
+      "commit": "58f0424e71f504344e3abf7b5347503c313b22a1",
+      "tree": "a12899a09727fa4e597c726fd8cf0939b67380fa",
+      "parents": [
+        "13fc9b36888607631a713e788595c2a8aed92b7f"
+      ],
+      "subject": "Compose extracted assembler output with successful bitwise function execution"
+    },
+    "pr685": {
+      "commit": "9a49a54fecea5f137830490c848d8af0c4730e96",
+      "tree": "784989529de8797e7ed4d298789dc6a2a9d489fc",
+      "parents": [
+        "8122a9aa17d652c60e5a5cdaa4337eaebb538b18"
+      ],
+      "subject": "Require real ARM64 function byte correspondence in Lean CI"
+    },
+    "pr686": {
+      "commit": "4bfe82b309c5a3f57fa4985939615f7f1cbdcded",
+      "tree": "0884cc41d0bb9822c3a3ed3e0e752df11da595a0",
+      "parents": [
+        "202d93da6009bacf3ff81989bcfcc45d9e395226"
+      ],
+      "subject": "Trigger required CI after retargeting RV64 proof to specification"
+    }
+  },
+  "reviewed_source_commits": [
+    {
+      "commit": "29cddb104e68b122efd5ee678e1d09af27d55f87",
+      "tree": "ac1e5bb6876982dbe5ffbc7490bd4ddccf76a2cb",
+      "parents": [
+        "58f0424e71f504344e3abf7b5347503c313b22a1"
+      ],
+      "subject": "Prove named invocation of admitted minimal bitwise Wasm modules",
+      "integration_commit": "de788241cbd055e2fe9dadc9848e12be24e4fb5a"
+    },
+    {
+      "commit": "7c08cdce7b05e8eff221ffd0d303e645a7bdd0bb",
+      "tree": "89d0cfc3df2de8d6701293d55b745dc7e83693a8",
+      "parents": [
+        "4bfe82b309c5a3f57fa4985939615f7f1cbdcded"
+      ],
+      "subject": "Model narrow ELF64 load admission and exact body placement",
+      "integration_commit": "969abac70885b58422b576cfd66d862aed30ec7e"
+    },
+    {
+      "commit": "fc4183b5904bcf65063e480e7474f80a7d253ffc",
+      "tree": "19a3b04bfd913b3bc91a9a9895927fbbd354fb8e",
+      "parents": [
+        "7c08cdce7b05e8eff221ffd0d303e645a7bdd0bb"
+      ],
+      "subject": "Bind admitted RV64 ELF leaf bytes to universal function theorem",
+      "integration_commit": "7918cf0ac65c91cc54869c6a62fde63cb11de862"
+    },
+    {
+      "commit": "ee620fe898c52acdae6a56330ec03458cfb67c4b",
+      "tree": "75f5b868c684052c0d48634320728343c2c79b95",
+      "parents": [
+        "d785644271e2fb9e2eec704258aac6baab5a45ba"
+      ],
+      "subject": "Compose minimal ARM64 ELF entry bytes with projected startup request",
+      "integration_commit": "11004dbd8cd3b9372387cca86c09d3597d13919f"
+    },
+    {
+      "commit": "f3df9f0ef996b66017e5e00ad7d76ac75a8ca60d",
+      "tree": "a79dfaa9c9bfb7e7461848a9508e3036c00a1450",
+      "parents": [
+        "4bfe82b309c5a3f57fa4985939615f7f1cbdcded"
+      ],
+      "subject": "Prove actual RV64 framed bitwise compiler output with kernel-only memory laws",
+      "integration_commit": "7622e20df0135c197ad11b4d7b3646e3a1ef58c5"
+    },
+    {
+      "commit": "4e9979b651151064bae43f11810fd955feb4d893",
+      "tree": "79d63a5ce33b9438f0496b1f6fda8d339afed7fe",
+      "parents": [
+        "29cddb104e68b122efd5ee678e1d09af27d55f87"
+      ],
+      "subject": "Bind original canonical bitwise source bytes to successful Wasm module results",
+      "integration_commit": "08c80ab85d26933a80947f8d111cd3db59f852ef"
+    },
+    {
+      "commit": "a38a645062fc60c1f096019acd49bec1a86b1d84",
+      "tree": "656724c316aa07363d2bbf861ff6a2ebfd678566",
+      "parents": [
+        "52afe95691b26b90fa7d95bd84ea183c06e057ca"
+      ],
+      "subject": "Compose source-bound Wasm ARM64 and framed RV64 successful results",
+      "integration_commit": "81145c12c32b4d86514665910e8690d823c9d47f"
+    },
+    {
+      "commit": "dd75f76f0aef54a9b03b1d24bc2d176bbf4ac8d1",
+      "tree": "df4b8f16f6546a77ea9ba034b8f2064930b56617",
+      "parents": [
+        "a38a645062fc60c1f096019acd49bec1a86b1d84"
+      ],
+      "subject": "Bridge checked bitwise source to existing typed expression semantics",
+      "integration_commit": "5bd7caca74b75cbda3685f61658a5b210b7c5eb5"
+    }
+  ],
+  "tested_code": {
+    "commit": "0ea1cfaa482b2fd8bd0da71a26ab98863665d4cd",
+    "tree": "4fd94cbd86c901c43c6545020d1567ef7472f09a",
+    "parents": [
+      "5bd7caca74b75cbda3685f61658a5b210b7c5eb5"
+    ],
+    "subject": "Require actual ARM64 compiler ELF startup correspondence in formal CI"
+  },
+  "reviewed_source_final_tree": "df4b8f16f6546a77ea9ba034b8f2064930b56617",
+  "excluded": [
+    "23d9b00e external Wasm Core projection",
+    "active ARM/RV external Sail experiments",
+    "blocked syntax work"
+  ],
+  "publication": "not authorized; no push or remote merge performed",
+  "integration_commits": [
+    {
+      "commit": "41a0c64f44e7ee9a08a90c92d7dce64a45dd29e8",
+      "tree": "469777067d453b1e54adc7474571f6177834d432",
+      "parents": [
+        "5e4a01946da653dd41936b20545b791358bbadb7",
+        "58f0424e71f504344e3abf7b5347503c313b22a1"
+      ],
+      "subject": "Merge published Wasm bitwise prerequisite for local proof integration"
+    },
+    {
+      "commit": "cb41b9825261b6e433057c20482d06f07889c048",
+      "tree": "8a34677b264c08ee6272002c31ed3242aaf4085d",
+      "parents": [
+        "41a0c64f44e7ee9a08a90c92d7dce64a45dd29e8",
+        "9a49a54fecea5f137830490c848d8af0c4730e96"
+      ],
+      "subject": "Merge published ARM64 bitwise prerequisite for local proof integration"
+    },
+    {
+      "commit": "7c53a70ccdaadceb02491465ac91046eab8d8c2f",
+      "tree": "9899e98a0021028c7bc8feee9f9caae507aab2e2",
+      "parents": [
+        "cb41b9825261b6e433057c20482d06f07889c048",
+        "4bfe82b309c5a3f57fa4985939615f7f1cbdcded"
+      ],
+      "subject": "Merge published RV64 bitwise prerequisite for local proof integration"
+    },
+    {
+      "commit": "969abac70885b58422b576cfd66d862aed30ec7e",
+      "tree": "41645778d81c4176460e9788cf3e43e9b042df9b",
+      "parents": [
+        "7c53a70ccdaadceb02491465ac91046eab8d8c2f"
+      ],
+      "subject": "Model narrow ELF64 load admission and exact body placement"
+    },
+    {
+      "commit": "7918cf0ac65c91cc54869c6a62fde63cb11de862",
+      "tree": "b7838cae0953335bb1c959d1fd2ba2fb2a7ab837",
+      "parents": [
+        "969abac70885b58422b576cfd66d862aed30ec7e"
+      ],
+      "subject": "Bind admitted RV64 ELF leaf bytes to universal function theorem"
+    },
+    {
+      "commit": "11004dbd8cd3b9372387cca86c09d3597d13919f",
+      "tree": "a7b171ab0035ebb09f95b00bdb410d7f394ab512",
+      "parents": [
+        "7918cf0ac65c91cc54869c6a62fde63cb11de862"
+      ],
+      "subject": "Compose minimal ARM64 ELF entry bytes with projected startup request"
+    },
+    {
+      "commit": "7622e20df0135c197ad11b4d7b3646e3a1ef58c5",
+      "tree": "8bc2e00f15ca5c22e5f812fa226a34152ee40712",
+      "parents": [
+        "11004dbd8cd3b9372387cca86c09d3597d13919f"
+      ],
+      "subject": "Prove actual RV64 framed bitwise compiler output with kernel-only memory laws"
+    },
+    {
+      "commit": "de788241cbd055e2fe9dadc9848e12be24e4fb5a",
+      "tree": "4062274bc157a3f97e7a8d1037467f0760fb0af0",
+      "parents": [
+        "7622e20df0135c197ad11b4d7b3646e3a1ef58c5"
+      ],
+      "subject": "Prove named invocation of admitted minimal bitwise Wasm modules"
+    },
+    {
+      "commit": "08c80ab85d26933a80947f8d111cd3db59f852ef",
+      "tree": "8e4d48dcbf5093fdc4fd5f5e9815a872251734fa",
+      "parents": [
+        "de788241cbd055e2fe9dadc9848e12be24e4fb5a"
+      ],
+      "subject": "Bind original canonical bitwise source bytes to successful Wasm module results"
+    },
+    {
+      "commit": "81145c12c32b4d86514665910e8690d823c9d47f",
+      "tree": "fdbff7fcb6d96fccf570c8b183077888b7040500",
+      "parents": [
+        "08c80ab85d26933a80947f8d111cd3db59f852ef"
+      ],
+      "subject": "Compose source-bound Wasm ARM64 and framed RV64 successful results"
+    },
+    {
+      "commit": "5bd7caca74b75cbda3685f61658a5b210b7c5eb5",
+      "tree": "1a116250016f1ee3f080bcafc09d816fcc2be074",
+      "parents": [
+        "81145c12c32b4d86514665910e8690d823c9d47f"
+      ],
+      "subject": "Bridge checked bitwise source to existing typed expression semantics"
+    },
+    {
+      "commit": "0ea1cfaa482b2fd8bd0da71a26ab98863665d4cd",
+      "tree": "4fd94cbd86c901c43c6545020d1567ef7472f09a",
+      "parents": [
+        "5bd7caca74b75cbda3685f61658a5b210b7c5eb5"
+      ],
+      "subject": "Require actual ARM64 compiler ELF startup correspondence in formal CI"
+    }
+  ],
+  "remaining_hosted_ci": {
+    "publication_authorization": "required before any push or new hosted CI set",
+    "ci_sharding_prerequisite": {
+      "pr": 682,
+      "reviewed_head": "46c011765e69e55af27e4cccb0d2a4f067a6c894",
+      "status_at_integration": "not merged; retain actual ancestry and workflow/script when it lands"
+    },
+    "pr686_old_hosted_result": "compiler-rest cumulative 45-minute timeout; Formal/Sail green per CI owner; do not retry unchanged before sharding prerequisite",
+    "full_suite": "not claimed; local ASan/LSan under ptrace is a known environmental blocker and was not disabled",
+    "external_semantics": "external Wasm Core and ARM/RV Sail work deliberately excluded"
+  },
+  "known_baseline_warnings": [
+    "Oak.SessionObligations has five existing sorry declarations (unchanged); aggregate build success is not an axiom-clean claim for all repository proofs. Added-slice public theorem audit is separate."
+  ],
+  "common_elf_deduplication": {
+    "retained_source": "7c08cdce7b05e8eff221ffd0d303e645a7bdd0bb",
+    "equivalent_alternate_not_cherry_picked": "d785644271e2fb9e2eec704258aac6baab5a45ba",
+    "file_bytes_equal": true
+  },
+  "toolchains": {
+    "lean": "4.33.1 (819816b2e0a3bf405af45ae5c7af2491d8f5bee6)",
+    "lake": "5.0.0-src+819816b",
+    "go": "go1.27.1 linux/amd64",
+    "node": "v24.19.0",
+    "LEAN_NUM_THREADS": "2",
+    "GOMAXPROCS": "2"
+  },
+  "validation": {
+    "date": "2026-10-08",
+    "scope": "Local integration only; no hosted CI set or remote publication.",
+    "core_lean": {
+      "status": "passed",
+      "command": "cd spec/lean && lake build",
+      "jobs": 352,
+      "fresh_build": true,
+      "baseline_sorry_warnings": 5
+    },
+    "mandatory_asm_pins": {
+      "status": "passed",
+      "command": "go test ./asm -run '^Test(AArch64BitwiseFunction.*|RV64((LocalBranches|CompressedBranches)MatchLean|(Relaxation|Materialization|CallExecution|DirectControl|BitwiseFunction|BitwiseELF)MatchesLean))$' -count=1 -timeout=20m -v",
+      "environment": {
+        "OAK_REQUIRE_ARM64_LEAN": "1",
+        "OAK_REQUIRE_RV64_LEAN": "1",
+        "OAK_REQUIRE_WASM_LEAN": "1",
+        "OAK_REQUIRE_WASM_TESTS": "1",
+        "OAK_WASM_TEST_ENGINE": "node"
+      },
+      "elapsed_seconds": 504.93,
+      "elf_kernel_elapsed_seconds": 286.62,
+      "elf_generated_declarations_and_examples": 41,
+      "elf_admission_examples": 38,
+      "skipped_tests": 0
+    },
+    "mandatory_compiler_pins": {
+      "status": "passed",
+      "command": "go test ./compiler -run '^(TestAArch64MinimalStartupMatchesLean|TestRV64FramedBitwiseCompilerMatchesLean|TestWasmExecutionLean)$' -count=1 -timeout=20m -v",
+      "environment": {
+        "OAK_REQUIRE_ARM64_LEAN": "1",
+        "OAK_REQUIRE_RV64_LEAN": "1",
+        "OAK_REQUIRE_WASM_LEAN": "1",
+        "OAK_REQUIRE_WASM_TESTS": "1",
+        "OAK_WASM_TEST_ENGINE": "node"
+      },
+      "elapsed_seconds": 57.28,
+      "wasm_execution_cases": 1993,
+      "includes": [
+        "full ARM executable ELF -> projected request (93,42)",
+        "complete 36-byte RV compiler functions for AND/OR/XOR",
+        "actual original source -> named Wasm module, ARM8 and RV36 all-input success",
+        "existing LoweringRefinement.Expr/evalX source bridge",
+        "all source/module mutation examples built in core aggregate"
+      ],
+      "skipped_tests": 0
+    },
+    "node_engine": {
+      "status": "passed",
+      "command": "OAK_REQUIRE_WASM_TESTS=1 OAK_WASM_TEST_ENGINE=node go test ./compiler -run '^(TestWasmBitwiseModule|TestWasmExecutionEngine)$' -count=1 -timeout=10m -v",
+      "numeric_local_trap_cases": 1983,
+      "actual_bitwise_modules": 3,
+      "input_pairs_per_module": 5184,
+      "elapsed_seconds": 0.478,
+      "skipped_tests": 0
+    },
+    "mandatory_arm_no_lake": {
+      "status": "passed expected failure",
+      "commands": [
+        "go test -c -o /workspace/shared/source-proof-validation/compiler.test ./compiler",
+        "env PATH=/usr/bin:/bin OAK_REQUIRE_ARM64_LEAN=1 /workspace/shared/source-proof-validation/compiler.test -test.run '^TestAArch64MinimalStartupMatchesLean$' -test.v"
+      ],
+      "observed": "nonzero exit with exec: lake: executable file not found in PATH; did not skip"
+    },
+    "axioms": {
+      "status": "passed",
+      "command": "cd spec/lean && lake env lean ../../docs/proofs/source-byte-integration-axioms.lean",
+      "theorems": 71,
+      "allowed_axioms": [
+        "Classical.choice",
+        "Quot.sound",
+        "propext"
+      ],
+      "closures": {
+        "Oak.BitwiseFunction.assembled_function": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseFunction.exact_encoding": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseFunction.body_success": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseFunction.function_success": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseFunction.assemblyPlan_encoding": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseFunction.emitted_function_success": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseFunction.accepts_iff": [
+          "propext"
+        ],
+        "Oak.BitwiseFunction.accepted_execution": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.AArch64BitwiseFunction.function_success": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.AArch64BitwiseFunction.result_u32": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.AArch64BitwiseFunction.preserves_other_registers": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.AArch64BitwiseFunction.return_boundary": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.AArch64BitwiseFunction.accepted_execution": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.AArch64BitwiseFunction.rejects_changed_bytes": [
+          "propext"
+        ],
+        "Oak.RiscVBitwiseFunction.exact_encoding": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVBitwiseFunction.decoded_execution": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVBitwiseFunction.eval64_widen": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.RiscVBitwiseFunction.result_register": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.RiscVBitwiseFunction.return_pc": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVBitwiseFunction.preserves_register": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVBitwiseFunction.zero_register": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVBitwiseFunction.function_success": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.RiscVBitwiseFunction.accepts_iff": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVBitwiseFunction.accepted_execution": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseModule.admitted_module_success": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseModule.canonical_loaded": [],
+        "Oak.BitwiseModule.canonical_admitted": [],
+        "Oak.BitwiseModule.canonical_success": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseModule.padded_type_length_admitted": [],
+        "Oak.BitwiseModule.single_bit_mutations_refused": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.MinimalELF.admitted_iff": [
+          "propext"
+        ],
+        "Oak.MinimalELF.admitted_body": [
+          "propext"
+        ],
+        "Oak.MinimalELF.admitted_load": [
+          "propext"
+        ],
+        "Oak.MinimalELF.admitted_bounds": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.MinimalELF.admitted_execution": [
+          "propext"
+        ],
+        "Oak.RiscVBitwiseELF.body_length": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVBitwiseELF.admitted_function": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.AArch64MinimalStartup.startup_request": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.AArch64MinimalStartup.admitted_startup_request": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.exact_decode": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.run_memory": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.run_pc": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.run_registers": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.run_success": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.function_success": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.preserved_register": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.stack_and_saves_restored": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.memory_footprint": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.writes_within_frame": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.accessed_addresses_fit": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.result_register": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.all_input_result": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.accepts_iff": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.RiscVFramedBitwise.accepted_success": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseSource.parse_sound": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseSource.parse_exact": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseSource.grammar_evaluation": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseSource.refuses_source_replay": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseSource.accepted_source_to_module": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseSource.fixture_op": [
+          "propext"
+        ],
+        "Oak.BitwiseSource.fixture_name": [
+          "propext"
+        ],
+        "Oak.BitwiseSource.fixture_parsed": [
+          "propext"
+        ],
+        "Oak.BitwiseSource.fixture_admitted": [
+          "propext"
+        ],
+        "Oak.BitwiseSource.source_mutations_refused": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseSourceParity.accepted_all_input_success": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseSourceParity.accepted_native_bytes": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseSourceParity.fixture_admitted": [
+          "propext",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseSourceLowering.lowering_success": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseSourceLowering.grammar_to_existing": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseSourceLowering.means_iff_existing": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ],
+        "Oak.BitwiseSourceLowering.accepted_module_existing": [
+          "propext",
+          "Classical.choice",
+          "Quot.sound"
+        ]
+      }
+    },
+    "workflow_preservation": {
+      "status": "passed",
+      "method": "PyYAML structural comparison against pinned specification: same events, permissions, jobs, all old steps and settings; only existing RV test regex extended and three mandatory correspondence steps added."
+    },
+    "patch_hygiene": {
+      "status": "passed",
+      "command": "git diff --check refs/integration/source-proof/specification"
+    },
+    "full_repository_suite": {
+      "status": "not claimed",
+      "reason": "Known local ASan/LSan-under-ptrace restriction; no sanitizer disabled. Hosted suite still required after approved publication and CI sharding prerequisite."
+    }
+  },
+  "claim_boundaries": [
+    "Restricted canonical original-byte grammar, not whole-language parser/name-resolution inclusion.",
+    "Restricted Lean Wasm loader/executor, not external WebAssembly Core refinement.",
+    "Native source parity consumes exact complete extracted body bytes; production ELF symbol lookup, relocation, loading and instruction fetch remain external.",
+    "Minimal ELF admission checks a narrow file/load profile; it does not prove host kernel or firmware loading.",
+    "RV framed execution assumes a mapped coherent 96-byte frame, 16-byte alignment, no faults, and separate instruction/data model; effects are not identical across targets.",
+    "ARM startup establishes projected syscall request 93,42, not actual Linux exit behavior.",
+    "No production verification flag or compiler implementation was changed."
+  ],
+  "local_evidence": {
+    "directory": "/workspace/shared/source-proof-validation",
+    "sha256": {
+      "core-build.log": "70afc8f08b44a7f9a624a85087a9e9ba5379adf57c09cc3e0d8fa0e00cc6f278",
+      "asm-pins.log": "d1cb2aee6e931f6932e8a2926d77390cb4d97fb85522af28d622bca134e37ddb",
+      "compiler-pins.log": "743f902115e9ce36b8be9b7d009cd45a7a775fe76b38abdc7574f65edd25ef23",
+      "node.log": "7c259bc70c97108176c5ba905f2e33b9f2777ff1f471fd200381e713e377f9bb",
+      "mandatory-arm-no-lake.log": "49e532382ab9cdda5705c7c340e77642f2abcf6bdde6a0986895eff5fbc7a9f4",
+      "axiom-audit.log": "3ba1f799ae97ca9475163128a1dea3156af82f20a97a492eb141d1e8534856aa",
+      "axiom-validation.log": "1009b5683d4e50e677b21f8cf8687e9b32a4f2562b723bafc160a26096965cf5",
+      "workflow-validation.log": "414af3b3801a2b2bdcf11b5a93b46f3c3292c13d4ec076e081076d9d99b9bcc6"
+    }
+  },
+  "manifest_note": "The tested_code commit/tree and integration_commits precede this evidence-only commit. This manifest and axiom query file do not modify tested code."
+}
