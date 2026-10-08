@@ -228,6 +228,11 @@ func TestE2ESelfHostedWasmDecodedExecution(t *testing.T) {
 
 func checkSelfHostedWasmExecution(t *testing.T, cases []wasmExecutionCase) {
 	t.Helper()
+	checkWasmExecutionCases(t, cases, assembleSelfHostedWasmBodies(t, cases))
+}
+
+func assembleSelfHostedWasmBodies(t *testing.T, cases []wasmExecutionCase) [][]byte {
+	t.Helper()
 	core, err := os.ReadFile(filepath.Join("..", "asm", "selfhost", "wasm.oak"))
 	if err != nil {
 		t.Fatal(err)
@@ -270,7 +275,7 @@ func checkSelfHostedWasmExecution(t *testing.T, cases []wasmExecutionCase) {
 	if pos != len(out) {
 		t.Fatal("compiled Oak emitted trailing bytes")
 	}
-	checkWasmExecutionCases(t, cases, bodies)
+	return bodies
 }
 
 func TestWasmExecutionLean(t *testing.T) {

@@ -141,7 +141,7 @@ jobs:
         env:
           OAK_REQUIRE_WASM_LEAN: '1'
           OAK_REQUIRE_WASM_TESTS: '1'
-        run: go test ./compiler -run '^TestWasm(Execution|Control)(Lean|Engine)$' -count=1 -timeout=20m -v
+        run: go test ./compiler -run '^TestWasm(Execution|Control|Calls)(Lean|Engine)$' -count=1 -timeout=20m -v
 
       - name: Check Wasm LEB production decisions against Lean
         env:

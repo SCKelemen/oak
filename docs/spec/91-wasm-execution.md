@@ -1,10 +1,11 @@
-# Decoded scalar Wasm execution and structured control
+# Decoded Wasm execution, control and direct calls
 
 `Oak.WasmExecution` adds a typed operand stack, local values, and incremental
 byte execution for the straight-line part of the scalar profile. It connects
 the [proved assembler output](91-wasm-assembler-proofs.md) to execution in this
 model. `Oak.WasmControl` extends it with structured labels, branches, loops,
-and returns. Neither is a complete Core interpreter or a source-to-Wasm compiler
+and returns. `Oak.WasmCalls` adds isolated direct calls in a closed function
+table. These are not a complete Core interpreter or a source-to-Wasm compiler
 proof.
 
 ## Reference and supported boundary
@@ -30,6 +31,7 @@ These are 49 of the assembler's 58 opcode forms. The remaining nine are
 They explicitly produce `unsupported` in the straight-line `WasmExecution`
 entry points; none is interpreted as a no-op. The `WasmControl` entry point below
 handles the eight control forms and still refuses execution of `call`.
+`WasmCalls` handles direct calls while reusing the scalar/control transitions.
 The same boundary excludes memory, globals, references, floating point, SIMD,
 and instructions not admitted by the scalar assembler.
 
@@ -138,7 +140,8 @@ executes with separate runtime fuel. It preserves an external byte suffix on
 success. Each machine transition consumes fuel, including frame exit; exhaustion
 has its own `Error.exhausted` result, never a Core trap. Exhaustion neither proves
 divergence nor imposes a production execution limit. Control diagnostics are
-separate from scalar runtime traps. Executing `call` remains `unsupported`.
+separate from scalar runtime traps. Executing `call` through this single-function
+entry remains `unsupported`; use `WasmCalls.invoke` for function tables.
 
 | Theorem | Result |
 | --- | --- |
@@ -174,10 +177,73 @@ Formal CI requires both new engine and Lean checks and includes the compiled
 Oak test in its existing self-hosted gate. Universal proofs use only standard
 Lean axioms where needed; no admitted proof or native decision oracle is added.
 
+## Direct calls and isolated frames
+
+`Oak.WasmCalls` models a closed array of defined functions. Each `Function`
+contains parameter/result types, declared local types, and an instruction body
+without the final function end token. Parameter and result lists use declaration
+order; the operand stack remains top-first. `invoke` checks external arguments
+exactly and installs the entry function. The behavioral reference is Core's
+[function invocation and return rules](https://webassembly.github.io/spec/core/exec/instructions.html).
+
+`call` resolves the unsigned function index, checks/pops arguments in reverse
+parameter order, then reverses them into local-index order. Extra declared locals
+are fresh typed zeros on every activation. It suspends the caller after the call
+instruction, including its remaining operands, locals, and labels. The callee
+starts with an empty operand stack and only its own function label.
+
+Normal fallthrough, `return`, and branches to the function label first use the
+existing control model's result checks. `resume` prepends the returned operands
+to the saved caller stack and restores the caller locals, labels, and continuation.
+Callee local writes cannot change caller locals, and a callee branch cannot name
+a caller label. Traps propagate through the entire invocation. Direct and mutual
+recursion use the same transitions and explicit runtime fuel. Exhaustion is a
+model bound, not a Core trap or a claim of divergence.
+
+| Theorem | Result |
+| --- | --- |
+| `activate_arguments` | Exact declaration-order parameters, fresh zero locals, empty operand stack, and an isolated function label for any typed arguments and deeper stack |
+| `call_arguments` | Consumes exactly the argument prefix and suspends the remaining caller state and all older callers |
+| `resume_caller` | Returns values above saved operands while restoring caller locals, labels, and code exactly |
+| `decodeFunction_assemble` | Decoding an assembled body recovers that body and the untouched suffix, retaining supplied metadata |
+| `decoded_invocation` | Replacing an in-bounds table slot with its decoded assembled body preserves every invocation at every runtime fuel, including recursive calls |
+| `assembled_function` | Actual extracted assembler output recovers the intended function body under the existing span/capacity/fuel preconditions; composes with invocation correspondence |
+| `run_more` | Successful whole-table invocation execution remains identical with additional fuel |
+
+The function table and signatures are supplied directly, not recovered from a
+proved module parser/instantiator. Every activated body receives encoding and
+nesting checks, but unused functions and untaken branches are not fully validated.
+These checks do not replace static module validation or prove that valid modules
+avoid all model diagnostics. Internal machine operations assume properly formed
+call/control states; theorems state their actual premises. Full Core refinement
+and preservation/progress for all valid modules remain open.
+
+`compiler/wasm_calls_test.go` supplies 133 shared scenarios: both integer widths,
+noncommutative argument order, caller operand/local/label preservation, nested
+calls, recursive factorial, mutual recursion, repeated fresh locals, mixed-width
+parameters, void calls, early returns/branches, and three propagated trap kinds.
+Expected values are computed from each scenario, independently of the call model.
+Tests exercise empty and single-result function signatures; generic list-based
+transfer laws do not claim independently tested multi-result module support.
+
+- `TestWasmCallsEngine` builds complete multi-function modules from production
+  assembler bytes, validates them with the independent checker, and executes them
+  in Node/Deno, comparing result bits and trap occurrence.
+- `TestE2ESelfHostedWasmCalls` runs the same 133 modules using every function body
+  actually emitted by the compiled Oak assembler, with exact-byte comparisons.
+- `TestWasmCallsLean` decodes each production body (checking an untouched suffix)
+  before invoking it with `decide +kernel`. Eleven additional diagnostics cover
+  invalid indices/arguments/results/locals/nesting, caller-label isolation, and
+  recursive exhaustion: 144 kernel claims.
+
+Formal CI requires the new engine and Lean corpus. As with the earlier layers,
+these finite comparisons support the model but do not prove the Go encoder,
+compiler, engine, module writer, or the complete official semantics correct.
+
 ## Next boundary
 
-Add direct calls and isolated call frames, argument/result transfer, and module
-instantiation. Connect the module validator to typed execution and prove the
-compiler's structured/dispatch control and selected instructions refine source
-semantics. `TranslationVerified` remains false; the existing verified-mode
-refusal is unchanged.
+Connect binary modules, index resolution, and instantiation to the function-table
+model. Prove validator correspondence and typed execution preservation/progress,
+then compiler structured/dispatch control and instruction selection refinement.
+Imports, memory/globals, and the wider target profile also remain open.
+`TranslationVerified` remains false; verified-mode refusal is unchanged.
