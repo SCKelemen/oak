@@ -20,17 +20,24 @@ import (
 // the universal framed execution theorem. This is not a universal theorem of
 // the Go parser/compiler or a source-identity certificate consumer.
 func TestRV64FramedBitwiseCompilerMatchesLean(t *testing.T) {
-	testRV64BitwiseCompilerPins(t, false)
+	testRV64BitwiseCompilerPins(t, "Oak.RiscVFramedBitwise")
 }
 
 // Check the actual restricted source and complete emitted bytes in the same
 // Lean 4.29 project as the unchanged generated instruction-fetch semantics.
 func TestRV64FetchedBitwiseCompilerMatchesLean(t *testing.T) {
-	testRV64BitwiseCompilerPins(t, true)
+	testRV64BitwiseCompilerPins(t, "OakSailFetchedFrame")
 }
 
-func testRV64BitwiseCompilerPins(t *testing.T, fetched bool) {
+// Bind exactly the original compiler input and all emitted bytes in the
+// same kernel as the nine actual generated try_step executions.
+func TestRV64SteppedBitwiseCompilerMatchesLean(t *testing.T) {
+	testRV64BitwiseCompilerPins(t, "OakSailSteppedFrame")
+}
+
+func testRV64BitwiseCompilerPins(t *testing.T, module string) {
 	t.Helper()
+	fetched := module != "Oak.RiscVFramedBitwise"
 	lake, err := exec.LookPath("lake")
 	if err != nil {
 		if os.Getenv("OAK_REQUIRE_RV64_LEAN") != "" {
@@ -126,10 +133,8 @@ func testRV64BitwiseCompilerPins(t *testing.T, fetched bool) {
 		t.Logf("%s source→oak_mix bytes %x", tc.name, code)
 	}
 	root := filepath.Join("..", "spec", "lean")
-	module := "Oak.RiscVFramedBitwise"
 	if fetched {
 		root = filepath.Join("..", "spec", "lean-sail429")
-		module = "OakSailFetchedFrame"
 	}
 	build := exec.Command(lake, "build", module)
 	build.Dir = root

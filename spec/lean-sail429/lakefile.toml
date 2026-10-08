@@ -1,5 +1,5 @@
 name = "oak-sail-fetch-429"
-defaultTargets = ["OakSailFetchedFrame"]
+defaultTargets = ["OakSailFetchedFrame", "OakSailSteppedFrame", "OakSailSteppedChecks"]
 
 # Compile the existing tracked source files directly into this project's cache.
 # No source copy or cross-version proof-object import is used.
@@ -29,3 +29,18 @@ name = "OakSailFetchedFrame"
 [[require]]
 name = "Lean_RV64D"
 path = "../../external/sail-riscv/build/model/Lean_RV64D"
+
+[[lean_lib]]
+name = "OakSailSteppedState"
+
+[[lean_lib]]
+name = "OakSailSteppedFetch"
+
+[[lean_lib]]
+name = "OakSailSteppedBody"
+
+[[lean_lib]]
+name = "OakSailSteppedFrame"
+
+[[lean_lib]]
+name = "OakSailSteppedChecks"

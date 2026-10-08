@@ -349,19 +349,20 @@ jobs:
           python3 spec/lean-sail433/prepare.py --generated external/sail-riscv/build/model/Lean_RV64D
           python3 spec/lean-sail433/test_verify_export.py --generated external/sail-riscv/build/model/Lean_RV64D
 
-      - name: Check original-source and actual-fetch composition in Lean 4.29
+      - name: Check original-source, actual fetch and stepping in Lean 4.29
         working-directory: spec/lean-sail429
         env:
           LEAN_NUM_THREADS: '2'
         run: |
           lake update
-          lake build OakSailFetchedFrame
+          lake build OakSailFetchedFrame OakSailSteppedFrame OakSailSteppedChecks
           python3 audit.py
+          python3 step-audit.py
 
-      - name: Pin actual compiler source and bytes to fetched theorem
+      - name: Pin actual compiler source and bytes to fetched/stepped theorems
         env:
           OAK_REQUIRE_RV64_LEAN: '1'
-        run: go test ./compiler -run '^TestRV64FetchedBitwiseCompilerMatchesLean$' -count=1 -v
+        run: go test ./compiler -run '^TestRV64(Fetched|Stepped)BitwiseCompilerMatchesLean$' -count=1 -v
 
       - name: Build bounded RV64 source and external execution composition
         working-directory: spec/lean-sail433

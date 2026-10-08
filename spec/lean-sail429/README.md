@@ -37,10 +37,10 @@ preserve every code byte; fetch is then proved again in the final saved-memory
 state. Code placement is an abstract RAM premise, not an ELF loader theorem.
 
 The caller explicitly sets PC for each fetch query. Sequential instruction
-execution with `try_step`, PC-to-nextPC advancement, interrupt dispatch,
-retirement counters and outer-loop clocks remains open. The existing
-nine-body execution theorem and these fetch queries do not by themselves
-prove a fetched execution loop. Generated Lean semantics are the target;
+execution with `try_step`, PC-to-nextPC advancement, interrupt dispatch and
+retirement counters are not conclusions of these per-word results. The
+additional composition in STEPS.md proves a bounded fetched execution sequence;
+outer-loop clocks remain outside it. Generated Lean semantics are the target;
 faithfulness of the Sail-to-Lean exporter remains an external boundary.
 
 ## Compatibility
@@ -95,3 +95,10 @@ body checks reject malformed or changed bytes. The mandatory production pin
 compiles AND/OR/XOR through the real compiler, extracts the complete function
 symbol, rejects any relocation in its extent, and checks both the restricted
 original declaration and every extracted byte in this same fetch project.
+
+## Actual stepped extension
+
+The reviewed fetched-word layer is composed with the generated nine-step
+control path in `OakSailSteppedFrame`. See [STEPS.md](STEPS.md) for its additional
+initial-state profile, exact PC/counter updates, required audits and remaining
+outer-loop/ELF boundary. Per-word fetch theorems retain their original scope.
