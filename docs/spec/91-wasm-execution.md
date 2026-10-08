@@ -132,6 +132,48 @@ count/width, result width, changed operator/immediate/opcode, and truncation.
 All new proofs use kernel reduction or existing proved lemmas, without `sorry`,
 additional axioms, or native-decision shortcuts.
 
+### Minimal named-module loading
+
+`Oak.BitwiseModule` composes the function theorem with an independently
+implemented binary loader for a single exported `(i32,i32)->i32` function.
+It decodes LEB lengths and indices, checks every type/function/export/code
+field, consumes each section payload exactly, requires the requested nonempty
+ASCII export name (at most 256 bytes), and requires zero additional locals.
+Extra types, functions, exports, sections, imports, start functions, memory,
+custom sections and trailing bytes are outside this profile and refuse.
+The only admitted type and function indices are zero.
+
+`admitted_module_success` quantifies over **every admitted concrete module**,
+its requested entry, target/ABI/signature/operator, and all u32 input pairs.
+It concludes successful named-entry invocation with the common word result.
+It does not merely compare the input with a fixture: the loader parses the
+binary structure, and `padded_type_length_admitted` demonstrates acceptance
+of a legal noncanonical LEB section length. Function instruction bytes remain
+bound to the exact bitwise profile. Wrong lengths/indices/type/name/locals,
+operator bytes and trailing sections cannot be ignored to reach the success
+path. `canonical_loaded`, `canonical_admitted` and `canonical_success` give
+constructive instances for the real emitter's three 45-byte modules.
+
+`single_bit_mutations_refused` kernel-checks all 360 single-bit changes per
+operator (1,080 total), in addition to truncation, extra-section, wrong-entry,
+width, target, ABI and operator regressions. These finite regressions support
+the universal admission theorem; they do not prove arbitrary mutation coverage.
+
+`compiler/wasm_bitwise_module_test.go` compiles three actual Oak source files
+through the production compiler, checks source-level export signatures and
+exact module bytes, and asserts `TranslationVerified` remains false. Node
+independently validates, instantiates and executes the emitted modules on a
+72-by-72 input grid per operator (15,552 executions). The existing required
+`TestWasmExecutionLean` lane additionally builds the module proof and generates
+all-input Lean success theorems for the **actual emitted byte literals**.
+This is concrete-artifact proof plus production correspondence testing, not a
+universal Go parser/lowering/emission refinement or an external-engine theorem.
+
+The loader and invocation are named Lean models. Their relation to the Go
+module checker and the complete external Core Wasm semantics remains open.
+There is no production admission consumer, no source-text identity theorem,
+and no new authority for `-verified`.
+
 ### Source-to-bytecode completion checklist
 
 The checked boxes describe only this restricted slice. An unchecked link is
@@ -145,7 +187,8 @@ an unmet obligation, not a premise silently discharged by the existing model.
 - [ ] Source text/parser and checked AST provenance connected to this expression and parameter order
 - [ ] Production Go lowering/selection/emission connected to the proved plan and bytes
 - [ ] Constants and arbitrary expression-tree compilation to the same word meaning
-- [ ] Wasm local declarations, function/module validation, instantiation and loading connected to invocation
+- [x] Restricted independent-model section/type/export/index/local loading connected to named invocation
+- [ ] Production Wasm loader/validator and external Core semantics refined to that model
 - [ ] RV64 emitted bytes, ABI boundary and pinned external Sail execution connected to this common meaning
 - [ ] ARM64 emitted bytes, ABI boundary and pinned external ISA execution connected to this common meaning
 - [ ] Concrete Go graph/root/CNF/LRAT provenance and certificate freshness/source identity

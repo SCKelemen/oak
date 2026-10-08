@@ -276,6 +276,7 @@ func TestWasmExecutionLean(t *testing.T) {
 		}
 		t.Skip("lake unavailable; formal CI requires decoded execution checks")
 	}
+	t.Run("BitwiseModule", testWasmBitwiseModuleLean)
 	root, err := filepath.Abs(filepath.Join("..", "spec", "lean"))
 	if err != nil {
 		t.Fatal(err)
