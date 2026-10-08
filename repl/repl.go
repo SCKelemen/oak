@@ -439,7 +439,7 @@ func Start(in io.Reader, out io.Writer) {
 				fmt.Fprintf(out, "%v\n", err)
 				continue
 			}
-			fmt.Fprintf(out, "wrote %s; import it from spec/lean and `lake build` to check the statements, replace each sorry to discharge\n", target)
+			fmt.Fprintf(out, "wrote %s; import it from spec/lean and `lake build` to check the statements, open propositions supply no proof; prove them separately or refute and correct their scope\n", target)
 			continue
 		}
 

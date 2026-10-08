@@ -1,9 +1,12 @@
-# Decoded scalar Wasm execution
+# Decoded Wasm execution, control and direct calls
 
 `Oak.WasmExecution` adds a typed operand stack, local values, and incremental
 byte execution for the straight-line part of the scalar profile. It connects
 the [proved assembler output](91-wasm-assembler-proofs.md) to execution in this
-model. It is not a complete Core interpreter or a source-to-Wasm compiler proof.
+model. `Oak.WasmControl` extends it with structured labels, branches, loops,
+and returns. `Oak.WasmCalls` adds isolated direct calls in a closed function
+table. These are not a complete Core interpreter or a source-to-Wasm compiler
+proof.
 
 ## Reference and supported boundary
 
@@ -25,7 +28,10 @@ to the complete official specification is claimed.
 
 These are 49 of the assembler's 58 opcode forms. The remaining nine are
 `block`, `loop`, `if`, `else`, `end`, `br`, `br_if`, `return`, and `call`.
-They explicitly produce `unsupported`; none is interpreted as a no-op.
+They explicitly produce `unsupported` in the straight-line `WasmExecution`
+entry points; none is interpreted as a no-op. The `WasmControl` entry point below
+handles the eight control forms and still refuses execution of `call`.
+`WasmCalls` handles direct calls while reusing the scalar/control transitions.
 The same boundary excludes memory, globals, references, floating point, SIMD,
 and instructions not admitted by the scalar assembler.
 
@@ -96,10 +102,148 @@ The universal proofs use only Lean's standard `propext`, `Classical.choice`
 and `Quot.sound` axioms where needed. Finite engine agreement is evidence for the
 model, not a universal proof of the engine, Go implementation, or Oak compiler.
 
+## Structured control
+
+`Oak.WasmControl` adds execution of `block`, `loop`, `if`, `else`, `end`, `br`,
+`br_if`, and `return` to the 49 scalar forms. This follows the assembler's
+existing zero-parameter block profile: empty, i32, or i64 results, with no type
+indices or multi-value block signatures. The reference is Core's
+[instruction execution](https://webassembly.github.io/spec/core/exec/instructions.html)
+and [label structure](https://webassembly.github.io/spec/core/exec/runtime.html).
+
+A frame records its kind, result types, saved outer operands, continuation,
+and loop restart body. Entering a block isolates its operand stack; scalar
+instructions cannot consume values below that label. Normal fallthrough requires
+exactly the declared results, restores the saved operands, and removes the frame.
+A loop falls through once unless a branch explicitly restarts it.
+
+Branching selects a relative label depth. Block/function targets carry their
+result values and discard all intermediate operands and labels through the
+target. Loop targets have zero branch arity in this profile, retain the target
+frame, and restart its body. Their normal result arity may still be one.
+`br_if` consumes an i32 condition: zero preserves the remaining operands and
+labels; any nonzero bit pattern takes the branch. `return` unwinds to the
+implicit function label. Locals remain shared within this single function.
+
+`execute` accepts a function body **without its final function end token**,
+caller-supplied local values, and result types in top-of-stack order. The tests
+exercise empty and single-result signatures. It checks token encodings and all
+control delimiters before running, including delimiters in unexecuted arms.
+`splitBody` finds the matching outer end/else and retains nested delimiters in
+the selected arm. This is not full module validation: unexecuted arms are not
+type-checked and function/local/branch index validity is not established by a
+validator proof. Direct `tick`, `enter`, `jump`, and `leave` are internal model
+operations; their callers can construct states the public entry would not create.
+
+`executeBytes` first decodes the selected syntactic instruction count, then
+executes with separate runtime fuel. It preserves an external byte suffix on
+success. Each machine transition consumes fuel, including frame exit; exhaustion
+has its own `Error.exhausted` result, never a Core trap. Exhaustion neither proves
+divergence nor imposes a production execution limit. Control diagnostics are
+separate from scalar runtime traps. Executing `call` through this single-function
+entry remains `unsupported`; use `WasmCalls.invoke` for function tables.
+
+| Theorem | Result |
+| --- | --- |
+| `executeBytes_assemble` | Universal token/byte correspondence for all runtime fuels, locals, function results, and external suffixes, including errors and exhaustion |
+| `assembled_execution` | Composes the actual extracted assembler's exact bytes with structured execution, retaining the assembler's span, capacity, and fuel preconditions |
+| `takeResults_typed`, `takeResults_prefix` | Carried operands have the exact requested types/arity; arbitrary intermediate values are discarded |
+| `branch_exit` | Exiting any non-loop target discards the selected inner labels and operands, restores the target's saved stack, and preserves locals |
+| `loop_branch` | A loop branch restarts with an empty operand stack and retains the loop label even when normal completion returns a value |
+| `leave_results` | Normal completion restores saved operands and removes the frame, including for loops |
+| `br_if_zero`, `br_if_nonzero` | Exact untaken/taken conditional-branch transitions for all i32 condition bit patterns |
+| `run_more` | A successful execution remains identical with any additional runtime fuel |
+
+These are proofs about this named model. They do not establish equivalence to
+the full official semantics, complete parser/validator correctness, absence of
+model diagnostics on every valid module, or compiler control-flow refinement.
+
+`compiler/wasm_control_test.go` provides 190 shared execution scenarios across
+both integer widths. These include block/loop fallthrough, nesting depths through
+eight, returns and branches to the function label, zero and nonzero conditions,
+selected and skipped traps, summation loops, result-bearing loops with zero-arity
+restart, and outer-loop branches through up to five inner blocks. Expected
+results come from the scenario arithmetic rather than another label interpreter.
+
+- `TestWasmControlEngine` checks production Go assembler bytes with the independent
+  module checker and Node/Deno, comparing result bits and trap occurrence.
+- `TestE2ESelfHostedWasmControl` executes all 190 bodies actually emitted by the
+  compiled Oak assembler, after comparing their bytes to the Go assembler.
+- `TestWasmControlLean` checks those same 190 bodies, complete local arrays, and
+  suffix preservation with `decide +kernel`. Another 22 cases check malformed
+  nesting, invalid states, call refusal, and fuel boundaries: 212 kernel claims.
+
+Formal CI requires both new engine and Lean checks and includes the compiled
+Oak test in its existing self-hosted gate. Universal proofs use only standard
+Lean axioms where needed; no admitted proof or native decision oracle is added.
+
+## Direct calls and isolated frames
+
+`Oak.WasmCalls` models a closed array of defined functions. Each `Function`
+contains parameter/result types, declared local types, and an instruction body
+without the final function end token. Parameter and result lists use declaration
+order; the operand stack remains top-first. `invoke` checks external arguments
+exactly and installs the entry function. The behavioral reference is Core's
+[function invocation and return rules](https://webassembly.github.io/spec/core/exec/instructions.html).
+
+`call` resolves the unsigned function index, checks/pops arguments in reverse
+parameter order, then reverses them into local-index order. Extra declared locals
+are fresh typed zeros on every activation. It suspends the caller after the call
+instruction, including its remaining operands, locals, and labels. The callee
+starts with an empty operand stack and only its own function label.
+
+Normal fallthrough, `return`, and branches to the function label first use the
+existing control model's result checks. `resume` prepends the returned operands
+to the saved caller stack and restores the caller locals, labels, and continuation.
+Callee local writes cannot change caller locals, and a callee branch cannot name
+a caller label. Traps propagate through the entire invocation. Direct and mutual
+recursion use the same transitions and explicit runtime fuel. Exhaustion is a
+model bound, not a Core trap or a claim of divergence.
+
+| Theorem | Result |
+| --- | --- |
+| `activate_arguments` | Exact declaration-order parameters, fresh zero locals, empty operand stack, and an isolated function label for any typed arguments and deeper stack |
+| `call_arguments` | Consumes exactly the argument prefix and suspends the remaining caller state and all older callers |
+| `resume_caller` | Returns values above saved operands while restoring caller locals, labels, and code exactly |
+| `decodeFunction_assemble` | Decoding an assembled body recovers that body and the untouched suffix, retaining supplied metadata |
+| `decoded_invocation` | Replacing an in-bounds table slot with its decoded assembled body preserves every invocation at every runtime fuel, including recursive calls |
+| `assembled_function` | Actual extracted assembler output recovers the intended function body under the existing span/capacity/fuel preconditions; composes with invocation correspondence |
+| `run_more` | Successful whole-table invocation execution remains identical with additional fuel |
+
+The function table and signatures are supplied directly, not recovered from a
+proved module parser/instantiator. Every activated body receives encoding and
+nesting checks, but unused functions and untaken branches are not fully validated.
+These checks do not replace static module validation or prove that valid modules
+avoid all model diagnostics. Internal machine operations assume properly formed
+call/control states; theorems state their actual premises. Full Core refinement
+and preservation/progress for all valid modules remain open.
+
+`compiler/wasm_calls_test.go` supplies 133 shared scenarios: both integer widths,
+noncommutative argument order, caller operand/local/label preservation, nested
+calls, recursive factorial, mutual recursion, repeated fresh locals, mixed-width
+parameters, void calls, early returns/branches, and three propagated trap kinds.
+Expected values are computed from each scenario, independently of the call model.
+Tests exercise empty and single-result function signatures; generic list-based
+transfer laws do not claim independently tested multi-result module support.
+
+- `TestWasmCallsEngine` builds complete multi-function modules from production
+  assembler bytes, validates them with the independent checker, and executes them
+  in Node/Deno, comparing result bits and trap occurrence.
+- `TestE2ESelfHostedWasmCalls` runs the same 133 modules using every function body
+  actually emitted by the compiled Oak assembler, with exact-byte comparisons.
+- `TestWasmCallsLean` decodes each production body (checking an untouched suffix)
+  before invoking it with `decide +kernel`. Eleven additional diagnostics cover
+  invalid indices/arguments/results/locals/nesting, caller-label isolation, and
+  recursive exhaustion: 144 kernel claims.
+
+Formal CI requires the new engine and Lean corpus. As with the earlier layers,
+these finite comparisons support the model but do not prove the Go encoder,
+compiler, engine, module writer, or the complete official semantics correct.
+
 ## Next boundary
 
-Add label/control stacks and structured blocks, loops and branches, then call
-frames, returns and module instantiation. Connect the module validator to typed
-execution and the compiler's selected instructions/control structure to source
-semantics. `TranslationVerified` remains false; the existing verified-mode
-refusal is unchanged.
+Connect binary modules, index resolution, and instantiation to the function-table
+model. Prove validator correspondence and typed execution preservation/progress,
+then compiler structured/dispatch control and instruction selection refinement.
+Imports, memory/globals, and the wider target profile also remain open.
+`TranslationVerified` remains false; verified-mode refusal is unchanged.

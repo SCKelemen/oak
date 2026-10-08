@@ -516,7 +516,7 @@ The first source and native rules are:
 | `reuse-record-base-carriers` | `share-record-bases` proved useful and the first computed destination is preserved through every replacement read | the child candidate independently passes the seam checker and receives a non-trusted whole-body verdict | the first destination carries the base when no otherwise-unused scratch exists |
 | `reuse-remaining-record-base-carriers` | the one-group carrier child proved useful and another distinct repeated base group remains; each iteration recomputes the acyclic CFG and liveness after removing at least one materialization | the fixed-point child independently passes the seam checker and receives a non-trusted whole-body verdict | all independently admitted carrier groups are reused while the established one-group body remains a fallback |
 | `reschedule-record-base-carriers` | the carrier child was useful and its late rewrites expose a schedule whose modeled stalls strictly decrease | the separately materialized child independently passes the seam checker and receives a non-trusted whole-body verdict | the final dependence graph is rescheduled without changing the instruction vocabulary; a neutral reorder keeps the byte-stable parent |
-| `post-schedule-cleanup` | ordinary late cleanup is active, fill unrolling is not, and the ordered phase registers this child after `late-cleanup` | the separately materialized child passes the seam checker and receives a non-trusted whole-body verdict | final copies and branches to adjacent alias labels disappear, including in unscheduled bodies, while the earlier cleaned parent remains selectable and fill plans retain their bounded validation fallback |
+| `post-schedule-cleanup` | ordinary late cleanup is active, fill unrolling is not, and the ordered phase registers this child after `late-cleanup`; exact repeated add-immediates additionally require dominance and all-path source/destination stability; a constant carrier requires one whole-body write and read, a same-width copy reader, dominance, and the same all-path stability | the separately materialized child passes the seam checker and receives a non-trusted whole-body verdict | final copies, branches to adjacent alias labels, unchanged dominated address recomputations, and a single-use one-instruction constant carrier disappear, while the earlier cleaned parent remains selectable and fill plans retain their bounded validation fallback |
 | `trim-callee-saves` | AArch64 reallocation leaves an exactly matched lowering-generated callee-save home dead | the edited ABI scaffold passes the seam checker and whole-body verifier | dead register homes and only their matching save/restore traffic disappear |
 | `elide-empty-frame` | callee-save trimming leaves one call-free, stack-free AArch64 body between equal canonical adjustments | the frameless body passes the seam checker and whole-body verifier | the two adjustments disappear and the declared frame becomes zero |
 
@@ -542,6 +542,13 @@ constant — `u8(0)`, `u8(1)`, `u16(limit)` — is the constant at the target
 width, materialized once and normalized by construction, so no `and wN,
 wN, #255` follows it (`compiler/e2e_native_constant_conversion_test.go`);
 the checker admits the constructor only where the value fits.
+The add/sub immediate selector also uses AArch64's 12-bit field shifted left
+by 12. It is shared by arithmetic, comparisons, owned-array guards, and
+frame-array span guards; RV64 keeps its separate unshifted legalization. Thus
+a 49,152-element page array is guarded by `cmp wI, #12, lsl #12`, without a
+constant register. In the stage-2 OS pilot this removes 17 instructions from
+six proven selected bodies and 68 bytes of text while all 27 relocations and
+all eight differential/conformance tests remain unchanged.
 Transforms marked verifier-gated are set aside when equivalence is not judged,
 at worst selecting the checked identity lowering.
 

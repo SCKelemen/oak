@@ -1,0 +1,81 @@
+{
+  "date_local": "2026-10-08",
+  "recorded_at_utc": "2026-10-08T09:25:32Z",
+  "host": "Apple M4 Max",
+  "baseline_revision": "5f547b70f9bab39cdabfa4bc21934b1238117abd",
+  "candidate": "baseline plus target-aware shifted AArch64 add/sub/cmp immediates, including fixed-array and frame-array span guards",
+  "baseline_configuration": "pushed specification compiler with its default optimizer search",
+  "os_revision": "31aeec182517d74f27ff9769e78a43a9b39ca4d3",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "differential_harness": "SCKelemen/os core/src/stage2_native_conformance.zig",
+  "differential_harness_sha256": "c7d53456d2b54f36342d2ee94575538369d9bbce83393dab1d7b1ccc8e438b01",
+  "native_shim_sha256": "0a1a8bcba5b776e55e5968e95175d2103b35b5be7dd140c1700a473989b8d8fb",
+  "toolchain": {"go": "go1.26.0 darwin/arm64", "zig": "0.16.0"},
+  "compiler_binary_sha256": {
+    "baseline": "ad6b568af41e7f1b0b4494ca2c594bcda6566d57c1e3c47731f968fed2182764",
+    "candidate": "adc73d38fdef3f6927b57936016094ca4e912e53cef85133f4ce143ffd0ec604"
+  },
+  "object_sha256": {
+    "baseline": "83670021d9c1f15292d1d80180a655ea5e5ce0ecac28a59077ebac202a754c6b",
+    "candidate": "d2dd288ab44851898db60faee31e211c66d2870ce37a77f2e18feb7bdf5d2296"
+  },
+  "object_bytes": {"baseline": 4928, "candidate": 4864, "delta": -64},
+  "text_bytes": {"baseline": 3408, "candidate": 3340, "delta": -68},
+  "relocation_entries": {"baseline": 27, "candidate": 27, "delta": 0},
+  "build": {
+    "target": "darwin/arm64 host object for the OS differential harness",
+    "verify_fresh": true,
+    "baseline_verdict_cache_hits": 0,
+    "candidate_verdict_cache_hits": 0,
+    "verdicts": 22
+  },
+  "changed_selected_bodies": {
+    "reset": {"instructions_before": 121, "instructions_after": 117, "verdict": "proven"},
+    "alloc_table": {"instructions_before": 122, "instructions_after": 120, "verdict": "proven"},
+    "walk_leaf": {"instructions_before": 118, "instructions_after": 115, "verdict": "proven"},
+    "map_page": {"instructions_before": 129, "instructions_after": 127, "verdict": "proven"},
+    "unmap_page": {"instructions_before": 157, "instructions_after": 153, "verdict": "proven"},
+    "translate": {"instructions_before": 53, "instructions_after": 51, "verdict": "proven"}
+  },
+  "summary": {
+    "selected_instructions_removed": 17,
+    "selected_branches_removed": 0,
+    "text_bytes_removed": 68,
+    "object_bytes_removed": 64,
+    "interpretation": "AArch64 compares 49,152-element fixed-array indices with #12, lsl #12 directly; RV64 retains its existing immediate legalization. No proof, branch, or relocation is weakened."
+  },
+  "differential_tests": {
+    "passed": 8,
+    "cases": [
+      "PRNG operation streams against Zig",
+      "independent isolated regimes",
+      "map/translate/unmap round trip",
+      "unaligned and out-of-range rejection",
+      "pool exhaustion",
+      "shadow-model translation property",
+      "fuzz map/unmap operation stream",
+      "atomic 16 KiB granule map/unmap"
+    ]
+  },
+  "runtime": {
+    "reported": true,
+    "benchmark": "pilots/oak bench-stage2-native, ReleaseFast, 20000000 translate calls and 2000000 decoder cycles per run",
+    "method": "three sequential interleaved baseline/candidate samples after warmup",
+    "translate_ns_per_op": {
+      "baseline_samples": [4.22, 4.29, 4.22],
+      "candidate_samples": [4.27, 4.33, 4.22],
+      "baseline_mean": 4.243,
+      "candidate_mean": 4.273,
+      "candidate_delta_percent": 0.71
+    },
+    "decoder_ns_per_cycle": {
+      "baseline_samples": [494.0, 475.4, 491.9],
+      "candidate_samples": [498.5, 490.9, 488.0],
+      "baseline_mean": 487.1,
+      "candidate_mean": 492.5,
+      "candidate_delta_percent": 1.10
+    },
+    "interpretation": "both timings overlap host variance; this tranche claims only the verified instruction and code-size reduction"
+  }
+}
