@@ -8,6 +8,7 @@ import Oak.WasmAssemblerBytes
 import Oak.WasmAssemblerTotal
 import Oak.WasmExecution
 import Oak.BitwiseFunction
+import Oak.RiscVBitwiseFunction
 import Oak.Effects
 import Oak.EffectRows
 import Oak.OptIRCallSummaryCertificate
