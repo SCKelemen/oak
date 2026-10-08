@@ -6824,6 +6824,26 @@ the complete decoder cycle remains within host variance of both its baseline
 and Zig. Exact provenance is in
 `benchmarks/native/results/stage2-dominated-add-cleanup-2026-10-08.json`.
 
+The second 2026-10-08 increment adds a deliberately narrow rematerialization
+rule for already colored assembly. A standalone `movz`, `movn`, immediate
+`mov`, or zero-register `mov` is retargeted to its only same-width copy reader
+and its carrier definition disappears only when that physical register has
+exactly one write and one read in the whole body, the definition dominates the
+reader, and no call or clobber lies on any path between them. Multiple reads,
+a second definition anywhere, a bypass path, an unresolved edge, a
+multi-instruction `movz`/`movk` constant, or an ordinary register source
+refuses. This is not general colored-assembly value reconstruction; that work
+remains with virtual-register MachineIR. The rule has no authority of its own:
+the final candidate is independently seam-checked and verdict-gated.
+
+On the stage-2 pilot, the success constant of `translate` moves from its early
+carrier directly to `w0`. The selected body remains `proven` and falls 51→50
+instructions (cost 79.0→78.0); Mach-O text shrinks 4 bytes and the aligned
+object 8 bytes, all 27 relocations remain, and all eight OS conformance tests
+pass. Interleaved translate samples average 4.26→4.24 ns/op, too small to claim
+beyond the static reduction. Exact provenance is in
+`benchmarks/native/results/stage2-single-use-constant-2026-10-08.json`.
+
 **Dead callee-save trimming (2026-09-17, AArch64 lane).** Reallocation can
 make a parameter home in x19–x28 dead while the lowering's conservative frame
 still saves and restores that register. The separate `trim-callee-saves`

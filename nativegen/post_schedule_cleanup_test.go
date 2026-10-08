@@ -100,6 +100,94 @@ func TestPostScheduleCleanupKeepsUnstableAddImmediate(t *testing.T) {
 	}
 }
 
+func TestPostScheduleCleanupRetargetsSingleUseConstant(t *testing.T) {
+	unit, errs := asm.ParseUnit("post.oakasm", `f: (choose: Bool) -> u32 = {
+  bind w0 = choose
+  clobber w4
+  movz w4, #1
+  cbz w0, miss
+  mov w0, w4
+  ret
+miss:
+  mov w0, wzr
+  ret
+}
+`)
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	fn := unit.Functions[0]
+	if removed := postScheduleCleanup(fn); removed != 1 {
+		t.Fatalf("single-use constant cleanup removed %d, want one:\n%s", removed, Describe(fn))
+	}
+	text := Describe(fn)
+	if strings.Contains(text, "movz w4, #1") || !strings.Contains(text, "movz w0, #1") {
+		t.Fatalf("single-use constant was not retargeted:\n%s", text)
+	}
+	if removed := postScheduleCleanup(fn); removed != 0 {
+		t.Fatalf("single-use constant cleanup is not idempotent: removed %d again", removed)
+	}
+}
+
+func TestPostScheduleCleanupKeepsUnsafeConstantCarriers(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "two reads",
+			body: "  movz w4, #1\n  cbz w0, other\n  mov w0, w4\n  ret\nother:\n  mov w0, w4\n  ret",
+		},
+		{
+			name: "second definition",
+			body: "  movz w4, #1\n  cbz w0, join\n  movz w4, #2\njoin:\n  mov w0, w4\n  ret",
+		},
+		{
+			name: "definition does not dominate",
+			body: "  cbz w0, join\n  movz w4, #1\njoin:\n  mov w0, w4\n  ret",
+		},
+		{
+			name: "caller-saved carrier crosses call",
+			body: "  movz w9, #1\n  bl callee\n  mov w0, w9\n  ret",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			unit, errs := asm.ParseUnit("post.oakasm", "f: (choose: Bool) -> u32 = {\n  bind w0 = choose\n  clobber w4, w9\n"+test.body+"\n}\n")
+			if len(errs) != 0 {
+				t.Fatal(errs)
+			}
+			fn := unit.Functions[0]
+			before := Describe(fn)
+			if removed := postScheduleSingleUseConstantCleanup(fn); removed != 0 || Describe(fn) != before {
+				t.Fatalf("unsafe constant carrier changed (%d removed):\n%s", removed, Describe(fn))
+			}
+		})
+	}
+}
+
+func TestSingleInstructionConstantVocabulary(t *testing.T) {
+	for _, instruction := range []asm.Instruction{
+		ins("movz", wr(4), asm.Immediate{Value: 1}),
+		ins("movn", xr(4), asm.Immediate{}),
+		ins("mov", wr(4), asm.Immediate{Value: 255}),
+		ins("mov", xr(4), xr(31)),
+	} {
+		if _, carrier, ok := singleInstructionConstant(instruction); !ok || carrier.Num != 4 {
+			t.Errorf("constant instruction refused: %#v", instruction)
+		}
+	}
+	for _, instruction := range []asm.Instruction{
+		ins("movk", wr(4), asm.Immediate{Value: 1}),
+		ins("mov", wr(4), wr(5)),
+		ins("mov", wr(4), xr(31)),
+		ins("add", wr(4), wr(5), asm.Immediate{Value: 1}),
+	} {
+		if _, _, ok := singleInstructionConstant(instruction); ok {
+			t.Errorf("non-constant instruction admitted: %#v", instruction)
+		}
+	}
+}
+
 func TestPostScheduleCleanupRemovesAliasLabelBranch(t *testing.T) {
 	unit, errs := asm.ParseUnit("post.oakasm", "f: () -> u32 = {\n  clobber w9\n  b target\nalias:\ntarget:\n  mov w0, w9\n  ret\n}\n")
 	if len(errs) != 0 {

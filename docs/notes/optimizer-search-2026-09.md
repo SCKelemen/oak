@@ -496,6 +496,16 @@ Mach-O object 64 bytes with all 27 relocations and all eight OS conformance
 tests unchanged. Interleaved runtime samples overlap, so this increment claims
 the verified instruction/code-size reduction, not a timing improvement.
 
+A final single-use constant carrier remains in `translate`: `movz w4, #1`
+near entry and `mov w0, w4` on the success arm. The 2026-10-08 post-schedule
+increment retargets only a one-instruction constant with one whole-body write
+and read when its same-width copy reader is dominated and every intervening
+path is stable. The selected `proven` body falls 51→50 instructions and cost
+79.0→78.0; text drops 4 bytes and the aligned object 8 bytes, with 27 unchanged
+relocations and all eight OS conformance tests passing. Runtime samples overlap
+(4.26→4.24 ns/op mean), so this is recorded as a static win. General
+rematerialization still belongs in the virtual-register backend.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, and exact trip counts against register bounds.

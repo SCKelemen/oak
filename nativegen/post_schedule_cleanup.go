@@ -16,6 +16,7 @@ func postScheduleCleanup(fn *asm.Function) int {
 		fn.Items = items
 	}
 	removed += postScheduleRecomputationCleanup(fn)
+	removed += postScheduleSingleUseConstantCleanup(fn)
 	return removed
 }
 
@@ -90,6 +91,99 @@ func addImmediateOperandsStable(items []asm.Item, succ [][]int, start, target, d
 		}
 	}
 	return true
+}
+
+// postScheduleSingleUseConstantCleanup retargets a one-instruction constant
+// from its temporary carrier to that carrier's only reader. The deliberately
+// whole-body single-definition/single-read admission avoids reconstructing a
+// live range from already colored assembly; dominance and all-path stability
+// close the remaining control-flow seam. General rematerialization belongs in
+// virtual-register MachineIR. This final spelling remains seam-checked and
+// whole-body verdict-gated with the rest of post-schedule cleanup.
+func postScheduleSingleUseConstantCleanup(fn *asm.Function) int {
+	removed := 0
+	for {
+		succ, ok := itemSuccessors(fn.Items)
+		if !ok {
+			return removed
+		}
+		changed := false
+		for definition, item := range fn.Items {
+			constant, carrier, constantOK := singleInstructionConstant(item)
+			if !constantOK {
+				continue
+			}
+			reader := -1
+			admitted := true
+			for at, other := range fn.Items {
+				ins, isInstruction := other.(asm.Instruction)
+				if !isInstruction {
+					continue
+				}
+				if at != definition && writesGeneral(ins, carrier.Num) {
+					admitted = false
+					break
+				}
+				if readsGeneral(ins, carrier.Num) {
+					if reader >= 0 {
+						admitted = false
+						break
+					}
+					reader = at
+				}
+			}
+			if !admitted || reader <= definition || !itemDominates(succ, definition, reader) ||
+				!addImmediateOperandsStable(fn.Items, succ, definition+1, reader, carrier.Num, carrier.Num) {
+				continue
+			}
+			copy, isInstruction := fn.Items[reader].(asm.Instruction)
+			destination, source, isCopy := isRegisterMove(copy)
+			if !isInstruction || !isCopy || source != carrier || destination.Num == carrier.Num {
+				continue
+			}
+			constant.Operands = append([]asm.Operand(nil), constant.Operands...)
+			constant.Operands[0] = destination
+			constant.Line = copy.Line
+			fn.Items[reader] = constant
+			fn.Items = append(fn.Items[:definition], fn.Items[definition+1:]...)
+			removed++
+			changed = true
+			break
+		}
+		if !changed {
+			return removed
+		}
+	}
+}
+
+func singleInstructionConstant(item asm.Item) (asm.Instruction, asm.Register, bool) {
+	ins, isInstruction := item.(asm.Instruction)
+	if !isInstruction || ins.Cond != "" || len(ins.Operands) != 2 {
+		return asm.Instruction{}, asm.Register{}, false
+	}
+	destination, destinationOK := generalReg(ins.Operands[0])
+	if !destinationOK {
+		return asm.Instruction{}, asm.Register{}, false
+	}
+	switch ins.Mnemonic {
+	case "movz", "movn":
+		if _, immediate := ins.Operands[1].(asm.Immediate); !immediate {
+			return asm.Instruction{}, asm.Register{}, false
+		}
+	case "mov":
+		switch source := ins.Operands[1].(type) {
+		case asm.Immediate:
+		case asm.Register:
+			if source.Class != destination.Class || !source.ZeroRegister() {
+				return asm.Instruction{}, asm.Register{}, false
+			}
+		default:
+			return asm.Instruction{}, asm.Register{}, false
+		}
+	default:
+		return asm.Instruction{}, asm.Register{}, false
+	}
+	return ins, destination, true
 }
 
 // postScheduleAliasLabelCleanup removes a branch whose target is any label in
