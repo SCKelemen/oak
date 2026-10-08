@@ -15,6 +15,12 @@ func (cg *CodeGenerator) inferredCallableDeclaration(stmt *ast.VariableDeclarati
 	if stmt.Type != nil || tc == nil {
 		return stmt
 	}
+	// Typed literals already carry their exact source signature, including
+	// supported target-specific and generic types. Preserve that existing
+	// path rather than unnecessarily reconstructing their annotations.
+	if literal, ok := stmt.Value.(*ast.FunctionLiteral); ok && (len(literal.Parameters) > 0 || literal.ReturnType != nil) {
+		return stmt
+	}
 	checked := tc.Env().CheckedDeclarationType(stmt)
 	if checked == nil {
 		checked = tc.Env().CheckedExpressionType(stmt.Value)
@@ -43,6 +49,26 @@ func callableTypeExpression(typ typechecker.Type) (ast.Expression, bool) {
 	switch t := typ.(type) {
 	case *typechecker.UnitType:
 		return &ast.Identifier{Value: "()"}, true
+	case *typechecker.GenericType:
+		// Reuse the monomorphizer's naming authority for nested sums.
+		return typechecker.ArgumentSpelling(t)
+	case *typechecker.CType, *typechecker.SimdType, *typechecker.NeverType:
+		return &ast.Identifier{Value: t.String()}, true
+	case *typechecker.ArrayType:
+		element, ok := callableTypeExpression(t.ElementType)
+		if !ok {
+			return nil, false
+		}
+		if t.IsSpan {
+			return &ast.IndexExpression{Left: element, Index: &ast.Identifier{Value: "*"}}, true
+		}
+		if t.IsSlice {
+			return &ast.IndexExpression{Left: element, Index: &ast.Identifier{Value: ""}}, true
+		}
+		if t.Length >= 0 {
+			return &ast.IndexExpression{Left: element, Index: &ast.IntegerLiteral{Value: t.Length}}, true
+		}
+		return nil, false
 	case *typechecker.FunctionType:
 		result, ok := callableTypeExpression(t.ReturnType)
 		if !ok {
