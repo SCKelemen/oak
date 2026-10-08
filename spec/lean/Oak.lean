@@ -250,6 +250,8 @@ import Oak.LRATRUPValidity
 import Oak.LRATStore
 import Oak.LRATTrail
 import Oak.LRATInitial
+import Oak.LRATSteps
+import Oak.LRATRecord
 import Oak.LRATFormulaBinding
 import Oak.ClauseAgreement
 import Oak.SATModel
