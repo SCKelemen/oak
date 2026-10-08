@@ -207,7 +207,7 @@ for(const r of rows){
 	if out, err := engine.Command(ctx, script, path).CombinedOutput(); err != nil {
 		t.Fatalf("Wasm engine: %v\n%s", err, out)
 	}
-	t.Logf("independently executed %d shared numeric/local/trap cases", len(rows))
+	t.Logf("independently executed %d shared execution cases", len(rows))
 }
 
 // Exercise actual compiled Oak bytes for every modeled operation family and
@@ -223,13 +223,18 @@ func TestE2ESelfHostedWasmDecodedExecution(t *testing.T) {
 			cases = append(cases, tc)
 		}
 	}
+	checkSelfHostedWasmExecution(t, cases)
+}
+
+func checkSelfHostedWasmExecution(t *testing.T, cases []wasmExecutionCase) {
+	t.Helper()
 	core, err := os.ReadFile(filepath.Join("..", "asm", "selfhost", "wasm.oak"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var source strings.Builder
 	source.Write(core)
-	source.WriteString("\nputchar: (ch: c.Int): c.Int = c.extern(\"putchar\")\nmain: (): i32 {\n  bytes: [64]u8\n  count: u32 = 0\n  cursor: u32 = 0\n")
+	source.WriteString("\nputchar: (ch: c.Int): c.Int = c.extern(\"putchar\")\nmain: (): i32 {\n  bytes: [512]u8\n  count: u32 = 0\n  cursor: u32 = 0\n")
 	var sizes []int
 	for i, tc := range cases {
 		code, err := encoding.Assemble(tc.plan)
