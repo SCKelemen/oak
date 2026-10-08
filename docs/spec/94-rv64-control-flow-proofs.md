@@ -26,6 +26,8 @@ successor exactly when the condition register is nonzero, otherwise to the false
 successor. It quantifies over every register state with x0 initially zero and
 proves preservation of the register file. The source-level Bool is assumed to
 agree with that register's zero/nonzero value.
+`Oak.RiscVComparison` discharges this assumption for register-resident i64/u64
+comparison producers; see [comparison proofs](94-rv64-comparison-proofs.md).
 
 The module uses ordinary four-byte instructions, modular 64-bit PC arithmetic,
 and IALIGN=16. It retains the underlying B/J encoding proofs' native
@@ -62,7 +64,8 @@ OAK_REQUIRE_RV64_LEAN=1 go test ./machine -run '^TestRV64ControlFlowSelector' -c
 
 ## Remaining obligations
 
-Source Bool provenance, register allocation correctness, spilled conditions,
+Bool provenance beyond the i64/u64 comparison subset, register allocation
+correctness, spilled conditions,
 edge arguments/copies, compressed terminator layouts, block bodies, instruction
 fetch, architectural traps, and whole-program execution remain separate work.
 This slice proves the Lean routing model universally and supplies bounded
