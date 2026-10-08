@@ -127,7 +127,7 @@ func TestAArch64ControlFlowSelectorMatchesLean(t *testing.T) {
 	checkAArch64SelectorLean(t, "AArch64ControlFlow", examples)
 }
 
-func checkAArch64SelectorLean(t *testing.T, module string, examples []string) {
+func checkAArch64SelectorLean(t *testing.T, module string, examples []string, extraImports ...string) {
 	t.Helper()
 	lake, err := exec.LookPath("lake")
 	if err != nil {
@@ -143,7 +143,11 @@ func checkAArch64SelectorLean(t *testing.T, module string, examples []string) {
 		t.Fatalf("build control-flow proof: %v\n%s", err, out)
 	}
 	path := filepath.Join(t.TempDir(), "Selector.lean")
-	header := "import Oak." + module + "\nopen Oak." + module + " Oak.AArch64ControlFlow\n"
+	header := "import Oak." + module + "\n"
+	for _, extraImport := range extraImports {
+		header += "import " + extraImport + "\n"
+	}
+	header += "open Oak." + module + " Oak.AArch64ControlFlow\n"
 	if err := os.WriteFile(path, []byte(header+strings.Join(examples, "\n")+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
