@@ -282,8 +282,9 @@ func TestIdentifierLedContextualDeclarationsHaveCorpusEvidence(t *testing.T) {
 }
 
 func TestFunctionContextualClausesHaveCorpusEvidence(t *testing.T) {
+	// Canonical and fn declarations delegate their clauses to this shared grammar.
 	requireKeywordClosure(t,
-		parserFunctionBodyForClosure(t, "parseFunctionDefinitionFromName"),
+		parserFunctionBodyForClosure(t, "parseFunctionDefinitionWithStyle"),
 		functionContextualKeyword,
 		functionClauseWitnesses,
 		"function clause",
