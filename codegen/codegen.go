@@ -2373,10 +2373,13 @@ func ownedArrayParameter(typeExpr ast.Expression, cg *CodeGenerator) (element st
 func (cg *CodeGenerator) cFunctionPointer(fn *ast.FunctionTypeExpression, name string) string {
 	parameters := make([]string, 0, len(fn.Parameters))
 	for _, parameter := range fn.Parameters {
-		parameters = append(parameters, cg.parseTypeExpression(parameter))
+		parameters = append(parameters, strings.TrimSpace(cg.cParameter(parameter, "")))
 	}
 	if len(parameters) == 0 {
 		parameters = append(parameters, "void")
+	}
+	if result, nested := fn.Return.(*ast.FunctionTypeExpression); nested {
+		return cg.cFunctionPointer(result, fmt.Sprintf("(*%s)(%s)", name, strings.Join(parameters, ", ")))
 	}
 	return fmt.Sprintf("%s (*%s)(%s)", cg.parseTypeExpression(fn.Return), name, strings.Join(parameters, ", "))
 }
@@ -4378,6 +4381,7 @@ func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement,
 
 // emitVariableDeclaration emits a variable declaration
 func (cg *CodeGenerator) emitVariableDeclaration(stmt *ast.VariableDeclaration, tc *typechecker.TypeChecker) {
+	stmt = cg.inferredCallableDeclaration(stmt, tc)
 	if stmt.Value != nil {
 		if value := cg.sequence(stmt.Value, tc); value != stmt.Value {
 			sequenced := *stmt
