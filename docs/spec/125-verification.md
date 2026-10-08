@@ -600,9 +600,15 @@ naming both. For a theorem the Oak lowering decided the row says `lowered and
 decided in Oak`, and the Go lowering and decider must reach the same
 verdict (`the Go lowering and decider agree`; the node counts are each
 lowering's own). `-solver go` keeps the bit-level rung with the Go decider
-alone; `-cross none` skips the replay. `-solver self` runs the prover
-written in Oak end to end (`prove/solver/shell.oak`): the solver program
-reads the law file itself, parses it, decides every theorem it declares
+alone; `-cross none` skips proof-decision comparison, never source validation.
+Every mode first passes the Go compiler frontend’s syntax, type, borrowing,
+and discipline gates. Go frontend validation is a current dependency; a
+complete checked-source validator in Oak remains follow-on work. Invalid
+source returns exit status 2 before any solver runs, theorem row prints, or
+Lean/witness output is produced. `-solver self` runs
+the proof ladder written in Oak (`prove/solver/shell.oak`): after frontend
+validation, the solver program reads a private unchanged snapshot of the
+validated law file, parses it, and decides every theorem it declares
 in source order by the same ladder — the exhaustive rung when the domains
 fit the bound and the body has no loop, else the witness pass and the
 three variable orders raced in one process, then the **certificate rung
@@ -614,10 +620,11 @@ command's format, a decided row carrying `an LRAT certificate of N steps,
 lowered to clauses in Oak and checked in Oak`, a row the diagram left
 over its budget decided or refuted by the certificate alone (two of
 `extents_lean.oak`'s rows are), and a row
-whose diagram and certificate disagree left `open` naming it; no Go is on
-the path from the file to the rows, and with `-cross go` the Go ladder
-decides the same file, its own certificate rung following the diagram as
-the shell's does, and every row's status must agree (`the Go ladder
+whose diagram and certificate disagree left `open` naming it. With
+`-cross none`, no Go proof decision or fallback runs; the frontend validity
+check does not decide theorems. With `-cross go` the Go ladder reuses the
+successfully checked model of the same source snapshot, its own certificate
+rung following the diagram as the shell's does, and every row's status must agree (`the Go ladder
 agrees on N of N rows`; `TestOakShellAgrees` requires it over the corpus,
 `TestOakShellCertificates` the certificate rows). With `-lean out.lean`
 the shell writes the Lean projection too (`prove/solver/lean.oak`: the
@@ -1027,7 +1034,7 @@ In order of payoff, each reusing a surface that exists:
   decided laws decides in Oak: 165 at the bit level, 49 exhaustively, the
   Go decider or interpreter confirming each; and the shell itself is an
   Oak program — `-solver self` reads the file, decides, and prints the
-  rows with no Go on the path, every status the Go ladder's over the
+  rows with no Go proof decision on the path, every status the Go ladder's over the
   corpus; and the Lean projection is an Oak program too —
   `prove/solver/lean.oak` renders the theorems, the functions they
   reach, and the types those mention to the extractor's text from the
