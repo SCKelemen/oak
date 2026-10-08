@@ -2306,9 +2306,14 @@ func (cg *CodeGenerator) emitVariadicCall(fn *ast.FunctionStatement, call *ast.I
 	fixed := len(fn.Parameters) - 1
 	lastParam := fn.Parameters[fixed]
 	elementType := cg.parseTypeExpression(lastParam.Type)
-	viewType := cg.emitViewType(elementType)
-
 	cg.output.WriteString(cg.cFunctionName(fn.Name.Value))
+	cg.emitVariadicArguments(fixed, elementType, call, tc)
+}
+
+// emitVariadicArguments is shared by direct and indirect calls: the C ABI
+// receives one view for the tail, regardless of the source callee spelling.
+func (cg *CodeGenerator) emitVariadicArguments(fixed int, elementType string, call *ast.InvocationExpression, tc *typechecker.TypeChecker) {
+	viewType := cg.emitViewType(elementType)
 	cg.output.WriteString("( ")
 	for i := 0; i < fixed && i < len(call.Arguments); i++ {
 		if i > 0 {
@@ -3306,11 +3311,14 @@ func (cg *CodeGenerator) emitExpressionFragment(expr ast.Expression, tc *typeche
 		if cg.emitFloatIntrinsicCall(e, tc) {
 			return
 		}
-		if ident, ok := e.Function.(*ast.Identifier); ok {
+		if ident, ok := e.Function.(*ast.Identifier); ok && !cg.isLocalName(ident.Value) {
 			if fn, isVariadicCallee := cg.variadicCallee(ident.Value); isVariadicCallee {
 				cg.emitVariadicCall(fn, e, tc)
 				return
 			}
+		}
+		if cg.emitIndirectVariadicCall(e, tc) {
+			return
 		}
 		if ident, ok := e.Function.(*ast.Identifier); ok {
 			// assert_eq / assert_ne name both values on failure; the checker

@@ -61,3 +61,40 @@ func callableTypeExpression(typ typechecker.Type) (ast.Expression, bool) {
 		return checkedTypeExpression(typ)
 	}
 }
+
+// Variadic is a property of the checked function value, not of its name.
+// The C pointer signature already contains the final view parameter; calls
+// through aliases must construct that view just like a direct call does.
+func (cg *CodeGenerator) emitIndirectVariadicCall(call *ast.InvocationExpression, tc *typechecker.TypeChecker) bool {
+	if tc == nil {
+		return false
+	}
+	checked := tc.Env().CheckedExpressionType(call.Function)
+	if checked == nil {
+		if tok, ok := ast.ExpressionToken(call.Function); ok {
+			checked, _ = tc.ExpressionTypeAt(tok)
+		}
+	}
+	fn, ok := checked.(*typechecker.FunctionType)
+	if !ok || !fn.Variadic {
+		return false
+	}
+	if len(fn.Parameters) == 0 {
+		cg.globalErrors = append(cg.globalErrors, fmt.Errorf("codegen: variadic callable has no tail parameter"))
+		return true
+	}
+	fixed := len(fn.Parameters) - 1
+	tail, ok := fn.Parameters[fixed].(*typechecker.ArrayType)
+	if !ok || !tail.IsSlice {
+		cg.globalErrors = append(cg.globalErrors, fmt.Errorf("codegen: variadic callable tail is not a view"))
+		return true
+	}
+	element, ok := callableTypeExpression(tail.ElementType)
+	if !ok {
+		cg.globalErrors = append(cg.globalErrors, fmt.Errorf("codegen: variadic callable element has no supported C type"))
+		return true
+	}
+	cg.emitExpressionFragment(call.Function, tc)
+	cg.emitVariadicArguments(fixed, cg.parseTypeExpression(element), call, tc)
+	return true
+}
