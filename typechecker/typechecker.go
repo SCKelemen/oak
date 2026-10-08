@@ -312,7 +312,8 @@ func (t *RecordType) Equals(other Type) bool {
 			return true
 		}
 		if otherRecord, ok := other.(*RecordType); ok {
-			return len(otherRecord.Fields) == 0
+			// The nominal-empty boundary also applies with the struct on the right.
+			return len(otherRecord.Fields) == 0 && !(otherRecord.Struct && otherRecord.Name != "")
 		}
 		return false
 	}
