@@ -1,5 +1,4 @@
 import Oak.WasmExecution
-import Oak.U32Bitwise
 
 /-!
 # First successful u32 bitwise function slice
@@ -24,6 +23,17 @@ set_option maxHeartbeats 800000
 namespace Oak.BitwiseFunction
 
 open Oak.WasmExecution
+
+inductive Op where
+  | and | or | xor
+  deriving DecidableEq, Repr
+
+/-- Common 32-bit mathematical meaning, independent of instruction decoding. -/
+def eval (op : Op) (left right : BitVec 32) : BitVec 32 :=
+  match op with
+  | .and => left &&& right
+  | .or => left ||| right
+  | .xor => left ^^^ right
 
 def opcode : Op → UInt8
   | .and => 113 | .or => 114 | .xor => 115
