@@ -89,6 +89,44 @@ theorem function_success (op : Op) (left right : BitVec 32) :
       .ok (eval op left right) := by
   exact assembled_function (exact_encoding op) (body_success op left right)
 
+/-- Concrete instruction plan for the mechanically extracted Oak assembler,
+including the function-end byte. Its span starts at the first instruction. -/
+def assemblyPlan (op : Op) : Array WasmAssembler.WasmInstruction :=
+  #[⟨32, 0⟩, ⟨32, 1⟩, ⟨UInt32.ofNat (opcode op).toNat, 0⟩, ⟨11, 0⟩]
+
+theorem assemblyPlan_encoding (op : Op) :
+    WasmAssembler.instructionSequence (assemblyPlan op).toList =
+      some (functionBytes op) := by
+  cases op <;> decide +kernel
+
+/-- The extracted assembler terminates successfully and its actual six-byte
+output span returns the shared word result for all inputs. The destination may
+have arbitrary prefix/suffix bytes, which are outside the emitted function.
+This uses the existing disjoint-array extraction model and representable spans;
+it is not a theorem about Go emission or a complete Wasm module. -/
+theorem emitted_function_success (op : Op) (dst : Array UInt8) (offset : UInt32)
+    (fuel : Nat) (left right : BitVec 32)
+    (representable : dst.size < 2^32)
+    (capacity : offset.toNat + 6 ≤ dst.size) (budget : 15 ≤ fuel) :
+    ∃ out, WasmAssembler.wasm_assemble dst offset (assemblyPlan op) fuel =
+      some (⟨0, 6⟩, out) ∧
+      invoke 3 ((out.toList.drop offset.toNat).take 6) #[.i32 left, .i32 right] =
+        .ok (eval op left right) := by
+  have size : (functionBytes op).length = 6 := by cases op <;> rfl
+  have fit : offset.toNat + (functionBytes op).length ≤ dst.size := by
+    simpa [size] using capacity
+  refine ⟨WasmAssembler.writeBytes dst offset.toNat (functionBytes op), ?_, ?_⟩
+  · simpa [size] using WasmAssembler.assemble_admitted_exact dst offset
+      (assemblyPlan op) (functionBytes op) fuel (by simp [assemblyPlan]) representable
+      (assemblyPlan_encoding op) fit budget
+  · rw [WasmAssembler.writeBytes_suffix _ _ _ fit]
+    have span : (functionBytes op ++ dst.toList.drop
+        (offset.toNat + (functionBytes op).length)).take 6 = functionBytes op := by
+      rw [← size]
+      simp
+    rw [span]
+    exact function_success op left right
+
 inductive Target where
   | rv64 | arm64 | wasm
   deriving DecidableEq, Repr
@@ -136,13 +174,13 @@ example : accepts .wasm .wasmLocals [32, 32] 32 .and [32, 0, 32, 0, 113, 11] = f
 example : accepts .wasm .wasmLocals [32, 32] 32 .and [32, 0, 32, 1, 106, 11] = false := by decide +kernel
 example : accepts .wasm .wasmLocals [32, 32] 32 .and [32, 0, 32, 1, 113] = false := by decide +kernel
 example : accepts .wasm .wasmLocals [32, 32] 32 .and [32, 0, 32, 1, 113, 11, 1] = false := by decide +kernel
-example : invoke 3 [32, 0, 32, 1, 113] #[.i32 7, .i32 3] = .error .malformed := by decide +kernel
-example : invoke 3 [32, 0, 32, 1, 113, 11, 1] #[.i32 7, .i32 3] = .error .malformed := by decide +kernel
-example : invoke 3 [32, 0, 32, 1, 113, 15] #[.i32 7, .i32 3] = .error .malformed := by decide +kernel
-example : finish ⟨[], #[]⟩ [11] = .error .typeMismatch := by decide +kernel
-example : finish ⟨[.i64 0], #[]⟩ [11] = .error .typeMismatch := by decide +kernel
-example : finish ⟨[.i32 0, .i32 0], #[]⟩ [11] = .error .typeMismatch := by decide +kernel
-example : invoke 3 [32, 0, 32, 1, 113, 11] #[.i64 7, .i32 3] = .error .typeMismatch := by decide +kernel
-example : invoke 3 [32, 0, 32, 1, 113, 11] #[.i32 7] = .error .localOutOfBounds := by decide +kernel
+example : invoke 3 [32, 0, 32, 1, 113] #[.i32 7, .i32 3] = .error .malformed := by rfl
+example : invoke 3 [32, 0, 32, 1, 113, 11, 1] #[.i32 7, .i32 3] = .error .malformed := by rfl
+example : invoke 3 [32, 0, 32, 1, 113, 15] #[.i32 7, .i32 3] = .error .malformed := by rfl
+example : finish ⟨[], #[]⟩ [11] = .error .typeMismatch := by rfl
+example : finish ⟨[.i64 0], #[]⟩ [11] = .error .typeMismatch := by rfl
+example : finish ⟨[.i32 0, .i32 0], #[]⟩ [11] = .error .typeMismatch := by rfl
+example : invoke 3 [32, 0, 32, 1, 113, 11] #[.i64 7, .i32 3] = .error .typeMismatch := by rfl
+example : invoke 3 [32, 0, 32, 1, 113, 11] #[.i32 7] = .error .localOutOfBounds := by rfl
 
 end Oak.BitwiseFunction
