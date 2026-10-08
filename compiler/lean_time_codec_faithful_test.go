@@ -362,6 +362,36 @@ func codecCorpus() []codecCase {
 		s := codecPeriodText(v)
 		good("iso_duration", s, s, v)
 	}
+	// Decimal width transitions, leading zeros, and delimiters followed by later
+	// fields exercise the shared unsigned writer/scanner at nonzero offsets.
+	for power := int64(1); power <= 1000000000; power *= 10 {
+		for _, delta := range []int64{-1, 0, 1} {
+			for _, sign := range []int64{1, -1} {
+				n := power + delta
+				v := codecValue{months: int32(sign * n), days: int32(sign * n), duration: sign}
+				prefix := ""
+				if sign < 0 {
+					prefix = "-"
+				}
+				text := fmt.Sprintf("%sP%012dM%012dDT0.000000001S", prefix, n, n)
+				good("iso_period", text, codecPeriodText(v), v)
+			}
+		}
+	}
+	for power := int64(1); power <= 1000000; power *= 10 {
+		for _, delta := range []int64{-1, 0, 1} {
+			for _, sign := range []int64{1, -1} {
+				hours := power + delta
+				v := codecValue{duration: sign * (hours*3600000000000 + 60000000000 + 1)}
+				prefix := ""
+				if sign < 0 {
+					prefix = "-"
+				}
+				text := fmt.Sprintf("%sPT%09dH1M0.000000001S", prefix, hours)
+				good("iso_duration", text, codecPeriodText(v), v)
+			}
+		}
+	}
 	for i := 0; i < 24; i++ {
 		v := codecValue{duration: int64(rng.Uint64())}
 		s := codecPeriodText(v)
