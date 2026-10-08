@@ -54,6 +54,17 @@ func TestLRATKernelRawWords(t *testing.T) {
 	add("invalid second initial clause", record(1, []uint32{1, 1, 1, 2}, nil, 2), -1)
 	add("truncated second initial clause", record(1, []uint32{1, 1, 2, 0}, nil, 2), -1)
 	add("extra initial length word", record(1, []uint32{1, 1, 0}, nil, 1), -1)
+	add("empty deletion advances", record(1, []uint32{1, 1, 1, 0},
+		[]uint32{1, 2, 0, 0, 3, 0, 2, 1, 2}, 2), 0)
+	add("deletion then addition", record(1, []uint32{1, 1, 1, 1, 1, 0},
+		[]uint32{1, 3, 1, 1, 0, 4, 0, 2, 2, 3}, 3), 0)
+	add("partial deletion cannot recover", record(1, []uint32{1, 1, 1, 0},
+		[]uint32{1, 2, 2, 1, 31, 0, 3, 0, 2, 1, 2}, 2), -1)
+	add("maximal addition length", record(1, []uint32{1, 1, 1, 0}, []uint32{0, 3, ^uint32(0)}, 2), -1)
+	add("maximal deletion length", record(1, []uint32{1, 1, 1, 0}, []uint32{1, 2, ^uint32(0)}, 2), -1)
+	add("maximal hint length", record(1, []uint32{1, 1, 1, 0}, []uint32{0, 3, 0, ^uint32(0)}, 2), -1)
+	add("unknown record cannot recover", record(1, []uint32{1, 1, 1, 0},
+		[]uint32{42, 0, 3, 0, 2, 1, 2}, 2), -1)
 	add("initial empty", record(0, []uint32{0}, nil, 1), 0)
 	add("empty deleted after derivation", record(1, []uint32{1, 1, 1, 0}, []uint32{0, 3, 0, 2, 1, 2, 1, 3, 1, 3}, 2), 0)
 	add("no empty", record(1, []uint32{1, 1}, nil, 1), -1)
@@ -244,6 +255,16 @@ example (fuel : Nat) (words starts lengths : Array UInt32)
   production_initialization fuel words starts lengths alive store assign variables count max_id store_words
     at_ end_ reset resetEnd scratch scratchEnd starts' lengths' alive' store' at' used' empty' c' a
     startCap lengthCap aliveCap storeCap assignCap wordCap cursor countBound input liveRun scratchRun run
+open Oak.LRATChecker in
+example (fuel : Nat) (words store : Array UInt32) (at_ n m used capacity end_ : UInt32)
+    (wc : end_.toNat ≤ words.size) (sc : capacity.toNat ≤ store.size)
+    (header : Oak.LRATChecker.lrat_fits at_ 3 end_ fuel = some true)
+    (literals : Oak.LRATChecker.lrat_fits (at_ + 3) n end_ fuel = some true)
+    (countWord : at_ + 3 + n < end_)
+    (hints : Oak.LRATChecker.lrat_fits (at_ + 3 + n + 1) m end_ fuel = some true)
+    (space : Oak.LRATChecker.lrat_fits used n capacity fuel = some true) :
+    AdditionBounds words store at_ n m used capacity end_ :=
+  addition_record_bounds fuel words store at_ n m used capacity end_ wc sc header literals countWord hints space
 #print axioms Oak.LRATRUP.production_rup_restores_zero
 #print axioms Oak.LRATChecker.production_addition_state
 #print axioms Oak.LRATChecker.initial_loop_preserves

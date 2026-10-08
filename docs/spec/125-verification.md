@@ -271,6 +271,16 @@ The CI contract pins this theorem's assumptions and checks its axioms;
 compiled regressions start with dirty metadata, live bytes, store, assignment,
 and trail buffers and check both successful and refused initialization.
 
+`Oak.LRATRecord` derives non-wrapping addition and deletion cursors from
+production framing predicates, including zero-length deletions. Accepted
+addition combines those bounds with the actual RUP and store-copy executions
+to preserve the model, live-store invariants, metadata and scratch capacities,
+and zero scratch. Deletion preserves that same state even after partial
+refusal. The outer loop cannot turn a refused entry status into acceptance.
+The new framing/transition theorems are included in the proof-hole gate;
+raw regressions cover maximal body/hint counts, deletion followed by addition,
+and refused records followed by otherwise valid records.
+
 These remain proofs of production components and the initialization phase.
 Entry-header capacity/framing guards are explicit hypotheses of the combined
 initialization theorem. Complete proof-record traversal, entry-header

@@ -80,6 +80,9 @@ jobs:
         run: go test ./compiler -run '^TestLRATKernel' -count=1 -timeout=10m -v
 
   lean:
+    # Proof-branch iterations use the dedicated gates above. PR and
+    # specification runs still check the complete formal specification.
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/codex/lrat-')
     name: Lean 4
     runs-on: ubuntu-24.04
     steps:
