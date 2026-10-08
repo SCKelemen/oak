@@ -1,4 +1,5 @@
 import Oak.BitwiseModule
+import Oak.ByteFields
 
 /-!
 # Independently checked original-source slice
@@ -69,7 +70,7 @@ private def parseOp : Bytes → Option Op
 
 /-- Field discovery is untrusted until the complete grammar expansion agrees. -/
 def candidate (source : Bytes) : Option Decl := do
-  match source.dropLast.splitOn 32 with
+  match Oak.ByteFields.splitOn source.dropLast 32 with
   | [name, first, _, second, _, _, _, _, operator, _] =>
       let op ← parseOp operator
       some ⟨name.dropLast, (first.drop 1).dropLast, second.dropLast, op⟩

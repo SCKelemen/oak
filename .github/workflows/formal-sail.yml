@@ -59,6 +59,11 @@ on:
       - 'spec/lean/Oak/AArch64ColdEntry.lean'
       - 'spec/lean-sail/**'
       - 'spec/lean-sail433/**'
+      - 'spec/lean-sail429/**'
+      - 'spec/lean/Oak/ByteFields.lean'
+      - 'spec/lean/Oak/BitwiseSource.lean'
+      - 'spec/lean/Oak/RiscVFramedBitwise.lean'
+      - 'compiler/rv64_framed_bitwise_lean_test.go'
       - '.github/workflows/formal-sail.yml'
   pull_request:
     branches:
@@ -388,13 +393,28 @@ jobs:
           python3 spec/lean-sail433/prepare.py --generated external/sail-riscv/build/model/Lean_RV64D
           python3 spec/lean-sail433/test_verify_export.py --generated external/sail-riscv/build/model/Lean_RV64D
 
+      - name: Check original-source, actual fetch and stepping in Lean 4.29
+        working-directory: spec/lean-sail429
+        env:
+          LEAN_NUM_THREADS: '2'
+        run: |
+          lake update
+          lake build OakSailFetchedFrame OakSailSteppedFrame OakSailSteppedChecks
+          python3 audit.py
+          python3 step-audit.py
+
+      - name: Pin actual compiler source and bytes to fetched/stepped theorems
+        env:
+          OAK_REQUIRE_RV64_LEAN: '1'
+        run: go test ./compiler -run '^TestRV64(Fetched|Stepped)BitwiseCompilerMatchesLean$' -count=1 -v
+
       - name: Build bounded RV64 source and external execution composition
         working-directory: spec/lean-sail433
         env:
           LEAN_NUM_THREADS: '2'
         run: |
           lake update
-          lake build OakSailComposition OakSailFullDispatch OakSailBridge.BitwiseDispatchAgreement
+          lake build OakSailComposition OakSailFullDispatch OakSailBridge.BitwiseDispatchAgreement OakSailFramedComposition OakSailFramedFullDispatch OakSourceSplitCompatibility OakSailFetchedCode
 
       - name: Audit bounded RV64 external theorem closures
         run: python3 spec/lean-sail433/audit.py

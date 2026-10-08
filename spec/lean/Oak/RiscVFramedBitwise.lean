@@ -112,18 +112,14 @@ def invoke (mappedRW : Nat → Nat → Bool) (bytes : Bytes) (s : State) : Optio
     return run code s
   else none
 
-/-- Kernel-only byte reconstruction by exhaustive bit index, avoiding the
-existing generic theorem's native-evaluation axioms. -/
+/-- Kernel-only 64-bit instance of the shared byte reconstruction theorem. -/
 private theorem load_store64 (m : Memory) (a : Nat) (v : X) :
     loadBytes 8 (storeBytes 8 m a v) a = v := by
-  simp only [loadBytes, storeBytes, Nat.add_assoc]
-  simp only [Nat.le_refl, Nat.lt_add_one, Nat.reduceAdd]
-  ext i hi
-  have cases : i = 0 ∨ i = 1 ∨ i = 2 ∨ i = 3 ∨ i = 4 ∨ i = 5 ∨ i = 6 ∨ i = 7 ∨ i = 8 ∨ i = 9 ∨ i = 10 ∨ i = 11 ∨ i = 12 ∨ i = 13 ∨ i = 14 ∨ i = 15 ∨ i = 16 ∨ i = 17 ∨ i = 18 ∨ i = 19 ∨ i = 20 ∨ i = 21 ∨ i = 22 ∨ i = 23 ∨ i = 24 ∨ i = 25 ∨ i = 26 ∨ i = 27 ∨ i = 28 ∨ i = 29 ∨ i = 30 ∨ i = 31 ∨ i = 32 ∨ i = 33 ∨ i = 34 ∨ i = 35 ∨ i = 36 ∨ i = 37 ∨ i = 38 ∨ i = 39 ∨ i = 40 ∨ i = 41 ∨ i = 42 ∨ i = 43 ∨ i = 44 ∨ i = 45 ∨ i = 46 ∨ i = 47 ∨ i = 48 ∨ i = 49 ∨ i = 50 ∨ i = 51 ∨ i = 52 ∨ i = 53 ∨ i = 54 ∨ i = 55 ∨ i = 56 ∨ i = 57 ∨ i = 58 ∨ i = 59 ∨ i = 60 ∨ i = 61 ∨ i = 62 ∨ i = 63 := by omega
-  rcases cases with h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h | h
-  all_goals subst i; simp [BitVec.getElem_setWidth, BitVec.getElem_ushiftRight,
-    BitVec.getElem_shiftLeft, BitVec.getElem_or]
+  exact Oak.AArch64SpillMemory.load_store .x64 m a v
 
+-- Keep byte-map implementations opaque while simplifying machine-state projections.
+-- The explicit memory lemmas above/below provide the required reconstruction laws.
+attribute [local irreducible] storeBytes loadBytes
 
 private theorem lower_sp (sp : X) (h : 96 ≤ sp.toNat) :
     (sp + (-96 : BitVec 12).signExtend 64).toNat = sp.toNat - 96 := by
@@ -151,10 +147,29 @@ def finalState (op : Op) (s : State) : State :=
       write s.core 10 (eval64 op (read s.core 10) (read s.core 11))⟩,
     mem := frameMemory s }
 
+private theorem execute_memory (i : Instruction) (s : State) :
+    (execute i s).mem = match i with
+      | .store rs base imm => storeBytes 8 s.mem (address s base imm) (read s.core rs)
+      | _ => s.mem := by cases i <;> rfl
+
+private theorem execute_registers (i : Instruction) (s : State) :
+    (execute i s).core.regs = match i with
+      | .addi rd rs imm => write s.core rd (read s.core rs + imm.signExtend 64)
+      | .store _ _ _ => s.core.regs
+      | .load rd base imm => write s.core rd (loadBytes 8 s.mem (address s base imm))
+      | .bitwise op rd rs1 rs2 => write s.core rd (eval64 op (read s.core rs1) (read s.core rs2))
+      | .ret => write s.core 0 (s.core.pc + 4) := by cases i <;> rfl
+
+private theorem execute_pc (i : Instruction) (s : State) :
+    (execute i s).core.pc = match i with
+      | .ret => clearLow (read s.core 1 + BitVec.ofInt 64 0)
+      | _ => s.core.pc + 4 := by cases i <;> rfl
+
 theorem run_memory (op : Op) (s : State) (hsp : 96 ≤ (s.core.regs 2).toNat) :
     (run (instructions op) s).mem = frameMemory s := by
-  simp only [instructions, run, execute, put, address, Oak.RiscVCallExecution.read,
-    write, Oak.RiscVCallExecution.jalr]
+  simp only [instructions, run]
+  simp only [execute_memory, execute_registers, execute_pc, address, Oak.RiscVCallExecution.read,
+    write]
   have h20 : (2 : Reg) ≠ 0 := by decide +kernel
   have h90 : (9 : Reg) ≠ 0 := by decide +kernel
   have h92 : (9 : Reg) ≠ 2 := by decide +kernel
@@ -166,8 +181,9 @@ theorem run_memory (op : Op) (s : State) (hsp : 96 ≤ (s.core.regs 2).toNat) :
   rfl
 theorem run_pc (op : Op) (s : State) :
     (run (instructions op) s).core.pc = clearLow (s.core.regs 1) := by
-  simp only [instructions, run, execute, put, address, Oak.RiscVCallExecution.read,
-    write, Oak.RiscVCallExecution.jalr, BitVec.reduceEq, if_false, if_true]
+  simp only [instructions, run]
+  simp only [execute_memory, execute_registers, execute_pc, address, Oak.RiscVCallExecution.read,
+    write, BitVec.reduceEq, if_false, if_true]
   change clearLow (s.core.regs 1 + 0#64) = _
   rw [BitVec.add_zero]
 
@@ -184,8 +200,9 @@ theorem run_registers (op : Op) (s : State) (hsp : 96 ≤ (s.core.regs 2).toNat)
   have hzero : (0 : BitVec 12).signExtend 64 = 0#64 := rfl
   have hcancel : (-96 : BitVec 12).signExtend 64 + (96 : BitVec 12).signExtend 64 = 0#64 := by decide +kernel
   funext r
-  simp only [instructions, run, execute, put, address, Oak.RiscVCallExecution.read,
-    write, Oak.RiscVCallExecution.jalr, BitVec.reduceEq, if_false, if_true,
+  simp only [instructions, run]
+  simp only [execute_memory, execute_registers, execute_pc, address, Oak.RiscVCallExecution.read,
+    write, BitVec.reduceEq, if_false, if_true,
     hzero, BitVec.add_zero, lower_sp _ hsp, lower_sp_plus8 _ hsp, hload1, hload2]
   by_cases h0 : r = 0
   · simp only [h0, BitVec.reduceEq, if_true]

@@ -89,7 +89,7 @@ func TestOakSolverSelfCheck(t *testing.T) {
 }
 
 // TestOakShellAgrees runs the prover written in Oak (-solver self: the
-// file to the rows and the Lean projection, no Go on the path) on every law
+// checked source to rows and Lean projection, no Go proof decision) on every law
 // file and requires the Go ladder to agree on every row's status and the
 // Go extractor to agree with the projection byte for byte.
 func TestOakShellAgrees(t *testing.T) {

@@ -22,6 +22,25 @@ FULL_DISPATCH = [
 ]
 
 
+FRAMED = [
+    "OakSailFramedComposition.accepted_typed_frame",
+    "OakSailFramedComposition.frame_instructions_run",
+    "OakSailBridge.BitwiseDecoded.vmem_stack_load8_run",
+    "OakSailBridge.BitwiseDecoded.vmem_stack_store8_run",
+]
+STANDARD_ONLY = [
+    "OakSailBridge.BitwiseDecoded.writeBytes8_readBytes8",
+    "OakSailBridge.BitwiseDecoded.lookup_store64_other",
+    "OakSailBridge.BitwiseDecoded.pmp_load_run",
+    "OakSailBridge.BitwiseDecoded.pmp_store_run",
+    "OakSailBridge.BitwiseDecoded.stagedFrameState_eq_finalFrameState",
+    "OakSailFramedComposition.saved_slots_bounds",
+]
+FULL_DISPATCH += [
+    "OakSailFramedFullDispatch.accepted_typed_full_frame",
+    "OakSailFramedFullDispatch.generated_frame_agreement",
+]
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lakefile", default="lakefile.toml")
@@ -30,8 +49,11 @@ def main() -> None:
     allow = json.loads((root / "axiom-allowlist.json").read_text())
     narrow = set(allow["standard"] + allow["configuration"])
     full = narrow | set(allow["full_dispatch_extras"])
-    source = "import OakSailFullDispatch\nimport OakSailBridge.BitwiseDispatchAgreement\n"
-    source += "\n".join("#print axioms " + name for name in NARROW + FULL_DISPATCH) + "\n"
+    framed = narrow | set(allow["framed_extras"])
+    standard = set(allow["standard"])
+    names = NARROW + FRAMED + STANDARD_ONLY + FULL_DISPATCH
+    source = "import OakSailFullDispatch\nimport OakSailBridge.BitwiseDispatchAgreement\nimport OakSailFramedFullDispatch\n"
+    source += "\n".join("#print axioms " + name for name in names) + "\n"
     with tempfile.TemporaryDirectory(prefix="oak-sail-axioms-") as tmp:
         path = Path(tmp) / "Audit.lean"
         path.write_text(source)
@@ -42,15 +64,17 @@ def main() -> None:
     matches = re.findall(r"'([^']+)' depends on axioms:\s*\[([^]]*)\]", result.stdout, re.S)
     actual = {name: {item.strip() for item in body.split(",") if item.strip()}
               for name, body in matches}
-    for name in NARROW + FULL_DISPATCH:
+    for name in names:
         if name not in actual:
             raise RuntimeError(f"Missing axiom audit result for {name}: {result.stdout}")
-        unexpected = actual[name] - (narrow if name in NARROW else full)
+        expected = standard if name in STANDARD_ONLY else framed if name in FRAMED else narrow if name in NARROW else full
+        unexpected = actual[name] - expected
         if unexpected:
             raise RuntimeError(f"Unexpected axioms in {name}: {sorted(unexpected)}")
         print(f"{name}: {len(actual[name])} checked dependencies")
     print("No native-evaluation, sorryAx, or unlisted dependencies admitted.")
     print("Narrow claims retain the declared Boolean platform parameter.")
+    print("Framed claims additionally retain the declared terminal/reservation parameters.")
     print("Full-dispatch agreement retains the separately enumerated opaque primitive parameters.")
 
 
