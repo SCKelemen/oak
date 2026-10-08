@@ -166,7 +166,7 @@ jobs:
       - name: Check RV64 production decisions against Lean
         env:
           OAK_REQUIRE_RV64_LEAN: '1'
-        run: go test ./asm -run '^TestRV64((LocalBranches|CompressedBranches)MatchLean|(Relaxation|Materialization|CallExecution|DirectControl)MatchesLean)$' -count=1 -v
+        run: go test ./asm -run '^TestRV64((LocalBranches|CompressedBranches)MatchLean|(Relaxation|Materialization|CallExecution|DirectControl|BitwiseFunction)MatchesLean)$' -count=1 -v
 
       - name: Check solver formula binding in Go, Oak, and Lean
         env:
