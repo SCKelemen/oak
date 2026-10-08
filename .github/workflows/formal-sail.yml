@@ -325,3 +325,60 @@ jobs:
         env:
           OAK_REQUIRE_ORACLES: "1"
         run: go test ./asm -run 'TestRV64SailBridge' -count=1 -v
+
+      # Publish only generated source and locked build inputs after all checks pass.
+      # Never upload .lake caches, .git metadata, home directories, or credentials.
+      - name: Package checked RV64 Lean export sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEXPORT'
+          import hashlib, json, os, pathlib, tarfile
+          root = pathlib.Path("external/sail-riscv/build/model/Lean_RV64D")
+          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "rv64-sail-export"
+          out.mkdir()
+          required = {"lakefile.toml", "lake-manifest.json", "lean-toolchain"}
+          for name in required:
+              assert (root / name).is_file(), f"Missing export input: {name}"
+          toolchain = (root / "lean-toolchain").read_text().strip()
+          assert toolchain == "leanprover/lean4:v4.29.0", toolchain
+          lock = json.loads((root / "lake-manifest.json").read_text())
+          sail = next(p for p in lock["packages"] if p["name"] == "Sail")
+          assert sail["rev"] == "079463134b9c50450b8393e1566a09fc492a34d9", sail
+          assert sail["url"].rstrip("/").removesuffix(".git") == "https://github.com/rems-project/lean-sail", sail
+          files = sorted(p for p in root.rglob("*") if p.is_file()
+                         and not p.is_symlink()
+                         and not any(x.startswith(".") for x in p.relative_to(root).parts)
+                         and (p.suffix == ".lean" or p.relative_to(root).as_posix() in required))
+          assert any(p.suffix == ".lean" for p in files), "No generated Lean sources"
+          hashes = []
+          archive = out / "Lean_RV64D.sources.tar.gz"
+          with tarfile.open(archive, "w:gz") as tar:
+              for path in files:
+                  name = "Lean_RV64D/" + path.relative_to(root).as_posix()
+                  hashes.append(hashlib.sha256(path.read_bytes()).hexdigest() + "  " + name)
+                  tar.add(path, arcname=name, recursive=False)
+          (out / "FILES.sha256").write_text("\n".join(hashes) + "\n")
+          provenance = {
+              "oak_commit": os.environ["GITHUB_SHA"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "sail_commit": os.environ["SAIL_GIT_COMMIT"],
+              "sail_riscv_commit": os.environ["SAIL_RISCV_COMMIT"],
+              "lean_sail_commit": sail["rev"],
+              "lean_toolchain": toolchain,
+              "contents": "Generated Lean sources and locked Lake build inputs; no caches",
+          }
+          (out / "PROVENANCE.json").write_text(json.dumps(provenance, indent=2) + "\n")
+          (out / "SHA256SUMS").write_text("".join(
+              hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.name + "\n"
+              for p in sorted(out.iterdir()) if p.is_file()))
+          PYEXPORT
+
+      - name: Upload checked RV64 Lean export sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: rv64-sail-export-${{ github.sha }}
+          path: ${{ runner.temp }}/rv64-sail-export/
+          if-no-files-found: error
+          retention-days: 14
