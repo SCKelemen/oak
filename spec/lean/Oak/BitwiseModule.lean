@@ -9,29 +9,29 @@ set_option maxRecDepth 8192
 namespace Oak.BitwiseModule
 open Oak.WasmExecution Oak.BitwiseFunction
 
-private def expectByte (expected : UInt8) : List UInt8 → Option (List UInt8)
+def expectByte (expected : UInt8) : List UInt8 → Option (List UInt8)
   | byte :: rest => if byte = expected then some rest else none
   | [] => none
 
-private def readNat (bytes : List UInt8) : Option (Nat × List UInt8) := do
+def readNat (bytes : List UInt8) : Option (Nat × List UInt8) := do
   let (value, rest) ← WasmLEB.decode 32 false bytes
   if 0 ≤ value then some (value.toNat, rest) else none
 
-private def expectNat (expected : Nat) (bytes : List UInt8) : Option (List UInt8) := do
+def expectNat (expected : Nat) (bytes : List UInt8) : Option (List UInt8) := do
   let (value, rest) ← readNat bytes
   if value = expected then some rest else none
 
-private def takeBytes (count : Nat) (bytes : List UInt8) :
+def takeBytes (count : Nat) (bytes : List UInt8) :
     Option (List UInt8 × List UInt8) :=
   if count ≤ bytes.length then some (bytes.take count, bytes.drop count) else none
 
-private def readSection (id : UInt8) (bytes : List UInt8) :
+def readSection (id : UInt8) (bytes : List UInt8) :
     Option (List UInt8 × List UInt8) := do
   let rest ← expectByte id bytes
   let (count, rest) ← readNat rest
   takeBytes count rest
 
-private def finished (bytes : List UInt8) : Option Unit :=
+def finished (bytes : List UInt8) : Option Unit :=
   if bytes = [] then some () else none
 
 structure Loaded where

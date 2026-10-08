@@ -47,6 +47,41 @@
       "path": "document/core/exec/numerics.rst",
       "sha256_utf8": "a830ac203c7c82fdd885c2db851895a9922d3f410035219b709c27ec97ed2947",
       "url": "https://github.com/WebAssembly/spec/blob/970c4116e644e2bf7acb39aab8b733db14ccdf28/document/core/exec/numerics.rst"
+    },
+    {
+      "path": "specification/wasm-3.0/5.1-binary.values.spectec",
+      "sha256_utf8": "7bdb1686c6fa9be9b67542b38e5be0537a29a44d48fb6b51f33b5a43b0f72d69",
+      "url": "https://github.com/WebAssembly/spec/blob/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/5.1-binary.values.spectec"
+    },
+    {
+      "path": "specification/wasm-3.0/5.2-binary.types.spectec",
+      "sha256_utf8": "d0a42bbf3128933b4a1270f9f58acd291b06c5b9a10707a6d24b11ca35422d23",
+      "url": "https://github.com/WebAssembly/spec/blob/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/5.2-binary.types.spectec"
+    },
+    {
+      "path": "specification/wasm-3.0/2.1-validation.types.spectec",
+      "sha256_utf8": "fe29444726505af0328144b93ebec011446afe298d19832f2e4537cd755dfd78",
+      "url": "https://github.com/WebAssembly/spec/blob/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/2.1-validation.types.spectec"
+    },
+    {
+      "path": "specification/wasm-3.0/2.2-validation.subtyping.spectec",
+      "sha256_utf8": "7dfbd51d4c9ac7c460a1e70e33c38d0f68323913048155d6f912152a01ac1c26",
+      "url": "https://github.com/WebAssembly/spec/blob/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/2.2-validation.subtyping.spectec"
+    },
+    {
+      "path": "specification/wasm-3.0/4.2-execution.types.spectec",
+      "sha256_utf8": "f15612d3ce0d3b5845948d304d357c1ef45045efc8f83e72df1b7cd509491d6d",
+      "url": "https://github.com/WebAssembly/spec/blob/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/4.2-execution.types.spectec"
+    },
+    {
+      "path": "document/core/binary/values.rst",
+      "sha256_utf8": "5b3836b519c021fccc52c80cb88f21ed315be326a53ef66545495704557332be",
+      "url": "https://github.com/WebAssembly/spec/blob/970c4116e644e2bf7acb39aab8b733db14ccdf28/document/core/binary/values.rst"
+    },
+    {
+      "path": "document/core/syntax/values.rst",
+      "sha256_utf8": "f715d8b049768c8e77212eb8a4e1048b781be383be2be8961e8916f9011e3dd7",
+      "url": "https://github.com/WebAssembly/spec/blob/970c4116e644e2bf7acb39aab8b733db14ccdf28/document/core/syntax/values.rst"
     }
   ]
 }

@@ -101,9 +101,10 @@ inductive Step : List (BitVec 32) → List Instr → List Instr → Prop where
       locals[i]? = some v →
       Step locals (valuesBefore.map Instr.const ++ .localGet i :: suffix)
         (valuesBefore.map Instr.const ++ .const v :: suffix)
-  | binary {locals : List (BitVec 32)} (valuesBefore : List (BitVec 32)) (suffix : List Instr) (op : Binop) (a b : BitVec 32) :
+  | binary {locals : List (BitVec 32)} (valuesBefore : List (BitVec 32)) (suffix : List Instr) (op : Binop) (a b result : BitVec 32) :
+      NumericResult op a b result →
       Step locals (valuesBefore.map Instr.const ++ .const a :: .const b :: .binary op :: suffix)
-        (valuesBefore.map Instr.const ++ .const (numeric op a b) :: suffix)
+        (valuesBefore.map Instr.const ++ .const result :: suffix)
   | labelContext {locals : List (BitVec 32)} {n : Nat} {code next : List Instr} :
       Step locals code next → Step locals [.label n code] [.label n next]
   | labelValues {locals : List (BitVec 32)} (n : Nat) (values : List (BitVec 32)) :
@@ -143,11 +144,11 @@ theorem body_steps (op : Op) (a b : BitVec 32) :
   rw [← numeric_agrees]
   exact .trans (.localGet [] [.localGet 1, .binary (binop op)] 0 a rfl)
     (.trans (.localGet [a] [.binary (binop op)] 1 b rfl)
-      (.trans (.binary [] [] (binop op) a b) (.refl _)))
+      (.trans (.binary [] [] (binop op) a b (numeric (binop op) a b) (numeric_bits _ _ _)) (.refl _)))
 
 /-- Administrative configuration AFTER the Core call-ref rule, whose two
-parameters become the locals, with no additional locals. The missing full
-store/call-ref/Module_ok bridge is not hidden in this definition. -/
+parameters become the locals, with no additional locals. The separate WasmCoreModule formalization derives the restricted
+store/call-ref/Module_ok path; this definition alone does not. -/
 def entered (op : Op) (a b : BitVec 32) : List Instr :=
   [.frame 1 [a,b] [.label 1 (body op)]]
 

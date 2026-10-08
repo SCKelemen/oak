@@ -316,3 +316,4 @@ import Oak.Forwarding
 import Oak.ArrayValues
 
 import Oak.WasmCoreBitwiseProjection
+import Oak.WasmCoreSource

@@ -1,119 +1,171 @@
-# Narrow Core-shaped bitwise projection
+# Source-pinned restricted WebAssembly Core derivation
 
-## Status
+## Status and exact claim
 
-`Oak.WasmCoreBitwiseProjection` is a **hand-written relational projection**, with
-Lean-kernel-checked proofs about that projection. It is **not an imported external
-WebAssembly Core mechanization**, not a proof of the official binary grammar,
-not an external `Module_ok` derivation, and not a full Core instantiation theorem.
-No production certificate, verified label, or acceptance policy uses this module.
+`Oak.WasmCoreSource.source_to_core` derives the complete admitted narrow path
+**inside a hand-transcribed, source-pinned Core formalization**:
 
-The existing complete-byte checker is reused unchanged. For every accepted source
-and Wasm module, and **all** pairs of 32-bit inputs, the final theorem combines:
+original restricted source bytes → existing typed source meaning → independent
+binary grammar derivation for the actual complete module → restricted Module_ok
+→ fresh allocation/instantiation → named export lookup → external invocation →
+non-null call-ref entry → local reads/bitwise operation → label/frame return.
 
-1. Grammar membership of the original restricted source bytes.
-2. Success of the established typed source `LoweringRefinement.evalX`.
-3. A projected one-function module and singleton allocation/export lookup.
-4. A restricted `(i32,i32)->i32` body-typing derivation with initialized locals.
-5. A Core-shaped small-step derivation through two local reads, a binary operator,
-   then label and frame removal, returning the same 32-bit result.
-6. Success of the existing complete-module byte executor.
+All 32-bit input pairs and every module admitted by the existing checker are
+covered, including its accepted padded LEB128 lengths/counts/indices. The theorem
+also quantifies over any pre-existing store in the represented fragment. It is
+not limited to a particular module fixture or an empty store.
 
-This is a useful intermediate obligation, **not closure of the external Core
-boundary**. It is a shared-result refinement for the fixed profile, not a general
-step-by-step simulation for arbitrary Wasm instructions or modules.
+**This is not a verified SpecTec importer or an independently mechanized proof
+that this transcription/representation is equivalent to the official full Core
+relations.** The original manual transcription boundary remains. No production
+certificate, verified label, runtime verdict, or CI workflow uses this change.
+Production Go parser/compiler correctness and runtime implementation correctness
+are separate boundaries.
+
+## Files and proofs
+
+- `WasmCoreBitwiseProjection.lean`: i32 bit-string result relation, unique result,
+  signed/unsigned bit preservation, body typing and relational instruction steps.
+  Its earlier empty-store projection is retained, but is not used as a substitute
+  for the stronger module/instantiation path below.
+- `WasmCoreModule.lean`: explicit type/function/export/module AST fields;
+  constructive type/function/export/module validity; indexed export allocation;
+  arbitrary-store fresh function allocation; external invoke, call-ref and
+  administrative activation/result relations.
+- `WasmCoreBinary.lean`: independent natural-valued BuN, instruction, expression,
+  UTF-8 ASCII name, section and module grammars; proof from the existing loader
+  to those relations. The loader's six helper definitions were made public for
+  these proofs; their implementations and behavior were not changed.
+- `WasmCoreSource.lean`: composes all of these with original source grammar and
+  the existing typed `LoweringRefinement.evalX` result.
+- `Audit.lean`: prints axioms of the central proof terms.
+
+The grammar relations do not invoke the loader or admission predicate.
+`loaded_binary` destructs the successful loader computation and reconstructs
+all consumed byte chunks, length/count encodings and sections. Its proof is
+universal over raw bytes. `admitted_binary` connects the checked operator to that
+structural derivation. The existing decoder is reused rather than replaced.
 
 ## Authoritative source and pin
 
 Official repository: <https://github.com/WebAssembly/spec>
 
 Revision: [`970c4116e644e2bf7acb39aab8b733db14ccdf28`](https://github.com/WebAssembly/spec/commit/970c4116e644e2bf7acb39aab8b733db14ccdf28)
-(2026-10-03). This is a development repository revision, not a claim of a dated W3C
-Recommendation. Sources are its `specification/wasm-3.0` profile.
+(2026-10-03), profile `specification/wasm-3.0`. This is a pinned development
+revision, not a claim of a particular dated W3C Recommendation.
 
-`provenance.json` records exact source URLs and SHA-256 values of the UTF-8 contents
-retrieved from the GitHub connector. The manifest is audit evidence, not a
-kernel-verified importer or a claim of source-to-Lean equivalence. Lean does not
-read that JSON file.
+`provenance.json` contains exact URLs and SHA-256 hashes of UTF-8 source contents
+retrieved using the GitHub connector. It is audit evidence, not an importer or a
+kernel dependency. Lean does not consume that manifest.
 
-| Local element | Pinned external source/rule |
+| Local relation | Pinned rule/source |
 | --- | --- |
-| `Typed.localGet` | `2.3-validation.instructions.spectec`, `Instr_ok/local.get`, initialized `SET I32` local |
-| `Typed.binary` | Same file, `Instr_ok/binop`, two i32 operands to one i32 |
-| `Step.localGet` | `4.3-execution.instructions.spectec`, `Step_read/local.get`, `Step/read`, `Step/ctxt-instrs` |
-| `Step.binary` | Same file, `Step_pure/binop-val`, `Step/pure`, `Step/ctxt-instrs` |
-| `Step.labelContext`, `labelValues` | Same file, `Step/ctxt-label`, `Step_pure/label-vals` |
-| `Step.frameContext`, `frameValues` | Same file, `Step/ctxt-frame`, `Step_pure/frame-vals` |
-| `entered` | Post-state shape of `Step/call_ref-func`, with arity 1 and locals consisting of the two arguments |
-| `instantiate`, `exported` | Only an empty-store singleton projection of `4.4-execution.modules.spectec` allocation/export rules |
-| `numeric`, `NumericResult` | `3.1-numerics.scalar.spectec` dispatch to `iand`, `ior`, `ixor`; normative bit-string equations in `document/core/exec/numerics.rst`, `op-iand`, `op-ior`, `op-ixor` |
-| Final `end` byte | `5.3-binary.instructions.spectec`, `Bexpr`; byte 0x0B is consumed by the expression grammar, **not executed** |
+| `Unsigned`, `leb_to_unsigned` | `5.1-binary.values.spectec`, `BuN`: unsigned naturals, remaining width, continuation byte minus 128 |
+| `UTF8Name`, `ascii_name`, `name_representation_injective` | Same file, `$utf8`, `Bname`; Unicode scalar/byte representation is injective on admitted ASCII names |
+| `Section` | `5.4-binary.modules.spectec`, `Bsection_`; declared size equals actual payload length |
+| Type/function/export/code payloads | Same file, `Btypesec`, `Bfuncsec`, `Bexportsec`, `Bcode`, `Bcodesec`, and `5.2-binary.types.spectec` |
+| `Instruction`, `Expression` | `5.3-binary.instructions.spectec`, local.get, i32.and/or/xor, `Bexpr` |
+| `BinaryModule` | `5.4-binary.modules.spectec`, `Bmodule`, with other sections absent and function/code vectors each singleton |
+| `I32TypesOk`, `FuncTypeOk`, `ClosedTypeOk`, `TypesOk` | `2.1-validation.types.spectec`: numeric/result/composite/subtype/recursive type rules; `2.4-validation.modules.spectec`: `Type_ok`, `Types_ok` |
+| `Typed`, `FunctionOk` | `2.3-validation.instructions.spectec`: local.get/binop/sequence/expression rules; `2.4-validation.modules.spectec`: `Func_ok` |
+| `ExportOk`, `ModuleOk` | `2.4-validation.modules.spectec`: `Externidx_ok/func`, `Export_ok`, `Module_ok` |
+| `ExportAllocated`, `Allocation` | `4.4-execution.modules.spectec`: export-index lookup, allocfunc, allocfuncs, allocmodule |
+| `Instantiation`, `instantiate` | Same file, `$instantiate`; empty initialization vectors and absent start yield no initialization instructions |
+| `Invoke` | Same file, `$invoke`; fresh address lookup and the function's parameter arity/types |
+| `CallStep.callRef` | `4.3-execution.instructions.spectec`, `Step/call_ref-func`; concrete non-null address, closed type match and initialized parameter/local frame |
+| `Step.localGet`, `Step.binary` | Same file, local.get, binop-val, read/pure/context rules |
+| Label and activation reductions | Same file, ctxt-label/label-vals, ctxt-frame/frame-vals |
+| `NumericResult`, `numeric_bits`, `numeric_unique` | `3.1-numerics.scalar.spectec` builtin dispatch, plus `document/core/exec/numerics.rst` normative `op-iand`, `op-ior`, `op-ixor` bit-string equations |
 
-The upstream SpecTec numeric file **declares** these primitive bitwise functions
-as builtins. Their mathematical definitions are in the normative document's
-bit-string equations. `numeric_bits` proves the corresponding pointwise Boolean
-law in Lean; `numeric_unique` proves its unique result. Translation of the
-normative bit-string representation to this local representation is still manual.
+## What is actually discharged
 
-The upstream label-values rule does not constrain the label's arity to the value
-count; the frame-values rule does. The local rules preserve this distinction.
-Typing of this exact body establishes one result. `Step` contains no rule that
-turns a trap, bad local access, or malformed state into success. The all-input
-result is an explicit successful reduction derivation, not merely equality of
-faults. This alone does not prove that no trap is reachable in the full external
-semantics; that requires the external bridge below.
+### Binary decoding
 
-## Exact remaining external obligations
+The derivation retains magic/version, exact section order, section and body sizes,
+vector counts, function/type/export indices, byte length of the UTF-8 name, zero
+local declarations, individual instruction productions and complete exhaustion.
+`leb_to_unsigned` proves the earlier signed-Int-shaped LEB relation agrees with
+the pinned unsigned-natural rules on this path; modulo-128 limbs are proved to
+match byte-minus-128 limbs. Legal padded encodings are preserved.
 
-Before describing this path as source-to-external-Core correctness, establish:
+`end` (0x0B) belongs to the expression grammar and contributes no instruction to
+the AST. Function return instead reduces an administrative label and activation.
+There is no reinterpretation of unsupported control flow as successful execution.
 
-1. **Source-rule fidelity:** a checked importer/translation, or an explicit reviewed
-   trusted transcription boundary, relating these inductive constructors and
-   numeric meanings to the pinned external relations. A hash only pins content;
-   it does not prove translation fidelity.
-2. **Binary grammar:** show that *every* module accepted by `BitwiseModule.load`
-   has an official `Bmodule` derivation yielding the intended abstract module.
-   This includes magic/version, section order/exhaustion, counts, padded LEB128
-   lengths/indices, function/type/export indices, ASCII-to-UTF-8 names, local
-   declarations, opcodes and final expression delimiter. Existing decoding and
-   all-byte exhaustion are useful inputs; they are not that external theorem.
-3. **Validation:** derive the complete pinned `Module_ok`, including type section,
-   function declaration/code matching, export uniqueness/index/type, and
-   instruction-expression typing. `Typed` proves only this body's restricted
-   initialized-i32 stack typing.
-4. **Instantiation and invocation:** relate the projected singleton instance to
-   Core allocation, recursive module/type closure and export addresses; discharge
-   `$instantiate` and `$invoke` premises; derive the call-ref entry step and show
-   the unused store components are unchanged. `entered_returns` starts **after**
-   call-ref, so this missing step is explicit rather than assumed as an axiom.
-5. **Host observation:** prove or state the interface that supplies/observes i32
-   bit patterns. `signed_unsigned_bits` proves that signed and unsigned integer
-   presentations convert back to the same 32 bits, including high-bit-set words;
-   it does not certify a JavaScript embedding or runtime.
+### Validation
 
-For this profile there are no imports, memory, tables, globals, start function,
-additional functions/exports/locals, calls inside the body, or memory effects.
-The allocation projection is limited to an empty store. General store extension,
-linking, host calls, execution-resource limits and full language support are
-outside it. Restricting the profile is not evidence that the remaining external
-proof obligations have already been discharged.
+The AST independently carries type definitions, function type indices, local
+declarations, code, export indices/names and non-function section fields.
+Module validity is an inductive derivation over these fields, not an alias of
+admission or an equality test against the intended module. Function context
+lookups and body typing, export lookups, export-name uniqueness, and omitted
+section/start premises are checked. `Each₂` requires both cardinalities to agree;
+`module_cardinality`, `function_index_valid` and `export_index_valid` expose those
+consequences. Invalid type/export index examples cannot derive the respective
+validity judgments.
 
-## Route assessment
+### Instantiation and invocation
 
-The official SpecTec sources are the closest source-of-truth connection. A checked
-translation of the relevant DSL fragment into Lean would preserve one proof
-kernel. Building/running the SpecTec interpreter and comparing fixtures would be
-useful tests, but would not discharge a universally quantified semantics theorem.
-No verified SpecTec-to-Lean importer is used or supplied here.
+A fresh function is appended at the old function-store length. Its instance
+contains the real module address vector and code/type relationship. Export
+allocation uses indexed lookup through that vector, not source-index/address
+conflation. The old function entries and abstract other-store component remain
+unchanged. `fresh_before`, `fresh_function`, `allocated_code_type`,
+`preserves_function`, `preserves_other`, and `export_resolves` state those facts.
 
-[WasmCert-Coq](https://github.com/WasmCert/WasmCert-Coq) is an independent Rocq
-mechanization. Its README describes Wasm 2.0 plus subtyping/tail-call additions.
-[WasmCert-Isabelle](https://github.com/WasmCert/WasmCert-Isabelle) is an Isabelle
-mechanization. Proving this profile directly in either is a plausible stronger
-external route, but needs its own pinned build, axiom review and a cross-model
-source/byte bridge. A Rocq/Isabelle proof or extracted interpreter cannot simply be
-claimed as a Lean-kernel proof. Neither toolchain is installed or trusted by this
-change.
+External invocation looks up the allocated function and checks two i32 arguments.
+The call-ref rule requires a concrete non-null function reference and matching
+closed type, then builds an activation containing the correct module instance,
+parameter locals, result arity and label. Empty extra-local declarations yield
+no added local values. The final frame-values rule checks the one-result arity
+and removes the activation, producing a result vector rather than a surviving
+callee frame. Both invocation and return are constructed for all inputs.
+
+### Numeric primitives
+
+The upstream SpecTec numeric file only **declares** iand/ior/ixor as builtins.
+Their normative mathematical definitions use bit-string Boolean operations in
+`document/core/exec/numerics.rst`. `NumericResult` independently states the
+pointwise Boolean law; the binary reduction rule requires that relation rather
+than simply returning the Oak evaluator's chosen result. `numeric_bits` proves
+Lean BitVec operations satisfy it; `numeric_unique` proves uniqueness.
+`signed_unsigned_bits` proves signed and unsigned host integer presentations
+convert back to identical 32-bit words, including words with bit 31 set.
+
+## Trust ledger and remaining external boundary
+
+The following representation choices are **manual specializations of the pinned
+rules**, not independently verified translations:
+
+1. `ClosedType.recFinalFunc` compresses a final parentless function subtype in a
+   singleton recursive group (and its index-zero definition projection). All
+   value types are i32, represented by units, so no type references occur and
+   rolling/substitution is structurally identity. The proofs derive the local
+   closed-type judgments; they do not verify the full Core recursive-type DSL.
+2. Names use their admitted ASCII bytes as a compact representation of Unicode
+   scalar sequences. UTF-8 derivation and representation injectivity are proved
+   for this subset, not arbitrary UTF-8 strings.
+3. The represented store contains function instances plus an opaque list of
+   natural tokens for other components. Arbitrary stores **in this representation**
+   are covered. An embedding from the full Core store, with arbitrary host
+   functions, memories, tags and other values, remains a representation-review
+   obligation. Preserving opaque state is not proof of that embedding.
+4. The activation relation represents the single entered frame and its module
+   explicitly. The body fragment cannot call, branch, access memory or mutate
+   locals/store. Unused outer-state components and type-context components are
+   omitted. The successful reduction is not a general determinism/type-safety
+   theorem for every malformed or unsupported configuration.
+5. The DSL rules, bit-string conventions and these simplifications were manually
+   read and transcribed. A checked importer or a proof of an embedding into an
+   independently mechanized complete Core semantics is still needed to remove
+   this trust boundary. Hashes and Lean axiom audits do not remove it.
+6. Production Go implementation refinement, runtime/host embedding correctness,
+   resource exhaustion and unrepresented Wasm features remain outside this work.
+
+The prior missing **local** binary/Module_ok/instantiation/invocation derivations
+are now provided for this profile; the **external transcription/embedding**
+boundary is explicitly not declared closed. No extra axiom assumes that a module
+is valid, that instantiation succeeds, or that its intended invocation returns.
 
 ## Reproduce the focused proof and axiom audit
 
@@ -121,12 +173,21 @@ With the repository's Lean 4.33.1 environment:
 
 ```sh
 cd spec/lean
-lake build Oak.WasmCoreBitwiseProjection
+lake build Oak.WasmCoreSource
 lake env lean ../wasm-core/Audit.lean
 ```
 
-The key final theorems use only standard Lean axioms `propext`,
-`Classical.choice`, and `Quot.sound`; there is no `sorryAx`, custom semantics axiom,
-`native_decide` axiom, or external solver oracle. The small body typing theorem
-has no axioms. This audit concerns proof terms about the local definitions; it
-cannot audit whether their manual transcription faithfully represents Core.
+Only standard Lean axioms `propext`, `Classical.choice`, `Quot.sound` occur in the
+central theorem closure; there is no `sorryAx`, custom semantics axiom, native
+computation axiom or external solver oracle. Audit results concern the actual
+local definitions, not correctness of their source transcription.
+
+## Longer-term route
+
+A verified translation of the relevant official SpecTec fragment into Lean is
+the strongest single-kernel route. Running its interpreter or comparing fixtures
+would be tests, not a universal proof. Alternatively,
+[WasmCert-Coq](https://github.com/WasmCert/WasmCert-Coq) or
+[WasmCert-Isabelle](https://github.com/WasmCert/WasmCert-Isabelle) supplies an
+independent mechanization, but requires a pinned build, axiom review, and
+cross-model source/byte bridge. Neither is installed or trusted by this change.
