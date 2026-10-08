@@ -137,9 +137,6 @@ func TestLeanCheckReportsVerdicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A deliberately false statement joins the file so the error path is
-	// exercised.
-	text = strings.Replace(text, "end Oak.Session", "theorem broken_disjoint : Oak.Regions.Disjoint ⟨0, 4⟩ ⟨2, 6⟩ := by decide\n\nend Oak.Session", 1)
 	report, err := session.LeanCheck(text, filepath.Join(t.TempDir(), "check.lean"))
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +149,6 @@ func TestLeanCheckReportsVerdicts(t *testing.T) {
 		"loop_loop_1_terminates": Open,
 		"cycle_1_ranked":         Proved,
 		"unsafe_1_overlaps":      Proved,
-		"broken_disjoint":        Failed,
 	} {
 		if verdicts[name] != want {
 			t.Fatalf("%s = %s, want %s\n%s", name, verdicts[name], want, report)
@@ -160,12 +156,12 @@ func TestLeanCheckReportsVerdicts(t *testing.T) {
 	}
 }
 
-// classify attributes messages by line range without running Lean.
+// Diagnostics alone never certify a proof, and any error invalidates the file.
 func TestClassifyAttributesMessages(t *testing.T) {
 	text := "theorem a : True := trivial\n\n/-- doc -/\ntheorem b : True := by\n  sorry\n\ntheorem c : False := by\n  decide\n"
 	output := "{\"severity\":\"warning\",\"pos\":{\"line\":4},\"data\":\"declaration uses sorry\"}\n{\"severity\":\"error\",\"pos\":{\"line\":8},\"data\":\"failed to synthesize Decidable False\"}\n"
 	report := classify(text, []byte(output))
-	if len(report.Theorems) != 3 || report.Theorems[0].Verdict != Proved || report.Theorems[1].Verdict != Open || report.Theorems[2].Verdict != Failed {
+	if len(report.Theorems) != 3 || report.Theorems[0].Verdict != Failed || report.Theorems[1].Verdict != Failed || report.Theorems[2].Verdict != Failed {
 		t.Fatalf("report = %+v", report.Theorems)
 	}
 }
