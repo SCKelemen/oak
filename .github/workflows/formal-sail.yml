@@ -99,6 +99,7 @@ jobs:
   sail:
     name: Sail bridges and oracles
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -107,7 +108,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf qemu-system-misc llvm
+          sudo apt-get install -y --no-install-recommends gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf qemu-system-misc llvm build-essential libgmp-dev pkg-config
           llvm-mc --version | head -1
           riscv64-unknown-elf-gcc --version | head -1
 
@@ -189,8 +190,51 @@ jobs:
         env:
           OAK_REQUIRE_ORACLES: "1"
         run: |
-          go test ./asm -run '^TestSailScalarExecution(RawPins|Regeneration|Lean|GuardedMutationAudit)$' -count=1 -v -timeout=15m
+          go test ./asm -run '^TestSailScalarExecution(RawPins|Regeneration|Lean|GuardedMutationAudit|ReturnFraming)$' -count=1 -v -timeout=15m
           python3 spec/sail/audit_scalar.py
+          python3 spec/sail/return_execution_regen.py --check-source
+          python3 spec/sail/audit_return.py
+
+      - name: Cache checksummed guarded-generator dependency downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/oak-arm-return-downloads
+          key: arm-return-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('spec/sail/repros/guarded_mutation/guarded_profile/toolchain-lock.json') }}
+
+      - name: Rebuild the separate guarded generator from pinned source and patch
+        run: |
+          set -euo pipefail
+          python3 spec/sail/repros/guarded_mutation/guarded_profile/build.py \
+            --workdir "$RUNNER_TEMP/oak-guarded-return-build" \
+            --download-cache "$RUNNER_TEMP/oak-arm-return-downloads" \
+            2>&1 | tee "$RUNNER_TEMP/oak-guarded-return-build.log"
+
+      - name: Regenerate and regress the bounded guarded return profile
+        run: |
+          set -euo pipefail
+          # Scoped to this step: the official Sail installation is unchanged.
+          source "$RUNNER_TEMP/oak-guarded-return-build/env.sh"
+          export OAK_LEAN_SAIL_SUPPORT="$(realpath ../external/lean-sail)"
+          python3 spec/sail/repros/guarded_mutation/guarded_profile/check_build.py \
+            2>&1 | tee "$RUNNER_TEMP/oak-guarded-return-provenance-tests.log"
+          python3 spec/sail/return_execution_regen.py --regenerate \
+            2>&1 | tee "$RUNNER_TEMP/oak-guarded-return-regeneration.log"
+          python3 spec/sail/repros/guarded_mutation/guarded_profile/check.py \
+            --output-dir "$RUNNER_TEMP/oak-guarded-return-regressions" \
+            2>&1 | tee "$RUNNER_TEMP/oak-guarded-return-regressions.log"
+          python3 spec/sail/audit_return.py
+
+      - name: Preserve guarded-build provenance and regression logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guarded-arm-return-provenance
+          path: |
+            ${{ runner.temp }}/oak-guarded-return-build/build-receipt.json
+            ${{ runner.temp }}/oak-guarded-return-*.log
+            ${{ runner.temp }}/oak-guarded-return-regressions/*.log
+          if-no-files-found: ignore
+          retention-days: 14
 
   lem-ram-traces:
     name: Arm Lem RAM request traces

@@ -1,0 +1,104 @@
+diff --git a/src/lib/rewrites.ml b/src/lib/rewrites.ml
+index ca362cd3a..e44c716d9 100644
+--- a/src/lib/rewrites.ml
++++ b/src/lib/rewrites.ml
+@@ -2896,6 +2896,17 @@ let rec rewrite_var_updates (E_aux (expaux, ((l, _) as annot)) as exp) =
+         let funcl = Id_aux (Id fname, gen_loc el) in
+         let v = E_aux (E_app (funcl, [cond; tuple_exp vars; body] @ measure), (gen_loc el, bannot)) in
+         Added_vars (v, tuple_pat (if overwrite then varpats else pat :: varpats))
++    | E_let _ ->
++        (* A guarded pattern can introduce a let-wrapped conditional here.
++           Thread updates used by the enclosing continuation through that
++           wrapper, just as for a direct conditional or match. *)
++        let vars, varpats =
++          find_updated_vars full_exp |> IdSet.inter used_vars |> mk_var_exps_pats pl env
++        in
++        if vars = [] then Same_vars (rewrite_var_updates full_exp)
++        else
++          let exp = rewrite_var_updates (add_vars overwrite full_exp vars) in
++          Added_vars (exp, tuple_pat (if overwrite then varpats else pat :: varpats))
+     | E_if (c, e1, e2) ->
+         let vars, varpats =
+           IdSet.union (find_updated_vars e1) (find_updated_vars e2) |> IdSet.inter used_vars |> mk_var_exps_pats pl env
+@@ -3292,7 +3303,73 @@ let rewrite_ast_remove_superfluous_returns env =
+       rewrite_ast = rewrite_ast_base;
+     }
+ 
++(* EXPERIMENTAL, fail-closed profile check. This does not rename source binders
++   or establish general exporter correctness. Run after remove_blocks, before
++   the experimental nested-let update rewrite. *)
++let rewrite_ast_oak_no_shadow _env ast =
++  let reject l why =
++    raise (Reporting.err_general l ("Oak experimental no-shadow profile: " ^ why))
++  in
++  let rec pattern_ids (P_aux (p, (l, a))) =
++    match p with
++    | P_wild | P_lit _ -> []
++    | P_id id -> if is_enum_member id (env_of_annot (l, a)) then [] else [id]
++    | P_typ (_, p) | P_var (p, _) -> pattern_ids p
++    | P_as (p, id) -> id :: pattern_ids p
++    | P_tuple ps | P_app (_, ps) | P_vector ps | P_list ps -> List.concat_map pattern_ids ps
++    | P_cons (p, q) -> pattern_ids p @ pattern_ids q
++    | _ -> reject l "unsupported pattern binder"
++  in
++  let rec mutable_ids (LE_aux (le, (l, _))) =
++    match le with
++    | LE_id id | LE_typ (_, id) -> [id]
++    | LE_tuple les -> List.concat_map mutable_ids les
++    | _ -> reject l "unsupported mutable binder"
++  in
++  let check_binders l env ids =
++    let seen = ref (Env.get_locals env |> Bindings.bindings |> List.map fst |> IdSet.of_list) in
++    List.iter (fun id ->
++      if IdSet.mem id !seen then reject l ("shadowed binder " ^ string_of_id id);
++      seen := IdSet.add id !seen
++    ) ids
++  in
++  let rec check_target (LE_aux (le, ((l, _) as a))) =
++    match le with
++    | LE_id id | LE_typ (_, id) ->
++        if id_is_unbound id (env_of_annot a) then reject l "residual local-introducing assignment"
++    | LE_tuple les | LE_vector_concat les -> List.iter check_target les
++    | LE_vector (le, _) | LE_vector_range (le, _, _) | LE_field (le, _) -> check_target le
++    | LE_app _ -> ()
++    | LE_deref _ -> reject l "dereference assignment alias"
++  in
++  let rec check (E_aux (e, ((l, _) as a)) as full) =
++    let env = env_of_annot a in
++    (match e with
++    | E_let (p, _, _) -> check_binders l env (pattern_ids p)
++    | E_var (le, _, _) -> check_binders l env (mutable_ids le)
++    | E_for (id, _, _, _, _, _) -> check_binders l env [id]
++    | E_match (_, arms) | E_try (_, arms) ->
++        List.iter (fun (Pat_aux (p, _)) ->
++          match p with
++          | Pat_exp (p, _) | Pat_when (p, _, _) -> check_binders l env (pattern_ids p)
++        ) arms
++    | E_assign (le, _) -> check_target le
++    | E_ref id ->
++        if id_is_local_var id env then reject l "local reference alias"
++    | E_block _ | E_internal_plet _ | E_internal_return _ | E_internal_value _ ->
++        reject l "unsupported internal/binding expression"
++    | E_id _ | E_lit _ | E_config _ | E_typ _ | E_app _ | E_tuple _
++    | E_if _ | E_loop _ | E_vector _ | E_vector_append _ | E_list _
++    | E_cons _ | E_struct _ | E_struct_update _ | E_field _ | E_sizeof _
++    | E_exit _ | E_throw _ | E_return _ | E_assert _ | E_undef
++    | E_internal_assume _ | E_constraint _ -> ());
++    Rewriter.rewrite_exp { Rewriter.rewriters_base with rewrite_exp = (fun _ e -> check e) } full
++  in
++  Rewriter.rewrite_ast_base
++    { Rewriter.rewriters_base with rewrite_exp = (fun _ e -> check e) } ast
++
+ let rewrite_ast_remove_e_assign env ast =
++  let ast = rewrite_ast_oak_no_shadow env ast in
+   let loop_specs =
+     fst
+       (Type_error.check_defs initial_env
+@@ -4919,6 +4996,7 @@ let all_rewriters =
+     ("nexp_ids", basic_rewriter rewrite_ast_nexp_ids);
+     ("remove_blocks", basic_rewriter rewrite_ast_remove_blocks);
+     ("letbind_effects", base_rewriter rewrite_ast_letbind_effects);
++    ("oak_no_shadow", basic_rewriter rewrite_ast_oak_no_shadow);
+     ("remove_e_assign", basic_rewriter rewrite_ast_remove_e_assign);
+     ("internal_lets", basic_rewriter rewrite_ast_internal_lets);
+     ("remove_superfluous_letbinds", basic_rewriter rewrite_ast_remove_superfluous_letbinds);
