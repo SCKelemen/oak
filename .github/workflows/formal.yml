@@ -5,7 +5,7 @@ on:
     branches:
       - specification
       - docs/spec-consolidation
-      - codex/lrat-record-soundness
+      - codex/lrat-record-framing
   pull_request:
     branches:
       - specification
@@ -65,9 +65,9 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       # Track the complete LRAT proof independently of unrelated formal modules.
-      - name: Build production LRAT state and scratch proofs
+      - name: Build production LRAT whole-record proof
         working-directory: spec/lean
-        run: lake build Oak.LRATTrail
+        run: lake build Oak.LRATRecordSoundness
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -77,9 +77,13 @@ jobs:
       - name: Check production LRAT records, extraction, and scratch restoration
         env:
           OAK_REQUIRE_LRAT_TRAIL_LEAN: '1'
+          OAK_REQUIRE_LRAT_RECORD_LEAN: '1'
         run: go test ./compiler -run '^TestLRATKernel' -count=1 -timeout=10m -v
 
   lean:
+    # Proof-branch iterations use the dedicated gates above. PR and
+    # specification runs still check the complete formal specification.
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/codex/lrat-')
     name: Lean 4
     runs-on: ubuntu-24.04
     steps:
@@ -151,7 +155,7 @@ jobs:
         env:
           OAK_REQUIRE_WASM_LEAN: '1'
           OAK_REQUIRE_WASM_TESTS: '1'
-        run: go test ./compiler -run '^TestWasmExecution(Lean|Engine)$' -count=1 -timeout=20m -v
+        run: go test ./compiler -run '^TestWasm(Execution|Control|Calls)(Lean|Engine)$' -count=1 -timeout=20m -v
 
       - name: Check Wasm LEB production decisions against Lean
         env:

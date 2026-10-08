@@ -18,6 +18,9 @@ import Oak.MinimalELF
 import Oak.RiscVBitwiseELF
 import Oak.AArch64MinimalStartup
 import Oak.RiscVFramedBitwise
+
+import Oak.WasmControl
+import Oak.WasmCalls
 import Oak.Effects
 import Oak.EffectRows
 import Oak.OptIRCallSummaryCertificate
@@ -258,6 +261,10 @@ import Oak.LRATCheckerState
 import Oak.LRATRUPValidity
 import Oak.LRATStore
 import Oak.LRATTrail
+import Oak.LRATInitial
+import Oak.LRATRecord
+import Oak.LRATSteps
+import Oak.LRATRecordSoundness
 import Oak.LRATFormulaBinding
 import Oak.ClauseAgreement
 import Oak.SATModel
