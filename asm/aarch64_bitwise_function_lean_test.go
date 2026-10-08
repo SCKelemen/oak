@@ -2,9 +2,9 @@ package asm
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,9 +38,14 @@ func TestAArch64BitwiseFunctionLeanExactBytes(t *testing.T) {
 			if err != nil || reloc != nil || ret != 0xd65f03c0 {
 				t.Fatalf("return word %#08x, relocation %v, error %v", ret, reloc, err)
 			}
-			emitted := make([]byte, 8)
-			binary.LittleEndian.PutUint32(emitted, word)
-			binary.LittleEndian.PutUint32(emitted[4:], ret)
+			unit, diagnostics := ParseUnit("bitwise.arm64.oakasm", fmt.Sprintf("bitwise: (a: u32, b: u32) -> u32 = {\n %s w0, w0, w1\n ret\n}\n", tc.mnemonic))
+			if len(diagnostics) != 0 || unit == nil || len(unit.Functions) != 1 {
+				t.Fatalf("parse function: %v", diagnostics)
+			}
+			emitted, relocations, err := EncodeFunction(unit.Functions[0])
+			if err != nil || len(relocations) != 0 {
+				t.Fatalf("encode function: %v, relocations %v", err, relocations)
+			}
 			if !bytes.Equal(emitted, tc.bytes) {
 				t.Fatalf("emitted %x, want %x", emitted, tc.bytes)
 			}
@@ -93,5 +98,42 @@ func TestAArch64BitwiseFunctionLeanEncodingRows(t *testing.T) {
 		if matches != 1 {
 			t.Fatalf("%s matched %d rows", tc.name, matches)
 		}
+	}
+}
+
+// Mandatory in formal.yml; optional in Go-only developer environments.
+func TestAArch64BitwiseFunctionMatchesLean(t *testing.T) {
+	if _, err := exec.LookPath("lake"); err != nil {
+		if os.Getenv("OAK_REQUIRE_ARM64_LEAN") == "1" {
+			t.Fatal("lake is required: ", err)
+		}
+		t.Skip("lake unavailable; formal.yml requires this oracle")
+	}
+	var source strings.Builder
+	source.WriteString("import Oak.AArch64BitwiseFunction\nopen Oak.AArch64BitwiseFunction\n")
+	for _, tc := range []struct{ mnemonic, op string }{{"and", "and"}, {"orr", "or"}, {"eor", "xor"}} {
+		unit, diagnostics := ParseUnit("bitwise.arm64.oakasm", fmt.Sprintf("bitwise: (a: u32, b: u32) -> u32 = {\n %s w0, w0, w1\n ret\n}\n", tc.mnemonic))
+		if len(diagnostics) != 0 || unit == nil || len(unit.Functions) != 1 {
+			t.Fatalf("parse: %v", diagnostics)
+		}
+		code, relocs, err := EncodeFunction(unit.Functions[0])
+		if err != nil || len(relocs) != 0 {
+			t.Fatalf("encode: %v, relocs %v", err, relocs)
+		}
+		var literals []string
+		for _, b := range code {
+			literals = append(literals, fmt.Sprint(b))
+		}
+		fmt.Fprintf(&source, "example : functionBytes .%s = [%s] := by decide +kernel\n", tc.op, strings.Join(literals, ","))
+		fmt.Fprintf(&source, "example (s : State) : invoke [%s] s = some (returned .%s s) := by exact function_success .%s s\n", strings.Join(literals, ","), tc.op, tc.op)
+	}
+	path := filepath.Join(t.TempDir(), "Arm64BitwiseCorrespondence.lean")
+	if err := os.WriteFile(path, []byte(source.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("lake", "env", "lean", path)
+	cmd.Dir = filepath.Join("..", "spec", "lean")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Lean byte/execution correspondence: %v\n%s\n%s", err, output, source.String())
 	}
 }
