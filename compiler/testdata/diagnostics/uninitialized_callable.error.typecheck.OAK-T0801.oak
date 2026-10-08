@@ -1,0 +1,5 @@
+// A function value has no callable zero value. Reject before C emission.
+main: (): i32 {
+  f: (i32) -> i32
+  f(42)
+}
