@@ -117,6 +117,11 @@ jobs:
       - name: Check bounded production correspondence
         run: go test ./asm -run 'TestAArch64Branch26RelocationMatchesLean|TestAArch64ADRL21PatchBoundaries|TestRV64PCRelMatchesLean|TestValidateCNFAllocationMatchesLean|TestValidateCNFTraceMatchesLean|TestNativeCNFReplay(Apply|Term|Word|WordPairs|Header|Finish|Settled|MetadataSettled|Recording)MatchesLean|TestNativeCNFReplayWordProjection' -count=1 -v
 
+      - name: Check ARM64 bitwise emitted bytes against Lean
+        env:
+          OAK_REQUIRE_ARM64_LEAN: '1'
+        run: go test ./asm -run '^TestAArch64BitwiseFunction' -count=1 -v
+
       - name: Check Wasm assembler production decisions against Lean
         env:
           OAK_REQUIRE_WASM_LEAN: '1'
