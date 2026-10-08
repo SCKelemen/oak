@@ -19,6 +19,7 @@ import (
 
 type bitwiseModuleCase struct {
 	name, symbol string
+	source       string
 	opcode       byte
 	bytes        []byte
 }
@@ -51,6 +52,7 @@ func bitwiseModuleCases(t *testing.T) []bitwiseModuleCase {
 		if !bytes.Equal(module.Bytes, want) {
 			t.Fatalf("%s production module changed: got %x, want %x", tc.name, module.Bytes, want)
 		}
+		tc.source = source
 		tc.bytes = append([]byte(nil), module.Bytes...)
 	}
 	return cases
@@ -118,14 +120,40 @@ func testWasmBitwiseModuleLean(t *testing.T) {
 			t.Fatalf("lake %v: %v\n%s", args, err, out)
 		}
 	}
-	run("build", "Oak.BitwiseModule")
+	run("build", "Oak.BitwiseSource")
 	var source strings.Builder
-	source.WriteString("import Oak.BitwiseModule\nopen Oak.BitwiseFunction Oak.BitwiseModule\nset_option maxRecDepth 8192\n")
+	source.WriteString("import Oak.BitwiseSource\nopen Oak Oak.BitwiseFunction Oak.BitwiseModule\nset_option maxRecDepth 8192\n")
 	for _, tc := range bitwiseModuleCases(t) {
 		literal := strings.Replace(wasmLeanArray(tc.bytes), "#[", "[", 1)
 		fmt.Fprintf(&source, "def actual_%s : List UInt8 := %s\n", tc.name, literal)
+		original := strings.Replace(wasmLeanArray([]byte(tc.source)), "#[", "[", 1)
+		fmt.Fprintf(&source, "def source_%s : List UInt8 := %s\n", tc.name, original)
+		fmt.Fprintf(&source, "theorem actual_%s_source_bound (left right : BitVec 32) : BitwiseSource.Means source_%s (BitwiseSource.fixture .%s) left right (eval .%s left right) ∧ invokeModule entryName actual_%s left right = .ok (eval .%s left right) := by simpa only [BitwiseSource.fixture_name, BitwiseSource.fixture_op] using (BitwiseSource.accepted_source_to_module (by decide +kernel : BitwiseSource.accepts source_%s (BitwiseSource.fixture .%s) .wasm .wasmLocals actual_%s = true) left right)\n", tc.name, tc.name, tc.name, tc.name, tc.name, tc.name, tc.name, tc.name, tc.name)
+
 		fmt.Fprintf(&source, "example : actual_%s = moduleBytes .%s := by decide +kernel\n", tc.name, tc.name)
 		fmt.Fprintf(&source, "theorem actual_%s_success (left right : BitVec 32) : invokeModule entryName actual_%s left right = .ok (eval .%s left right) := admitted_module_success (by decide +kernel : acceptsModule .wasm .wasmLocals [32,32] 32 .%s entryName actual_%s = true) left right\n", tc.name, tc.name, tc.name, tc.name, tc.name)
+	}
+	// These cases deliberately vary declaration/parameter identity, contextual
+	// identifiers, and export-name LEB length. The generic theorem, not this
+	// finite table, is the source-semantics authority.
+	for i, names := range [][3]string{
+		{"mix", "left0", "Right9"},
+		{"kernel", "forall", "exists"},
+		{strings.Repeat("LongName", 16), "A1", "b2"},
+	} {
+		original := fmt.Sprintf("%s: (%s: u32, %s: u32): u32 = %s ^ %s\n", names[0], names[1], names[2], names[1], names[2])
+		module, err := New().WithSource("source-bound.oak", original).EmitWasm().Get()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if module.TranslationVerified || module.ByteValidation == nil {
+			t.Fatal("source binding must not change production verification authority")
+		}
+		list := func(b []byte) string { return strings.Replace(wasmLeanArray(b), "#[", "[", 1) }
+		fmt.Fprintf(&source, "def renamedSource%d : List UInt8 := %s\n", i, list([]byte(original)))
+		fmt.Fprintf(&source, "def renamedModule%d : List UInt8 := %s\n", i, list(module.Bytes))
+		fmt.Fprintf(&source, "def renamedClaim%d : BitwiseSource.Decl := ⟨%s, %s, %s, .xor⟩\n", i, list([]byte(names[0])), list([]byte(names[1])), list([]byte(names[2])))
+		fmt.Fprintf(&source, "theorem renamed%d_source_bound (left right : BitVec 32) : BitwiseSource.Means renamedSource%d renamedClaim%d left right (eval .xor left right) ∧ invokeModule renamedClaim%d.name renamedModule%d left right = .ok (eval .xor left right) := BitwiseSource.accepted_source_to_module (by decide +kernel : BitwiseSource.accepts renamedSource%d renamedClaim%d .wasm .wasmLocals renamedModule%d = true) left right\n", i, i, i, i, i, i, i, i)
 	}
 	path := filepath.Join(t.TempDir(), "ActualBitwiseModules.lean")
 	if err := os.WriteFile(path, []byte(source.String()), 0600); err != nil {
