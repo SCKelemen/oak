@@ -133,6 +133,16 @@ jobs:
       - name: Check bounded production correspondence
         run: go test ./asm -run 'TestAArch64Branch26RelocationMatchesLean|TestAArch64ADRL21PatchBoundaries|TestRV64PCRelMatchesLean|TestValidateCNFAllocationMatchesLean|TestValidateCNFTraceMatchesLean|TestNativeCNFReplay(Apply|Term|Word|WordPairs|Header|Finish|Settled|MetadataSettled|Recording)MatchesLean|TestNativeCNFReplayWordProjection' -count=1 -v
 
+      - name: Check ARM64 bitwise emitted bytes against Lean
+        env:
+          OAK_REQUIRE_ARM64_LEAN: '1'
+        run: go test ./asm -run '^TestAArch64BitwiseFunction' -count=1 -v
+
+      - name: Check ARM64 compiler ELF startup against Lean
+        env:
+          OAK_REQUIRE_ARM64_LEAN: '1'
+        run: go test ./compiler -run '^TestAArch64MinimalStartupMatchesLean$' -count=1 -v
+
       - name: Check Wasm assembler production decisions against Lean
         env:
           OAK_REQUIRE_WASM_LEAN: '1'
@@ -159,6 +169,14 @@ jobs:
           OAK_REQUIRE_WASM_TESTS: '1'
         run: go test ./compiler -run '^TestWasm(Execution|Control|Calls)(Lean|Engine)$' -count=1 -timeout=20m -v
 
+      - name: Check actual source and compiled Wasm modules against restricted Core
+        env:
+          OAK_REQUIRE_WASM_LEAN: '1'
+        run: go test ./compiler -run '^TestWasmCoreSourceMatchesLean$' -count=1 -timeout=10m -v
+
+      - name: Audit restricted Wasm Core theorem axioms
+        run: python3 spec/wasm-core/audit.py
+
       - name: Check Wasm LEB production decisions against Lean
         env:
           OAK_REQUIRE_WASM_LEAN: '1'
@@ -177,7 +195,12 @@ jobs:
       - name: Check RV64 production decisions against Lean
         env:
           OAK_REQUIRE_RV64_LEAN: '1'
-        run: go test ./asm -run '^TestRV64((LocalBranches|CompressedBranches)MatchLean|(Relaxation|Materialization|CallExecution|DirectControl)MatchesLean)$' -count=1 -v
+        run: go test ./asm -run '^TestRV64((LocalBranches|CompressedBranches)MatchLean|(Relaxation|Materialization|CallExecution|DirectControl|BitwiseFunction|BitwiseELF)MatchesLean)$' -count=1 -v
+
+      - name: Check RV64 compiler bitwise bytes against Lean
+        env:
+          OAK_REQUIRE_RV64_LEAN: '1'
+        run: go test ./compiler -run '^TestRV64FramedBitwiseCompilerMatchesLean$' -count=1 -v
 
       - name: Check solver formula binding in Go, Oak, and Lean
         env:

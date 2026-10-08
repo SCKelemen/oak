@@ -7,6 +7,17 @@ import Oak.WasmAssemblerLaws
 import Oak.WasmAssemblerBytes
 import Oak.WasmAssemblerTotal
 import Oak.WasmExecution
+import Oak.BitwiseFunction
+import Oak.BitwiseModule
+import Oak.BitwiseSource
+import Oak.BitwiseSourceParity
+import Oak.BitwiseSourceLowering
+import Oak.AArch64BitwiseFunction
+import Oak.RiscVBitwiseFunction
+import Oak.MinimalELF
+import Oak.RiscVBitwiseELF
+import Oak.AArch64MinimalStartup
+import Oak.RiscVFramedBitwise
 import Oak.WasmControl
 import Oak.WasmCalls
 import Oak.Effects
@@ -304,3 +315,6 @@ import Oak.LoopArrayHomes
 import Oak.LoopResultHomes
 import Oak.Forwarding
 import Oak.ArrayValues
+
+import Oak.WasmCoreBitwiseProjection
+import Oak.WasmCoreSource

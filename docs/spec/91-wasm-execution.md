@@ -102,6 +102,110 @@ The universal proofs use only Lean's standard `propext`, `Classical.choice`
 and `Quot.sound` axioms where needed. Finite engine agreement is evidence for the
 model, not a universal proof of the engine, Go implementation, or Oak compiler.
 
+## Restricted successful u32 bitwise function composition
+
+`Oak.BitwiseFunction` adds a separate, deliberately restricted function-body
+boundary. The grammar is **exactly** `op(parameter 0, parameter 1)` for AND,
+OR or XOR, with exactly two u32 parameters and one u32 result. It does not yet
+include constants, arbitrary expression trees, casts, control, calls, memory,
+traps, or explicit `return`. `WasmExecution.step` still rejects all nine
+control/call forms; the new boundary consumes only the final function `end`.
+
+The common meaning is `Oak.BitwiseFunction.eval` over two `BitVec 32` inputs.
+For each operator, bytes are exactly `20 00 20 01 OP 0b` in hexadecimal, with
+`OP` equal to `71`, `72`, or `73`. These are instruction bytes including the
+final `end`, excluding the module envelope, code-entry length and local
+declarations. Parameters are supplied as typed locals 0 and 1.
+
+| Theorem | Concrete obligation established |
+| --- | --- |
+| `exact_encoding` | The independent instruction assembler emits the exact five body bytes |
+| `body_success` | Token execution succeeds for every pair of u32 inputs and preserves locals |
+| `assembled_function` | Successful typed token execution composes with exact decoded bytes and a final end; equal faults do not suffice |
+| `function_success` | The exact six bytes return the common word result for every pair of inputs |
+| `assemblyPlan_encoding` | The concrete extracted-assembler plan includes the exact body and end |
+| `emitted_function_success` | The mechanically extracted Oak assembler terminates with success and six bytes, and its actual emitted span executes successfully for all u32 inputs |
+| `accepts_iff`, `accepted_execution` | Exact target/ABI/signature/operator/whole-byte admission implies successful execution for every input |
+
+The extracted-assembler theorem requires a destination length below 2^32,
+sufficient room at the u32 offset, and at least 15 units of extraction fuel.
+It inherits the existing disjoint-array/extraction modeling boundary. It
+executes precisely the six-byte emitted span, not the unused destination
+suffix. The function boundary rejects missing/wrong end, trailing bytes, an
+empty or multi-value result stack, i64 results and ill-typed/missing locals.
+Kernel-checked mutation examples also reject wrong native target/ABI, parameter
+count/width, result width, changed operator/immediate/opcode, and truncation.
+All new proofs use kernel reduction or existing proved lemmas, without `sorry`,
+additional axioms, or native-decision shortcuts.
+
+### Minimal named-module loading
+
+`Oak.BitwiseModule` composes the function theorem with an independently
+implemented binary loader for a single exported `(i32,i32)->i32` function.
+It decodes LEB lengths and indices, checks every type/function/export/code
+field, consumes each section payload exactly, requires the requested nonempty
+ASCII export name (at most 256 bytes), and requires zero additional locals.
+Extra types, functions, exports, sections, imports, start functions, memory,
+custom sections and trailing bytes are outside this profile and refuse.
+The only admitted type and function indices are zero.
+
+`admitted_module_success` quantifies over **every admitted concrete module**,
+its requested entry, target/ABI/signature/operator, and all u32 input pairs.
+It concludes successful named-entry invocation with the common word result.
+It does not merely compare the input with a fixture: the loader parses the
+binary structure, and `padded_type_length_admitted` demonstrates acceptance
+of a legal noncanonical LEB section length. Function instruction bytes remain
+bound to the exact bitwise profile. Wrong lengths/indices/type/name/locals,
+operator bytes and trailing sections cannot be ignored to reach the success
+path. `canonical_loaded`, `canonical_admitted` and `canonical_success` give
+constructive instances for the real emitter's three 45-byte modules.
+
+`single_bit_mutations_refused` kernel-checks all 360 single-bit changes per
+operator (1,080 total), in addition to truncation, extra-section, wrong-entry,
+width, target, ABI and operator regressions. These finite regressions support
+the universal admission theorem; they do not prove arbitrary mutation coverage.
+
+`compiler/wasm_bitwise_module_test.go` compiles three actual Oak source files
+through the production compiler, checks source-level export signatures and
+exact module bytes, and asserts `TranslationVerified` remains false. Node
+independently validates, instantiates and executes the emitted modules on a
+72-by-72 input grid per operator (15,552 executions). The existing required
+`TestWasmExecutionLean` lane additionally builds the module proof and generates
+all-input Lean success theorems for the **actual emitted byte literals**.
+This is concrete-artifact proof plus production correspondence testing, not a
+universal Go parser/lowering/emission refinement or an external-engine theorem.
+
+The loader and invocation are named Lean models. Their relation to the Go
+module checker and the complete external Core Wasm semantics remains open.
+There is no production admission consumer, no source-text identity theorem,
+and no new authority for `-verified`.
+
+### Source-to-bytecode completion checklist
+
+The checked boxes describe only this restricted slice. An unchecked link is
+an unmet obligation, not a premise silently discharged by the existing model.
+
+- [x] Explicit two-parameter u32 AND/OR/XOR meaning and exact Wasm-local signature
+- [x] Successful, all-input execution rather than agreement that could preserve a fault
+- [x] Exact instruction bytes, final end consumption and single-i32 result boundary
+- [x] Mechanically extracted Oak assembler termination, emitted byte span and execution composition
+- [x] Fail-closed target/ABI/width/operator/byte admission and kernel mutation regressions
+- [ ] Source text/parser and checked AST provenance connected to this expression and parameter order
+- [ ] Production Go lowering/selection/emission connected to the proved plan and bytes
+- [ ] Constants and arbitrary expression-tree compilation to the same word meaning
+- [x] Restricted independent-model section/type/export/index/local loading connected to named invocation
+- [ ] Production Wasm loader/validator and external Core semantics refined to that model
+- [ ] RV64 emitted bytes, ABI boundary and pinned external Sail execution connected to this common meaning
+- [ ] ARM64 emitted bytes, ABI boundary and pinned external ISA execution connected to this common meaning
+- [ ] Concrete Go graph/root/CNF/LRAT provenance and certificate freshness/source identity
+- [ ] Full core-formal and cross-backend CI for the final integrated revision
+- [ ] Production certificate-backed verdict authority, only after all required concrete soundness links
+
+There is no certificate consumer in this module; stale-certificate and source
+identity rejection are not claimed. `VerdictProven` and `TranslationVerified`
+behavior is unchanged. A native internal-decoder theorem alone does not check
+the external ISA semantics. These component results do not establish complete
+source-to-bytecode parity for any backend.
 ## Structured control
 
 `Oak.WasmControl` adds execution of `block`, `loop`, `if`, `else`, `end`, `br`,
