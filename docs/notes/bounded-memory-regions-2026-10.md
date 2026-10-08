@@ -44,17 +44,29 @@ A narrower nested addition, a different base, more than sixteen addends, or a
 possibly wrapping residual fails closed. The same relation removes dead writes
 in `memoryAt` and unnecessary functional-consistency pairs in the bit blaster.
 
+Constant scaling is bounded by the same no-wrap rule. A left shift uses its
+machine count modulo the word width and refines only when the operand's upper
+bound fits below the shifted word maximum; multiplication accepts a constant
+on either side, handles zero exactly, and likewise requires the upper product
+to fit. Thus derived element offsets such as `base + ((i & 63) << 2)` and
+`base + 256 + 4 * (j & 63)` enter the common-base proof, while a possibly
+wrapping scale keeps the prior known-bit bound or the full word.
+
 `Oak.IndexBounds.common_base_disjoint` proves that adding one `BitVec` base
-preserves inequality of disjoint bounded offsets. Go tests exhaust all 4-bit
-values for the admitted shared-base shape and pin duplicate bases, different
-bases, residual wraparound, and complete write-log removal.
+preserves inequality of disjoint bounded offsets;
+`Oak.IndexBounds.scale_no_wrap` proves the scaled interval. Go tests exhaust
+all small mixed-width scale expressions and all 4-bit values for the admitted
+shared-base shape, and pin duplicate bases, different bases, residual
+wraparound, scaled regions, and complete write-log removal.
 
 On the Apple M4 Max development host, a 128-write common-base construction
 with the relation disabled took 21.6--22.0 µs, 400 allocations, and 71,336
 allocated bytes, and retained the 128 alias conditions. With cancellation it
 took 35.7--37.8 µs, 29 allocations, and 36,752 bytes, and returned the entry
 value directly. The analyzer itself spends more CPU to establish the fact; the
-win is removing the conditional DAG and its later proof cost.
+win is removing the conditional DAG and its later proof cost. The scaled
+128-write variant takes 35.3--37.3 µs with the same 29 allocations and 36,752
+bytes, also returning the entry value directly.
 
 ## Validation
 

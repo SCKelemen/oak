@@ -45,6 +45,14 @@ theorem add_no_wrap {a b : Interval} {x y modulus : Nat}
   simp only
   omega
 
+theorem scale_no_wrap {a : Interval} {x factor modulus : Nat}
+    (hx : Contains a x) (h : a.hi * factor < modulus) :
+    Contains ⟨a.lo * factor, a.hi * factor⟩ ((x * factor) % modulus) := by
+  have lower : a.lo * factor ≤ x * factor := Nat.mul_le_mul_right factor hx.1
+  have upper : x * factor ≤ a.hi * factor := Nat.mul_le_mul_right factor hx.2
+  rw [Nat.mod_eq_of_lt (Nat.lt_of_le_of_lt upper h)]
+  exact ⟨lower, upper⟩
+
 theorem sub_no_wrap {a b : Interval} {x y modulus : Nat}
     (hx : Contains a x) (hy : Contains b y) (h : b.hi ≤ a.lo)
     (fit : a.hi < modulus) :

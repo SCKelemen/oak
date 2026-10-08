@@ -37,7 +37,8 @@ func termBounds(t *term, memo map[*term]indexBounds) indexBounds {
 		l, r := boundsAt(t.left, t.width, memo), boundsAt(t.right, t.width, memo)
 		refined, refine = indexBounds{min(l.lo, r.lo), max(l.hi, r.hi)}, true
 	case termBinary:
-		if t.op == "add" || t.op == "sub" {
+		switch t.op {
+		case "add", "sub":
 			l, r := boundsAt(t.left, t.width, memo), boundsAt(t.right, t.width, memo)
 			switch {
 			case t.op == "add" && l.hi <= m-r.hi:
@@ -45,6 +46,28 @@ func termBounds(t *term, memo map[*term]indexBounds) indexBounds {
 				refined, refine = indexBounds{l.lo + r.lo, l.hi + r.hi}, true
 			case t.op == "sub" && l.lo >= r.hi:
 				refined, refine = indexBounds{l.lo - r.hi, l.hi - r.lo}, true
+			}
+		case "shl":
+			if t.right.kind == termConst {
+				shift := t.right.value % uint64(t.width)
+				l := boundsAt(t.left, t.width, memo)
+				if l.hi <= m>>shift {
+					refined, refine = indexBounds{l.lo << shift, l.hi << shift}, true
+				}
+			}
+		case "mul":
+			variable, factor := t.left, t.right
+			if variable.kind == termConst {
+				variable, factor = factor, variable
+			}
+			if factor.kind == termConst {
+				c := factor.value & m
+				l := boundsAt(variable, t.width, memo)
+				if c == 0 {
+					refined, refine = indexBounds{}, true
+				} else if l.hi <= m/c {
+					refined, refine = indexBounds{l.lo * c, l.hi * c}, true
+				}
 			}
 		}
 	}

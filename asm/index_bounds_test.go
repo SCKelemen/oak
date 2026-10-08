@@ -63,6 +63,10 @@ func TestIndexBoundsWordEdges(t *testing.T) {
 			{"wrapping add", binaryTerm("add", x, constTerm(mask(w), w)), 0, mask(w)},
 			{"bounded sub", binaryTerm("sub", constTerm(511, w), x), 256, 511},
 			{"underflow", binaryTerm("sub", x, constTerm(1, w)), 0, mask(w)},
+			{"bounded shift", binaryTerm("shl", binaryTerm("and", x, constTerm(63, w)), constTerm(2, w)), 0, 252},
+			{"bounded multiply", binaryTerm("mul", constTerm(4, w), binaryTerm("and", x, constTerm(63, w))), 0, 252},
+			{"zero multiply", binaryTerm("mul", x, constTerm(0, w)), 0, 0},
+			{"wrapping shift", binaryTerm("shl", x, constTerm(uint64(w-1), w)), 0, uint64(1) << uint(w-1)},
 		}
 		for _, c := range cases {
 			b := boundsAt(c.n, w, map[*term]indexBounds{})
@@ -171,5 +175,18 @@ func TestMemoryAtCommonBaseBoundedRegions(t *testing.T) {
 	bl.selectBits("memory", bl.blast(high), 8, high)
 	if consistency := bl.consistency(); consistency != bddTrue {
 		t.Fatalf("disjoint common-base reads retained a consistency implication: %d", consistency)
+	}
+}
+
+func TestMemoryAtCommonBaseScaledRegions(t *testing.T) {
+	base := paramTerm("base", 32)
+	x, y := paramTerm("x", 32), paramTerm("y", 32)
+	lowOffset := binaryTerm("shl", binaryTerm("and", x, constTerm(63, 32)), constTerm(2, 32))
+	highOffset := binaryTerm("add", constTerm(256, 32), binaryTerm("mul", constTerm(4, 32), binaryTerm("and", y, constTerm(63, 32))))
+	low := binaryTerm("add", base, lowOffset)
+	high := binaryTerm("add", base, highOffset)
+	initial := paramTerm("initial", 32)
+	if got := memoryAt([]*spanWrite{{index: high, value: constTerm(9, 32)}}, low, initial); got != initial {
+		t.Fatalf("scaled common-base regions kept an alias test: %s", got)
 	}
 }
