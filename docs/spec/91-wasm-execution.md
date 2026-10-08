@@ -96,6 +96,68 @@ The universal proofs use only Lean's standard `propext`, `Classical.choice`
 and `Quot.sound` axioms where needed. Finite engine agreement is evidence for the
 model, not a universal proof of the engine, Go implementation, or Oak compiler.
 
+## Restricted successful u32 bitwise function composition
+
+`Oak.BitwiseFunction` adds a separate, deliberately restricted function-body
+boundary. The grammar is **exactly** `op(parameter 0, parameter 1)` for AND,
+OR or XOR, with exactly two u32 parameters and one u32 result. It does not yet
+include constants, arbitrary expression trees, casts, control, calls, memory,
+traps, or explicit `return`. `WasmExecution.step` still rejects all nine
+control/call forms; the new boundary consumes only the final function `end`.
+
+The common meaning is `Oak.BitwiseFunction.eval` over two `BitVec 32` inputs.
+For each operator, bytes are exactly `20 00 20 01 OP 0b` in hexadecimal, with
+`OP` equal to `71`, `72`, or `73`. These are instruction bytes including the
+final `end`, excluding the module envelope, code-entry length and local
+declarations. Parameters are supplied as typed locals 0 and 1.
+
+| Theorem | Concrete obligation established |
+| --- | --- |
+| `exact_encoding` | The independent instruction assembler emits the exact five body bytes |
+| `body_success` | Token execution succeeds for every pair of u32 inputs and preserves locals |
+| `assembled_function` | Successful typed token execution composes with exact decoded bytes and a final end; equal faults do not suffice |
+| `function_success` | The exact six bytes return the common word result for every pair of inputs |
+| `assemblyPlan_encoding` | The concrete extracted-assembler plan includes the exact body and end |
+| `emitted_function_success` | The mechanically extracted Oak assembler terminates with success and six bytes, and its actual emitted span executes successfully for all u32 inputs |
+| `accepts_iff`, `accepted_execution` | Exact target/ABI/signature/operator/whole-byte admission implies successful execution for every input |
+
+The extracted-assembler theorem requires a destination length below 2^32,
+sufficient room at the u32 offset, and at least 15 units of extraction fuel.
+It inherits the existing disjoint-array/extraction modeling boundary. It
+executes precisely the six-byte emitted span, not the unused destination
+suffix. The function boundary rejects missing/wrong end, trailing bytes, an
+empty or multi-value result stack, i64 results and ill-typed/missing locals.
+Kernel-checked mutation examples also reject wrong native target/ABI, parameter
+count/width, result width, changed operator/immediate/opcode, and truncation.
+All new proofs use kernel reduction or existing proved lemmas, without `sorry`,
+additional axioms, or native-decision shortcuts.
+
+### Source-to-bytecode completion checklist
+
+The checked boxes describe only this restricted slice. An unchecked link is
+an unmet obligation, not a premise silently discharged by the existing model.
+
+- [x] Explicit two-parameter u32 AND/OR/XOR meaning and exact Wasm-local signature
+- [x] Successful, all-input execution rather than agreement that could preserve a fault
+- [x] Exact instruction bytes, final end consumption and single-i32 result boundary
+- [x] Mechanically extracted Oak assembler termination, emitted byte span and execution composition
+- [x] Fail-closed target/ABI/width/operator/byte admission and kernel mutation regressions
+- [ ] Source text/parser and checked AST provenance connected to this expression and parameter order
+- [ ] Production Go lowering/selection/emission connected to the proved plan and bytes
+- [ ] Constants and arbitrary expression-tree compilation to the same word meaning
+- [ ] Wasm local declarations, function/module validation, instantiation and loading connected to invocation
+- [ ] RV64 emitted bytes, ABI boundary and pinned external Sail execution connected to this common meaning
+- [ ] ARM64 emitted bytes, ABI boundary and pinned external ISA execution connected to this common meaning
+- [ ] Concrete Go graph/root/CNF/LRAT provenance and certificate freshness/source identity
+- [ ] Full core-formal and cross-backend CI for the final integrated revision
+- [ ] Production certificate-backed verdict authority, only after all required concrete soundness links
+
+There is no certificate consumer in this module; stale-certificate and source
+identity rejection are not claimed. `VerdictProven` and `TranslationVerified`
+behavior is unchanged. A native internal-decoder theorem alone does not check
+the external ISA semantics. These component results do not establish complete
+source-to-bytecode parity for any backend.
+
 ## Next boundary
 
 Add label/control stacks and structured blocks, loops and branches, then call
