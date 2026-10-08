@@ -251,6 +251,8 @@ import Oak.LRATStore
 import Oak.LRATTrail
 import Oak.LRATInitial
 import Oak.LRATRecord
+import Oak.LRATSteps
+import Oak.LRATRecordSoundness
 import Oak.LRATFormulaBinding
 import Oak.ClauseAgreement
 import Oak.SATModel
