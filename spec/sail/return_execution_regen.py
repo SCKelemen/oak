@@ -36,11 +36,18 @@ def source_fragment():
     source+=decl('aarch_types.sail','struct','ProcState')+decl('prelude.sail','union','exception')
     for name in ['_PC','__PC_changed','PSTATE','TCR_EL1','TCR_EL2','TCR_EL3']: source+=decl('aarch_mem.sail','register',name)
     for file,name in [('aarch_mem.sail','_R'),('aarch_mem.sail','InGuardedPage'),('aarch64.sail','BTypeNext'),('aarch64.sail','__unconditional'),('aarch_decode.sail','SEE')]: source+=decl(file,'register',name)
+    for name in ['CFG_ID_AA64PFR0_EL1_EL2','CFG_ID_AA64PFR0_EL1_EL3']: source+=decl('aarch_mem.sail','register configuration',name)
     for name in ['EL0','EL1','EL2','EL3']: source+=decl('aarch_mem.sail','let',name)
     for name in ['ZeroExtend__0','ZeroExtend__1']: source+=both('aarch_mem.sail',name)
     source+='overload ZeroExtend = {ZeroExtend__0, ZeroExtend__1}\n'
-    for name in ['UsingAArch32','IsInHost','SignExtend__1','HaveEL','S1TranslationRegime__0','ELUsingAArch32','HavePACExt','HaveVirtHostExt','ELIsInHost']: source+=cut('aarch_mem.sail',name)
-    source+='overload SignExtend = {SignExtend__1}\noverload S1TranslationRegime = {S1TranslationRegime__0}\n'
+    for name in ['UsingAArch32','IsInHost','SignExtend__1','ELUsingAArch32','HavePACExt','HaveVirtHostExt','ELIsInHost','get_SCR']: source+=cut('aarch_mem.sail',name)
+    source+='overload SignExtend = {SignExtend__1}\n'
+    queries={}
+    for name in ['HaveEL','S1TranslationRegime__0']:
+        signature=decl('aarch_mem.sail','val',name);body=decl('aarch_mem.sail','function',name)
+        source+=signature+body
+        queries[name]={'signature_sha256':sha(signature.encode()),'unchanged_body_sha256':sha(body.encode())}
+    source+='overload S1TranslationRegime = {S1TranslationRegime__0}\n'
     signature=decl('aarch_mem.sail','val','AddrTop')
     require(signature.count('-> int effect')==1,'AddrTop signature drift')
     strengthened=signature.replace('-> int effect',"-> {'top, 'top in {31, 55, 63}. int('top)} effect")
@@ -48,7 +55,7 @@ def source_fragment():
     source+=strengthened+body
     for name in ['Hint_Branch','AArch64_BranchAddr','BranchTo']: source+=both('aarch_mem.sail',name)
     provenance={'original_signature':signature,'strengthened_signature':strengthened,'original_signature_sha256':sha(signature.encode()),'strengthened_signature_sha256':sha(strengthened.encode()),'unchanged_body_sha256':sha(body.encode())}
-    return source.encode(), provenance
+    return source.encode(), provenance, queries
 
 def frame(raw, namespace, interface, functions, boundary_type):
     text=raw.decode().replace('import Out.Defs\nimport Out.Specialization\nimport Out.FakeReal\n', 'import ReturnExecution.Defs\nimport ReturnExecution.'+interface+'\n')
@@ -61,7 +68,7 @@ def frame(raw, namespace, interface, functions, boundary_type):
 def framed_outputs(raw, defs, scalar):
     out={}
     out['lean/ReturnExecution/Defs.lean']=(defs.decode().replace('import Sail\n','import Sail\nnamespace ReturnExecution\n')+'\nend ReturnExecution\n').encode()
-    out['lean/ReturnExecution/Generated.lean']=frame(raw,'ReturnExecution.Functions','Interface',['AddrTop','AArch64_BranchAddr','BranchTo'],'Boundaries')
+    out['lean/ReturnExecution/Generated.lean']=frame(raw,'ReturnExecution.Functions','Interface',['S1TranslationRegime__0','AddrTop','AArch64_BranchAddr','BranchTo'],'Boundaries')
     out['lean/ReturnExecution/ScalarGenerated.lean']=frame(scalar,'ReturnExecution.ScalarFunctions','ScalarInterface',['LSL','ShiftReg','__PostDecode','integer_logical_shiftedreg','integer_logical_shiftedreg_decode','branch_unconditional_register','branch_unconditional_register_decode','decode64'],'ScalarBoundaries')
     out['lean/ReturnExecution/ScalarInterface.lean']=(LEAN/'ScalarExecution/Interface.lean').read_text().replace('ScalarExecution','ReturnExecution').replace('Boundaries','ScalarBoundaries').encode()
     text=(LEAN/'ScalarExecutionBridge.lean').read_text().replace('import ScalarExecution\n','import ReturnScalar\n').replace('namespace Oak.SailBridge.Scalar','namespace Oak.SailBridge.ExtendedScalar').replace('end Oak.SailBridge.Scalar','end Oak.SailBridge.ExtendedScalar').replace('ScalarExecution.Functions','ReturnExecution.ScalarFunctions').replace('ScalarExecution','ReturnExecution').replace('Boundaries','ScalarBoundaries')
@@ -78,9 +85,10 @@ def main():
     raw=(LEAN/'ReturnExecution/Raw.lean').read_bytes();defs=(LEAN/'ReturnExecution/RawDefs.lean').read_bytes()
     scalar=(LEAN/'ScalarExecution/Raw.lean').read_bytes()
     if args.check_source or args.regenerate:
-        source,provenance=source_fragment()
+        source,provenance,queries=source_fragment()
         require(source==(HERE/'return_execution.sail').read_bytes(),'source extraction drift')
         require(provenance==manifest['AddrTop_adapter'],'signature/body provenance drift')
+        require(queries==manifest['EL1_query_bodies'],'query declaration provenance drift')
     if args.regenerate:
         profile=json.loads((PROFILE/'profile.json').read_text())
         sys.path.insert(0,str(PROFILE))

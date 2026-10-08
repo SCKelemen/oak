@@ -20,7 +20,7 @@ open Register
 open LogicalOp
 open BranchType
 
-/-- Type quantifiers: k_ex2936_ : Bool, k_ex2935_ : Bool -/
+/-- Type quantifiers: k_ex3227_ : Bool, k_ex3226_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -228,17 +228,47 @@ def EL3 : (BitVec 2) := 0b11#2
 
 /-- Type quantifiers: k_M : Nat, N : Int, k_M ≥ 0 -/
 def ZeroExtend__0 (x : (BitVec k_M)) (N : Int) : SailM (BitVec N) := do
-  assert (N ≥b (Sail.BitVec.length x)) "return.sail:157.18-157.19"
+  assert (N ≥b (Sail.BitVec.length x)) "return.sail:161.18-161.19"
   (pure ((Zeros (N -i (Sail.BitVec.length x))) +++ x))
 
 /-- Type quantifiers: k_M : Nat, N : Int, k_M ≥ 0 -/
 def ZeroExtend__1 {N : _} (x : (BitVec k_M)) : SailM (BitVec N) := do
   (ZeroExtend__0 x N)
 
+def HaveEL (el : (BitVec 2)) : SailM Bool := do
+  if (((el == EL1) || (el == EL0)) : Bool)
+  then (pure true)
+  else
+    (do
+      if ((el == EL2) : Bool)
+      then (pure ((← readReg CFG_ID_AA64PFR0_EL1_EL2) != 0x0#4))
+      else
+        (do
+          if ((el == EL3) : Bool)
+          then (pure ((← readReg CFG_ID_AA64PFR0_EL1_EL3) != 0x0#4))
+          else
+            (do
+              assert false "return.sail:201.28-201.29"
+              throw Error.Exit)))
+
+def S1TranslationRegime__0 (el : (BitVec 2)) : SailM (BitVec 2) := do
+  if ((el != EL0) : Bool)
+  then (pure el)
+  else
+    (do
+      if ((((← (HaveEL EL3)) && (← (boundaries.ELUsingAArch32 EL3))) && ((BitVec.join1 [(BitVec.access
+                 (← (boundaries.get_SCR ())) 0)]) == 0#1)) : Bool)
+      then (pure EL3)
+      else
+        (do
+          if (((← (boundaries.HaveVirtHostExt ())) && (← (boundaries.ELIsInHost el))) : Bool)
+          then (pure EL2)
+          else (pure EL1)))
+
 /-- Type quantifiers: k_IsInstr : Bool -/
 def AddrTop (address : (BitVec 64)) (IsInstr : Bool) (el : (BitVec 2)) : SailM Int := do
-  assert (← (boundaries.HaveEL el)) "return.sail:192.21-192.22"
-  let regime ← do (boundaries.S1TranslationRegime__0 el)
+  assert (← (HaveEL el)) "return.sail:231.21-231.22"
+  let regime ← do (S1TranslationRegime__0 el)
   let tbi ← (( do (undefined_bitvector 1) ) : SailM (BitVec 1) )
   let tbid ← (( do (undefined_bitvector 1) ) : SailM (BitVec 1) )
   if ((← (boundaries.ELUsingAArch32 regime)) : Bool)
@@ -318,7 +348,7 @@ def AddrTop (address : (BitVec 64)) (IsInstr : Bool) (el : (BitVec 2)) : SailM I
                           (pure (tbi, tbid)))
                       else
                         (do
-                          assert false "Pattern match failure at return.sail:199.8-225.9"
+                          assert false "Pattern match failure at return.sail:238.8-264.9"
                           throw Error.Exit) ) : SailM ((BitVec 1) × (BitVec 1)) )
                     (pure (tbi, tbid))) ) : SailM ((BitVec 1) × (BitVec 1)) )
               (pure (tbi, tbid))) ) : SailM ((BitVec 1) × (BitVec 1)) )
@@ -331,9 +361,9 @@ def Hint_Branch (hint : BranchType) : Unit :=
   ()
 
 def AArch64_BranchAddr (vaddress : (BitVec 64)) : SailM (BitVec 64) := do
-  assert (! (← (boundaries.UsingAArch32 ()))) "return.sail:239.28-239.29"
+  assert (! (← (boundaries.UsingAArch32 ()))) "return.sail:278.28-278.29"
   let msbit ← do (AddrTop vaddress true (← readReg PSTATE).EL)
-  assert ((msbit +i 1) ≥b 0) "return.sail:241.25-241.26"
+  assert ((msbit +i 1) ≥b 0) "return.sail:280.25-280.26"
   if ((msbit == 63) : Bool)
   then (pure vaddress)
   else
@@ -349,11 +379,11 @@ def BranchTo (target : (BitVec k_N)) (branch_type : BranchType) : SailM Unit := 
   if (((Sail.BitVec.length target) == 32) : Bool)
   then
     (do
-      assert (← (boundaries.UsingAArch32 ())) "return.sail:259.29-259.30"
+      assert (← (boundaries.UsingAArch32 ())) "return.sail:298.29-298.30"
       writeReg _PC (← (ZeroExtend__1 (N := 64) target)))
   else
     (do
-      assert (((Sail.BitVec.length target) == 64) && (! (← (boundaries.UsingAArch32 ())))) "return.sail:262.43-262.44"
+      assert (((Sail.BitVec.length target) == 64) && (! (← (boundaries.UsingAArch32 ())))) "return.sail:301.43-301.44"
       writeReg _PC (← (AArch64_BranchAddr (BitVec.slice target 0 64))))
   writeReg __PC_changed true
 
@@ -371,6 +401,8 @@ def initialize_registers (_ : Unit) : SailM Unit := do
   writeReg SEE (← (undefined_int ()))
 
 def sail_model_init (x_0 : Unit) : SailM Unit := do
+  writeReg CFG_ID_AA64PFR0_EL1_EL2 0x2#4
+  writeReg CFG_ID_AA64PFR0_EL1_EL3 0x2#4
   (initialize_registers ())
 
 end Out.Functions

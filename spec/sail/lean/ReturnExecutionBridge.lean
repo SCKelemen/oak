@@ -38,9 +38,31 @@ theorem addrTop_result_range (b : Boundaries) (address : BitVec 64) (instr : Boo
    · apply returns_pure; simp
 
 
+/-- The copied original HaveEL body returns true for EL1 without reading
+configuration registers, even if those registers are absent. -/
+theorem haveEL_el1 : HaveEL EL1 = (pure true : SailM Bool) := by rfl
+
+/-- The copied original EL1 regime path does not invoke any cut callback. -/
+theorem regime_el1 (b : Boundaries) :
+ S1TranslationRegime__0 b EL1 = (pure EL1 : SailM (BitVec 2)) := by rfl
+
+/-- The new concrete query does not assume absent configuration is initialized. -/
+theorem haveEL_el2_missing (s : State)
+ (missing : s.regs.get? ReturnExecution.Register.CFG_ID_AA64PFR0_EL1_EL2 = none) :
+ (HaveEL EL2).run s = .error .Unreachable s := by
+ simp [HaveEL, EL0, EL1, EL2, readReg, missing, EStateM.run,
+ Bind.bind, Pure.pure, EStateM.bind, EStateM.pure,
+ MonadStateOf.get, MonadState.get, EStateM.get, getThe, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
+
+/-- EL0 still traverses the concrete EL3 configuration read before any cut. -/
+theorem regime_el0_missing (b : Boundaries) (s : State)
+ (missing : s.regs.get? ReturnExecution.Register.CFG_ID_AA64PFR0_EL1_EL3 = none) :
+ (S1TranslationRegime__0 b EL0).run s = .error .Unreachable s := by
+ simp [S1TranslationRegime__0, HaveEL, EL0, EL1, EL2, EL3, readReg, missing,
+ EStateM.run, Bind.bind, Pure.pure, EStateM.bind, EStateM.pure,
+ MonadStateOf.get, MonadState.get, EStateM.get, getThe, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
+
 structure QueryProfile (b : Boundaries) : Prop where
- haveEL : b.HaveEL EL1 = pure true
- regime : b.S1TranslationRegime__0 EL1 = pure EL1
  a32 : b.ELUsingAArch32 EL1 = pure false
  pac : b.HavePACExt () = pure false
  usingA32 : b.UsingAArch32 () = pure false
@@ -59,7 +81,7 @@ theorem addrTop_el1_no_tags (b : Boundaries) (q : QueryProfile b) (s : State)
  (address : BitVec 64) :
  (AddrTop b address true EL1).run s = .ok 63 s := by
  by_cases h : BitVec.join1 [BitVec.access address 55] = (1#1 : BitVec 1)
- all_goals simp +decide [h, AddrTop, q.haveEL, q.regime, q.a32, q.pac, undefined_bits_eq,
+ all_goals simp +decide [h, AddrTop, haveEL_el1, regime_el1, q.a32, q.pac, undefined_bits_eq,
  readReg, PreSail.assert, tcr, EStateM.run,
  Bind.bind, Pure.pure, EStateM.bind, EStateM.pure, MonadStateOf.get,
  EStateM.get, MonadState.get, getThe]
@@ -98,6 +120,10 @@ theorem branchTo64_query_failure (b : Boundaries) (s after : State)
  Bind.bind, Pure.pure, EStateM.bind, EStateM.pure] at failed ⊢
  rw [failed]
 
+#print axioms haveEL_el2_missing
+#print axioms regime_el0_missing
+#print axioms haveEL_el1
+#print axioms regime_el1
 #print axioms branchTo64_query_failure
 #print axioms addrTop_result_range
 #print axioms addrTop_el1_no_tags
