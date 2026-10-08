@@ -18,6 +18,18 @@ def tree_hash(root):
   else:continue
   h.update((str(p.relative_to(root))+'\0'+value+'\n').encode())
  return h.hexdigest()
+def source_diff(source):
+ # The frozen patch was emitted with nine-character object IDs. Git's default
+ # abbreviation depends on repository object count (a shallow CI fetch used
+ # seven), and user diff presentation settings must not change this check.
+ # Compare every byte, including modes/paths/hunks; never strip index headers.
+ return subprocess.check_output(['git','-C',str(source),'-c','core.quotePath=true',
+  'diff','--binary','--abbrev=9','--no-ext-diff','--no-textconv','--no-color',
+  '--no-renames','--no-relative','--diff-algorithm=myers','--indent-heuristic','--unified=3',
+  '--inter-hunk-context=0','--src-prefix=a/','--dst-prefix=b/','--line-prefix=',
+  '--output-indicator-new=+','--output-indicator-old=-','--output-indicator-context= ',
+  '--ignore-submodules=none','HEAD','--'])
+
 def main():
  p=argparse.ArgumentParser();p.add_argument('--workdir',type=pathlib.Path,required=True)
  p.add_argument('--download-cache',type=pathlib.Path);p.add_argument('--source-cache',type=pathlib.Path)
@@ -78,9 +90,9 @@ def main():
  command(['git','-C',src,'apply','--check',HERE/'no-shadow.patch'])
  command(['git','-C',src,'apply',HERE/'no-shadow.patch'])
  expected=(HERE/'no-shadow.patch').read_bytes()
- require(subprocess.check_output(['git','-C',src,'diff','--binary','HEAD'])==expected,'source patch mismatch')
+ require(source_diff(src)==expected,'source patch mismatch')
  command(['dune','build','--profile','release','-j','1','src/bin/sail.exe','src/sail_lean_backend/sail_plugin_lean.cmxs'],src,env)
- require(subprocess.check_output(['git','-C',src,'diff','--binary','HEAD'])==expected,'build changed tracked source')
+ require(source_diff(src)==expected,'build changed tracked source')
  require(not subprocess.check_output(['git','-C',src,'ls-files','--others','--exclude-standard'],text=True).strip(),'untracked source files in build')
  exe=src/'_build/default/src/bin/sail.exe';plugin=src/'_build/default/src/sail_lean_backend/sail_plugin_lean.cmxs'
  receipt={'format':'oak-guarded-source-build-v1','official_base':base,'patch_sha256':sha(HERE/'no-shadow.patch'),

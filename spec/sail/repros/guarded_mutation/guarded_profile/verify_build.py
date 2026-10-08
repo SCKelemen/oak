@@ -4,7 +4,7 @@ CI creates it itself from the checked build script; it never consumes an
 untrusted uploaded receipt as authority to select a different generator.
 """
 import hashlib,json,os,pathlib,subprocess
-from build import tree_hash
+from build import tree_hash, source_diff
 HERE=pathlib.Path(__file__).resolve().parent
 
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -32,7 +32,7 @@ def verified_generator():
  require(receipt['ocaml_version']=='5.3.0' and receipt['dune_version']=='3.21.1','toolchain version drift')
  require(git(source,'rev-parse','HEAD').decode().strip()==profile['official_base'],'source checkout drift')
  require(git(source,'rev-parse','HEAD^{tree}').decode().strip()==receipt['source_tree'],'source tree drift')
- require(git(source,'diff','--binary','HEAD')==(HERE/'no-shadow.patch').read_bytes(),'source changes beyond exact patch')
+ require(source_diff(source)==(HERE/'no-shadow.patch').read_bytes(),'source changes beyond exact patch')
  require(not git(source,'ls-files','--others','--exclude-standard').decode().strip(),'untracked source files')
  lock=json.loads((HERE/'toolchain-lock.json').read_text())
  for item in lock['packages']+lock['archives']:

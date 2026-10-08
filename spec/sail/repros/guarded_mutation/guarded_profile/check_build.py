@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Reject provenance-record mutations before CI uses its freshly built tool."""
-import json,os,pathlib,tempfile
+import json,os,pathlib,tempfile,subprocess,sys
 from verify_build import verified_generator
 
 receipt=pathlib.Path(os.environ['OAK_RETURN_BUILD_RECEIPT']).resolve()
 data=json.loads(receipt.read_text());verified_generator()
+subprocess.run([sys.executable,str(pathlib.Path(__file__).with_name('check_source_diff.py')),
+ '--source-cache',data['source_dir']],check=True)
 with tempfile.NamedTemporaryFile(prefix='receipt-mutant-',suffix='.json',dir=receipt.parent,delete=False) as handle:
  mutant=pathlib.Path(handle.name)
 try:

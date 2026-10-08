@@ -98,3 +98,26 @@ local executable/plugin hashes remain enforced when no build receipt is selected
 The job saves the receipt and build/regeneration/regression logs. Until the lane
 passes on the proposed commit, hosted reproduction remains pending and merge must
 stay on hold. Existing official scalar/STR/primitive exports remain unchanged.
+
+### Shallow-checkout patch identity regression
+
+The first hosted build ([run 37803936009, job 113403134349](https://github.com/SCKelemen/oak/actions/runs/37803936009/job/113403134349))
+stopped before compiling Sail at the exact source-patch comparison. The runner
+used Git 2.55.0 and a depth-one fetch. Git's automatic object-ID abbreviation
+printed `ca362cd..e44c716`; the frozen patch, produced from the larger local
+object store, prints `ca362cd3a..e44c716d9`. A local depth-one reproduction showed
+that this index-header formatting was the only difference. The check rejected
+that build; no receipt or generated output was accepted.
+
+`build.source_diff` now explicitly fixes abbreviation, prefixes, context,
+algorithm, indentation heuristic and other presentation options, and disables
+external diff/text conversion. Build pre/post checks and receipt verification
+use this same helper, covered by the receipt's builder hash. The frozen patch
+and its hash are unchanged; the comparison still requires every patch byte,
+including file modes, paths and contents. `check_source_diff.py` reproduces the
+legacy seven-character mismatch in a shallow local fetch, exercises hostile
+diff presentation settings, and rejects content, executable-mode, unrelated,
+staged and extra tracked-file mutations. The existing mandatory receipt gate
+runs this regression. This correction does not establish exporter semantics;
+the bounded experimental profile and original-source faithfulness limits above
+remain unchanged.
