@@ -15,6 +15,16 @@ func postScheduleCleanup(fn *asm.Function) int {
 	if removed != 0 {
 		fn.Items = items
 	}
+	// The zero-store rule above exposes an exact scalar-global definition that
+	// the earlier forwarding phase cannot see. Carry it through final control
+	// flow before single-use constant cleanup retargets the resulting zero.
+	if forwardDominatedZeroGlobalLoads(fn) != 0 {
+		items, n := cleanupItemsWith(fn.Items, true)
+		if n != 0 {
+			fn.Items = items
+			removed += n
+		}
+	}
 	removed += postScheduleRecomputationCleanup(fn)
 	removed += postScheduleSingleUseConstantCleanup(fn)
 	return removed
@@ -86,7 +96,7 @@ func addImmediateOperandsStable(items []asm.Item, succ [][]int, start, target, d
 		if !isInstruction {
 			continue
 		}
-		if ins.Mnemonic == "bl" || ins.Mnemonic == "blr" || writesGeneral(ins, dest) || writesGeneral(ins, source) {
+		if ins.Mnemonic == "bl" || ins.Mnemonic == "blr" || ins.Mnemonic == "svc" || writesGeneral(ins, dest) || writesGeneral(ins, source) {
 			return false
 		}
 	}
@@ -94,10 +104,10 @@ func addImmediateOperandsStable(items []asm.Item, succ [][]int, start, target, d
 }
 
 // postScheduleSingleUseConstantCleanup retargets a one-instruction constant
-// from its temporary carrier to that carrier's only reader. The deliberately
-// whole-body single-definition/single-read admission avoids reconstructing a
-// live range from already colored assembly; dominance and all-path stability
-// close the remaining control-flow seam. General rematerialization belongs in
+// from its temporary carrier to that definition's only reachable reader. A
+// conservative CFG walk stops at later kills and rejects a cycle back to the
+// definition, calls, or a second read; dominance and all-path stability close
+// the remaining control-flow seam. General rematerialization belongs in
 // virtual-register MachineIR. This final spelling remains seam-checked and
 // whole-body verdict-gated with the rest of post-schedule cleanup.
 func postScheduleSingleUseConstantCleanup(fn *asm.Function) int {
@@ -113,38 +123,20 @@ func postScheduleSingleUseConstantCleanup(fn *asm.Function) int {
 			if !constantOK {
 				continue
 			}
-			reader := -1
-			admitted := true
-			for at, other := range fn.Items {
-				ins, isInstruction := other.(asm.Instruction)
-				if !isInstruction {
-					continue
-				}
-				if at != definition && writesGeneral(ins, carrier.Num) {
-					admitted = false
-					break
-				}
-				if readsGeneral(ins, carrier.Num) {
-					if reader >= 0 {
-						admitted = false
-						break
-					}
-					reader = at
-				}
-			}
-			if !admitted || reader <= definition || !itemDominates(succ, definition, reader) ||
+			reader, admitted := singleReadOfDefinition(fn.Items, succ, definition, carrier.Num)
+			if !admitted || !itemDominates(succ, definition, reader) ||
 				!addImmediateOperandsStable(fn.Items, succ, definition+1, reader, carrier.Num, carrier.Num) {
 				continue
 			}
-			copy, isInstruction := fn.Items[reader].(asm.Instruction)
-			destination, source, isCopy := isRegisterMove(copy)
-			if !isInstruction || !isCopy || source != carrier || destination.Num == carrier.Num {
+			readerInstruction, isInstruction := fn.Items[reader].(asm.Instruction)
+			if !isInstruction {
 				continue
 			}
-			constant.Operands = append([]asm.Operand(nil), constant.Operands...)
-			constant.Operands[0] = destination
-			constant.Line = copy.Line
-			fn.Items[reader] = constant
+			replacement, retargeted := retargetSingleUseConstant(constant, carrier, readerInstruction)
+			if !retargeted {
+				continue
+			}
+			fn.Items[reader] = replacement
 			fn.Items = append(fn.Items[:definition], fn.Items[definition+1:]...)
 			removed++
 			changed = true
@@ -154,6 +146,66 @@ func postScheduleSingleUseConstantCleanup(fn *asm.Function) int {
 			return removed
 		}
 	}
+}
+
+func singleReadOfDefinition(items []asm.Item, succ [][]int, definition, carrier int) (int, bool) {
+	if definition < 0 || definition >= len(items) || definition >= len(succ) {
+		return -1, false
+	}
+	seen := make([]bool, len(items))
+	work := append([]int(nil), succ[definition]...)
+	reader := -1
+	for len(work) > 0 {
+		at := work[len(work)-1]
+		work = work[:len(work)-1]
+		if at == definition || at < 0 || at >= len(items) {
+			return -1, false
+		}
+		if seen[at] {
+			continue
+		}
+		seen[at] = true
+		ins, isInstruction := items[at].(asm.Instruction)
+		if isInstruction {
+			if ins.Mnemonic == "bl" || ins.Mnemonic == "blr" || ins.Mnemonic == "svc" {
+				return -1, false
+			}
+			if readsGeneral(ins, carrier) {
+				if reader >= 0 && reader != at {
+					return -1, false
+				}
+				reader = at
+			}
+			if writesGeneral(ins, carrier) {
+				continue
+			}
+		}
+		work = append(work, succ[at]...)
+	}
+	return reader, reader >= 0
+}
+
+func retargetSingleUseConstant(constant asm.Instruction, carrier asm.Register, reader asm.Instruction) (asm.Instruction, bool) {
+	if destination, source, isCopy := isRegisterMove(reader); isCopy && source == carrier && destination.Num != carrier.Num {
+		constant.Operands = append([]asm.Operand(nil), constant.Operands...)
+		constant.Operands[0] = destination
+		constant.Line = reader.Line
+		return constant, true
+	}
+	if reader.Mnemonic != "str" || reader.Cond != "" || len(reader.Operands) != 2 {
+		return asm.Instruction{}, false
+	}
+	zero, isZero := constant.Operands[1].(asm.Register)
+	stored, isStored := reader.Operands[0].(asm.Register)
+	memory, isMemory := reader.Operands[1].(asm.Memory)
+	if !isZero || !zero.ZeroRegister() || zero.Class != carrier.Class || !isStored || stored != carrier ||
+		!isMemory || memoryMentions(memory, carrier.Num) {
+		return asm.Instruction{}, false
+	}
+	replacement := reader
+	replacement.Operands = append([]asm.Operand(nil), reader.Operands...)
+	replacement.Operands[0] = zero
+	return replacement, true
 }
 
 func singleInstructionConstant(item asm.Item) (asm.Instruction, asm.Register, bool) {
