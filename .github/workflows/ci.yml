@@ -24,7 +24,9 @@ jobs:
         # checks the live Go test inventory before running with -race.
         # Split the former compiler-rest by name after it exceeded 45 minutes
         # cumulatively, retaining the same tests and 45-minute deadlines.
-        shard: [e2e-a-r, e2e-stdlib-text, e2e-stdlib-rest, e2e-s-z, compiler-rest-a-m, compiler-rest-n-z, packages]
+        # Split stdlib-rest after F: measured root-test loads were 40 / 37
+        # minutes; both halves retain the former 90-minute deadline.
+        shard: [e2e-a-r, e2e-stdlib-text, e2e-stdlib-rest-a-f, e2e-stdlib-rest-g-z, e2e-s-z, compiler-rest-a-m, compiler-rest-n-z, packages]
 
     steps:
     - name: Checkout code
@@ -79,6 +81,18 @@ jobs:
   # pass only when both replacement shards (and the rest of the matrix) pass.
   compiler-rest:
     name: Run Tests (1.27.1, compiler-rest)
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+    steps:
+    - name: Require every test shard
+      env:
+        TEST_RESULT: ${{ needs.test.result }}
+      run: test "$TEST_RESULT" = success
+
+  # Preserve the old stdlib-rest check name for branch protection too.
+  stdlib-rest:
+    name: Run Tests (1.27.1, e2e-stdlib-rest)
     runs-on: ubuntu-latest
     needs: test
     if: always()
