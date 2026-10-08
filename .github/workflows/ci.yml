@@ -14,16 +14,11 @@ jobs:
     strategy:
       matrix:
         go-version: ['1.27.1']
-        # The compiler package's end-to-end suite under the race detector
-        # passed the 40-minute ceiling once the standard library grew; the
-        # shards partition every test name exactly once (compiler E2E A-R,
-        # the standard-library E2E tests in two halves (the text tests,
-        # the rest), the remaining compiler E2E S-Z, the rest of compiler,
-        # every other package). The broad A-R shard needs a 90-minute
-        # ceiling on slow runners. The broad stdlib-rest shard also needs 90
-        # minutes, while stdlib-text uses 60; S-Z and the remaining compiler
-        # tests retain their 45-minute bound.
-        shard: [e2e-a-r, e2e-stdlib-text, e2e-stdlib-rest, e2e-s-z, compiler-rest, packages]
+        # Every compiler test must belong to exactly one shard; the runner
+        # checks the live Go test inventory before running with -race.
+        # Split the former compiler-rest by name after it exceeded 45 minutes
+        # cumulatively, retaining the same tests and 45-minute deadlines.
+        shard: [e2e-a-r, e2e-stdlib-text, e2e-stdlib-rest, e2e-s-z, compiler-rest-a-m, compiler-rest-n-z, packages]
 
     steps:
     - name: Checkout code
@@ -70,13 +65,22 @@ jobs:
         OAK_REQUIRE_RV64_GCC: ${{ matrix.shard == 'packages' && '1' || '' }}
       run: |
         case "${{ matrix.shard }}" in
-          e2e-a-r) go test -v -race -timeout 90m ./compiler -run '^TestE2E[A-R]' ;;
-          e2e-stdlib-text) go test -v -race -timeout 60m ./compiler -run '^TestE2EStdlibT' ;;
-          e2e-stdlib-rest) go test -v -race -timeout 90m ./compiler -run '^TestE2EStd(lib[^T]|[^l])' ;;
-          e2e-s-z) go test -v -race -timeout 45m ./compiler -run '^TestE2E(S[^t]|St[^d]|[T-Z])' ;;
-          compiler-rest) go test -v -race -timeout 45m ./compiler -run '^Test([^E]|E[^2]|E2[^E])' ;;
           packages) go test -v -race -timeout 45m $(go list ./... | grep -v '/compiler$') ;;
+          *) python3 .github/scripts/compiler_shards.py "${{ matrix.shard }}" ;;
         esac
+
+  # Preserve the old compiler-rest check name for branch protection. It can
+  # pass only when both replacement shards (and the rest of the matrix) pass.
+  compiler-rest:
+    name: Run Tests (1.27.1, compiler-rest)
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+    steps:
+    - name: Require every test shard
+      env:
+        TEST_RESULT: ${{ needs.test.result }}
+      run: test "$TEST_RESULT" = success
 
   cross-targets:
     name: Cross targets (zig)
