@@ -2091,6 +2091,7 @@ const inlineHelperLines = 12
 // extern/asm-backed functions keep external linkage.
 func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 	cg.inlineHelpers = make(map[string]bool)
+	valueUses := functionValueUses(program)
 	functions := make(map[string]*ast.FunctionStatement)
 	for _, stmt := range program.Statements {
 		if fn, ok := stmt.(*ast.FunctionStatement); ok && fn.Name != nil && fn.Receiver == nil {
@@ -2099,7 +2100,7 @@ func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 	}
 	for name, fn := range functions {
 		if fn.Receiver != nil || fn.ExternSymbol != "" || fn.AsmBacked || fn.NativeBacked || fn.Body == nil ||
-			fn.Exported || len(fn.TypeParams) > 0 || name == "main" {
+			fn.Exported || len(fn.TypeParams) > 0 || name == "main" || valueUses[name] {
 			continue
 		}
 		if fn.EndToken.Line <= 0 || fn.EndToken.Line-fn.Token.Line > inlineHelperLines {
@@ -2122,7 +2123,7 @@ func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 	for _, name := range codecHotHelpers {
 		fn := functions[name]
 		if fn == nil || fn.Body == nil || fn.Receiver != nil || fn.ExternSymbol != "" || fn.AsmBacked ||
-			fn.NativeBacked || len(fn.TypeParams) > 0 {
+			fn.NativeBacked || len(fn.TypeParams) > 0 || valueUses[name] {
 			continue
 		}
 		if _, isMember := cg.trampolineMember[name]; isMember {
