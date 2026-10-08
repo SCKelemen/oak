@@ -30,8 +30,8 @@ run_cmd do
       unless [``propext, ``Classical.choice, ``Quot.sound].contains axiomName do
         throwError "{name} depends on nonstandard axiom {axiomName}"
   -- The generated fixture must not leave proof authority in the aggregate.
-  for (name, info) in env.constants.toList do
-    if name.toString.startsWith "Oak." && info.isTheorem then
+  for (name, _) in env.constants.toList do
+    if name.toString.startsWith "Oak." || name.toString.startsWith "_private.Oak." then
       let axioms ← collectAxioms name
       if axioms.contains ``sorryAx then
-        throwError "aggregate theorem {name} depends on sorryAx"
+        throwError "aggregate declaration {name} depends on sorryAx"

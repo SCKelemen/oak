@@ -869,6 +869,8 @@ naming the import to add (`encode` needs `import("json")`, text needs
   premises and their own proofs. All five original statements remain visible;
   a proposition definition is not a proof, and the emitter labels it open.
   Symbolic region claims and extracted operator laws use the same representation.
+  Untranslatable loops or laws remain explicitly listed as unsupported open
+  obligations; no approximate proposition or proof is fabricated.
   CI checks the two proofs and three refutations use only standard logical
   axioms and that no imported Oak theorem depends on `sorryAx`.
   None of this proves the Go translator correct for arbitrary programs, or

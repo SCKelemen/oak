@@ -60,6 +60,7 @@ func (s *Session) LeanObligations() (string, error) {
 		translation, reason := translateLoop(unbounded.Loop, unbounded.Function, model.Tree.Root)
 		fmt.Fprintf(&out, "/-- OAK-D0103: the loop in `%s` at repl.oak:%d has no statically evident bound. -/\n", unbounded.Function, line)
 		if translation == nil {
+			fmt.Fprintf(&out, "-- OAK-OBLIGATION %s_terminates: unsupported\n", name)
 			fmt.Fprintf(&out, "-- Not translatable into Oak.Loops: %s.\n-- State the loop's termination by hand over Oak.Loops or Oak.BoundedLoop.\n\n", reason)
 			continue
 		}
@@ -203,6 +204,15 @@ func writeOperatorLaws(out *strings.Builder, model *compiler.SemanticModel) int 
 		if law.Law == "identity" {
 			element, elementOK = leanElement(law.Argument)
 		}
+		if err != nil || (law.Law == "identity" && !elementOK) {
+			if law.Law == "identity" {
+				fmt.Fprintf(out, "-- OAK-OBLIGATION %s_left: unsupported\n-- OAK-OBLIGATION %s_right: unsupported\n", name, name)
+			} else {
+				fmt.Fprintf(out, "-- OAK-OBLIGATION %s: unsupported\n", name)
+			}
+		}
+		// Infer operand types from the extracted function applications. A
+		// source scalar name such as u32 is not a declaration in Defs.
 		switch {
 		case err != nil && law.Law == "associative":
 			fmt.Fprintf(out, "-- theorem %s : ∀ a b c, %s = %s\n\n", name, app("("+app("a", "b")+")", "c"), app("a", "("+app("b", "c")+")"))
@@ -214,14 +224,14 @@ func writeOperatorLaws(out *strings.Builder, model *compiler.SemanticModel) int 
 			element := law.Argument.String()
 			fmt.Fprintf(out, "-- theorem %s_left : ∀ a, %s = a\n-- theorem %s_right : ∀ a, %s = a\n\n", name, app(element, "a"), name, app("a", element))
 		case law.Law == "associative":
-			fmt.Fprintf(out, "-- OAK-OBLIGATION %s: open\ndef %s : Prop :=\n  ∀ (a b c : Defs.%s) (fuel : Nat),\n    (Defs.%s a b fuel >>= fun ab => Defs.%s ab c fuel) = (Defs.%s b c fuel >>= fun bc => Defs.%s a bc fuel)\n\n", name, name, typ, fn, fn, fn, fn)
+			fmt.Fprintf(out, "-- OAK-OBLIGATION %s: open\ndef %s : Prop :=\n  ∀ (a b c : _) (fuel : Nat),\n    (Defs.%s a b fuel >>= fun ab => Defs.%s ab c fuel) = (Defs.%s b c fuel >>= fun bc => Defs.%s a bc fuel)\n\n", name, name, fn, fn, fn, fn)
 		case law.Law == "commutative":
-			fmt.Fprintf(out, "-- OAK-OBLIGATION %s: open\ndef %s : Prop :=\n  ∀ (a b : Defs.%s) (fuel : Nat),\n    Defs.%s a b fuel = Defs.%s b a fuel\n\n", name, name, typ, fn, fn)
+			fmt.Fprintf(out, "-- OAK-OBLIGATION %s: open\ndef %s : Prop :=\n  ∀ (a b : _) (fuel : Nat),\n    Defs.%s a b fuel = Defs.%s b a fuel\n\n", name, name, fn, fn)
 		case law.Law == "idempotent":
-			fmt.Fprintf(out, "-- OAK-OBLIGATION %s: open\ndef %s : Prop :=\n  ∀ (a : Defs.%s) (fuel : Nat),\n    Defs.%s a a fuel = some a\n\n", name, name, typ, fn)
+			fmt.Fprintf(out, "-- OAK-OBLIGATION %s: open\ndef %s : Prop :=\n  ∀ (a : _) (fuel : Nat),\n    Defs.%s a a fuel = some a\n\n", name, name, fn)
 		default: // identity, with an extracted element
-			fmt.Fprintf(out, "-- OAK-OBLIGATION %s_left: open\ndef %s_left : Prop :=\n  ∀ (a : Defs.%s) (fuel : Nat),\n    (Defs.%s fuel >>= fun e => Defs.%s e a fuel) = some a\n\n", name, name, typ, element, fn)
-			fmt.Fprintf(out, "-- OAK-OBLIGATION %s_right: open\ndef %s_right : Prop :=\n  ∀ (a : Defs.%s) (fuel : Nat),\n    (Defs.%s fuel >>= fun e => Defs.%s a e fuel) = some a\n\n", name, name, typ, element, fn)
+			fmt.Fprintf(out, "-- OAK-OBLIGATION %s_left: open\ndef %s_left : Prop :=\n  ∀ (a : _) (fuel : Nat),\n    (Defs.%s fuel >>= fun e => Defs.%s e a fuel) = some a\n\n", name, name, element, fn)
+			fmt.Fprintf(out, "-- OAK-OBLIGATION %s_right: open\ndef %s_right : Prop :=\n  ∀ (a : _) (fuel : Nat),\n    (Defs.%s fuel >>= fun e => Defs.%s a e fuel) = some a\n\n", name, name, element, fn)
 			stated++
 		}
 		stated++
