@@ -1,4 +1,4 @@
-# Concrete RV64 decoder/body projection in one Lean kernel
+# Concrete RV64 source-to-framed-execution proofs in one Lean kernel
 
 This bounded project uses Lean 4.33.1 for both Oak and the pinned generated
 Sail model. It does not compose incompatible 4.29/4.33 compiled proofs by trust.
@@ -15,7 +15,7 @@ lean-sail `079463134b9c50450b8393e1566a09fc492a34d9` (`v5`). Then:
 python3 spec/lean-sail433/prepare.py --generated /path/to/Lean_RV64D
 cd spec/lean-sail433
 lake update
-lake build OakSailComposition OakSailFullDispatch OakSailBridge.BitwiseDispatchAgreement
+lake build OakSailComposition OakSailFullDispatch OakSailBridge.BitwiseDispatchAgreement OakSailFramedComposition OakSailFramedFullDispatch
 python3 audit.py
 ```
 
@@ -43,7 +43,21 @@ on a restored build cache. It does not depend on an expiring artifact download
 at CI runtime or claim exporter correctness. Updating external sources requires
 an explicit provenance/hash review, not merely editing a version string.
 
-## What is proved
+## Complete framed execution
+
+`OakSailFramedComposition.accepted_typed_frame` now proves successful execution
+of all nine instructions from the complete admitted 36-byte function, composed
+with original source bytes and the existing typed interpreter.
+`OakSailFramedFullDispatch.accepted_typed_full_frame` uses the unrestricted
+generated dispatcher. Both use the unchanged concrete sequential Sail RAM.
+
+This is a **freestanding Machine/Bare profile**, with explicit PMP/PMA,
+non-MMIO, stack and register prerequisites. It is not arbitrary Linux user-mode
+execution. See [FRAME.md](FRAME.md) for the exact preconditions, memory footprint,
+state preservation and typed opaque-parameter declarations. The existing
+production source/full-byte pins remain mandatory; this adds no verified verdict.
+
+## Earlier two-body projection
 
 - The unchanged external `encdec_backwards` decodes the exact AND/OR/XOR and
   RET words, and all seven other words of the actual 36-byte compiler wrapper.
@@ -69,13 +83,13 @@ bodies. It is not the generated fetch/step loop; PC is not ticked, and RET's
 architectural effect is reported as nextPC. No fetch/cache/code-immutability,
 loader, boot configuration, or OS syscall behavior is proved.
 
-Complete 36-byte decoding is proved. Complete 36-byte **external execution is
-not**: the seven omitted instructions are not semantically erased. In
-particular the actual Sail virtual/physical-memory path for SD/LD has not been
-related to Oak's flat frame memory, address translation, PMP, permissions,
-faults, or access events. The existing internal framed proof and its explicit
-96-byte mapped-frame contract remain separate. No native verified verdict or
-compiler authority is enabled here.
+The complete framed theorems execute all nine bodies through actual Sail
+virtual/physical checks and its sequential byte-map interpreter. They do not
+claim a general correspondence between that interpreter and Oak's earlier total
+flat-memory model. The earlier internal framed proof, loader, platform startup
+and OS environment obligations remain separate. The new theorem directly
+connects restricted source meaning to the external result in the same kernel.
+No native verified verdict or compiler authority is enabled here.
 
 ## Trust and build audit
 
@@ -83,10 +97,11 @@ compiler authority is enabled here.
 `axiom-allowlist.json`. The broader full-dispatch parameter set is audited
 separately; new or native-evaluation dependencies fail the audit.
 
-The successful new theorem closures contain standard Lean axioms plus the
+The earlier narrow two-body theorem closures contain standard Lean axioms plus the
 pinned export's existing `sys_enable_experimental_extensions : Unit → Bool`
 platform parameter (`LeanRV64D/RiscvExtras.lean:41`). No value of that parameter
-is assumed; the normalized supported paths do not depend on it. No native
+is assumed; the normalized supported paths do not depend on it. The framed closure additionally includes the three explicitly typed parameters
+in [FRAME.md](FRAME.md). No native
 `bv_decide`/`native_decide` evaluation axioms or `sorryAx` are admitted.
 
 `OakSailFullDispatch.accepted_source_full_projection` additionally proves the

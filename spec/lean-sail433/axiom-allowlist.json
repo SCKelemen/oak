@@ -80,5 +80,16 @@
     "riscv_ui64ToF16",
     "riscv_ui64ToF32",
     "riscv_ui64ToF64"
-  ]
+  ],
+  "framed_extras": [
+    "plat_term_write",
+    "load_reservation",
+    "match_reservation"
+  ],
+  "framed_parameter_signatures": {
+    "plat_term_write": "{\u03b1 : Sort u} \u2192 \u03b1 \u2192 LeanRV64D.SailM Unit",
+    "load_reservation": "[Sail.ConcurrencyInterfaceV1.Arch] \u2192 Arch.pa \u2192 Nat \u2192 LeanRV64D.SailM Unit",
+    "match_reservation": "[Sail.ConcurrencyInterfaceV1.Arch] \u2192 Arch.pa \u2192 Bool",
+    "sys_enable_experimental_extensions": "Unit \u2192 Bool"
+  }
 }

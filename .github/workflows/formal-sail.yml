@@ -345,7 +345,7 @@ jobs:
           LEAN_NUM_THREADS: '2'
         run: |
           lake update
-          lake build OakSailComposition OakSailFullDispatch OakSailBridge.BitwiseDispatchAgreement
+          lake build OakSailComposition OakSailFullDispatch OakSailBridge.BitwiseDispatchAgreement OakSailFramedComposition OakSailFramedFullDispatch
 
       - name: Audit bounded RV64 external theorem closures
         run: python3 spec/lean-sail433/audit.py

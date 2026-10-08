@@ -1,5 +1,5 @@
 name = "oak-sail-concrete"
-defaultTargets = ["OakSailComposition", "OakSailFullDispatch"]
+defaultTargets = ["OakSailComposition", "OakSailFullDispatch", "OakSailFramedComposition", "OakSailFramedFullDispatch"]
 
 [[lean_lib]]
 name = "OakSailBridge"
@@ -18,3 +18,9 @@ path = "../lean"
 
 [[lean_lib]]
 name = "OakSailFullDispatch"
+
+[[lean_lib]]
+name = "OakSailFramedComposition"
+
+[[lean_lib]]
+name = "OakSailFramedFullDispatch"
