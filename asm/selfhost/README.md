@@ -155,8 +155,8 @@ independent byte model with no returning-run assumption. The Oak implementation
 is a bootstrap kernel. The [decoded execution model](../../docs/spec/91-wasm-execution.md)
 now composes these byte proofs with 49 straight-line scalar forms and explicit
 traps, plus structured blocks, loops, conditionals, branches and single-function
-returns in `Oak.WasmControl`. Calls, module writing, linking and source-to-module
-verification remain open.
+returns in `Oak.WasmControl`, and isolated direct calls in `Oak.WasmCalls`.
+Module writing/instantiation, linking and source-to-module verification remain open.
 
 ## Remaining M7/M8 work
 
