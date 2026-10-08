@@ -124,7 +124,7 @@
     "active ARM/RV external Sail experiments",
     "blocked syntax work"
   ],
-  "publication": "not authorized; no push or remote merge performed",
+  "publication": "Authorized for one draft PR targeting specification; no merge to specification by this integration worker.",
   "integration_commits": [
     {
       "commit": "41a0c64f44e7ee9a08a90c92d7dce64a45dd29e8",
@@ -227,11 +227,11 @@
     }
   ],
   "remaining_hosted_ci": {
-    "publication_authorization": "required before any push or new hosted CI set",
+    "publication_authorization": "Granted for one draft PR; CI owner will serialize merges.",
     "ci_sharding_prerequisite": {
       "pr": 682,
       "reviewed_head": "46c011765e69e55af27e4cccb0d2a4f067a6c894",
-      "status_at_integration": "not merged; retain actual ancestry and workflow/script when it lands"
+      "status_at_integration": "Actual reviewed commit merged into the local feature branch before publication; specification landing remains CI-owner managed."
     },
     "pr686_old_hosted_result": "compiler-rest cumulative 45-minute timeout; Formal/Sail green per CI owner; do not retry unchanged before sharding prerequisite",
     "full_suite": "not claimed; local ASan/LSan under ptrace is a known environmental blocker and was not disabled",
@@ -652,5 +652,30 @@
       "workflow-validation.log": "414af3b3801a2b2bdcf11b5a93b46f3c3292c13d4ec076e081076d9d99b9bcc6"
     }
   },
-  "manifest_note": "The tested_code commit/tree and integration_commits precede this evidence-only commit. This manifest and axiom query file do not modify tested code."
+  "manifest_note": "The tested_code commit/tree and integration_commits precede this evidence-only commit. This manifest and axiom query file do not modify tested code.",
+  "ci_sharding_integration": {
+    "prerequisite_commit": "46c011765e69e55af27e4cccb0d2a4f067a6c894",
+    "local_merge_commit": "2bde867d51ab4c1e62d0aa68d00f450fe6649365",
+    "tree": "d18f0bcc58b323726b3cd321913847b43b38a3c1",
+    "validation": {
+      "status": "passed",
+      "inventory_command": "go test -race ./compiler -list '^Test'",
+      "inventory_count": 1361,
+      "shard_counts": {
+        "e2e-a-r": 646,
+        "e2e-stdlib-text": 27,
+        "e2e-stdlib-rest": 79,
+        "e2e-s-z": 90,
+        "compiler-rest-a-m": 265,
+        "compiler-rest-n-z": 254
+      },
+      "old_rest_union_preserved": true,
+      "workflow_structure": "same reviewed CI files; seven matrix entries including packages; legacy compiler-rest requires complete successful matrix",
+      "merge_changed_only": [
+        ".github/scripts/compiler_shards.py",
+        ".github/workflows/ci.yml"
+      ],
+      "proof_source_unchanged": true
+    }
+  }
 }
