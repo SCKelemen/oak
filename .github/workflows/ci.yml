@@ -19,11 +19,13 @@ jobs:
         # shards partition every test name exactly once (compiler E2E A-R,
         # the standard-library E2E tests in two halves (the text tests,
         # the rest), the remaining compiler E2E S-Z, the rest of compiler,
-        # every other package). The broad A-R shard needs a 90-minute
-        # ceiling on slow runners. The broad stdlib-rest shard also needs 90
-        # minutes, while stdlib-text uses 60; S-Z and the remaining compiler
-        # tests retain their 45-minute bound.
-        shard: [e2e-a-r, e2e-stdlib-text, e2e-stdlib-rest, e2e-s-z, compiler-rest, packages]
+        # every other package). Split non-E2E Native tests and Differential/
+        # Timehost corpus tests out of compiler-rest: that shard exhausted
+        # 45 minutes without an assertion failure. Its -skip expression is
+        # exactly the union of those two new shards, retaining every test.
+        # A-R and stdlib-rest keep 90 minutes; stdlib-text keeps 60; all
+        # other shards keep 45. Race detection remains enabled throughout.
+        shard: [e2e-a-r, e2e-stdlib-text, e2e-stdlib-rest, e2e-s-z, compiler-native, compiler-corpus, compiler-rest, packages]
 
     steps:
     - name: Checkout code
@@ -74,7 +76,9 @@ jobs:
           e2e-stdlib-text) go test -v -race -timeout 60m ./compiler -run '^TestE2EStdlibT' ;;
           e2e-stdlib-rest) go test -v -race -timeout 90m ./compiler -run '^TestE2EStd(lib[^T]|[^l])' ;;
           e2e-s-z) go test -v -race -timeout 45m ./compiler -run '^TestE2E(S[^t]|St[^d]|[T-Z])' ;;
-          compiler-rest) go test -v -race -timeout 45m ./compiler -run '^Test([^E]|E[^2]|E2[^E])' ;;
+          compiler-native) go test -v -race -timeout 45m ./compiler -run '^TestNative' ;;
+          compiler-corpus) go test -v -race -timeout 45m ./compiler -run '^Test(Differential|Timehost)' ;;
+          compiler-rest) go test -v -race -timeout 45m ./compiler -run '^Test([^E]|E[^2]|E2[^E])' -skip '^Test(Native|Differential|Timehost)' ;;
           packages) go test -v -race -timeout 45m $(go list ./... | grep -v '/compiler$') ;;
         esac
 
