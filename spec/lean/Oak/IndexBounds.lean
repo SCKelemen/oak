@@ -26,6 +26,16 @@ theorem disjoint_ne {a b : Interval} {x y : Nat}
   unfold Contains Disjoint at *
   omega
 
+/-- Adding the same modular base preserves disjoint bounded offsets. -/
+theorem common_base_disjoint {w : Nat} {a b : Interval}
+    (base x y : BitVec w) (hx : Contains a x.toNat) (hy : Contains b y.toNat)
+    (h : Disjoint a b) : base + x ≠ base + y := by
+  have hxy : x ≠ y := by
+    intro same
+    exact disjoint_ne hx hy h (congrArg BitVec.toNat same)
+  intro same
+  exact hxy ((BitVec.add_right_inj base).mp same)
+
 theorem add_no_wrap {a b : Interval} {x y modulus : Nat}
     (hx : Contains a x) (hy : Contains b y) (h : a.hi + b.hi < modulus) :
     Contains ⟨a.lo + b.lo, a.hi + b.hi⟩ ((x + y) % modulus) := by
@@ -34,6 +44,14 @@ theorem add_no_wrap {a b : Interval} {x y modulus : Nat}
   unfold Contains at *
   simp only
   omega
+
+theorem scale_no_wrap {a : Interval} {x factor modulus : Nat}
+    (hx : Contains a x) (h : a.hi * factor < modulus) :
+    Contains ⟨a.lo * factor, a.hi * factor⟩ ((x * factor) % modulus) := by
+  have lower : a.lo * factor ≤ x * factor := Nat.mul_le_mul_right factor hx.1
+  have upper : x * factor ≤ a.hi * factor := Nat.mul_le_mul_right factor hx.2
+  rw [Nat.mod_eq_of_lt (Nat.lt_of_le_of_lt upper h)]
+  exact ⟨lower, upper⟩
 
 theorem sub_no_wrap {a b : Interval} {x y modulus : Nat}
     (hx : Contains a x) (hy : Contains b y) (h : b.hi ≤ a.lo)

@@ -160,6 +160,9 @@ func memoryAt(log []*spanWrite, index, base *term) *term {
 				known, equal = true, false
 			}
 		}
+		if !known && boundedIndexSumsDisjoint(index, other, 32, bounds) {
+			known, equal = true, false
+		}
 		relations[other] = relation{known, equal}
 		return known, equal
 	}
