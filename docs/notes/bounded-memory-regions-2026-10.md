@@ -27,9 +27,34 @@ cannot affect the read and no equality/ITE terms need to be constructed.
   formal refinement of the Go analyzer. Exhaustive mixed-width evaluation
   independently checks that implementation.
 
-This is the first bounded-offset slice, not path-sensitive range inference.
-An arbitrary shared symbolic base may still hide otherwise disjoint offsets.
-Standalone Oak lowering and solver/certificate acceptance are unchanged.
+The initial bounded-offset slice was not path-sensitive range inference and an
+arbitrary shared symbolic base still hid otherwise disjoint offsets. The
+common-base follow-up below closes that particular case; general path-sensitive
+ranges remain open. Standalone Oak lowering and solver/certificate acceptance
+are unchanged.
+
+## Common-base follow-up
+
+The next slice cancels addends common to two 32-bit indices before comparing
+their residual intervals. It therefore proves `base + (x & 255)` disjoint from
+`base + 256 + (y & 255)` even though the arbitrary `base` makes both whole-term
+intervals the full word. Additions flatten only at the compared width, common
+terms cancel as a multiset, and each residual sum must fit without wrapping.
+A narrower nested addition, a different base, more than sixteen addends, or a
+possibly wrapping residual fails closed. The same relation removes dead writes
+in `memoryAt` and unnecessary functional-consistency pairs in the bit blaster.
+
+`Oak.IndexBounds.common_base_disjoint` proves that adding one `BitVec` base
+preserves inequality of disjoint bounded offsets. Go tests exhaust all 4-bit
+values for the admitted shared-base shape and pin duplicate bases, different
+bases, residual wraparound, and complete write-log removal.
+
+On the Apple M4 Max development host, a 128-write common-base construction
+with the relation disabled took 21.6--22.0 µs, 400 allocations, and 71,336
+allocated bytes, and retained the 128 alias conditions. With cancellation it
+took 35.7--37.8 µs, 29 allocations, and 36,752 bytes, and returned the entry
+value directly. The analyzer itself spends more CPU to establish the fact; the
+win is removing the conditional DAG and its later proof cost.
 
 ## Validation
 

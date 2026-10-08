@@ -116,3 +116,60 @@ func TestMemoryAtBoundedRegions(t *testing.T) {
 		t.Fatal("lost memory snapshot")
 	}
 }
+
+func TestBoundedIndexSumsDisjointAfterCommonBase(t *testing.T) {
+	base := paramTerm("base", 4)
+	x, y := paramTerm("x", 4), paramTerm("y", 4)
+	low := binaryTerm("and", x, constTerm(3, 4))
+	high := binaryTerm("add", constTerm(4, 4), binaryTerm("and", y, constTerm(3, 4)))
+	left := binaryTerm("add", base, low)
+	right := binaryTerm("add", high, base)
+	if !boundedIndexSumsDisjoint(left, right, 4, map[*term]indexBounds{}) {
+		t.Fatal("common base hid disjoint bounded offsets")
+	}
+	for bv := uint64(0); bv < 16; bv++ {
+		for xv := uint64(0); xv < 16; xv++ {
+			for yv := uint64(0); yv < 16; yv++ {
+				env := map[string]uint64{"base": bv, "x": xv, "y": yv}
+				if left.eval(env) == right.eval(env) {
+					t.Fatalf("false disjointness at base=%d x=%d y=%d", bv, xv, yv)
+				}
+			}
+		}
+	}
+
+	// Duplicated common terms are cancelled as a multiset.
+	doubleBaseLeft := binaryTerm("add", base, binaryTerm("add", low, base))
+	doubleBaseRight := binaryTerm("add", binaryTerm("add", base, high), base)
+	if !boundedIndexSumsDisjoint(doubleBaseLeft, doubleBaseRight, 4, map[*term]indexBounds{}) {
+		t.Fatal("duplicated common base was not cancelled as a multiset")
+	}
+	// A residual sum that can wrap has no ordinary interval proof.
+	wrapping := binaryTerm("add", base, binaryTerm("add", constTerm(14, 4), low))
+	overlapping := binaryTerm("add", base, binaryTerm("and", y, constTerm(3, 4)))
+	if boundedIndexSumsDisjoint(wrapping, overlapping, 4, map[*term]indexBounds{}) {
+		t.Fatal("wrapping residual sum was treated as an interval")
+	}
+	if boundedIndexSumsDisjoint(binaryTerm("add", paramTerm("a", 4), low), binaryTerm("add", paramTerm("b", 4), high), 4, map[*term]indexBounds{}) {
+		t.Fatal("distinct symbolic bases were cancelled")
+	}
+}
+
+func TestMemoryAtCommonBaseBoundedRegions(t *testing.T) {
+	base := paramTerm("base", 32)
+	x, y := paramTerm("x", 32), paramTerm("y", 32)
+	low := binaryTerm("add", base, binaryTerm("and", x, constTerm(255, 32)))
+	high := binaryTerm("add", base, binaryTerm("add", constTerm(256, 32), binaryTerm("and", y, constTerm(255, 32))))
+	initial := paramTerm("initial", 32)
+	got := memoryAt([]*spanWrite{{index: high, value: constTerm(9, 32)}}, low, initial)
+	if got != initial {
+		t.Fatalf("common-base disjoint region kept an alias test: %s", got)
+	}
+
+	bl := newBlaster([]string{"base", "x", "y"}, map[string]int{"base": 32, "x": 32, "y": 32})
+	bl.selectBits("memory", bl.blast(low), 8, low)
+	bl.selectBits("memory", bl.blast(high), 8, high)
+	if consistency := bl.consistency(); consistency != bddTrue {
+		t.Fatalf("disjoint common-base reads retained a consistency implication: %d", consistency)
+	}
+}
