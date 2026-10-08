@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/parser"
 	"github.com/SCKelemen/oak/scanner"
 )
@@ -33,6 +34,10 @@ main: (): i32 { h: Holder = default_value[Holder](Holder { callback: id }); 0 }`
 		{"sum payload", `Action: type = Run: Holder | Stop
 main: (): i32 { action: Action; 0 }`, true},
 		{"generic sum payload", `Choice[T]: type = Some: T | None
+main: (): i32 { choice: Choice[Holder]; 0 }`, true},
+		{"sum empty alternative initialized", `Choice[T]: type = None | Some: T
+main: (): i32 { choice: Choice[Holder] = .None; 0 }`, false},
+		{"sum empty alternative implicit", `Choice[T]: type = None | Some: T
 main: (): i32 { choice: Choice[Holder]; 0 }`, true},
 		{"wrong missing record field", `main: (): i32 { h: Holder = Holder {}; 0 }`, true},
 		{"wrong empty array initializer", `main: (): i32 { a: [1]Holder = []; 0 }`, true},
@@ -113,5 +118,29 @@ func TestCallableInitializationRecursiveStorage(t *testing.T) {
 		if _, found := tc.zeroContainsCallable(typ); !found {
 			t.Fatalf("missed callable in %T", typ)
 		}
+	}
+}
+
+func TestCallableInitializationRecursiveGenericPayloads(t *testing.T) {
+	tc := setupTypeChecker("")
+	callback := &FunctionType{ReturnType: &UnitType{}}
+	tc.adtTypes["Nest"] = &object.ADTType{Name: "Nest", TypeParams: []string{"T"}, Variants: []*object.ADTVariantDef{{Name: "Next", Payload: "Nest"}, {Name: "Value", Payload: "T"}}}
+	tc.adtPayloadTypes["Nest"] = map[string]Type{
+		"Next":  &GenericType{Name: "Nest", TypeArgs: []Type{callback}},
+		"Value": &ADTType{Name: "T"},
+	}
+	root := &GenericType{Name: "Nest", TypeArgs: []Type{&PrimitiveType{Name: "i32"}}}
+	if _, found := tc.zeroContainsCallable(root); !found {
+		t.Fatal("changed recursive type argument hid callable storage")
+	}
+	tc.adtPayloadTypes["Nest"]["Next"] = &GenericType{Name: "Nest", TypeArgs: []Type{root}}
+	if _, found := tc.zeroContainsCallable(root); found {
+		t.Fatal("callable-free expanding recursion invented callable storage")
+	}
+	tc.adtPayloadTypes["Nest"]["Next"] = &GenericType{Name: "Nest", TypeArgs: []Type{callback}}
+	delete(tc.adtPayloadTypes["Nest"], "Value")
+	tc.adtTypes["Nest"].Variants = tc.adtTypes["Nest"].Variants[:1]
+	if _, found := tc.zeroContainsCallable(root); found {
+		t.Fatal("phantom callable argument was mistaken for actual storage")
 	}
 }
