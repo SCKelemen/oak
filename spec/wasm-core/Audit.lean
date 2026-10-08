@@ -1,0 +1,8 @@
+import Oak.WasmCoreBitwiseProjection
+#print axioms Oak.WasmCoreBitwiseProjection.numeric_bits
+#print axioms Oak.WasmCoreBitwiseProjection.numeric_unique
+#print axioms Oak.WasmCoreBitwiseProjection.signed_unsigned_bits
+#print axioms Oak.WasmCoreBitwiseProjection.body_typed
+#print axioms Oak.WasmCoreBitwiseProjection.entered_returns
+#print axioms Oak.WasmCoreBitwiseProjection.admitted_bridge
+#print axioms Oak.WasmCoreBitwiseProjection.accepted_source_bridge

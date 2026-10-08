@@ -314,3 +314,5 @@ import Oak.LoopArrayHomes
 import Oak.LoopResultHomes
 import Oak.Forwarding
 import Oak.ArrayValues
+
+import Oak.WasmCoreBitwiseProjection
