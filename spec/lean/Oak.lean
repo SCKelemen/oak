@@ -228,6 +228,7 @@ import Oak.RiscVMaterialization
 import Oak.RiscVCallExecution
 import Oak.RiscVDirectControl
 import Oak.RiscVControlFlow
+import Oak.RiscVComparison
 import Oak.RiscVMemory
 import Oak.SailRiscVBridge
 import Oak.Target
