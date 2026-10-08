@@ -489,7 +489,7 @@ func (t *FunctionType) String() string {
 
 func (t *FunctionType) Equals(other Type) bool {
 	if otherFunc, ok := other.(*FunctionType); ok {
-		if len(t.Parameters) != len(otherFunc.Parameters) {
+		if t.Variadic != otherFunc.Variadic || len(t.Parameters) != len(otherFunc.Parameters) {
 			return false
 		}
 		if !t.ReturnType.Equals(otherFunc.ReturnType) {
