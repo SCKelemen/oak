@@ -96,7 +96,7 @@ func wordBytes(word uint32) []byte {
 // ISA, memory forms, aliases, immediates, and system instructions.
 var encoderSamples = []string{
 	"add x0, x1, x2", "add w0, w1, w2", "add x0, x1, x2, lsl #3", "add x0, x1, w2, uxtw #2", "add x0, x1, w2, sxtw", "add x0, x1, #4095", "add x0, x1, #4095, lsl #12",
-	"add sp, sp, #16", "sub sp, sp, #32", "adds x0, x1, x2", "subs w0, w1, #7", "sub x0, x1, x2, lsr #4", "cmp x0, x1", "cmp w0, #12", "cmn x0, x1", "cmp x0, w1, sxth",
+	"add sp, sp, #16", "sub sp, sp, #32", "adds x0, x1, x2", "subs w0, w1, #7", "sub x0, x1, x2, lsr #4", "cmp x0, x1", "cmp w0, #12", "cmp w0, #12, lsl #12", "cmn x0, x1", "cmp x0, w1, sxth",
 	"neg x0, x1", "negs w0, w1", "adc x0, x1, x2", "adcs w0, w1, w2", "sbc x0, x1, x2", "sbcs x0, x1, x2", "ngc x0, x1", "ngcs w0, w1",
 	"and x0, x1, x2", "and x0, x1, #0xff", "and w0, w1, #0xf0f0f0f0", "ands x0, x1, #0x3", "orr x0, x1, x2, lsl #8", "orr w0, w1, #0x7", "eor x0, x1, #0xffff0000", "eon x0, x1, x2", "bic x0, x1, x2", "bics w0, w1, w2", "orn x0, x1, x2", "tst x0, x1", "tst w0, #8", "mvn x0, x1",
 	"lsl x0, x1, #3", "lsr w0, w1, #5", "asr x0, x1, #63", "ror x0, x1, #7", "lsl x0, x1, x2", "lsr w0, w1, w2", "asr x0, x1, x2", "ror w0, w1, w2", "extr x0, x1, x2, #8", "lslv x0, x1, x2", "rorv w0, w1, w2",

@@ -52,3 +52,60 @@ func TestConstantOperandFoldsNamedConstantExpressions(t *testing.T) {
 		}
 	}
 }
+
+func TestAddSubImmediateUsesShiftedAArch64Field(t *testing.T) {
+	g := &generator{}
+	for _, test := range []struct {
+		value uint64
+		want  asm.Immediate
+		ok    bool
+	}{
+		{0, asm.Immediate{}, true},
+		{4095, asm.Immediate{Value: 4095}, true},
+		{4096, asm.Immediate{Value: 1, Shift: 12}, true},
+		{0xc000, asm.Immediate{Value: 12, Shift: 12}, true},
+		{0xfff000, asm.Immediate{Value: 4095, Shift: 12}, true},
+		{4097, asm.Immediate{}, false},
+		{0x1000000, asm.Immediate{}, false},
+	} {
+		got, ok := g.addSubImmediate(test.value)
+		if ok != test.ok || got != test.want {
+			t.Errorf("%#x: got (%+v, %v), want (%+v, %v)", test.value, got, ok, test.want, test.ok)
+		}
+	}
+
+	rv := &generator{rvLane: true}
+	if _, ok := rv.addSubImmediate(0xc000); ok {
+		t.Fatal("RV64 must not receive the AArch64 shifted-immediate spelling")
+	}
+}
+
+func TestShiftedImmediateFlowsToCompareOperands(t *testing.T) {
+	g := &generator{constants: map[string]asm.Constant{
+		"entries": {Type: "u32", Value: 0xc000},
+	}}
+	want := asm.Immediate{Value: 12, Shift: 12}
+	op, r, fixed, err := g.sourceOperand(&ast.Identifier{Value: "entries"}, scalars["u32"], "cmp")
+	if err != nil || op != want || r != -1 || fixed {
+		t.Fatalf("named compare operand: got (%+v, %d, %v, %v), want shifted immediate", op, r, fixed, err)
+	}
+	op, ok := g.simpleOperand(&ast.IntegerLiteral{Value: 0xc000}, scalars["u32"], true)
+	if !ok || op != want {
+		t.Fatalf("literal compare operand: got (%+v, %v), want shifted immediate", op, ok)
+	}
+}
+
+func TestConstantGuardUsesShiftedAArch64Immediate(t *testing.T) {
+	g := &generator{trap: "trap", flagsTo: map[string]string{}}
+	if err := g.constantGuard(5, 0xc000); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.items) != 2 {
+		t.Fatalf("constant guard emitted %d items, want cmp and branch", len(g.items))
+	}
+	compare, ok := g.items[0].(asm.Instruction)
+	want := asm.Immediate{Value: 12, Shift: 12}
+	if !ok || compare.Mnemonic != "cmp" || len(compare.Operands) != 2 || compare.Operands[1] != want {
+		t.Fatalf("constant guard compare = %#v, want shifted immediate", g.items[0])
+	}
+}

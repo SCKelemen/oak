@@ -542,6 +542,13 @@ constant — `u8(0)`, `u8(1)`, `u16(limit)` — is the constant at the target
 width, materialized once and normalized by construction, so no `and wN,
 wN, #255` follows it (`compiler/e2e_native_constant_conversion_test.go`);
 the checker admits the constructor only where the value fits.
+The add/sub immediate selector also uses AArch64's 12-bit field shifted left
+by 12. It is shared by arithmetic, comparisons, owned-array guards, and
+frame-array span guards; RV64 keeps its separate unshifted legalization. Thus
+a 49,152-element page array is guarded by `cmp wI, #12, lsl #12`, without a
+constant register. In the stage-2 OS pilot this removes 17 instructions from
+six proven selected bodies and 68 bytes of text while all 27 relocations and
+all eight differential/conformance tests remain unchanged.
 Transforms marked verifier-gated are set aside when equivalence is not judged,
 at worst selecting the checked identity lowering.
 

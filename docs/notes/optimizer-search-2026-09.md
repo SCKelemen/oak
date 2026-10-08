@@ -486,6 +486,16 @@ and three from `unmap_page`, both still proven, for 16 bytes less text/object.
 The isolated translate improves about 4–5% in interleaved host measurements;
 the end-to-end decoder cycle was already at Zig parity and remains there.
 
+The next 2026-10-08 lowering measurement uses the complete AArch64 add/sub
+immediate field, including `lsl #12`, for arithmetic, comparisons, and fixed
+array guards. The 49,152-entry stage-2 page arrays then compare their index
+directly instead of materializing `0xc000`. Six proven selected bodies lose 17
+instructions: `reset` four, `alloc_table` two, `walk_leaf` three, `map_page`
+two, `unmap_page` four, and `translate` two. Text shrinks 68 bytes and the
+Mach-O object 64 bytes with all 27 relocations and all eight OS conformance
+tests unchanged. Interleaved runtime samples overlap, so this increment claims
+the verified instruction/code-size reduction, not a timing improvement.
+
 Not in this increment: live-range splitting, vector callee-saved growth
 (d8–d15, fs0–fs11), RVV bodies, a lowering that emits virtual registers
 directly, and exact trip counts against register bounds.

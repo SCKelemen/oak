@@ -6610,8 +6610,10 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 				if leftOK && !rightOK {
 					// A named constant, or a folded conversion: the compare
 					// immediate, as a literal's.
-					if c, isConst := g.constantOperand(infix.Right, operand); isConst && c < 4096 {
-						right, rightOK = imm(int64(c)), true
+					if c, isConst := g.constantOperand(infix.Right, operand); isConst {
+						if immediate, encodable := g.addSubImmediate(c); encodable {
+							right, rightOK = immediate, true
+						}
 					}
 				}
 				computed := -1
@@ -6685,8 +6687,8 @@ func (g *generator) conditionBranch(expr ast.Expression, target string, jumpIfFa
 }
 
 // simpleOperand spells an operand `cmp` takes directly: a variable in its
-// register, a span's length register, or (on the right) a constant below
-// 4096, possibly under a widening constructor.
+// register, a span's length register, or (on the right) a target add/sub
+// immediate, possibly under a widening constructor.
 func (g *generator) simpleOperand(expr ast.Expression, typ scalar, allowImm bool) (asm.Operand, bool) {
 	switch e := expr.(type) {
 	case *ast.IndexExpression:
@@ -6709,14 +6711,18 @@ func (g *generator) simpleOperand(expr ast.Expression, typ scalar, allowImm bool
 				}
 			}
 			if _, isConv := scalars[ident.Value]; isConv && allowImm {
-				if v, ok := constantValue(e.Arguments[0]); ok && v >= 0 && v < 4096 {
-					return imm(v), true
+				if v, ok := constantValue(e.Arguments[0]); ok && v >= 0 {
+					if immediate, encodable := g.addSubImmediate(uint64(v)); encodable {
+						return immediate, true
+					}
 				}
 			}
 		}
 	case *ast.IntegerLiteral:
-		if allowImm && e.Value >= 0 && e.Value < 4096 {
-			return imm(e.Value), true
+		if allowImm && e.Value >= 0 {
+			if immediate, encodable := g.addSubImmediate(uint64(e.Value)); encodable {
+				return immediate, true
+			}
 		}
 	}
 	return nil, false
@@ -7578,8 +7584,8 @@ func (g *generator) sourceOperand(expr ast.Expression, typ scalar, mnemonic stri
 	if v, isConst := g.constantOperand(expr, typ); isConst {
 		switch mnemonic {
 		case "add", "sub", "cmp":
-			if v < 4096 {
-				return imm(int64(v)), -1, false, nil
+			if immediate, encodable := g.addSubImmediate(v); encodable {
+				return immediate, -1, false, nil
 			}
 		case "and", "orr", "eor":
 			width := 32
@@ -7596,6 +7602,20 @@ func (g *generator) sourceOperand(expr ast.Expression, typ scalar, mnemonic stri
 		return nil, 0, false, err
 	}
 	return reg(r, typ), r, fixed, nil
+}
+
+// addSubImmediate spells the constant field shared by AArch64 add, sub, and
+// their cmp alias. Besides the unshifted 12-bit form, AArch64 admits the same
+// field shifted left by 12. RV64 keeps the established unshifted spelling: its
+// immediate and legalization rules are separate.
+func (g *generator) addSubImmediate(value uint64) (asm.Immediate, bool) {
+	if value < 1<<12 {
+		return asm.Immediate{Value: int64(value)}, true
+	}
+	if !g.rvLane && value&0xfff == 0 && value>>12 < 1<<12 {
+		return asm.Immediate{Value: int64(value >> 12), Shift: 12}, true
+	}
+	return asm.Immediate{}, false
 }
 
 // constantOperand reads a constant expression's value at a type: a
@@ -9141,8 +9161,8 @@ func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Tok
 		if v, inReg := g.regs[ident.Value]; inReg && v >= 0 && v < vecBase {
 			if t, ok := g.types[ident.Value]; ok && !t.signed && !t.isBool && !t.isFloat && !t.isVec && !t.wide() {
 				g.usedTrap = true
-				if sp.frameLen > 0 && sp.frameLen <= maxCmpImmediate {
-					g.emit("cmp", wr(v), imm(sp.frameLen))
+				if immediate, ok := g.frameLengthImmediate(sp.frameLen); ok {
+					g.emit("cmp", wr(v), immediate)
 				} else {
 					g.emit("cmp", wr(v), wr(sp.lenReg))
 				}
@@ -9156,10 +9176,10 @@ func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Tok
 		return 0, err
 	}
 	g.usedTrap = true
-	if sp.frameLen > 0 && sp.frameLen <= maxCmpImmediate {
+	if immediate, ok := g.frameLengthImmediate(sp.frameLen); ok {
 		// A span over a frame array: the frame idiom's constant guard, so
 		// the checker bounds the access inside the declared frame.
-		g.emit("cmp", wr(r), imm(sp.frameLen))
+		g.emit("cmp", wr(r), immediate)
 	} else {
 		g.emit("cmp", wr(r), wr(sp.lenReg))
 	}
@@ -9167,8 +9187,12 @@ func (g *generator) guardedIndexAt(sp span, index ast.Expression, tok *token.Tok
 	return r, nil
 }
 
-// maxCmpImmediate is the largest unshifted `cmp wI, #K` immediate (12 bits).
-const maxCmpImmediate = 4095
+func (g *generator) frameLengthImmediate(length int64) (asm.Immediate, bool) {
+	if length <= 0 {
+		return asm.Immediate{}, false
+	}
+	return g.addSubImmediate(uint64(length))
+}
 
 // indexValue evaluates an element index into a 32-bit register: a u32 as
 // is; a u64 after checking its high word is zero (an index of 2^32 or more
@@ -9415,14 +9439,15 @@ func (g *generator) callsProgramFunction(expr ast.Expression) bool {
 }
 
 // constantGuard emits the constant index guard `cmp wI, #N; b.hs trap`
-// over an array of N elements; a length past the compare immediate is
-// materialized in a scratch register first (`movz wK, #N; cmp wI, wK`),
-// which the checker reads as the same constant guard (asm/check.go, a
+// over an array of N elements. On AArch64, #N may use the add/sub immediate's
+// 12-bit shift; a length outside the target's compare-immediate vocabulary is
+// materialized in a scratch register first (`movz wK, #N; cmp wI, wK`). The
+// checker reads either spelling as the same constant guard (asm/check.go, a
 // compare against a register holding a known constant).
 func (g *generator) constantGuard(r int, length int64) error {
 	g.usedTrap = true
-	if length <= maxCmpImmediate {
-		g.emit("cmp", wr(r), imm(length))
+	if immediate, ok := g.addSubImmediate(uint64(length)); ok {
+		g.emit("cmp", wr(r), immediate)
 	} else {
 		k, err := g.alloc(scalars["u32"])
 		if err != nil {

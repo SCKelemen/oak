@@ -3256,8 +3256,9 @@ w9, w19, w20`), the result landing in the left operand's scratch when it
 has one and a fresh one when the left is a variable, so the scratch
 pressure never exceeds the moving form's; a constant right operand —
 a literal, a widening of one, or a folded constant global — is the
-instruction's immediate where its field admits it (a 12-bit unsigned for
-`add`/`sub`/`cmp`, a bitmask immediate, asked of the encoder's own
+instruction's immediate where its field admits it (a 12-bit unsigned,
+optionally shifted left by 12 on AArch64, for `add`/`sub`/`cmp`; a bitmask
+immediate, asked of the encoder's own
 `LogicalImmediate`, for `and`/`orr`/`eor`; a constant left operand of a
 commutative operation moves right); and a value assigned or declared into
 a register variable is written there by the instruction that produced it
@@ -7371,8 +7372,9 @@ sym` (`auipc` + `addi`, kind `riscv_pcrel`: `R_RISCV_PCREL_HI20` and
 `PCREL_LO12_I` against a local label) — and reads elements through it as
 it reads a record's array: a literal index inside the table is a plain
 offset, any other goes under the constant guard `cmp wI, #N; b.hs trap`
-(a bound past the compare immediate is materialized in a register first,
-which the checker reads as the same constant guard) or `li; bgeu`. The
+(AArch64 uses either the unshifted 12-bit field or its `lsl #12` form; a
+bound outside that vocabulary is materialized in a register, which the
+checker reads as the same constant guard) or `li; bgeu`. The
 checkers know the address as a read-only region of the table's size
 (`asm.Function.Tables`): an element region derives from it as from a
 frame array (`elementRegion`, `deriveTableRegion`), a store through it
