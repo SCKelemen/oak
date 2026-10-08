@@ -341,6 +341,10 @@ func (u *Unifier) occursIn(tv *TypeVar, t Type) bool {
 }
 
 func (u *Unifier) unifyFunction(fn1, fn2 *FunctionType) Substitution {
+	if fn1.Variadic != fn2.Variadic {
+		u.errors = append(u.errors, "cannot unify variadic and fixed-arity functions")
+		return nil
+	}
 	if len(fn1.Parameters) != len(fn2.Parameters) {
 		u.errors = append(u.errors, fmt.Sprintf("function arity mismatch: %d vs %d", len(fn1.Parameters), len(fn2.Parameters)))
 		return nil
