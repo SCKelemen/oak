@@ -110,3 +110,17 @@ The standard Sail trivial choice source is used. Initial undefined temporaries
 are overwritten on the selected path; their generated choice-state handling is
 proved explicitly rather than asserted as an axiom. Public theorem audits use
 only propext, Classical.choice and Quot.sound, with no sorryAx/native-decide axiom.
+
+## Known broader exporter defect and selected-path impact audit
+
+The pinned generator drops a mutable-local update in a guarded-match/early-return
+shape. A total-match reproducer evaluates to 55 in Sail's interpreter but 63 in
+unchanged raw generated Lean, including an axiom-free kernel proof of 63. See
+`repros/guarded_mutation/README.md` for the preserved source, raw exports,
+independent interpreter evidence, full AddrTop compilation limitation,
+and bounded audit of this module's selected paths. Passing Lean proofs here
+establishes the stated generated-model properties; it does not repair or prove
+general Sail/ASL source equivalence. The 15 source-evaluator fixtures and structural
+inspection are supporting checks, not a universal equivalence proof.
+AddrTop/BranchAddr expansion remains quarantined. No generated body has been
+hand-edited to conceal this defect, and no verified-authority label is promoted.

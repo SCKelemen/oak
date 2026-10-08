@@ -1,0 +1,43 @@
+[93mWarning[0m: Deprecated [96moriginal_addr_top.sail[0m:77.45-73:
+77[96m |[0m  (bits(64), bool('IsInstr), bits(2)) -> int effect {escape, rreg, undef}
+  [91m |[0m                                             [91m^--------------------------^[0m
+  [91m |[0m 
+Explicit effect annotations are deprecated. They are no longer used and can be removed.
+
+[93mWarning[0m: Incomplete pattern match statement at [96moriginal_addr_top.sail[0m:87.8-13:
+87[96m |[0m        match regime {
+  [91m |[0m        [91m^---^[0m
+  [91m |[0m 
+No expression of type [93mbitvector(2)[0m can be matched by unguarded patterns.
+This is the type of the expression being matched on.
+
+[93mWarning[0m: Unused variable [96moriginal_addr_top.sail[0m:65.16-18:
+65[96m |[0mfunction HaveEL(el) = true
+  [91m |[0m                [91m^^[0m
+  [91m |[0m 
+This variable is defined but never used.
+
+[93mWarning[0m: Unused variable [96moriginal_addr_top.sail[0m:67.29-31:
+67[96m |[0mfunction S1TranslationRegime(el) = 0b01
+  [91m |[0m                             [91m^^[0m
+  [91m |[0m 
+This variable is defined but never used.
+
+[93mWarning[0m: Unused variable [96moriginal_addr_top.sail[0m:69.24-26:
+69[96m |[0mfunction ELUsingAArch32(el) = false
+  [91m |[0m                        [91m^^[0m
+  [91m |[0m 
+This variable is defined but never used.
+
+[93mWarning[0m: Unused variable [96moriginal_addr_top.sail[0m:75.20-22:
+75[96m |[0mfunction ELIsInHost(el) = false
+  [91m |[0m                    [91m^^[0m
+  [91m |[0m 
+This variable is defined but never used.
+
+initialize_registers()
+Result = ()
+main()
+TBI0=0 -> 63
+TBI0=1 -> 55
+Result = ()

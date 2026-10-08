@@ -179,7 +179,7 @@ jobs:
         env:
           OAK_REQUIRE_ORACLES: "1"
         run: |
-          go test ./asm -run '^TestSailScalarExecution(RawPins|Regeneration|Lean)$' -count=1 -v -timeout=15m
+          go test ./asm -run '^TestSailScalarExecution(RawPins|Regeneration|Lean|GuardedMutationAudit)$' -count=1 -v -timeout=15m
           python3 spec/sail/audit_scalar.py
 
   lem-ram-traces:
