@@ -116,6 +116,10 @@ jobs:
         working-directory: spec/lean
         run: lake env lean CheckSessionObligations.lean
 
+      - name: Check unsigned strength reduction boundaries and proof authority
+        working-directory: spec/lean
+        run: lake env lean CheckStrengthReduction.lean
+
       # The standard-library extractions are checked for faithfulness by
       # running the extracted Lean and the compiled Oak on one corpus and
       # comparing byte for byte (docs/spec/95-extraction.md section 6).
