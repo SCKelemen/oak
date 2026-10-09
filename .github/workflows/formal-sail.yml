@@ -425,16 +425,17 @@ jobs:
           LEAN_NUM_THREADS: '2'
         run: |
           lake update
-          lake build OakSailFetchedFrame OakSailSteppedFrame OakSailSteppedChecks OakSailClockedSource OakSailClockChecks OakSailImageLoad OakSailImageSource OakSailImageChecks
+          lake build OakSailFetchedFrame OakSailSteppedFrame OakSailSteppedChecks OakSailClockedSource OakSailClockChecks OakSailImageLoad OakSailImageSource OakSailImageChecks OakSailEntryInstructions OakSailEntrySource OakSailEntryChecks
           python3 audit.py
           python3 step-audit.py
           python3 clock-audit.py
           python3 image-audit.py
+          python3 entry-audit.py
 
       - name: Pin actual compiler source and bytes to fetched/stepped theorems
         env:
           OAK_REQUIRE_RV64_LEAN: '1'
-        run: go test ./compiler -run '^TestRV64(Fetched|Stepped|Clocked|Image)BitwiseCompilerMatchesLean$' -count=1 -timeout=30m -v
+        run: go test ./compiler -run '^TestRV64(Fetched|Stepped|Clocked|Image|Entry)BitwiseCompilerMatchesLean$' -count=1 -timeout=30m -v
 
       - name: Build bounded RV64 source and external execution composition
         working-directory: spec/lean-sail433
