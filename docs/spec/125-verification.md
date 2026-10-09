@@ -477,10 +477,18 @@ stronger `Oak.LRATChecker.production_bound_record_sound` theorem described above
 uses the extracted production identity loop directly and derives initial-decoder
 locality from successful checking, without an expected-decoding hypothesis.
 `Oak.LRATChecker.production_bound_cnf_sound` additionally concludes successful
-bounded decoding of that expected CNF. Correspondence with the separate list
-predicate is still checked on the corpus;
-it is not a premise of that stronger theorem. Source-to-CNF correctness and
-native compilation of the checker remain separate proof obligations.
+bounded decoding of that expected CNF. The universal acceptance-refinement
+theorem `Oak.LRATFormulaBinding.production_binding_refines_model` (module
+`Oak.LRATBindingModel`) now connects the extracted identity gate to the complete
+list predicate: successful execution implies both framing checks, the formula-only
+input requirement, all identity fields, and exact ordered payload equality. It
+requires both array lengths to fit UInt32 view lengths; it does not assume a
+solver verdict or clause validity. The dedicated CI contract rejects proof holes
+and pins fuel exhaustion, empty payloads, and mismatch refusal. This theorem
+proves the acceptance direction; completeness with sufficient fuel remains
+separate. The stronger direct checker theorem does not depend on this list
+model. Source-to-CNF correctness and native compilation of the checker remain
+separate proof obligations.
 `-cnf dir` writes every bit-level
 obligation's clauses as DIMACS (`name.cnf`) for any solver or checker to
 read; the clause engine agrees with the diagram engine input for input over
