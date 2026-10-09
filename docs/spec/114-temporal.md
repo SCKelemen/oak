@@ -278,10 +278,15 @@ decimal, fractional-clock, offset, component-arithmetic, and buffer layers:
   nanosecond fraction from 1 through 999,999,999 and every UInt64 whole part,
   `put_frac` emits one to nine fractional digits with no trailing zero; the
   actual integer and fractional scanners recover both values. This composition
-  uses the emitted numeric field's end as the scanner limit; the general
-  fractional reader also accepts a following nondigit. A separate theorem
-  covers zero fractions, which emit only the integer field. The writer and
-  roundtrip contracts preserve buffer size and every byte outside the result,
+  is also proved with a following nondigit unit and the full buffer as the
+  scanner limit: `TimePeriodFractionUnitLaws.lean` connects the exact
+  `put_frac` plus unit-store sequence to both scanners. They recover the
+  integer and nanosecond values and stop before the unit, even with arbitrary
+  later bytes present. The zero-fraction case emits only the integer field and
+  stops at the unit too. These delimiter contracts require a 31-byte window
+  for nonzero fractions (21 bytes for zero), buffer size below `2^32`, and fuel
+  at least 21; they preserve every byte outside the number and unit.
+  The writer and roundtrip contracts preserve buffer size and every byte outside the result,
   with sufficient fuel and explicit capacity and pointer bounds. All these
   proofs are kernel checked without native decision certificates. The outer
   period/duration grammar and complete period/duration text round trips remain
@@ -334,7 +339,8 @@ Open release gates, explicitly not implied by successful tests or extraction:
    ordinal/week conversion, the remaining calendar success laws, and duration
    carry arithmetic.
 2. Prove outer parser grammar soundness/completeness, input-position bounds,
-   sufficient-fuel termination, and composition with unit delimiters.
+   sufficient-fuel termination, and composition of numeric units through the
+   outer parser state transitions.
    The UInt64 integer and fractional-second writer/scanner bridges, numeric
    scanner safety, and main accumulator bounds are established. Extend canonical text round-trip proofs to periods and durations. Establish
    successful prefix contents, output bounds, and sufficient-fuel termination
