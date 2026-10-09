@@ -6360,7 +6360,7 @@ func restoreLoopEntryMemories(t *term, ev *loopEvent, memo map[*term]*term, vali
 		return t
 	}
 	out := *t
-	out.kbDone, out.sigBits = false, 0
+	out.sigBits = 0
 	out.cond, out.left, out.right = cond, left, right
 	out.args = args
 	memo[t] = &out
@@ -6421,7 +6421,7 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 		return t
 	}
 	out := *t
-	out.kbDone, out.sigBits = false, 0
+	out.sigBits = 0
 	out.cond, out.left, out.right = cond, left, right
 	if lane, isExtraction := extractedLane(&out); isExtraction {
 		// A lane read out of a register the substitution made a pack of
@@ -7800,7 +7800,7 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 		args, argsChanged := rewriteTermArgs(t.args, rewrite)
 		if cond != t.cond || left != t.left || right != t.right || argsChanged {
 			copy := *t
-			copy.kbDone, copy.sigBits = false, 0
+			copy.sigBits = 0
 			copy.cond, copy.left, copy.right = cond, left, right
 			copy.args = args
 			out = &copy
@@ -7885,7 +7885,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 				c, l, r := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
 				if c != t.cond || l != t.left || r != t.right {
 					copy := *t
-					copy.kbDone, copy.sigBits = false, 0
+					copy.sigBits = 0
 					copy.cond, copy.left, copy.right = c, l, r
 					out = &copy
 				}
@@ -7917,7 +7917,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 				c, l, r := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
 				if c != t.cond || l != t.left || r != t.right {
 					copy := *t
-					copy.kbDone, copy.sigBits = false, 0
+					copy.sigBits = 0
 					copy.cond, copy.left, copy.right = c, l, r
 					out = &copy
 				}
@@ -7926,7 +7926,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 			l, r := rewrite(t.left), rewrite(t.right)
 			if l != t.left || r != t.right {
 				copy := *t
-				copy.kbDone, copy.sigBits = false, 0
+				copy.sigBits = 0
 				copy.left, copy.right = l, r
 				out = &copy
 			}

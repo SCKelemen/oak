@@ -519,7 +519,7 @@ func (bl *blaster) consistency() int {
 	// against `base + 16` — needs no implication, which keeps the
 	// constraint linear in the reads of such a body rather than quadratic.
 	forms := make([]*linearForm, len(bl.selects))
-	bounds := map[*term]indexBounds{}
+	bounds := newIndexBoundsMemo()
 	for k := range bl.selects {
 		if bl.selects[k].index != nil {
 			forms[k] = bl.selects[k].index.linearAt(32)

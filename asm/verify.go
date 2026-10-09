@@ -1053,10 +1053,6 @@ type term struct {
 	right *term
 	cond  *term   // termIte
 	args  []*term // termApply, in semantic argument order
-	// The known-bits memo (knownBits, asm/floats_ops.go): set once computed.
-	kbDone  bool
-	kbValue uint64
-	kbKnown uint64
 	// sigBits is the significant-bits memo (significantBits): the count
 	// plus one, zero before it is computed. Canonicalization asks for it
 	// at every comparison, and the operands of a body's comparisons share
