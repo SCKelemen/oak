@@ -116,3 +116,10 @@ termination claim is inferred.
 installation, derived fetch/frame placement and constructive source-clocked
 execution corollary. The separately checked function address remains the
 invocation boundary; ELF startup and reset reachability are not inferred.
+
+## Checked ELF entry prefix
+
+[ENTRY.md](ENTRY.md) derives the function invocation from the actual emitted
+AUIPC/JALR startup at checked `e_entry`, composing eleven callbacks and five
+ticks. Initial platform/ABI state remains explicit. The proof stops at the
+returned `e_entry+8`, before ADDI/ECALL, and makes no reset or full-loop claim.
