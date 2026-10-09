@@ -1,0 +1,791 @@
+{
+  "roots": {
+    ".": {
+      "TestBuildAsmUnitsLinkOnceInEveryMode": "build_asm_cli_test.go",
+      "TestOakShellAgreesNative": "spec_solver_test.go"
+    },
+    "./asm": {
+      "TestSiliconDifferential": "asm/silicon_test.go"
+    },
+    "./compiler": {
+      "TestE2EAddressOfAsmFunction": "compiler/e2e_layout_builtins_test.go",
+      "TestE2EAsmAdd": "compiler/e2e_asm_test.go",
+      "TestE2EAsmCalleeSavedAndCall": "compiler/e2e_asm_test.go",
+      "TestE2EAsmFallbackBody": "compiler/e2e_asm_test.go",
+      "TestE2EAsmFlagsLoop": "compiler/e2e_asm_test.go",
+      "TestE2EAsmFrameSaveRestore": "compiler/e2e_asm_test.go",
+      "TestE2EAsmOperandStackShorthand": "compiler/e2e_asm_stack_test.go",
+      "TestE2EAsmSpanParameter": "compiler/e2e_asm_test.go",
+      "TestE2EAsmVectorTableAssembles": "compiler/e2e_asm_test.go",
+      "TestE2EAsmVerifiedConditionalExecutesBothWays": "compiler/e2e_asm_verify_test.go",
+      "TestE2EAsmVerifiedFallbackExecutesBothWays": "compiler/e2e_asm_verify_test.go",
+      "TestE2EEL0EntryBothForms": "compiler/e2e_el0_entry_test.go",
+      "TestE2EExampleAsmPackage": "compiler/e2e_asm_package_test.go",
+      "TestE2EExampleAsmPackageNative": "compiler/e2e_asm_package_test.go",
+      "TestE2EExampleSMEPackage": "compiler/e2e_sme_test.go",
+      "TestE2EInferredValueNativeARM64": "compiler/inferred_values_test.go",
+      "TestE2EMessageSendFoundation": "compiler/e2e_ffi_objc_test.go",
+      "TestE2ENativeADTs": "compiler/e2e_native_adt_test.go",
+      "TestE2ENativeAbsorberCall": "compiler/e2e_native_absorber_call_test.go",
+      "TestE2ENativeAffineIndexLoop": "compiler/e2e_native_affine_index_test.go",
+      "TestE2ENativeAffineIndexLoopTraps": "compiler/e2e_native_affine_index_test.go",
+      "TestE2ENativeAggregateInline": "compiler/e2e_native_aggregate_inline_test.go",
+      "TestE2ENativeArrayPermutation": "compiler/e2e_native_array_permutation_test.go",
+      "TestE2ENativeArrayPermutationLoop": "compiler/e2e_native_array_permutation_loop_test.go",
+      "TestE2ENativeArrayResultStorage": "compiler/e2e_native_array_result_test.go",
+      "TestE2ENativeArrayValues": "compiler/e2e_native_array_value_test.go",
+      "TestE2ENativeArrays": "compiler/e2e_native_array_test.go",
+      "TestE2ENativeAtomics": "compiler/e2e_native_atomics_test.go",
+      "TestE2ENativeBlake3CompressionBoundaries": "compiler/e2e_native_blake3_proven_test.go",
+      "TestE2ENativeBlake3PackageAgreesWithReference": "compiler/e2e_native_blake3_package_test.go",
+      "TestE2ENativeBodies": "compiler/e2e_native_test.go",
+      "TestE2ENativeBottomTestedLoops": "compiler/e2e_native_rotation_test.go",
+      "TestE2ENativeBoundaryCopies": "compiler/e2e_native_boundary_copies_test.go",
+      "TestE2ENativeBreakProven": "compiler/e2e_native_break_test.go",
+      "TestE2ENativeCallIndex": "compiler/e2e_native_call_index_test.go",
+      "TestE2ENativeCallLiveness": "compiler/e2e_native_call_liveness_test.go",
+      "TestE2ENativeCallResultRegisterCarriesLoopVariable": "compiler/e2e_native_call_result_carried_test.go",
+      "TestE2ENativeCalleeCellInLoopProven": "compiler/e2e_native_callee_cell_loop_test.go",
+      "TestE2ENativeCalleeEffects": "compiler/e2e_native_callee_effects_test.go",
+      "TestE2ENativeCalleeLoopReachedProven": "compiler/e2e_native_callee_loop_reached_test.go",
+      "TestE2ENativeCallerHomes": "compiler/e2e_native_caller_homes_test.go",
+      "TestE2ENativeCellsAroundLoopProven": "compiler/e2e_native_record_loop_store_test.go",
+      "TestE2ENativeChainComputedOperands": "compiler/e2e_native_chain_operand_test.go",
+      "TestE2ENativeCheckedFactTransport": "compiler/e2e_native_fact_transport_test.go",
+      "TestE2ENativeCompoundElementFieldReads": "compiler/e2e_native_compound_test.go",
+      "TestE2ENativeConditionSelection": "compiler/e2e_native_condition_test.go",
+      "TestE2ENativeConstantConditions": "compiler/e2e_native_constant_condition_test.go",
+      "TestE2ENativeConstantConstructorsNeedNoMask": "compiler/e2e_native_constant_conversion_test.go",
+      "TestE2ENativeConstantExpressionsFold": "compiler/e2e_native_constant_fold_test.go",
+      "TestE2ENativeConstantIndexElision": "compiler/e2e_native_const_index_test.go",
+      "TestE2ENativeConstantReads": "compiler/e2e_native_constants_test.go",
+      "TestE2ENativeConstantShiftCounts": "compiler/e2e_native_constant_shift_test.go",
+      "TestE2ENativeConstants": "compiler/e2e_native_constants_test.go",
+      "TestE2ENativeDeepExpressions": "compiler/e2e_native_deep_test.go",
+      "TestE2ENativeDispatchingFunctionStaysWithTheCBackend": "compiler/e2e_native_dispatch_test.go",
+      "TestE2ENativeElementFieldViews": "compiler/e2e_simd_record_fields_test.go",
+      "TestE2ENativeExtentFold": "compiler/e2e_native_extent_fold_test.go",
+      "TestE2ENativeExtentFoldRetainsTraps": "compiler/e2e_native_extent_fold_test.go",
+      "TestE2ENativeExternCallProven": "compiler/e2e_native_extern_call_test.go",
+      "TestE2ENativeExternFlushLargeChunkProven": "compiler/e2e_native_extern_call_test.go",
+      "TestE2ENativeFMAMaps": "compiler/e2e_native_fma_map_test.go",
+      "TestE2ENativeFarField": "compiler/e2e_native_far_field_test.go",
+      "TestE2ENativeFieldPromotion": "compiler/e2e_native_field_promotion_test.go",
+      "TestE2ENativeFieldViewCallsProven": "compiler/e2e_native_field_view_proof_test.go",
+      "TestE2ENativeFloatSimd": "compiler/e2e_native_float_simd_test.go",
+      "TestE2ENativeFloatSpanStores": "compiler/e2e_native_float_span_store_test.go",
+      "TestE2ENativeFloats": "compiler/e2e_native_float_test.go",
+      "TestE2ENativeForkedLoopsOrder": "compiler/e2e_native_forked_loops_test.go",
+      "TestE2ENativeForwarding": "compiler/e2e_native_forwarding_test.go",
+      "TestE2ENativeForwardingBases": "compiler/e2e_native_forwarding_bases_test.go",
+      "TestE2ENativeFrameRecordSpanArguments": "compiler/e2e_native_frame_record_span_test.go",
+      "TestE2ENativeFrameSpan": "compiler/e2e_native_frame_span_test.go",
+      "TestE2ENativeFuse": "compiler/e2e_native_fuse_test.go",
+      "TestE2ENativeGenerics": "compiler/e2e_native_generic_test.go",
+      "TestE2ENativeGetterLinearForm": "compiler/e2e_native_linear_mask_test.go",
+      "TestE2ENativeGlobalAddressCSE": "compiler/e2e_native_global_address_cse_test.go",
+      "TestE2ENativeGlobalAggregates": "compiler/e2e_native_global_aggregates_test.go",
+      "TestE2ENativeGlobalArrayProven": "compiler/e2e_native_global_array_test.go",
+      "TestE2ENativeGlobals": "compiler/e2e_native_globals_test.go",
+      "TestE2ENativeGraphemeTableViewProven": "compiler/e2e_native_table_view_test.go",
+      "TestE2ENativeGuardLines": "compiler/e2e_native_guard_lines_test.go",
+      "TestE2ENativeGuardedRecordLoopProven": "compiler/e2e_native_record_loop_store_test.go",
+      "TestE2ENativeGuardedWrites": "compiler/e2e_native_guarded_writes_test.go",
+      "TestE2ENativeHeaderHoist": "compiler/e2e_native_header_hoist_test.go",
+      "TestE2ENativeIfConversion": "compiler/e2e_native_select_test.go",
+      "TestE2ENativeInPlaceElementAllocation": "compiler/e2e_native_inplace_element_test.go",
+      "TestE2ENativeInPlaceUpdate": "compiler/e2e_native_inplace_update_test.go",
+      "TestE2ENativeInlineIndexTarget": "compiler/e2e_native_inline_index_target_test.go",
+      "TestE2ENativeInstructionFunctions": "compiler/e2e_native_instructions_test.go",
+      "TestE2ENativeLICMConstantChain": "compiler/e2e_native_licm_constant_test.go",
+      "TestE2ENativeLargeArrayLoopsProven": "compiler/e2e_native_large_array_test.go",
+      "TestE2ENativeLargeStrides": "compiler/e2e_native_stride_test.go",
+      "TestE2ENativeLeaves": "compiler/e2e_native_leaf_test.go",
+      "TestE2ENativeLiteralsVerdicts": "compiler/e2e_native_literals_test.go",
+      "TestE2ENativeLoopArrayHomes": "compiler/e2e_native_loop_array_homes_test.go",
+      "TestE2ENativeLoopBoundByAField": "compiler/e2e_native_loop_bound_field_test.go",
+      "TestE2ENativeLoopCarriedCellProven": "compiler/e2e_native_loop_cells_test.go",
+      "TestE2ENativeLoopInvariants": "compiler/e2e_native_licm_test.go",
+      "TestE2ENativeLoopResultHomes": "compiler/e2e_native_loop_result_homes_test.go",
+      "TestE2ENativeManySequentialConditionalsProven": "compiler/e2e_native_staircase_test.go",
+      "TestE2ENativeMapPageProvenByCases": "compiler/e2e_native_map_page_cases_test.go",
+      "TestE2ENativeMaskedTableElision": "compiler/e2e_native_masked_table_test.go",
+      "TestE2ENativeMultiplyAdd": "compiler/e2e_native_multiply_add_test.go",
+      "TestE2ENativeNarrowCountersProven": "compiler/e2e_native_narrow_counter_test.go",
+      "TestE2ENativeNestedLoopKeepsTheOuterMemoryMarker": "compiler/e2e_native_nested_loop_frame_test.go",
+      "TestE2ENativeNestedRecordSpan": "compiler/e2e_native_nested_record_span_test.go",
+      "TestE2ENativeNestedRecords": "compiler/e2e_native_nested_test.go",
+      "TestE2ENativeNestedZeroingLoopProven": "compiler/e2e_native_nested_zeroing_test.go",
+      "TestE2ENativeOptIRConstantIdentities": "compiler/e2e_native_optir_identity_test.go",
+      "TestE2ENativeOptIRMemoryCleanup": "compiler/e2e_native_optir_memory_cleanup_test.go",
+      "TestE2ENativeOptIRMemoryCleanupDeadStores": "compiler/e2e_native_optir_memory_cleanup_dse_test.go",
+      "TestE2ENativeOptIRMemoryCleanupLICM": "compiler/e2e_native_optir_memory_cleanup_licm_test.go",
+      "TestE2ENativeOptIRMemoryPhiReusesAvailableLoad": "compiler/e2e_native_optir_memory_cfg_test.go",
+      "TestE2ENativeOptIRRegionMemoryComposesWithSpills": "compiler/e2e_native_optir_memory_spill_test.go",
+      "TestE2ENativeOptIRSelectsVerifiedModRefCallRegionMemory": "compiler/e2e_native_optir_memory_calls_test.go",
+      "TestE2ENativeOptIRSelectsVerifiedNoModRefCallRegionDSE": "compiler/e2e_native_optir_memory_calls_test.go",
+      "TestE2ENativeOptIRSelectsVerifiedRefCallRegionMemory": "compiler/e2e_native_optir_memory_calls_test.go",
+      "TestE2ENativeOptIRSelectsVerifiedRegionDSE": "compiler/e2e_native_optir_memory_test.go",
+      "TestE2ENativeOptIRSelectsVerifiedRegionDSEAcrossBranch": "compiler/e2e_native_optir_memory_cfg_test.go",
+      "TestE2ENativeOptIRSelectsVerifiedRegionLoadAfterStore": "compiler/e2e_native_optir_load_test.go",
+      "TestE2ENativeOptIRSelectsVerifiedRegionLoadForwarding": "compiler/e2e_native_optir_memory_test.go",
+      "TestE2ENativeOptIRSelectsVerifiedRegionMemoryLoop": "compiler/e2e_native_optir_memory_loop_test.go",
+      "TestE2ENativeOptIRSelectsVerifiedScalarCall": "compiler/e2e_native_optir_calls_test.go",
+      "TestE2ENativePaddedRecordSpan": "compiler/e2e_native_padded_record_span_test.go",
+      "TestE2ENativePagePaLinearForm": "compiler/e2e_native_linear_mask_test.go",
+      "TestE2ENativePairCopies": "compiler/e2e_native_pair_copies_test.go",
+      "TestE2ENativeRV64ExtraOnArm64": "compiler/e2e_native_rv64_test.go",
+      "TestE2ENativeRV64UnionsOnArm64": "compiler/e2e_native_rv64_test.go",
+      "TestE2ENativeReadOnlyBorrow": "compiler/e2e_native_readonly_borrow_test.go",
+      "TestE2ENativeRecordABI": "compiler/e2e_native_record_abi_test.go",
+      "TestE2ENativeRecordArrayMemory": "compiler/e2e_native_record_array_memory_test.go",
+      "TestE2ENativeRecordArrays": "compiler/e2e_native_record_array_test.go",
+      "TestE2ENativeRecordBaseCSE": "compiler/e2e_native_record_base_cse_test.go",
+      "TestE2ENativeRecordBaseCSETrap": "compiler/e2e_native_record_base_cse_test.go",
+      "TestE2ENativeRecordElementFromCall": "compiler/e2e_native_record_element_call_test.go",
+      "TestE2ENativeRecordFieldLoop": "compiler/e2e_native_record_field_loop_test.go",
+      "TestE2ENativeRecordInPlace": "compiler/e2e_native_record_inplace_test.go",
+      "TestE2ENativeRecordLoopStoresProven": "compiler/e2e_native_record_loop_store_test.go",
+      "TestE2ENativeRecordMixed": "compiler/e2e_native_record_abi_test.go",
+      "TestE2ENativeRecordSpanReadersProven": "compiler/e2e_native_record_span_proof_test.go",
+      "TestE2ENativeRecordSpans": "compiler/e2e_native_record_span_test.go",
+      "TestE2ENativeRecordWords": "compiler/e2e_native_record_words_test.go",
+      "TestE2ENativeRecords": "compiler/e2e_native_record_test.go",
+      "TestE2ENativeReductionLivenessTails": "compiler/e2e_native_reduction_liveness_test.go",
+      "TestE2ENativeReductionUnrolling": "compiler/e2e_native_reduction_test.go",
+      "TestE2ENativeRedundantGuards": "compiler/e2e_native_redundant_guards_test.go",
+      "TestE2ENativeRedundantGuardsTrap": "compiler/e2e_native_redundant_guards_test.go",
+      "TestE2ENativeRegisterBudget": "compiler/e2e_native_register_budget_test.go",
+      "TestE2ENativeResultBlock": "compiler/e2e_native_result_block_test.go",
+      "TestE2ENativeResultSpan": "compiler/e2e_native_result_span_test.go",
+      "TestE2ENativeReturnProven": "compiler/e2e_native_return_test.go",
+      "TestE2ENativeRotates": "compiler/e2e_native_rotate_test.go",
+      "TestE2ENativeScalarArrayLastUseLifetimes": "compiler/e2e_native_scalar_array_release_test.go",
+      "TestE2ENativeScalarArrayRelease": "compiler/e2e_native_scalar_array_release_test.go",
+      "TestE2ENativeSelectAtComputedIndexProven": "compiler/e2e_native_select_index_linear_test.go",
+      "TestE2ENativeSelectDoesNotSpeculateAGuardedShift": "compiler/e2e_native_select_guard_test.go",
+      "TestE2ENativeSelectsAndExecutesSpilledOptIR": "compiler/e2e_native_optir_test.go",
+      "TestE2ENativeSelectsVerifiedNarrowOptIR": "compiler/e2e_native_optir_test.go",
+      "TestE2ENativeSelectsVerifiedOptimizedOptIR": "compiler/e2e_native_optir_test.go",
+      "TestE2ENativeSha256Path": "compiler/e2e_native_sha256_path_test.go",
+      "TestE2ENativeSimd": "compiler/e2e_native_simd_test.go",
+      "TestE2ENativeSimdKernelVerdicts": "compiler/e2e_native_simd_test.go",
+      "TestE2ENativeSlotIndexElision": "compiler/e2e_native_slot_index_test.go",
+      "TestE2ENativeSpanArrayFields": "compiler/e2e_native_span_fields_test.go",
+      "TestE2ENativeSpanCalls": "compiler/e2e_native_span_call_test.go",
+      "TestE2ENativeSpanEffects": "compiler/e2e_native_span_effects_test.go",
+      "TestE2ENativeSpanLocals": "compiler/e2e_native_rv64_span_locals_test.go",
+      "TestE2ENativeSpans": "compiler/e2e_native_test.go",
+      "TestE2ENativeStackArgs": "compiler/e2e_native_stack_args_test.go",
+      "TestE2ENativeStackSummary": "compiler/e2e_native_stack_summary_test.go",
+      "TestE2ENativeStage2AllocTableProven": "compiler/e2e_native_record_loop_store_test.go",
+      "TestE2ENativeStage2ReplicaProvenUnderEscalatedBudget": "compiler/e2e_native_budget_escalation_test.go",
+      "TestE2ENativeStrengthReduction": "compiler/e2e_native_strength_test.go",
+      "TestE2ENativeSubslice": "compiler/e2e_native_subslice_test.go",
+      "TestE2ENativeTableInLoop": "compiler/e2e_native_table_loop_test.go",
+      "TestE2ENativeTableViewExecution": "compiler/e2e_native_table_view_test.go",
+      "TestE2ENativeTableViews": "compiler/e2e_native_table_view_test.go",
+      "TestE2ENativeUnionArmBinders": "compiler/e2e_native_union_binder_test.go",
+      "TestE2ENativeUnrollConstant": "compiler/e2e_native_unroll_constant_test.go",
+      "TestE2ENativeUnrollGeneratedNames": "compiler/e2e_native_unroll_names_test.go",
+      "TestE2ENativeUnrolledMapInPlaceAndMismatchedLengths": "compiler/e2e_native_map_unroll_test.go",
+      "TestE2ENativeValueSelectForms": "compiler/e2e_native_value_select_test.go",
+      "TestE2ENativeVectorFieldRecords": "compiler/e2e_simd_record_fields_test.go",
+      "TestE2ENativeVectorFold": "compiler/e2e_native_vector_fold_test.go",
+      "TestE2ENativeVectorHomes": "compiler/e2e_native_vector_homes_test.go",
+      "TestE2ENativeVectorLanes": "compiler/e2e_native_vector_lanes_test.go",
+      "TestE2ENativeVectorMap": "compiler/e2e_native_vector_map_test.go",
+      "TestE2ENativeVectorRecordByValueFallsBack": "compiler/e2e_simd_record_fields_test.go",
+      "TestE2ENativeVectorReduction": "compiler/e2e_native_vector_reduction_test.go",
+      "TestE2ENativeVectorStackArgs": "compiler/e2e_native_vector_stack_args_test.go",
+      "TestE2ENativeWalkerCleanups": "compiler/e2e_native_walker_cleanup_test.go",
+      "TestE2ENativeWideResult": "compiler/e2e_native_wide_result_test.go",
+      "TestE2ENativeZeroRecord": "compiler/e2e_native_zero_record_test.go",
+      "TestVerdictCache": "compiler/verdict_cache_test.go"
+    },
+    "./testrunner": {
+      "TestDispatchClaimsAreChecked": "testrunner/dispatch_test.go"
+    }
+  },
+  "skip_sites": {
+    "asm/aarch64_bitwise_function_lean_test.go::TestAArch64BitwiseFunctionMatchesLean": [
+      "t.Skip(\"lake unavailable; formal.yml requires this oracle\")"
+    ],
+    "asm/aarch64_call_branch_encoding_lean_test.go::TestAArch64CallBranchLocalEncodingMatchesLean": [
+      "t.Skip(\"lake not on PATH; the formal workflow runs this kernel oracle\")"
+    ],
+    "asm/aarch64_conditional_branch_test.go::checkAArch64BranchLean": [
+      "t.Skip(\"lake not on PATH; formal workflow requires this oracle\")"
+    ],
+    "asm/aarch64_direct_branch_encoding_lean_test.go::TestAArch64DirectBranchLocalEncodingMatchesLean": [
+      "t.Skip(\"lake not on PATH; the formal workflow runs this kernel oracle\")"
+    ],
+    "asm/cnf_allocation_refinement_test.go::TestValidateCNFAllocationMatchesLean": [
+      "t.Skip(\"lake not on PATH; the formal workflow runs this kernel oracle\")"
+    ],
+    "asm/cnf_trace_refinement_test.go::TestValidateCNFTraceMatchesLean": [
+      "t.Skip(\"lake not on PATH; the formal workflow runs this kernel oracle\")"
+    ],
+    "asm/isa_xml_test.go::loadISAXML": [
+      "t.Skip(\"Arm A64 ISA XML not present under external/isa-a64\")"
+    ],
+    "asm/minimal_elf_lean_test.go::TestRV64BitwiseELFMatchesLean": [
+      "t.Skip(\"lake unavailable\")"
+    ],
+    "asm/object_address_relocation_refinement_test.go::TestAArch64ADRL21PatchBoundaries": [
+      "t.Skip(\"lake not on PATH; the formal workflow runs this kernel oracle\")"
+    ],
+    "asm/object_relocation_refinement_test.go::TestAArch64Branch26RelocationMatchesLean": [
+      "t.Skip(\"lake not on PATH; the formal workflow runs this kernel oracle\")"
+    ],
+    "asm/oracles_test.go::requireOracle": [
+      "t.Skip(msg)"
+    ],
+    "asm/replay_test.go::TestReplayBlast": [
+      "t.Skip(\"OAK_VERIFY_REPLAY_BLAST names no dump\")"
+    ],
+    "asm/replay_test.go::TestReplayObligation": [
+      "t.Skip(\"OAK_VERIFY_REPLAY names no dump\")"
+    ],
+    "asm/rv64_bitwise_function_lean_test.go::TestRV64BitwiseFunctionMatchesLean": [
+      "t.Skip(\"lake unavailable; formal CI requires this oracle\")"
+    ],
+    "asm/rv64_branch_encoding_lean_test.go::TestRV64LocalBranchesMatchLean": [
+      "t.Skip(\"lake not on PATH; formal workflow requires this oracle\")"
+    ],
+    "asm/rv64_call_execution_lean_test.go::TestRV64CallExecutionMatchesLean": [
+      "t.Skip(\"lake unavailable; formal CI requires this oracle\")"
+    ],
+    "asm/rv64_compressed_branch_lean_test.go::TestRV64CompressedBranchesMatchLean": [
+      "t.Skip(\"lake not on PATH; formal workflow requires this oracle\")"
+    ],
+    "asm/rv64_direct_control_lean_test.go::TestRV64DirectControlMatchesLean": [
+      "t.Skip(\"lake unavailable; formal CI requires this oracle\")"
+    ],
+    "asm/rv64_materialization_lean_test.go::TestRV64MaterializationMatchesLean": [
+      "t.Skip(\"lake not on PATH; formal workflow requires this oracle\")"
+    ],
+    "asm/rv64_relaxation_lean_test.go::TestRV64RelaxationMatchesLean": [
+      "t.Skip(\"lake not on PATH; formal workflow requires this oracle\")"
+    ],
+    "asm/rv64_relocation_test.go::TestRV64PCRelMatchesLean": [
+      "t.Skip(\"lake not on PATH; formal CI checks these production pins\")"
+    ],
+    "asm/silicon_test.go::TestSiliconDifferential": [
+      "t.Skip(\"no C compiler on PATH\")",
+      "t.Skip(\"the silicon differential needs an AArch64 host\")"
+    ],
+    "build_asm_cli_test.go::TestBuildAsmUnitsLinkOnceInEveryMode": [
+      "t.Skip(\"the asm example targets AArch64\")"
+    ],
+    "clause_agreement_test.go::TestClauseAgreementPolicy": [
+      "t.Skip(\"lake not on PATH; formal CI requires the Lean replay\")"
+    ],
+    "codegen/aarch64_barrier_test.go::TestAArch64BarrierGeneratedCFailsClosedOnHost": [
+      "t.Skip(\"host C compiler is not available\")"
+    ],
+    "codegen/aarch64_event_control_test.go::TestAArch64EventControlGeneratedCFailsClosedOnHost": [
+      "t.Skip(\"host C compiler is not available\")"
+    ],
+    "codegen/aarch64_memory_refinement_test.go::requireAArch64Clang": [
+      "t.Skip(\"clang is required for AArch64 memory refinement test\")"
+    ],
+    "codegen/aarch64_mmio_test.go::TestAArch64MmioGeneratedCFailsClosedOnHost": [
+      "t.Skip(\"host C compiler is not available\")"
+    ],
+    "codegen/aarch64_sysreg_test.go::TestAArch64SystemRegisterGeneratedCFailsClosedOnHost": [
+      "t.Skip(\"host C compiler is not available\")"
+    ],
+    "codegen/aarch64_tlbi_test.go::TestAArch64TLBIGeneratedCFailsClosedOnHost": [
+      "t.Skip(\"host C compiler is not available\")"
+    ],
+    "codegen/compare_exchange_e2e_test.go::TestCompareExchangeGeneratedCUnderContention": [
+      "t.Skip(\"cc is required for native compare-exchange execution test\")"
+    ],
+    "codegen/memory_e2e_test.go::TestAtomicGeneratedCIsCorrectUnderContention": [
+      "t.Skip(\"cc is required for native atomic execution test\")"
+    ],
+    "codegen/metal/gpu/gpu_test.go::TestRunnerProbeAndCheck": [
+      "t.Skip(reason)"
+    ],
+    "codegen/riscv64_memory_refinement_test.go::requireRISCV64Compiler": [
+      "t.Skip(\"no C compiler with the riscv64 target\")"
+    ],
+    "codegen/translation_validation_test.go::TestTranslationValidationArm64": [
+      "t.Skip(\"clang is required to compile the prelude helpers for arm64\")"
+    ],
+    "codegen/translation_validation_test.go::TestTranslationValidationArm64Apple": [
+      "t.Skip(\"clang is required to compile the prelude helpers for arm64\")"
+    ],
+    "codegen/translation_validation_test.go::TestTranslationValidationArm64LSE": [
+      "t.Skip(\"clang is required to compile the prelude helpers for arm64\")"
+    ],
+    "codegen/translation_validation_test.go::TestTranslationValidationRV64": [
+      "t.Skip(\"a riscv64 GCC (riscv64-elf-gcc / riscv64-unknown-elf-gcc) is required to compile the prelude helpers for rv64\")"
+    ],
+    "compiler/aarch64_control_flow_lean_test.go::checkAArch64SourceLean": [
+      "t.Skip(\"lake not on PATH; ARM64 proof workflow requires this oracle\")"
+    ],
+    "compiler/aarch64_minimal_startup_lean_test.go::TestAArch64MinimalStartupMatchesLean": [
+      "t.Skip(\"lake unavailable; compiler ELF byte pin above passed\")"
+    ],
+    "compiler/arm_decoder_classification_test.go::TestArmDecoderClassificationCompilerBytes": [
+      "t.Skip(\"formal-sail.yml requires the built classification library\")"
+    ],
+    "compiler/arm_decoder_partition_test.go::TestArmDecoderPartitionCompilerBytes": [
+      "t.Skip(\"formal-sail.yml requires the built full-source partition library\")"
+    ],
+    "compiler/bench_protocol_emit_test.go::TestEmitStateMachineBenchmarkSource": [
+      "t.Skip(\"set OAK_UPDATE_BENCH=1 to regenerate benchmarks/state-machines/utf8_protocol.c\")"
+    ],
+    "compiler/differential_corpus_test.go::TestDifferentialCorpus": [
+      "t.Skip(reason)"
+    ],
+    "compiler/e2e_aggregate_index_lowering_test.go::runAggregateGeneratedC": [
+      "t.Skip(\"no C compiler on PATH\")"
+    ],
+    "compiler/e2e_asm_test.go::TestE2EAsmVectorTableAssembles": [
+      "t.Skip(\"no C compiler on PATH\")"
+    ],
+    "compiler/e2e_asm_test.go::requireArm64Host": [
+      "t.Skip(\"asm units execute natively only on an AArch64 host\")"
+    ],
+    "compiler/e2e_assert_values_test.go::buildAndRunStderr": [
+      "t.Skip(\"no C compiler on PATH\")"
+    ],
+    "compiler/e2e_atomic_admission_test.go::crossCompile": [
+      "t.Skip(\"no clang on PATH\")",
+      "t.Skipf(\"clang cannot target %s: %v\\n%s\", target, err, out)"
+    ],
+    "compiler/e2e_callable_inline_test.go::TestAddressTakenCallableCCompilers": [
+      "t.Skipf(\"%s is not installed\", compiler)"
+    ],
+    "compiler/e2e_cross_test.go::TestCrossRunUnderEmulator": [
+      "t.Skip(\"the host target runs directly\")",
+      "t.Skipf(\"no emulator: %v\", err)"
+    ],
+    "compiler/e2e_cross_test.go::crossLink": [
+      "t.Skipf(\"no cross compiler for %s on this host (%v)\", tgt, err)"
+    ],
+    "compiler/e2e_dispatch_test.go::TestE2EDispatchSelectsSVEUnderQEMU": [
+      "t.Skip(\"qemu-system-aarch64 not present\")",
+      "t.Skipf(\"no zig for %s (%v)\", tgt, err)"
+    ],
+    "compiler/e2e_el0_entry_test.go::TestE2EEL0EntryBothForms": [
+      "t.Skip(\"no C compiler on PATH\")"
+    ],
+    "compiler/e2e_ffi_fnptr_test.go::skipWithoutDlsym": [
+      "t.Skip(\"the function-pointer test needs dlopen/dlsym on a POSIX host\")"
+    ],
+    "compiler/e2e_ffi_objc_test.go::skipWithoutObjC": [
+      "t.Skip(\"the message-send test needs the Objective-C runtime on an arm64 Darwin host\")"
+    ],
+    "compiler/e2e_ffi_spawn_test.go::skipWithoutPosixSpawn": [
+      "t.Skip(\"posix_spawn test needs a POSIX host with /bin/echo and /usr/bin/false\")"
+    ],
+    "compiler/e2e_hash_dispatch_test.go::TestE2EHashKernelsAreDispatchRealizations": [
+      "t.Skip(\"clang is required for the cross-compile\")"
+    ],
+    "compiler/e2e_inline_helpers_test.go::assembleC": [
+      "t.Skip(\"no C compiler on PATH\")"
+    ],
+    "compiler/e2e_kernel_helper_names_test.go::TestKernelHelperNamesOnDevice": [
+      "t.Skip(reason)"
+    ],
+    "compiler/e2e_kernel_strided_test.go::TestE2EKernelStridedStoresOnDevice": [
+      "t.Skip(reason)"
+    ],
+    "compiler/e2e_kernels_gpu_test.go::TestE2EKernelsOnDevice": [
+      "t.Skip(reason)"
+    ],
+    "compiler/e2e_layout_builtins_test.go::TestE2EStaticAssertFailsTheBuild": [
+      "t.Skip(\"no C compiler on PATH\")"
+    ],
+    "compiler/e2e_lean_function_arguments_test.go::checkFunctionArgumentLean": [
+      "t.Skip(\"lake not found (PATH or ~/.elan/bin)\")"
+    ],
+    "compiler/e2e_lean_nested_assignment_test.go::TestE2ELeanNestedAssignment": [
+      "t.Skip(\"lake not found (PATH or ~/.elan/bin)\")"
+    ],
+    "compiler/e2e_link_inputs_test.go::TestE2ELinkInputsFailClosed": [
+      "t.Skipf(\"symlinks unavailable: %v\", err)"
+    ],
+    "compiler/e2e_link_inputs_test.go::buildLinkedAndRun": [
+      "t.Skip(\"no C compiler on PATH\")"
+    ],
+    "compiler/e2e_link_inputs_test.go::nativeArchive": [
+      "t.Skip(\"no C compiler on PATH\")",
+      "t.Skip(\"no archiver on PATH\")"
+    ],
+    "compiler/e2e_mcu_test.go::TestE2EMicrocontrollerTargetsUnderQEMU": [
+      "t.Skipf(\"%s not present\", m.qemu)",
+      "t.Skipf(\"no zig for %s (%v)\", m.tgt, err)"
+    ],
+    "compiler/e2e_ml_feedback_test.go::TestE2EMatchValuedBindingIsWarningFreeC": [
+      "t.Skip(\"no C compiler on PATH\")"
+    ],
+    "compiler/e2e_modules_test.go::buildPackageAndRun": [
+      "t.Skip(\"no C compiler on PATH\")"
+    ],
+    "compiler/e2e_native_exec_test.go::TestE2ENativeExecutableLinuxUnderUserQEMU": [
+      "t.Skipf(\"no emulator: %v\", err)"
+    ],
+    "compiler/e2e_native_exec_test.go::runImage": [
+      "t.Skipf(\"%s not present\", qemu)",
+      "t.Skipf(\"no system emulator for %s\", tgt)"
+    ],
+    "compiler/e2e_native_literals_test.go::TestE2ENativeLiteralsVerdicts": [
+      "t.Skip(err)"
+    ],
+    "compiler/e2e_native_object_test.go::TestE2EFreestandingPartialLink": [
+      "t.Skipf(\"no zig for %s (%v)\", tgt, err)"
+    ],
+    "compiler/e2e_native_rv64_stack_args_test.go::TestE2ENativeRV64StackArgs": [
+      "t.Skipf(\"no user-mode emulator: %v\", err)"
+    ],
+    "compiler/e2e_native_rv64_test.go::TestE2ENativeRV64UnderUserQEMU": [
+      "t.Skipf(\"no emulator: %v\", err)"
+    ],
+    "compiler/e2e_native_rv64_test.go::runNativeRV64BareWith": [
+      "t.Skipf(\"%s not present\", rv64Virt.qemu)",
+      "t.Skipf(\"no zig for %s (%v)\", bare, err)"
+    ],
+    "compiler/e2e_native_simd_test.go::TestE2ENativeSimdKernelVerdicts": [
+      "t.Skip(err)"
+    ],
+    "compiler/e2e_porting_asks_test.go::TestE2EAssertionTrapNamesLocation": [
+      "t.Skip(\"no C compiler on PATH\")"
+    ],
+    "compiler/e2e_protocol_array_test.go::TestProtocolArrayTLAModule": [
+      "t.Skip(\"set OAK_TLA2TOOLS_JAR (and have java) to model-check the generated module\")"
+    ],
+    "compiler/e2e_protocol_invariants_test.go::TestProtocolInvariantTheoremsInModule": [
+      "t.Skip(reason)"
+    ],
+    "compiler/e2e_protocol_liveness_test.go::TestE2EProtocolLiveness": [
+      "t.Skip(\"set OAK_TLA2TOOLS_JAR (and have java) to model-check the generated module\")"
+    ],
+    "compiler/e2e_protocol_record_payload_test.go::TestE2EProtocolRecordPayload": [
+      "t.Skip(reason)"
+    ],
+    "compiler/e2e_protocol_replica_logs_test.go::TestE2EProtocolReplicaLogs": [
+      "t.Skip(reason)"
+    ],
+    "compiler/e2e_rings_targets_test.go::TestRingsCrossTargets": [
+      "t.Skipf(\"linked for %s; no emulator to run it (%v)\", tgt, err)",
+      "t.Skipf(\"no cross compiler for %s (%v)\", tgt, err)"
+    ],
+    "compiler/e2e_rings_targets_test.go::ringsTargetAssembly": [
+      "t.Skip(\"clang is required to inspect target assembly\")",
+      "t.Skipf(\"clang cannot compile for %s and zig is absent: %v\\n%s\", targetTriple, err, out)",
+      "t.Skipf(\"neither clang nor zig cc compiles for %s: %v\\n%s\", targetTriple, err, out)"
+    ],
+    "compiler/e2e_rings_test.go::runRingsHarness": [
+      "t.Skip(\"no C compiler on PATH\")",
+      "t.Skipf(\"cc does not accept %v: %s\", ccFlags, out)"
+    ],
+    "compiler/e2e_rvv_test.go::TestE2ERVVAgreesWithInterpreter": [
+      "t.Skip(\"qemu-system-riscv64 not present\")",
+      "t.Skipf(\"no zig for %s (%v)\", tgt, err)"
+    ],
+    "compiler/e2e_sme_test.go::requireSME": [
+      "t.Skip(\"SME detection is implemented for macOS hosts\")",
+      "t.Skip(\"host has no SME\")"
+    ],
+    "compiler/e2e_stdlib_buffer_test.go::TestStdlibBuilderOptimizesToConstant": [
+      "t.Skip(\"assembly comparison currently targets the Linux amd64 CI toolchain\")",
+      "t.Skip(\"no C compiler\")"
+    ],
+    "compiler/e2e_sve_test.go::TestE2ESVEAgreesWithInterpreter": [
+      "t.Skip(\"qemu-system-aarch64 not present\")",
+      "t.Skipf(\"no zig for %s (%v)\", tgt, err)"
+    ],
+    "compiler/e2e_test.go::buildAndRunFrom": [
+      "t.Skip(\"no C compiler on PATH\")"
+    ],
+    "compiler/e2e_test.go::skipInShort": [
+      "t.Skip(\"long test; run without -short\")"
+    ],
+    "compiler/hypervisor_poc_test.go::buildAndRunStrict": [
+      "t.Skip(\"no C compiler on PATH\")"
+    ],
+    "compiler/lean_float_bits_test.go::TestLeanFloatBitsAgreeWithHost": [
+      "t.Skip(\"lake not found (PATH or ~/.elan/bin)\")"
+    ],
+    "compiler/lean_stdlib_faithful_test.go::TestLeanStdlibFaithful": [
+      "t.Skip(\"lake not found (PATH or ~/.elan/bin); the faithfulness check needs the Lean toolchain\")"
+    ],
+    "compiler/lean_time_calendar_faithful_test.go::TestLeanTimeCalendarFaithful": [
+      "t.Skip(\"calendar correspondence requires lake\")"
+    ],
+    "compiler/lean_time_codec_faithful_test.go::TestLeanTimeCodecFaithful": [
+      "t.Skip(\"codec correspondence requires lake\")"
+    ],
+    "compiler/lean_wasm_assembler_test.go::TestLeanWasmAssemblerFaithful": [
+      "t.Skip(\"lake unavailable; formal CI requires the extraction oracle\")"
+    ],
+    "compiler/lrat_kernel_test.go::TestLRATKernelRecordSoundness": [
+      "t.Skip(\"lake not on PATH; formal CI requires whole-record soundness\")"
+    ],
+    "compiler/lrat_kernel_test.go::TestLRATKernelTrailSoundness": [
+      "t.Skip(\"lake not on PATH; formal CI requires production LRAT proofs\")"
+    ],
+    "compiler/protocol_refine_test.go::TestTLARefinementRunsTLC": [
+      "t.Skip(reason)"
+    ],
+    "compiler/rv64_framed_bitwise_lean_test.go::testRV64BitwiseCompilerPins": [
+      "t.Skip(\"lake unavailable\")",
+      "t.Skip(\"optional pinned RV64 Sail export unavailable\")"
+    ],
+    "compiler/rv64_image_bitwise_lean_test.go::TestRV64ImageBitwiseCompilerMatchesLean": [
+      "t.Skip(\"lake unavailable; complete production ELF structural checks passed\")",
+      "t.Skip(\"optional pinned RV64 Sail export unavailable; complete production ELF structural checks passed\")"
+    ],
+    "compiler/wasm_branch_test.go::TestWasmDiamondTiming": [
+      "t.Skip(\"opt-in engine timings; no noisy CI threshold\")"
+    ],
+    "compiler/wasm_call_composition_test.go::TestWasmCallCompositionLean": [
+      "t.Skip(\"lake unavailable\")"
+    ],
+    "compiler/wasm_calls_test.go::TestWasmCallsLean": [
+      "t.Skip(\"lake unavailable\")"
+    ],
+    "compiler/wasm_control_test.go::TestWasmControlLean": [
+      "t.Skip(\"lake unavailable; formal CI requires control execution checks\")"
+    ],
+    "compiler/wasm_core_source_test.go::TestWasmCoreSourceMatchesLean": [
+      "t.Skip(\"lake unavailable\")"
+    ],
+    "compiler/wasm_core_source_test.go::loadWasmNumericSources": [
+      "t.Skipf(\"official Wasm numeric sources unavailable: %s\", out)"
+    ],
+    "compiler/wasm_execution_test.go::TestWasmExecutionLean": [
+      "t.Skip(\"lake unavailable; formal CI requires decoded execution checks\")"
+    ],
+    "compiler/wasm_forward_test.go::TestWasmForwardTiming": [
+      "t.Skip(\"opt-in engine timings; no noisy CI threshold\")"
+    ],
+    "compiler/wasm_loop_test.go::TestWasmStructuredLoopTiming": [
+      "t.Skip(\"opt-in engine timings; no noisy CI threshold\")"
+    ],
+    "compiler/wasm_module_test.go::TestWasmModuleLean": [
+      "t.Skip(\"lake unavailable\")"
+    ],
+    "compiler/wasm_nested_loop_test.go::TestWasmNestedLoopTiming": [
+      "t.Skip(\"opt-in engine timings; no noisy CI threshold\")"
+    ],
+    "compiler/wasm_region_loop_test.go::TestWasmRegionLoopTiming": [
+      "t.Skip(\"opt-in engine timings; no noisy CI threshold\")"
+    ],
+    "compiler/wasm_stack_test.go::TestWasmStackExpressionTiming": [
+      "t.Skip(\"opt-in engine timings; no noisy CI threshold\")"
+    ],
+    "compiler/wasm_typing_test.go::TestWasmTypingLean": [
+      "t.Skip(\"lake unavailable\")"
+    ],
+    "experiments/verification-poc/helper_inlining_test.go::TestCheckerHelpersInline": [
+      "t.Skip(\"C compiler required\")"
+    ],
+    "experiments/verification-poc/self_hosted_certified_stream_test.go::TestSelfHostedCertifiedCertificates": [
+      "t.Skip(\"actual certificate replay runs in the opt-in solver gate\")"
+    ],
+    "experiments/verification-poc/self_hosted_rup_test.go::TestSelfHostedRUPKernel": [
+      "t.Skip(\"no C compiler\")"
+    ],
+    "experiments/verification-poc/self_hosted_text_test.go::TestSelfHostedTextCertificate": [
+      "t.Skip(\"actual certificate replay runs in the opt-in solver gate\")"
+    ],
+    "lean_cli_test.go::TestBuildLeanNamespace": [
+      "t.Skip(\"lake not found (PATH or ~/.elan/bin)\")"
+    ],
+    "link_cli_test.go::archiveFixture": [
+      "t.Skip(\"no C compiler on PATH\")",
+      "t.Skip(\"no archiver on PATH\")"
+    ],
+    "lrat_entry_test.go::lratEntryBinary": [
+      "t.Skip(\"no C compiler for LRAT entry-point tests\")"
+    ],
+    "lrat_formula_test.go::TestLRATFormulaBindingMatchesLean": [
+      "t.Skip(\"lake not on PATH; formal CI requires the Lean replay\")"
+    ],
+    "lrat_formula_test.go::TestOakLRATFormulaBinding": [
+      "t.Skip(\"no C compiler for the bootstrap differential\")"
+    ],
+    "machine/aarch64_control_flow_lean_test.go::checkAArch64SelectorLean": [
+      "t.Skip(\"lake not on PATH; ARM64 proof workflow requires this oracle\")"
+    ],
+    "machine/rv64_control_flow_lean_test.go::checkRV64SelectorLean": [
+      "t.Skip(\"lake not on PATH; RV64 proof workflow requires this oracle\")"
+    ],
+    "main_test.go::TestBuildCache": [
+      "t.Skip(\"no C compiler\")"
+    ],
+    "object_output_cli_test.go::TestBuildObjectOutput": [
+      "t.Skip(\"no C compiler\")"
+    ],
+    "prove/lrat_test.go::TestEncodeLRATWordsRemapsSparseClauseIDs": [
+      "t.Skip(\"sparse source id exceeds a 32-bit host int\")"
+    ],
+    "prove_sat_test.go::TestCertificateRungTrustsOnlyCheckedAnswers": [
+      "t.Skip(\"the fake solver is a shell script\")"
+    ],
+    "prove_sat_test.go::TestCertificateRungWithSolver": [
+      "t.Skip(\"no cadical on this machine\")"
+    ],
+    "repl/lean_test.go::TestLeanCheckReportsVerdicts": [
+      "t.Skip(\"lake not on PATH\")"
+    ],
+    "repl/leancheck_test.go::trustProject": [
+      "t.Skip(\"lake not on PATH\")"
+    ],
+    "sat_model_test.go::TestOakSATModelRawWords": [
+      "t.Skip(\"lake not on PATH; formal CI requires the extracted-checker replay\")"
+    ],
+    "sat_model_test.go::TestOakSATModelSoundnessLean": [
+      "t.Skip(\"lake not on PATH; formal CI requires the production soundness proof\")"
+    ],
+    "semir/aarch64_herd_test.go::requireAArch64Herd": [
+      "t.Skip(message)"
+    ],
+    "serialize/generate_golden_test.go::TestGenerateGoldenFiles": [
+      "t.Skip(\"set OAK_GENERATE_GOLDEN=1 to run golden file generation test\")"
+    ],
+    "serialize/golden_corpus_test.go::TestGoldenCCompiles": [
+      "t.Skip(\"no C compiler on PATH\")"
+    ],
+    "serialize/golden_corpus_test.go::TestGoldenCorpusMatches": [
+      "t.Skip(\"case marked as known issue\")"
+    ],
+    "spec_laws_test.go::leanBinary": [
+      "t.Skip(\"lean not found (PATH or ~/.elan/bin); the Lean-proved laws need the toolchain\")"
+    ],
+    "spec_solver_test.go::TestOakShellAgreesNative": [
+      "t.Skip(\"the native backend's host lane is AArch64\")"
+    ],
+    "testrunner/adapter_test.go::TestNativeAdapterReplayPinsImplementation": [
+      "t.Skip(\"native adapters require an ELF toolchain\")"
+    ],
+    "testrunner/adapter_test.go::compileAdapterFixture": [
+      "t.Skip(\"requires cc\")"
+    ],
+    "testrunner/bench_test.go::benchmarkCampaign": [
+      "b.Skip(\"requires cc\")"
+    ],
+    "testrunner/commands_test.go::FuzzMinimizeCommands": [
+      "t.Skip()"
+    ],
+    "testrunner/dispatch_test.go::TestDispatchClaimsAreChecked": [
+      "t.Skip(\"the crc slot is inert off AArch64\")"
+    ],
+    "testrunner/emulator_test.go::TestForeignTargetRunsUnderEmulator": [
+      "t.Skipf(\"no cross compiler: %v\", err)",
+      "t.Skipf(\"no emulator: %v\", err)"
+    ],
+    "testrunner/engine_test.go::FuzzMinimize": [
+      "t.Skip()"
+    ],
+    "testrunner/engine_test.go::FuzzMutationBounds": [
+      "t.Skip()"
+    ],
+    "testrunner/link_test.go::TestLinkedNativeLibraryInTests": [
+      "t.Skip(\"requires ar\")",
+      "t.Skip(\"requires cc\")"
+    ],
+    "testrunner/process_trace_test.go::TestProcessTracing": [
+      "t.Skip(\"resident workers require fork\")"
+    ],
+    "testrunner/runner_test.go::TestFuzzHarnessExportAndNativeExecution": [
+      "t.Skip(\"clang has no libFuzzer runtime on this host\")",
+      "t.Skip(\"requires clang\")"
+    ],
+    "testrunner/runner_test.go::runCLI": [
+      "t.Skip(\"requires cc\")"
+    ],
+    "testrunner/target_test.go::TestTargetFlagBuildsWithoutRunning": [
+      "t.Skipf(\"no toolchain for %s: %v\", foreign, err)"
+    ],
+    "wasm/check/leb_lean_test.go::TestWasmLEBMatchesLean": [
+      "t.Skip(\"lake unavailable; formal CI requires this oracle\")"
+    ],
+    "wasm/encoding/lean_test.go::TestWasmEncodingMatchesLean": [
+      "t.Skip(\"lake unavailable; formal CI requires this oracle\")"
+    ]
+  },
+  "children": {
+    ".": {
+      "TestOakShellAgreesNative": [
+        "adts.oak",
+        "discharge.oak",
+        "effects.oak",
+        "extents.oak",
+        "floats.oak",
+        "generalization.oak",
+        "intrinsics.oak",
+        "lattice.oak",
+        "layout.oak",
+        "machines.oak",
+        "mono.oak",
+        "patterns.oak",
+        "protocols.oak",
+        "quantifiers.oak",
+        "shapes.oak",
+        "sums.oak",
+        "witnesses.oak"
+      ]
+    },
+    "./compiler": {
+      "TestE2ENativeUnrollGeneratedNames": [
+        "native",
+        "c"
+      ],
+      "TestE2ENativeAffineIndexLoopTraps": [
+        "bad_table",
+        "bad_domain"
+      ],
+      "TestE2ENativeFMAMaps": [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "7",
+        "8",
+        "9",
+        "17"
+      ],
+      "TestE2ENativeUnrolledMapInPlaceAndMismatchedLengths": [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "17"
+      ],
+      "TestE2ENativeArrayPermutationLoop": [
+        "native",
+        "c"
+      ],
+      "TestE2ENativeReductionLivenessTails": [
+        "0",
+        "1",
+        "3",
+        "4",
+        "7",
+        "8",
+        "9",
+        "15",
+        "16",
+        "17",
+        "31",
+        "32",
+        "33"
+      ]
+    }
+  }
+}

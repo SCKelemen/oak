@@ -1,0 +1,54 @@
+name: Native ARM64
+
+on:
+  push:
+    branches: [main, master, specification]
+  pull_request:
+    branches: [main, master, specification]
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    name: Native ARM64 host tests
+    # Standard public-repository runner, not a paid larger runner. One job,
+    # serial packages, no second broad test matrix. Actual native execution is
+    # mandatory: QEMU and the x86 jobs are separate coverage.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    concurrency:
+      group: ${{ github.workflow }}-host-tests-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
+    env:
+      CGO_ENABLED: '1'
+      GOFLAGS: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Install native compiler and linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential clang
+          uname -m
+          lscpu
+          go version
+          cc --version
+          clang --version
+      - name: Verify dependencies and coverage guard regressions
+        run: |
+          go mod verify
+          go test -race -count=1 ./.github/scripts/native_arm64
+          python3 -m unittest discover -s .github/scripts -p test_native_arm64.py -v
+      - name: Execute every required native ARM64 root and subtest
+        run: python3 .github/scripts/native_arm64.py --run
+      - name: Preserve native execution evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: native-arm64-results/
+          if-no-files-found: warn
+          retention-days: 14
