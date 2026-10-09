@@ -434,13 +434,23 @@ The framing checks reject truncation, trailing words, and wrapping lengths.
 A proof for a different embedded formula does not count, even when its
 dimensions match. The word certificate is neither printed nor parsed on
 the way; an external solver's certificate is text, checked as before.
-`Oak.LRATFormulaBinding` models this identity gate and transfers abstract
-RUP acceptance to the expected database under an explicit shared decoder.
+`Oak.LRATFormulaBinding` models this identity gate. The concrete composition
+in `Oak.LRATFormulaBinding.production_bound_record_sound` (module
+`Oak.LRATBoundSoundness`) connects exact
+formula identity to `production_record_sound`: an accepted production record
+refutes the independently supplied, successfully decoded expected CNF. Its
+natural-cursor decoder checks array bounds, each length-prefixed clause, and
+exact consumption of the declared initial region. The theorem assumes neither
+an abstract RUP derivation nor an arbitrary shared decoder. Successful expected
+CNF decoding is an explicit hypothesis; deriving it from a source-to-CNF emitter
+remains separate.
 The 64-case raw-word corpus runs through the production Go predicate, the
 compiled Oak predicate and acceptance wrapper, and kernel-replayed Lean
-examples in formal CI. This is bounded correspondence; concrete decoding,
-RUP implementation refinement, source-to-CNF correctness, and native
-compilation of the checker remain separate proof obligations.
+examples in formal CI. The dedicated LRAT job also pins the concrete composition
+contract, tests malformed decoder boundaries, and rejects proof holes. Refinement
+of the production identity loops to the list predicate remains bounded
+correspondence; source-to-CNF correctness and native compilation of the checker
+remain separate proof obligations.
 `-cnf dir` writes every bit-level
 obligation's clauses as DIMACS (`name.cnf`) for any solver or checker to
 read; the clause engine agrees with the diagram engine input for input over

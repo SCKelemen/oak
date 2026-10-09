@@ -5,7 +5,7 @@ on:
     branches:
       - specification
       - docs/spec-consolidation
-      - codex/lrat-record-framing
+      - codex/lrat-bound-soundness
   pull_request:
     branches:
       - specification
@@ -72,7 +72,7 @@ jobs:
       # Track the complete LRAT proof independently of unrelated formal modules.
       - name: Build production LRAT whole-record proof
         working-directory: spec/lean
-        run: lake build Oak.LRATRecordSoundness
+        run: lake build Oak.LRATBoundSoundness
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -84,6 +84,11 @@ jobs:
           OAK_REQUIRE_LRAT_TRAIL_LEAN: '1'
           OAK_REQUIRE_LRAT_RECORD_LEAN: '1'
         run: go test ./compiler -run '^TestLRATKernel' -count=1 -timeout=10m -v
+
+      - name: Check exact formula binding and concrete soundness
+        env:
+          OAK_REQUIRE_LRAT_BINDING_LEAN: '1'
+        run: go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean)$' -count=1 -timeout=10m -v
 
   lean:
     # Proof-branch iterations use the dedicated gates above. PR and

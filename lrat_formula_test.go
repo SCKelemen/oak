@@ -176,7 +176,7 @@ func TestLRATFormulaBindingMatchesLean(t *testing.T) {
 		t.Skip("lake not on PATH; formal CI requires the Lean replay")
 	}
 	var source strings.Builder
-	source.WriteString("import Oak.LRATFormulaBinding\n\n")
+	source.WriteString("import Oak.LRATBoundSoundness\n\n")
 	list := func(words []uint32) string {
 		items := make([]string, len(words))
 		for i, word := range words {
@@ -191,17 +191,49 @@ func TestLRATFormulaBindingMatchesLean(t *testing.T) {
 		}
 		fmt.Fprintf(&source, "example : Oak.LRATFormulaBinding.matchesFormula %s %s = %t := by decide\n", list(c.formula), list(c.record), got)
 	}
+	source.WriteString(`
+open Oak.LRATFormulaBinding in
+example (formula record starts lengths : Array UInt32)
+    (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32)
+    (fuel : Nat) (s l : Array UInt32) (v : Array UInt8) (t : Array UInt32)
+    (x : Array UInt8) (y o : Array UInt32) (clauses : List Oak.RupCheck.Clause)
+    (bound : matchesFormula (project formula) (project record) = true)
+    (decoded : decodeInitial formula 8 (8 + (formula.getD 3 0).toNat)
+      (formula.getD 2 0).toNat = some clauses)
+    (run : Oak.LRATChecker.lrat_check record starts lengths alive store assign trail out fuel =
+      some (Oak.LRATChecker.LRAT_ACCEPTED, s, l, v, t, x, y, o)) :
+    ¬ ∃ a, ∀ clause ∈ clauses, Oak.RupCheck.SatisfiesClause a clause :=
+  production_bound_record_sound formula record starts lengths alive store assign trail out
+    fuel s l v t x y o clauses bound decoded run
+example : Oak.LRATFormulaBinding.decodeInitial #[1, 0, 1, 1] 0 4 2 =
+    some [Oak.LRATChecker.inputClause #[1, 0, 1, 1] 1 1,
+      Oak.LRATChecker.inputClause #[1, 0, 1, 1] 3 1] := by decide
+example : Oak.LRATFormulaBinding.decodeInitial #[] 0 0 0 = some [] := by decide
+example : Oak.LRATFormulaBinding.decodeInitial #[0] 0 1 1 = some [[]] := by decide
+example : Oak.LRATFormulaBinding.decodeInitial #[] 0 1 1 = none := by decide
+example : Oak.LRATFormulaBinding.decodeInitial #[] 1 1 0 = none := by decide
+example : Oak.LRATFormulaBinding.decodeInitial #[1] 0 1 1 = none := by decide
+example : Oak.LRATFormulaBinding.decodeInitial #[4294967295] 0 1 1 = none := by decide
+example : Oak.LRATFormulaBinding.decodeInitial #[0, 0] 0 2 1 = none := by decide
+example : Oak.LRATFormulaBinding.decodeInitial #[0] 0 1 2 = none := by decide
+#print axioms Oak.LRATFormulaBinding.production_bound_record_sound
+#print axioms Oak.LRATFormulaBinding.decodeInitial_transfer
+`)
 	path := filepath.Join(t.TempDir(), "FormulaBindingPins.lean")
 	if err := os.WriteFile(path, []byte(source.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	for _, args := range [][]string{{"build", "Oak.LRATFormulaBinding"}, {"env", "lean", path}} {
+	for _, args := range [][]string{{"build", "Oak.LRATBoundSoundness"}, {"env", "lean", path}} {
 		cmd := exec.CommandContext(ctx, lake, args...)
 		cmd.Dir = filepath.Join("spec", "lean")
-		if out, err := cmd.CombinedOutput(); err != nil {
+		out, err := cmd.CombinedOutput()
+		if err != nil {
 			t.Fatalf("Lean formula binding: %v (%v)\n%s", err, ctx.Err(), out)
+		}
+		if strings.Contains(string(out), "sorryAx") {
+			t.Fatalf("formula-binding soundness depends on a proof hole:\n%s", out)
 		}
 	}
 }
