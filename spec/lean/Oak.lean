@@ -326,3 +326,5 @@ import Oak.WasmCoreBitwiseProjection
 import Oak.WasmCoreSource
 
 import Oak.LRATBoundSoundness
+
+import Oak.LRATBindingModel

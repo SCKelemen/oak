@@ -193,7 +193,7 @@ func TestLRATFormulaBindingMatchesLean(t *testing.T) {
 		t.Skip("lake not on PATH; formal CI requires the Lean replay")
 	}
 	var source strings.Builder
-	source.WriteString("import Oak.LRATBoundSoundness\nimport Oak.LRATBindingExtracted\n\n")
+	source.WriteString("import Oak.LRATBindingModel\nimport Oak.LRATBindingExtracted\n\n")
 	list := func(words []uint32) string {
 		items := make([]string, len(words))
 		for i, word := range words {
@@ -234,6 +234,23 @@ example : Oak.LRATFormulaBinding.decodeInitial #[1] 0 1 1 = none := by decide
 example : Oak.LRATFormulaBinding.decodeInitial #[4294967295] 0 1 1 = none := by decide
 example : Oak.LRATFormulaBinding.decodeInitial #[0, 0] 0 2 1 = none := by decide
 example : Oak.LRATFormulaBinding.decodeInitial #[0] 0 1 2 = none := by decide
+example (formula record : Array UInt32) (fuel : Nat)
+    (formulaSize : formula.size < 4294967296) (recordSize : record.size < 4294967296)
+    (run : Oak.LRATBinding.lrat_matches_formula formula record fuel = some true) :
+    Oak.LRATFormulaBinding.matchesFormula (Oak.LRATFormulaBinding.project formula)
+      (Oak.LRATFormulaBinding.project record) = true :=
+  Oak.LRATFormulaBinding.production_binding_refines_model formula record fuel formulaSize recordSize run
+example : Oak.LRATBinding.lrat_matches_formula
+    #[1280459348, 0, 0, 0, 0, 0, 0, 0] #[1280459348, 0, 0, 0, 0, 0, 0, 0] 0 = none := by decide
+example : Oak.LRATBinding.lrat_matches_formula
+    #[1280459348, 0, 0, 0, 0, 0, 0, 0] #[1280459348, 0, 0, 0, 0, 0, 0, 0] 1 = some true := by decide
+example : Oak.LRATBinding.lrat_matches_formula
+    #[1280459348, 0, 1, 1, 0, 0, 0, 0, 0] #[1280459348, 0, 1, 1, 0, 0, 0, 0, 0] 1 = none := by decide
+example : Oak.LRATBinding.lrat_matches_formula
+    #[1280459348, 0, 1, 1, 0, 0, 0, 0, 0] #[1280459348, 0, 1, 1, 0, 0, 0, 0, 0] 2 = some true := by decide
+example : Oak.LRATBinding.lrat_matches_formula.loop1 #[0, 1, 2] #[9, 1, 2] true 0 3 =
+    some (false, 1) := by decide
+#print axioms Oak.LRATFormulaBinding.production_binding_refines_model
 #print axioms Oak.LRATFormulaBinding.production_bound_record_sound
 #print axioms Oak.LRATFormulaBinding.decodeInitial_transfer
 `)
@@ -243,7 +260,7 @@ example : Oak.LRATFormulaBinding.decodeInitial #[0] 0 1 2 = none := by decide
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	for _, args := range [][]string{{"build", "Oak.LRATBoundSoundness", "Oak.LRATBindingExtracted"}, {"env", "lean", path}} {
+	for _, args := range [][]string{{"build", "Oak.LRATBindingModel"}, {"env", "lean", path}} {
 		cmd := exec.CommandContext(ctx, lake, args...)
 		cmd.Dir = filepath.Join("spec", "lean")
 		out, err := cmd.CombinedOutput()
