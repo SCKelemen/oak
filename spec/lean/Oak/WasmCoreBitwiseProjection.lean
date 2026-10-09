@@ -6,7 +6,10 @@ import Oak.BitwiseSourceLowering
 This hand-written projection follows the named rules in WebAssembly/spec at
 970c4116e644e2bf7acb39aab8b733db14ccdf28. See
 `spec/wasm-core/README.md` for the exact provenance and remaining obligations.
-Lean checks the theorems below, not the transcription's fidelity to SpecTec.
+Lean checks the theorems below, not this overall transcription's fidelity to
+SpecTec. WasmNumericSource separately binds the original scalar dispatch bytes
+(opcode, width and operands) to this numeric projection; builtin bit semantics
+and the broader Core representation remain reviewed interpretation boundaries.
 In particular this is NOT an independently verified external binary decoder,
 Module_ok proof, or full Core instantiation proof. No production flag uses it.
 
@@ -28,7 +31,9 @@ def binop : Op → Binop
   | .and => .and | .or => .or | .xor => .xor
 
 /-- Mathematical implementation of the SpecTec numeric builtins. These are
-only DECLARED builtin upstream; correspondence is a documented trust boundary.
+only DECLARED builtin upstream; their bit semantics remain a documented reviewed
+interpretation boundary. The separate WasmNumericSource checker proves the
+source dispatch's opcode/width/operand wiring to this interpretation.
 i32 is an unsigned bit pattern here; no signed extension or reinterpretation
 is performed by AND/OR/XOR. -/
 def numeric : Binop → BitVec 32 → BitVec 32 → BitVec 32
