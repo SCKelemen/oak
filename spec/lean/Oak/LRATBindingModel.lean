@@ -92,7 +92,7 @@ theorem production_binding_refines_model (formula record : Array UInt32) (fuel :
     · exact congrArg UInt32.toNat fm
     · have zero : (formula.getD 4 0).toNat = 0 := congrArg UInt32.toNat fsteps
       omega
-  · exact congrArg UInt32.toNat fsteps
+  · simpa only [project_word] using congrArg UInt32.toNat fsteps
   · simp only [Framed, project_length, project_word]
     exact ⟨rn, congrArg UInt32.toNat rm, rl, steps⟩
   · unfold formulaKey
