@@ -9,6 +9,8 @@ as Oak UInt32 view lengths. Fuel exhaustion is not successful execution.
 set_option autoImplicit false
 namespace Oak.LRATFormulaBinding
 
+private theorem eight_nat : (8 : UInt32).toNat = 8 := by decide
+
 @[simp] theorem project_length (words : Array UInt32) :
     (project words).length = words.size := by simp [project]
 
@@ -62,25 +64,34 @@ theorem production_binding_refines_model (formula record : Array UInt32) (fuel :
   simp only [LRATChecker.bindingHeader, Bool.and_eq_true, decide_eq_true_eq,
     beq_iff_eq, and_assoc] at header
   obtain ⟨fs, rs, fm, rm, fsteps, flen, rlen, rsteps, vars, counts, lens⟩ := header
+  change formula.getD 0 0 = LRATBinding.LRAT_MAGIC at fm
+  change record.getD 0 0 = LRATBinding.LRAT_MAGIC at rm
+  change formula.getD 4 0 = 0 at fsteps
+  change formula.getD 3 0 = formula.size.toUInt32 - 8 at flen
+  change record.getD 3 0 ≤ record.size.toUInt32 - 8 at rlen
+  change record.getD 4 0 = record.size.toUInt32 - 8 - record.getD 3 0 at rsteps
+  change formula.getD 1 0 = record.getD 1 0 at vars
+  change formula.getD 2 0 = record.getD 2 0 at counts
+  change formula.getD 3 0 = record.getD 3 0 at lens
   have fsize : formula.size.toUInt32.toNat = formula.size := Nat.mod_eq_of_lt formulaSize
   have rsize : record.size.toUInt32.toNat = record.size := Nat.mod_eq_of_lt recordSize
   change (8 : UInt32) ≤ formula.size.toUInt32 at fs
   change (8 : UInt32) ≤ record.size.toUInt32 at rs
   have fn : 8 ≤ formula.size := by
     have h := UInt32.le_iff_toNat_le.mp fs
-    simpa only [fsize] using h
+    simpa only [eight_nat, fsize] using h
   have rn : 8 ≤ record.size := by
     have h := UInt32.le_iff_toNat_le.mp rs
-    simpa only [rsize] using h
+    simpa only [eight_nat, rsize] using h
   have fl : (formula.getD 3 0).toNat = formula.size - 8 := by
     have h := congrArg UInt32.toNat flen
-    simpa only [UInt32.toNat_sub_of_le _ _ fs, fsize] using h
+    simpa only [UInt32.toNat_sub_of_le _ _ fs, eight_nat, fsize] using h
   have rl : (record.getD 3 0).toNat ≤ record.size - 8 := by
     have h := UInt32.le_iff_toNat_le.mp rlen
-    simpa only [UInt32.toNat_sub_of_le _ _ rs, rsize] using h
+    simpa only [UInt32.toNat_sub_of_le _ _ rs, eight_nat, rsize] using h
   have steps : (record.getD 4 0).toNat = record.size - 8 - (record.getD 3 0).toNat := by
     have h := congrArg UInt32.toNat rsteps
-    simpa only [UInt32.toNat_sub_of_le _ _ rlen, UInt32.toNat_sub_of_le _ _ rs, rsize] using h
+    simpa only [UInt32.toNat_sub_of_le _ _ rlen, UInt32.toNat_sub_of_le _ _ rs, eight_nat, rsize] using h
   have flit : (formula.getD 3 0).toNat = (record.getD 3 0).toNat := congrArg UInt32.toNat lens
   have body := projected_body_eq formula record (record.getD 3 0).toNat
     (by omega) (by omega) (by intro k lo hi; exact (exactBinding.payload k lo hi).symm)
@@ -92,7 +103,7 @@ theorem production_binding_refines_model (formula record : Array UInt32) (fuel :
     · exact congrArg UInt32.toNat fm
     · have zero : (formula.getD 4 0).toNat = 0 := congrArg UInt32.toNat fsteps
       omega
-  · simpa only [project_word] using congrArg UInt32.toNat fsteps
+  · simpa only [project_word, UInt32.toNat_zero] using congrArg UInt32.toNat fsteps
   · simp only [Framed, project_length, project_word]
     exact ⟨rn, congrArg UInt32.toNat rm, rl, steps⟩
   · unfold formulaKey
