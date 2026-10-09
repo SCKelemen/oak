@@ -195,22 +195,7 @@ func TestSailDecodeCoverage(t *testing.T) {
 	if _, err := os.Stat(sailArmModel); err != nil {
 		requireOracle(t, "sail-arm model not present: "+err.Error())
 	}
-	llvmMC := ""
-	if path, err := exec.LookPath("llvm-mc"); err == nil {
-		llvmMC = path
-	}
-	for _, candidate := range llvmMCCandidates {
-		if llvmMC != "" {
-			break
-		}
-		if _, err := os.Stat(candidate); err == nil {
-			llvmMC = candidate
-			break
-		}
-	}
-	if llvmMC == "" {
-		requireOracle(t, "llvm-mc not present")
-	}
+	llvmMC := findLLVMMC(t)
 	classes, err := parseSailDecodeClasses(sailArmModel)
 	if err != nil {
 		t.Fatal(err)

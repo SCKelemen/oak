@@ -2,6 +2,7 @@ package testrunner
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,9 +11,9 @@ import (
 )
 
 // `oak test -target` (docs/spec/90-backend.md §2a): a foreign hosted target
-// is built through its cross toolchain and every test is reported "built",
-// not run; a freestanding target is refused, since the test harness is
-// hosted C; and the run-dependent modes are refused with a foreign target.
+// is built through its cross toolchain and, without an emulator, every test
+// is reported "built", not run; a freestanding target is refused, since the
+// test harness is hosted C; run-dependent modes need the host target.
 func TestTargetFlagBuildsWithoutRunning(t *testing.T) {
 	dir := fixture(t, map[string]string{
 		"production.oak": "double: (x: u32): u32 = x + x\nmain: (): i32 = 42",
@@ -39,6 +40,11 @@ TestArithmetic: (): () { test_check(double(u32(3)) == u32(6), u32(1)) }
 	if _, err := toolchain.Resolve(foreign, toolchain.Options{}, nil, nil); err != nil {
 		t.Skipf("no toolchain for %s: %v", foreign, err)
 	}
+	// Exercise the build-only fallback even on an equipped CI host. An
+	// explicit unavailable emulator must not fall through to auto-detected
+	// QEMU; TestForeignTargetRunsUnderEmulator checks real execution there.
+	unavailableEmulator := filepath.Join(t.TempDir(), "unavailable-emulator")
+	t.Setenv("OAK_EMULATOR", unavailableEmulator)
 	code, results, errText := runCLI(t, "-target", foreign.String(), dir)
 	if code != 0 {
 		t.Fatalf("code %d, stderr %s, results %+v", code, errText, results)
@@ -48,5 +54,8 @@ TestArithmetic: (): () { test_check(double(u32(3)) == u32(6), u32(1)) }
 	}
 	if !strings.Contains(results[0].Output, "built for "+foreign.String()) {
 		t.Fatalf("output = %q", results[0].Output)
+	}
+	if !strings.Contains(results[0].Output, "not run (OAK_EMULATOR="+unavailableEmulator+":") {
+		t.Fatalf("build-only result must identify the unavailable emulator: %q", results[0].Output)
 	}
 }

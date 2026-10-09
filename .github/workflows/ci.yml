@@ -65,6 +65,12 @@ jobs:
     - name: Check nested array store regression
       run: go test -v ./compiler -run '^TestE2ENestedArrayFieldStores$' -count=1
 
+    - name: Check required backend test inventory and runner
+      if: matrix.shard == 'packages'
+      run: |
+        python3 -m unittest discover -s .github/scripts -p 'test_required_backend_tests.py' -v
+        python3 .github/scripts/required_backend_tests.py --check
+
     - name: Run tests
       env:
         OAK_TLA2TOOLS_JAR: /tmp/tla2tools.jar
@@ -128,6 +134,14 @@ jobs:
 
     - name: Cross-build Linux targets and run the microcontroller targets
       run: go test -v -timeout 15m ./target ./toolchain ./compiler -run '^Test(ParseAndEnv|Spellings|ResolveOrder|ResolveEmulator|Cross|E2EMicrocontroller|E2ERVV|E2ESVE|E2ENativeRV64)'
+
+    # These roots and their nested architecture checks skip in ordinary Go
+    # jobs. Require actual passes here, where Zig and both QEMU modes exist.
+    - name: Require cross-backend execution and partial linking
+      run: python3 .github/scripts/required_backend_tests.py cross-compiler
+
+    - name: Require foreign-target test runner behavior
+      run: python3 .github/scripts/required_backend_tests.py cross-testrunner
 
     - name: Run freestanding native executables under system QEMU
       run: go test -v -timeout 10m ./compiler -run '^TestE2ENativeExecutable(UnderQEMU|RefusesCBodies)$'

@@ -69,6 +69,8 @@ on:
       - 'spec/lean/Oak/RiscVFramedBitwise.lean'
       - 'compiler/rv64_framed_bitwise_lean_test.go'
       - '.github/workflows/formal-sail.yml'
+      - '.github/scripts/required_backend_tests.py'
+      - '.github/scripts/test_required_backend_tests.py'
   pull_request:
     branches:
       - specification
@@ -113,8 +115,14 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf qemu-system-misc llvm build-essential libgmp-dev pkg-config
-          llvm-mc --version | head -1
+          sudo apt-get install -y --no-install-recommends gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf qemu-system-misc llvm-19 build-essential libgmp-dev pkg-config
+          # The differential corpus uses apple-m4 (including SME2), which
+          # requires LLVM 19; Ubuntu 24.04's unversioned llvm selects 18.
+          echo "/usr/lib/llvm-19/bin" >> "$GITHUB_PATH"
+          /usr/lib/llvm-19/bin/llvm-mc --version | head -1
+          printf 'smstart\nfmopa za0.s, p0/m, p1/m, z0.s, z1.s\n' | /usr/lib/llvm-19/bin/llvm-mc --triple=arm64 -mcpu=apple-m4 --show-encoding
+          /usr/lib/llvm-19/bin/llvm-objdump --version | head -1
+          /usr/lib/llvm-19/bin/llvm-nm --version | head -1
           riscv64-unknown-elf-gcc --version | head -1
 
       - name: Install the pinned Sail release
@@ -170,6 +178,16 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.27.1'
+
+      - name: Require BRK, CBZ32, and scalar ADDP source contracts
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: python3 .github/scripts/required_backend_tests.py sail-source
+
+      - name: Require LLVM encoder and object differential checks
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: python3 .github/scripts/required_backend_tests.py llvm
 
       - name: Run the oracle tests, every oracle required
         env:

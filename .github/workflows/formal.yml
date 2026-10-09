@@ -133,6 +133,12 @@ jobs:
         with:
           go-version: '1.27.1'
 
+      - name: Require floating-point and extracted Lean execution
+        run: python3 .github/scripts/required_backend_tests.py lean-compiler
+
+      - name: Require generated Lean namespace imports
+        run: python3 .github/scripts/required_backend_tests.py lean-cli
+
       - name: Check REPL obligation generation and proof trust verdicts
         run: go test ./repl -run 'TestLean|TestClassify' -count=1 -timeout=10m -v
 
