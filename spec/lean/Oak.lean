@@ -21,6 +21,7 @@ import Oak.RiscVFramedBitwise
 import Oak.WasmControl
 import Oak.WasmCalls
 import Oak.WasmModule
+import Oak.WasmCallComposition
 import Oak.WasmTyping
 import Oak.Effects
 import Oak.EffectRows
