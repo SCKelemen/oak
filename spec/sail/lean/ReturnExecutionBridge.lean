@@ -1,4 +1,4 @@
-import ReturnExecution
+import ReturnConfig
 import Std.Data.ExtDHashMap.Lemmas
 namespace Oak.SailBridge.Return
 open ReturnExecution ReturnExecution.Functions Sail PreSail
@@ -64,7 +64,6 @@ theorem regime_el0_missing (b : Boundaries) (s : State)
 
 structure QueryProfile (b : Boundaries) : Prop where
  a32 : b.ELUsingAArch32 EL1 = pure false
- pac : b.HavePACExt () = pure false
  usingA32 : b.UsingAArch32 () = pure false
 
 def put (s : State) (r : ReturnExecution.Register) (v : ReturnExecution.RegisterType r) : State :=
@@ -77,27 +76,32 @@ private theorem undefined_bits_eq (width : Nat) :
  rw [← hc]
 
 theorem addrTop_el1_no_tags (b : Boundaries) (q : QueryProfile b) (s : State)
+ (versions : ReturnConfig.Values) (config : ReturnConfig.Initialized s versions)
  (tcr : s.regs.get? ReturnExecution.Register.TCR_EL1 = some (0 : BitVec 64))
  (address : BitVec 64) :
  (AddrTop b address true EL1).run s = .ok 63 s := by
+ have pac : HavePACExt () s = .ok versions.v83 s := ReturnConfig.havePAC_run s versions config
+ cases hv : versions.v83 <;>
  by_cases h : BitVec.join1 [BitVec.access address 55] = (1#1 : BitVec 1)
- all_goals simp +decide [h, AddrTop, haveEL_el1, regime_el1, q.a32, q.pac, undefined_bits_eq,
+ all_goals simp +decide [h, AddrTop, haveEL_el1, regime_el1, q.a32, pac, hv, undefined_bits_eq,
  readReg, PreSail.assert, tcr, EStateM.run,
  Bind.bind, Pure.pure, EStateM.bind, EStateM.pure, MonadStateOf.get,
  EStateM.get, MonadState.get, getThe]
 
 theorem branchAddr_el1_no_tags (b : Boundaries) (q : QueryProfile b) (s : State)
+ (versions : ReturnConfig.Values) (config : ReturnConfig.Initialized s versions)
  (ps : ProcState) (pstate : s.regs.get? ReturnExecution.Register.PSTATE = some ps)
  (el : ps.EL = EL1)
  (tcr : s.regs.get? ReturnExecution.Register.TCR_EL1 = some (0 : BitVec 64))
  (address : BitVec 64) :
  (AArch64_BranchAddr b address).run s = .ok address s := by
- have top : AddrTop b address true EL1 s = .ok 63 s := addrTop_el1_no_tags b q s tcr address
+ have top : AddrTop b address true EL1 s = .ok 63 s := addrTop_el1_no_tags b q s versions config tcr address
  simp +decide [AArch64_BranchAddr, q.usingA32, pstate, el, top, readReg,
  PreSail.assert, EStateM.run, Bind.bind, Pure.pure, EStateM.bind, EStateM.pure,
  MonadStateOf.get, MonadState.get, EStateM.get, getThe]
 
 theorem branchTo64_el1_no_tags (b : Boundaries) (q : QueryProfile b) (s : State)
+ (versions : ReturnConfig.Values) (config : ReturnConfig.Initialized s versions)
  (ps : ProcState) (pstate : s.regs.get? ReturnExecution.Register.PSTATE = some ps)
  (el : ps.EL = EL1)
  (tcr : s.regs.get? ReturnExecution.Register.TCR_EL1 = some (0 : BitVec 64))
@@ -106,7 +110,7 @@ theorem branchTo64_el1_no_tags (b : Boundaries) (q : QueryProfile b) (s : State)
  .ok () (put (put s ._PC address) .__PC_changed true) := by
  have sliced : BitVec.slice address 0 64 = address := by simp [BitVec.slice]
  have branch : AArch64_BranchAddr b address s = .ok address s :=
-  branchAddr_el1_no_tags b q s ps pstate el tcr address
+  branchAddr_el1_no_tags b q s versions config ps pstate el tcr address
  simp +decide [BranchTo, Hint_Branch, q.usingA32, Sail.BitVec.length, sliced,
  branch, put, PreSail.assert, writeReg, EStateM.run, Bind.bind, Pure.pure,
  EStateM.bind, EStateM.pure, modify, modifyGet, MonadStateOf.modifyGet, EStateM.modifyGet]

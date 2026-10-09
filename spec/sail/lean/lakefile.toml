@@ -105,3 +105,6 @@ name = "ReturnStateProjection"
 
 [[lean_lib]]
 name = "ReturnSimulation"
+
+[[lean_lib]]
+name = "ReturnConfig"

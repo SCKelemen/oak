@@ -32,6 +32,10 @@ inductive BranchType where | BranchType_DIRCALL | BranchType_INDCALL | BranchTyp
   deriving BEq, Inhabited, Repr
   open BranchType
 
+inductive ArchVersion where | ARMv8p0 | ARMv8p1 | ARMv8p2 | ARMv8p3 | ARMv8p4 | ARMv8p5
+  deriving BEq, Inhabited, Repr
+  open ArchVersion
+
 structure ProcState where
   N : (BitVec 1)
   Z : (BitVec 1)
@@ -73,6 +77,11 @@ inductive exception where
   open exception
 
 inductive Register : Type where
+  | __v85_implemented
+  | __v84_implemented
+  | __v83_implemented
+  | __v82_implemented
+  | __v81_implemented
   | CFG_ID_AA64PFR0_EL1_EL3
   | CFG_ID_AA64PFR0_EL1_EL2
   | SEE
@@ -90,6 +99,11 @@ inductive Register : Type where
 open Register
 
 abbrev RegisterType : Register → Type
+  | .__v85_implemented => Bool
+  | .__v84_implemented => Bool
+  | .__v83_implemented => Bool
+  | .__v82_implemented => Bool
+  | .__v81_implemented => Bool
   | .CFG_ID_AA64PFR0_EL1_EL3 => (BitVec 4)
   | .CFG_ID_AA64PFR0_EL1_EL2 => (BitVec 4)
   | .SEE => Int
