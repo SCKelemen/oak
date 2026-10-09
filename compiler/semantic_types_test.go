@@ -119,7 +119,7 @@ func TestBuildTypeModelProjectsInterfaceMethods(t *testing.T) {
 					Name:       &ast.Identifier{Value: "Read"},
 					ReturnType: &ast.Identifier{Value: "ReadResult"},
 					Parameters: []*ast.FunctionParameter{
-						{Name: &ast.Identifier{Value: "buf"}, Type: &ast.IndexExpression{Left: &ast.Identifier{Value: "u8"}, Index: &ast.Identifier{Value: ""}}},
+						{Name: &ast.Identifier{Value: "buf"}, Type: &ast.IndexExpression{TypeForm: ast.IndexArrayType, Left: &ast.Identifier{Value: "u8"}, Index: &ast.Identifier{Value: ""}}},
 					},
 				},
 			},
@@ -162,9 +162,11 @@ func TestBuildTypeModelRejectsAmbiguousLegacyVariantLiteral(t *testing.T) {
 
 func TestSemanticTypeNameFlattensGenericArguments(t *testing.T) {
 	expr := &ast.IndexExpression{
+		TypeForm: ast.IndexGenericType,
 		Left: &ast.IndexExpression{
-			Left:  &ast.Identifier{Value: "Result"},
-			Index: &ast.Identifier{Value: "T"},
+			TypeForm: ast.IndexGenericType,
+			Left:     &ast.Identifier{Value: "Result"},
+			Index:    &ast.Identifier{Value: "T"},
 		},
 		Index: &ast.Identifier{Value: "E"},
 	}
@@ -193,5 +195,50 @@ func TestCompilationTypeModelPreservesIndexedConstructorResults(t *testing.T) {
 	variants := module.Definitions[0].Type.Variants
 	if variants[0].Result != "Expr[i64]" || variants[1].Result != "Expr[T]" {
 		t.Fatalf("constructor results were not preserved: %#v", variants)
+	}
+}
+
+func TestCompilationTypeModelPreservesIndexedTypeForms(t *testing.T) {
+	const source = `
+Ring[T, N: u32]: type = { data: [N]T }
+Buffer[T, N: u32]: type = { plain: [N]T, grown: [N+1]T, ring: Ring[T, 4] }
+View: type = { data: [align 64]u8 }
+Span: type = { data: [* align 64]u8 }
+Nested: type = { data: [2]Ring[u8, 4] }
+`
+	module, err := New().WithSource("indexed.oak", source).TypeModel().Get()
+	if err != nil {
+		t.Fatalf("indexed type model failed: %v", err)
+	}
+	wantFields := []string{"[N]T", "[N + 1]T", "Ring[T, 4]"}
+	for i, want := range wantFields {
+		if got := module.Definitions[1].Type.Fields[i].Type; got != want {
+			t.Errorf("Buffer field %d = %q, want %q", i, got, want)
+		}
+	}
+	for i, want := range []string{"[align 64]u8", "[* align 64]u8", "[2]Ring[u8, 4]"} {
+		if got := module.Definitions[i+2].Type.Fields[0].Type; got != want {
+			t.Errorf("record %d = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestSemanticTypeNameRejectsValueIndexing(t *testing.T) {
+	for _, index := range []ast.Expression{&ast.Identifier{Value: "N"}, &ast.IntegerLiteral{Value: 4}} {
+		_, err := semanticTypeName(&ast.IndexExpression{Left: &ast.Identifier{Value: "T"}, Index: index})
+		if err == nil {
+			t.Errorf("value index %T was inferred to be a type constructor", index)
+		}
+	}
+}
+
+func TestSemanticTypeNamePreservesUnaryExtentGrouping(t *testing.T) {
+	expression := &ast.IndexExpression{
+		TypeForm: ast.IndexArrayType,
+		Left:     &ast.Identifier{Value: "u8"},
+		Index:    &ast.PrefixExpression{Operator: "-", Right: &ast.Identifier{Value: "N"}},
+	}
+	if got, err := semanticTypeName(expression); err != nil || got != "[(-N)]u8" {
+		t.Fatalf("unary extent = %q, %v", got, err)
 	}
 }
