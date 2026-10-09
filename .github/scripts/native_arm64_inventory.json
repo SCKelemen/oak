@@ -715,6 +715,9 @@
     ],
     "semir/cpu_compile_test.go::TestCPUFeatureAttributesCompile": [
       "t.Skipf(\"AArch64 %s compiler unavailable: %v\", family, err)"
+    ],
+    "compiler/wasm_conditional_source_test.go::TestWasmConditionalSourceLean": [
+      "t.Skip(\"lake unavailable\")"
     ]
   },
   "children": {
