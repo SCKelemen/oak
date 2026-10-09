@@ -7,10 +7,10 @@
     "unchanged_body_sha256": "ab4db1fc2ab8aaa15cb5de7547be0149c40f93d4cb18d6b0b8e2f7700eaee582"
   },
   "files": {
-    "return_execution.sail": "5c6646dc0889c239e3ad7c9bca7632df64c75df1800d9fcc14c992ce66b35fd3",
+    "return_execution.sail": "348caa9fa997bf9a28b4ee3319c24f2a94d2314a22e8f487a5c22f7d1ca05a06",
     "return_execution_vector.sail": "bb11bdbed65daa83716cbf4a1a40b6e5702751af492b9264f134b1fd06257f83",
-    "lean/ReturnExecution/Raw.lean": "2cea838700c519a709a66306b99672d6c884620e4d77b9980ec0598f166699ca",
-    "lean/ReturnExecution/RawDefs.lean": "ff46b590588077a6eccd7c98f13774c484e5e310a35430fb5bf5351a08f67351",
+    "lean/ReturnExecution/Raw.lean": "a8e264c52ada38ad2490d7fad1e48b4e5e97f491f5881eac797c73381e36df05",
+    "lean/ReturnExecution/RawDefs.lean": "d25508bfdc2f44c3b206b08fdaf7dfa194d62ca073ee339c5adf192e66ae0dc7",
     "lean/ScalarExecution/Raw.lean": "db0b8ed93db97925f152d508f3c2020230c13c09cf5ea29942a4666d3df24f83",
     "lean/ScalarExecution/RawDefs.lean": "4599759ae12f5aff5af70c4fcc35fb4fff1d56bbfa6ef94c8997426fedaeac01",
     "lean/ScalarExecution/Interface.lean": "6032a5b9f082f9b903bb07c546bb114ce7ef567d86d9a036f7a916cc07d4cef0",
@@ -21,10 +21,6 @@
     "HaveEL": {
       "signature_sha256": "b8065d67832396b3cb4efc21ae7ca2f3d3823a9cd0f006702d98326065a4ee6b",
       "unchanged_body_sha256": "18d50ba895481dddd633c3093334c607123fcbec6408a4c14c4d528abb90e26a"
-    },
-    "S1TranslationRegime__0": {
-      "signature_sha256": "8d3f02273c58b73526e01c6e2b40a22935976589d81c9a31d0f19488ab46d8e9",
-      "unchanged_body_sha256": "b23a22c6642933d61d4fa1488c6c81745674a67f98a06921fd0a7235fd1ab589"
     },
     "HasArchVersion": {
       "signature_sha256": "9942e24d2ce7d2bd834ca786c48533581c0c970428ab95243aab69871d27a868",
@@ -45,6 +41,46 @@
     "UsingAArch32": {
       "signature_sha256": "8f613e18d72956ee92b2408c101ce213c8efe1b6e37859fbff4af11b9a5d2f34",
       "unchanged_body_sha256": "e81262b4d86efa3df11834538160278bb6f309cb2288758654e7c8ec90842302"
+    },
+    "HaveVirtHostExt": {
+      "signature_sha256": "9360700ac53f220ab720664fc1020518c9f87c526ce065617d1d388d4a532d04",
+      "unchanged_body_sha256": "31297ff831131f59e4a4c0f659ca2aa9485f340ed81c498d8cfc5e460800359a"
+    },
+    "HaveSecureEL2Ext": {
+      "signature_sha256": "2ee36bfdf725e9b8684a8a8a713eafbbb89c6d8948577dea1d363b9cb1dbcb4c",
+      "unchanged_body_sha256": "6894d82aea4c2e32ed91f979953d813de69dfdfffb95d219cfd50c048a399579"
+    },
+    "aget_SCR_GEN": {
+      "signature_sha256": "a7c4d7a1867dd139c6d43ef55f6237b887f6e28e2233159cc841e5eace3ce876",
+      "unchanged_body_sha256": "a8fd661d98c6f8311ecf0f1b6eeb82dc53d3edfa7f59605170d5afbb55dee0d8"
+    },
+    "HighestEL": {
+      "signature_sha256": "ee85494c8acd9defcd758539d95bf31e416e447a44dd5a98a3e1ccbfa5920da0",
+      "unchanged_body_sha256": "7732bd324e547b7ed3318092e174242a227dd4a52e109c18fe8a8cbb270b0fbc"
+    },
+    "IsSecureBelowEL3": {
+      "signature_sha256": "9389f9fcdd31193354ff30c0157f3f56ff7c551d24912529de0ea1e67dc6e796",
+      "unchanged_body_sha256": "140a096851acef10c7350d6a9e5ead4ae7521b54638f0686f9c81d7ddf85f5bc"
+    },
+    "HaveAArch32EL": {
+      "signature_sha256": "aa6ed8db095f72a42ea0caa583786a1277c4861ee2e3a511e386d5f495ffb479",
+      "unchanged_body_sha256": "ce55308717f1bfd4ad27806ca0cc60eab783924d2e2e20653b84c9008c7cdda0"
+    },
+    "ELStateUsingAArch32K": {
+      "signature_sha256": "43e489edaae1283f476715a3971b0d5c82550d2d9d5ae7eb2987fa4ca7742e5b",
+      "unchanged_body_sha256": "51cfc325d770bda142b37dd1b2367c174347b0c4255d5bafb7a2e9c74c543887"
+    },
+    "ELStateUsingAArch32": {
+      "signature_sha256": "e5311e58deefb5658b6cacf926d96f8107c1b70413cff8ab85073bfe54debe62",
+      "unchanged_body_sha256": "6844d31a0f26f155a1d73513a949804346f43c31395e63dedd3844822ffbba00"
+    },
+    "ELUsingAArch32": {
+      "signature_sha256": "120b2ce60b3bfb6a76181a2e798e08e5bbbe7816f4acac33d99cec314ab9cb3e",
+      "unchanged_body_sha256": "c386de13bf8ddbe78b2fb22a5a2574d351e6a924a0748835922f2e099399abc2"
+    },
+    "S1TranslationRegime__0": {
+      "signature_sha256": "8d3f02273c58b73526e01c6e2b40a22935976589d81c9a31d0f19488ab46d8e9",
+      "unchanged_body_sha256": "b23a22c6642933d61d4fa1488c6c81745674a67f98a06921fd0a7235fd1ab589"
     }
   }
 }

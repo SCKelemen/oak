@@ -92,6 +92,8 @@ inductive Register : Type where
   | BTypeNext
   | InGuardedPage
   | _R
+  | HCR_EL2
+  | SCR_EL3
   | __highest_el_aarch32
   | TCR_EL3
   | TCR_EL2
@@ -117,6 +119,8 @@ abbrev RegisterType : Register → Type
   | .BTypeNext => (BitVec 2)
   | .InGuardedPage => Bool
   | ._R => (Vector (BitVec 64) 31)
+  | .HCR_EL2 => (BitVec 64)
+  | .SCR_EL3 => (BitVec 32)
   | .__highest_el_aarch32 => Bool
   | .TCR_EL3 => (BitVec 32)
   | .TCR_EL2 => (BitVec 64)

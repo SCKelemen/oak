@@ -21,7 +21,7 @@ open LogicalOp
 open BranchType
 open ArchVersion
 
-/-- Type quantifiers: k_ex4151_ : Bool, k_ex4150_ : Bool -/
+/-- Type quantifiers: k_ex6688_ : Bool, k_ex6687_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -251,7 +251,7 @@ def EL3 : (BitVec 2) := 0b11#2
 
 /-- Type quantifiers: k_M : Nat, N : Int, k_M ≥ 0 -/
 def ZeroExtend__0 (x : (BitVec k_M)) (N : Int) : SailM (BitVec N) := do
-  assert (N ≥b (Sail.BitVec.length x)) "return.sail:179.18-179.19"
+  assert (N ≥b (Sail.BitVec.length x)) "return.sail:183.18-183.19"
   (pure ((Zeros (N -i (Sail.BitVec.length x))) +++ x))
 
 /-- Type quantifiers: k_M : Nat, N : Int, k_M ≥ 0 -/
@@ -271,22 +271,8 @@ def HaveEL (el : (BitVec 2)) : SailM Bool := do
           then (pure ((← readReg CFG_ID_AA64PFR0_EL1_EL3) != 0x0#4))
           else
             (do
-              assert false "return.sail:215.28-215.29"
+              assert false "return.sail:217.28-217.29"
               throw Error.Exit)))
-
-def S1TranslationRegime__0 (boundaries : Boundaries) (el : (BitVec 2)) : SailM (BitVec 2) := do
-  if ((el != EL0) : Bool)
-  then (pure el)
-  else
-    (do
-      if ((((← (HaveEL EL3)) && (← (boundaries.ELUsingAArch32 EL3))) && ((BitVec.join1 [(BitVec.access
-                 (← (boundaries.get_SCR ())) 0)]) == 0#1)) : Bool)
-      then (pure EL3)
-      else
-        (do
-          if (((← (boundaries.HaveVirtHostExt ())) && (← (boundaries.ELIsInHost el))) : Bool)
-          then (pure EL2)
-          else (pure EL1)))
 
 def HasArchVersion (version : ArchVersion) : SailM Bool := do
   (pure ((((((version == ARMv8p0) || ((version == ARMv8p1) && (← readReg __v81_implemented))) || ((version == ARMv8p2) && (← readReg __v82_implemented))) || ((version == ARMv8p3) && (← readReg __v83_implemented))) || ((version == ARMv8p4) && (← readReg __v84_implemented))) || ((version == ARMv8p5) && (← readReg __v85_implemented))))
@@ -303,20 +289,182 @@ def HighestELUsingAArch32 (_ : Unit) : SailM Bool := do
 def UsingAArch32 (_ : Unit) : SailM Bool := do
   let aarch32 ← do (pure ((← readReg PSTATE).nRW == 1#1))
   if ((! (← (HaveAnyAArch32 ()))) : Bool)
-  then assert (! aarch32) "return.sail:269.25-269.26"
+  then assert (! aarch32) "return.sail:253.25-253.26"
   else (pure ())
   if ((← (HighestELUsingAArch32 ())) : Bool)
-  then assert aarch32 "return.sail:272.22-272.23"
+  then assert aarch32 "return.sail:256.22-256.23"
   else (pure ())
   (pure aarch32)
 
+def HaveVirtHostExt (_ : Unit) : SailM Bool := do
+  (HasArchVersion ARMv8p1)
+
+def HaveSecureEL2Ext (_ : Unit) : SailM Bool := do
+  (HasArchVersion ARMv8p4)
+
+def aget_SCR_GEN (boundaries : Boundaries) (_ : Unit) : SailM (BitVec 32) := do
+  assert (← (HaveEL EL3)) "return.sail:276.22-276.23"
+  let r ← (( do (undefined_bitvector 32) ) : SailM (BitVec 32) )
+  if ((← (HighestELUsingAArch32 ())) : Bool)
+  then
+    (do
+      (boundaries.get_SCR ()))
+  else
+    (do
+      readReg SCR_EL3)
+
+def HighestEL (_ : Unit) : SailM (BitVec 2) := do
+  if ((← (HaveEL EL3)) : Bool)
+  then (pure EL3)
+  else
+    (do
+      if ((← (HaveEL EL2)) : Bool)
+      then (pure EL2)
+      else (pure EL1))
+
+def IsSecureBelowEL3 (boundaries : Boundaries) (_ : Unit) : SailM Bool := do
+  if ((← (HaveEL EL3)) : Bool)
+  then (pure ((BitVec.join1 [(BitVec.access (← (aget_SCR_GEN boundaries ())) 0)]) == 0#1))
+  else
+    (do
+      if (((← (HaveEL EL2)) && ((! (← (HaveSecureEL2Ext ()))) || (← (HighestELUsingAArch32 ())))) : Bool)
+      then (pure false)
+      else (boundaries.__IMPDEF_boolean "Secure-only implementation"))
+
+def HaveAArch32EL (el : (BitVec 2)) : SailM Bool := do
+  if ((! (← (HaveEL el))) : Bool)
+  then (pure false)
+  else
+    (do
+      if ((! (← (HaveAnyAArch32 ()))) : Bool)
+      then (pure false)
+      else
+        (do
+          if ((← (HighestELUsingAArch32 ())) : Bool)
+          then (pure true)
+          else
+            (do
+              if ((el == (← (HighestEL ()))) : Bool)
+              then (pure false)
+              else
+                (do
+                  if ((el == EL0) : Bool)
+                  then (pure true)
+                  else
+                    (do
+                      let questionMark := el
+                      if ((questionMark == EL0) : Bool)
+                      then (pure ((← readReg CFG_ID_AA64PFR0_EL1_EL0) == 0x2#4))
+                      else
+                        (do
+                          if ((questionMark == EL1) : Bool)
+                          then (pure ((← readReg CFG_ID_AA64PFR0_EL1_EL1) == 0x2#4))
+                          else
+                            (do
+                              if ((questionMark == EL2) : Bool)
+                              then (pure ((← readReg CFG_ID_AA64PFR0_EL1_EL2) == 0x2#4))
+                              else
+                                (do
+                                  if ((questionMark == EL3) : Bool)
+                                  then (pure ((← readReg CFG_ID_AA64PFR0_EL1_EL3) == 0x2#4))
+                                  else
+                                    (do
+                                      assert false "Pattern match failure at return.sail:333.24-346.25"
+                                      throw Error.Exit)))))))))
+
+/-- Type quantifiers: k_secure : Bool -/
+def ELStateUsingAArch32K (el : (BitVec 2)) (secure : Bool) : SailM (Bool × Bool) := do
+  let aarch32 ← (( do (undefined_bool ()) ) : SailM Bool )
+  let known ← (( do (undefined_bool ()) ) : SailM Bool )
+  let known : Bool := true
+  let aarch32_at_el1 ← (( do (undefined_bool ()) ) : SailM Bool )
+  let aarch32_below_el3 ← (( do (undefined_bool ()) ) : SailM Bool )
+  let (aarch32, known) ← (( do
+    if ((! (← (HaveAArch32EL el))) : Bool)
+    then
+      (let aarch32 : Bool := false
+      (pure (aarch32, known)))
+    else
+      (do
+        let (aarch32, known) ← (( do
+          if ((← (HighestELUsingAArch32 ())) : Bool)
+          then
+            (let aarch32 : Bool := true
+            (pure (aarch32, known)))
+          else
+            (do
+              let aarch32_below_el3 ←
+                (pure ((← (HaveEL EL3)) && ((BitVec.join1 [(BitVec.access (← readReg SCR_EL3) 10)]) == 0#1)))
+              let aarch32_at_el1 ←
+                (pure (aarch32_below_el3 || ((((← (HaveEL EL2)) && (((← (HaveSecureEL2Ext ())) && ((BitVec.join1 [(BitVec.access
+                                    (← readReg SCR_EL3) 18)]) == 1#1)) || (! secure))) && ((BitVec.join1 [(BitVec.access
+                              (← readReg HCR_EL2) 31)]) == 0#1)) && (! ((((BitVec.join1 [(BitVec.access
+                                  (← readReg HCR_EL2) 34)]) == 1#1) && ((BitVec.join1 [(BitVec.access
+                                  (← readReg HCR_EL2) 27)]) == 1#1)) && (← (HaveVirtHostExt ())))))))
+              let (aarch32, known) ← (( do
+                if (((el == EL0) && (! aarch32_at_el1)) : Bool)
+                then
+                  (do
+                    let (aarch32, known) ← (( do
+                      if (((← readReg PSTATE).EL == EL0) : Bool)
+                      then
+                        (do
+                          let aarch32 ← (pure ((← readReg PSTATE).nRW == 1#1))
+                          (pure (aarch32, known)))
+                      else
+                        (let known : Bool := false
+                        (pure (aarch32, known))) ) : SailM (Bool × Bool) )
+                    (pure (aarch32, known)))
+                else
+                  (let aarch32 : Bool :=
+                    ((aarch32_below_el3 && (el != EL3)) || (aarch32_at_el1 && ((el == EL1) || (el == EL0))))
+                  (pure (aarch32, known))) ) : SailM (Bool × Bool) )
+              (pure (aarch32, known))) ) : SailM (Bool × Bool) )
+        (pure (aarch32, known))) ) : SailM (Bool × Bool) )
+  let aarch32 ← (( do
+    if ((! known) : Bool)
+    then
+      (do
+        (undefined_bool ()))
+    else (pure aarch32) ) : SailM Bool )
+  (pure (known, aarch32))
+
+/-- Type quantifiers: k_secure : Bool -/
+def ELStateUsingAArch32 (el : (BitVec 2)) (secure : Bool) : SailM Bool := do
+  let aarch32 ← (( do (undefined_bool ()) ) : SailM Bool )
+  let known ← (( do (undefined_bool ()) ) : SailM Bool )
+  let (aarch32, known) ← (( do
+    let (tup__0, tup__1) ← do (ELStateUsingAArch32K el secure)
+    let known : Bool := tup__0
+    let aarch32 : Bool := tup__1
+    (pure (aarch32, known)) ) : SailM (Bool × Bool) )
+  assert known "return.sail:395.16-395.17"
+  (pure aarch32)
+
+def ELUsingAArch32 (boundaries : Boundaries) (el : (BitVec 2)) : SailM Bool := do
+  (ELStateUsingAArch32 el (← (IsSecureBelowEL3 boundaries ())))
+
+def S1TranslationRegime__0 (boundaries : Boundaries) (el : (BitVec 2)) : SailM (BitVec 2) := do
+  if ((el != EL0) : Bool)
+  then (pure el)
+  else
+    (do
+      if ((((← (HaveEL EL3)) && (← (ELUsingAArch32 boundaries EL3))) && ((BitVec.join1 [(BitVec.access
+                 (← (boundaries.get_SCR ())) 0)]) == 0#1)) : Bool)
+      then (pure EL3)
+      else
+        (do
+          if (((← (HaveVirtHostExt ())) && (← (boundaries.ELIsInHost el))) : Bool)
+          then (pure EL2)
+          else (pure EL1)))
+
 /-- Type quantifiers: k_IsInstr : Bool -/
 def AddrTop (boundaries : Boundaries) (address : (BitVec 64)) (IsInstr : Bool) (el : (BitVec 2)) : SailM Int := do
-  assert (← (HaveEL el)) "return.sail:282.21-282.22"
+  assert (← (HaveEL el)) "return.sail:428.21-428.22"
   let regime ← do (S1TranslationRegime__0 boundaries el)
   let tbi ← (( do (undefined_bitvector 1) ) : SailM (BitVec 1) )
   let tbid ← (( do (undefined_bitvector 1) ) : SailM (BitVec 1) )
-  if ((← (boundaries.ELUsingAArch32 regime)) : Bool)
+  if ((← (ELUsingAArch32 boundaries regime)) : Bool)
   then (pure 31)
   else
     (do
@@ -346,7 +494,7 @@ def AddrTop (boundaries : Boundaries) (address : (BitVec 64)) (IsInstr : Bool) (
                 then
                   (do
                     let (tbi, tbid) ← (( do
-                      if (((← (boundaries.HaveVirtHostExt ())) && (← (boundaries.ELIsInHost el))) : Bool)
+                      if (((← (HaveVirtHostExt ())) && (← (boundaries.ELIsInHost el))) : Bool)
                       then
                         (do
                           let tbi ←
@@ -393,7 +541,7 @@ def AddrTop (boundaries : Boundaries) (address : (BitVec 64)) (IsInstr : Bool) (
                           (pure (tbi, tbid)))
                       else
                         (do
-                          assert false "Pattern match failure at return.sail:289.8-315.9"
+                          assert false "Pattern match failure at return.sail:435.8-461.9"
                           throw Error.Exit) ) : SailM ((BitVec 1) × (BitVec 1)) )
                     (pure (tbi, tbid))) ) : SailM ((BitVec 1) × (BitVec 1)) )
               (pure (tbi, tbid))) ) : SailM ((BitVec 1) × (BitVec 1)) )
@@ -406,9 +554,9 @@ def Hint_Branch (hint : BranchType) : Unit :=
   ()
 
 def AArch64_BranchAddr (boundaries : Boundaries) (vaddress : (BitVec 64)) : SailM (BitVec 64) := do
-  assert (! (← (UsingAArch32 ()))) "return.sail:329.28-329.29"
+  assert (! (← (UsingAArch32 ()))) "return.sail:475.28-475.29"
   let msbit ← do (AddrTop boundaries vaddress true (← readReg PSTATE).EL)
-  assert ((msbit +i 1) ≥b 0) "return.sail:331.25-331.26"
+  assert ((msbit +i 1) ≥b 0) "return.sail:477.25-477.26"
   if ((msbit == 63) : Bool)
   then (pure vaddress)
   else
@@ -424,11 +572,11 @@ def BranchTo (boundaries : Boundaries) (target : (BitVec k_N)) (branch_type : Br
   if (((Sail.BitVec.length target) == 32) : Bool)
   then
     (do
-      assert (← (UsingAArch32 ())) "return.sail:349.29-349.30"
+      assert (← (UsingAArch32 ())) "return.sail:495.29-495.30"
       writeReg _PC (← (ZeroExtend__1 (N := 64) target)))
   else
     (do
-      assert (((Sail.BitVec.length target) == 64) && (! (← (UsingAArch32 ())))) "return.sail:352.43-352.44"
+      assert (((Sail.BitVec.length target) == 64) && (! (← (UsingAArch32 ())))) "return.sail:498.43-498.44"
       writeReg _PC (← (AArch64_BranchAddr boundaries (BitVec.slice target 0 64))))
   writeReg __PC_changed true
 
@@ -440,6 +588,8 @@ def initialize_registers (_ : Unit) : SailM Unit := do
   writeReg TCR_EL2 (← (undefined_bitvector 64))
   writeReg TCR_EL3 (← (undefined_bitvector 32))
   writeReg __highest_el_aarch32 (← (undefined_bool ()))
+  writeReg SCR_EL3 (← (undefined_bitvector 32))
+  writeReg HCR_EL2 (← (undefined_bitvector 64))
   writeReg _R (← (undefined_vector 31 (← (undefined_bitvector 64))))
   writeReg InGuardedPage (← (undefined_bool ()))
   writeReg BTypeNext (← (undefined_bitvector 2))

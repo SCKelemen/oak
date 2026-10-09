@@ -23,8 +23,8 @@ no-op. `ReturnStateProjection.project_final` and the execution simulation prove
 that erasing the new fields has precisely this effect.
 
 The supported return configuration is intentionally narrow: PSTATE.EL is EL1,
-TCR_EL1 is zero, and the remaining mode cut must be successful and read-only:
-`ELUsingAArch32(EL1)=false`. The scalar control profile additionally requires
+TCR_EL1 is zero, and the concrete current-mode/EL-mode configuration profiles
+below are initialized. The scalar control profile still requires
 `HaveBTIExt()=false`. `install` installs the concrete generated current-mode and PAC queries.
 Eager queries in the exported model remain present; these premises cover them.
 Sign extension, host/EL2 configuration and nonzero-tag paths are not discharged.
@@ -58,7 +58,8 @@ observations. They do not prove hardware reset, startup or EL1 reachability.
 Both PAC values produce the same bounded plain-RET result when TCR_EL1 is zero.
 The scalar RET query and both eager AddrTop calls execute the concrete body;
 configuration preservation is proved through the actual logical/RET/PC writes.
-`QueryProfile` now contains only the remaining EL-specific mode-query premise.
+The former `QueryProfile` callback-success assumptions are now discharged by
+concrete mode/configuration reads.
 The old scalar observation still uses an explicit projected callback profile;
 its PAC value is immaterial on this exact non-authenticating RET path.
 
@@ -78,8 +79,37 @@ boot or EL1 reachability. All four CFG reads occur eagerly. Separate negative
 controls preserve missing-register failures for PSTATE, every CFG register,
 and the highest-mode register, and retain both inconsistent-configuration
 assertion failures. `postdecode_missing_pstate` shows that BTI=false still
-permits the exported eager mode read to fail. `ELUsingAArch32(EL1)` remains an
-explicit cut; this change does not equate current mode with EL-specific mode.
+permits the exported eager mode read to fail. The EL-specific mode query is justified separately below; current mode and
+EL-specific mode are not identified by assumption.
+
+The intact EL-mode caller chain now includes `ELUsingAArch32`,
+`ELStateUsingAArch32`, `ELStateUsingAArch32K`, `HaveAArch32EL`, `HighestEL`,
+`IsSecureBelowEL3`, `aget_SCR_GEN`, `HaveSecureEL2Ext` and `HaveVirtHostExt`.
+Their original signatures/bodies remain pinned in `query_bodies`; the guarded
+exporter/profile is unchanged. `ReturnELMode.Ready` explicitly maps CFG_EL0..EL3
+to their default value 0x2, requires highest-EL-AArch32=false, and supplies
+SCR_EL3/HCR_EL2 with their RW bits (10/31) set. SCR/HCR's other bits and all
+architecture-version values remain arbitrary. `el1_run` returns false and the
+complete unchanged state for every remaining callback interpretation.
+
+`get_SCR` remains an explicit cut because its original shadowing body is outside
+the guarded profile. It is not exported, rewritten or assumed successful:
+EL3 is present, so `IsSecureBelowEL3` reads `SCR_GEN`; highest-EL-AArch32=false
+selects the direct SCR_EL3 read. The secure-only IMPDEF callback is also outside
+this path. `callbacks_irrelevant` and `hostile_callbacks` quantify over arbitrary
+callbacks, including failures that would replace the entire state. They prove
+result/state independence in this sequential model, not a new hardware event
+trace semantics or source/export equivalence for those omitted bodies.
+
+Constructive initialization witnesses preserve the prior register bank, PSTATE,
+TCR, PAC profile, current-mode profile and memory. The selected actual scalar
+and return writes preserve the EL-mode profile. `each_missing_read_fails`
+removes each of the twelve required registers in turn and proves exact
+Unreachable failure with unchanged state. Alternate-branch theorems expose the
+get_SCR and secure-only IMPDEF callback results outside the profile. Clearing
+SCR.RW, or clearing HCR.RW in the shown nonsecure configuration, instead yields
+AArch32=true. These controls retain branch/failure behavior; they do not prove
+boot/reset reachability, all EL configurations or execution of omitted bodies.
 
 The pinned `BranchTo` body itself performs no target-alignment check.
 `aligned_return_observation` carries an explicit caller X30 alignment premise.

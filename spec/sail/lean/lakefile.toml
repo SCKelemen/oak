@@ -111,3 +111,6 @@ name = "ReturnConfig"
 
 [[lean_lib]]
 name = "ReturnMode"
+
+[[lean_lib]]
+name = "ReturnELMode"
