@@ -5,7 +5,7 @@ on:
     branches:
       - specification
       - docs/spec-consolidation
-      - codex/lrat-record-framing
+      - codex/lrat-bound-soundness
   pull_request:
     branches:
       - specification
@@ -72,7 +72,7 @@ jobs:
       # Track the complete LRAT proof independently of unrelated formal modules.
       - name: Build production LRAT whole-record proof
         working-directory: spec/lean
-        run: lake build Oak.LRATRecordSoundness
+        run: lake build Oak.LRATBoundSoundness
 
       - name: Set up Go
         uses: actions/setup-go@v5
