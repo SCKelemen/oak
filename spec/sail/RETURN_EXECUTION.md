@@ -24,14 +24,23 @@ that erasing the new fields has precisely this effect.
 
 The supported return configuration is intentionally narrow: PSTATE.EL is EL1,
 TCR_EL1 is zero, and the following cut actions must be successful and read-only:
-`HaveEL(EL1)=true`, `S1TranslationRegime(EL1)=EL1`,
 `ELUsingAArch32(EL1)=false`, `HavePACExt()=false`, and
 `UsingAArch32()=false`. The scalar control profile additionally requires
 `HaveBTIExt()=false`. `install` shares the mode/PAC actions between components.
 Eager queries in the exported model remain present; these premises cover them.
 Sign extension, host/EL2 configuration and nonzero-tag paths are not discharged.
-No successful implementations of these architectural queries are silently
-installed.
+The remaining query cuts are explicit.
+
+The intact pinned `HaveEL` and `S1TranslationRegime__0` bodies are now exported
+with the same guarded profile. `haveEL_el1` and `regime_el1` prove their actions
+equal `pure true` and `pure EL1` for every state and every remaining callback,
+without configuration initialization or callback-success premises. Their source
+signature/body hashes are checked in `EL1_query_bodies` in the manifest. The
+configuration registers used by their other branches are represented explicitly;
+`haveEL_el2_missing` and `regime_el0_missing` retain `Unreachable` and the complete
+unchanged state when the required register is absent. EL0 retains a `get_SCR`
+cut and is not covered by the successful-return profile. These checks establish
+the generated-model paths, not general original-source/export equivalence.
 
 The pinned `BranchTo` body itself performs no target-alignment check.
 `aligned_return_observation` carries an explicit caller X30 alignment premise.

@@ -74,6 +74,8 @@ inductive exception where
   open exception
 
 inductive Register : Type where
+  | CFG_ID_AA64PFR0_EL1_EL3
+  | CFG_ID_AA64PFR0_EL1_EL2
   | SEE
   | __unconditional
   | BTypeNext
@@ -89,6 +91,8 @@ inductive Register : Type where
 open Register
 
 abbrev RegisterType : Register → Type
+  | .CFG_ID_AA64PFR0_EL1_EL3 => (BitVec 4)
+  | .CFG_ID_AA64PFR0_EL1_EL2 => (BitVec 4)
   | .SEE => Int
   | .__unconditional => Bool
   | .BTypeNext => (BitVec 2)
@@ -107,6 +111,8 @@ instance : Inhabited (RegisterRef RegisterType (BitVec 2)) where
   default := .Reg BTypeNext
 instance : Inhabited (RegisterRef RegisterType (BitVec 32)) where
   default := .Reg TCR_EL3
+instance : Inhabited (RegisterRef RegisterType (BitVec 4)) where
+  default := .Reg CFG_ID_AA64PFR0_EL1_EL2
 instance : Inhabited (RegisterRef RegisterType (BitVec 64)) where
   default := .Reg _PC
 instance : Inhabited (RegisterRef RegisterType Bool) where

@@ -142,6 +142,10 @@ register __unconditional : bool
 
 register SEE : int
 
+register configuration CFG_ID_AA64PFR0_EL1_EL2 : bits(4) = 0x2
+
+register configuration CFG_ID_AA64PFR0_EL1_EL3 : bits(4) = 0x2
+
 let EL0 : bits(2) = 0b00
 
 let EL1 : bits(2) = 0b01
@@ -171,10 +175,6 @@ val IsInHost = impure { lean: "boundaries.IsInHost" } : unit -> bool effect {esc
 val SignExtend__1 = impure { lean: "boundaries.SignExtend__1" } : forall ('M : Int) ('N : Int), 'M >= 0.
   (implicit('N), bits('M)) -> bits('N) effect {escape}
 
-val HaveEL = impure { lean: "boundaries.HaveEL" } : bits(2) -> bool effect {escape}
-
-val S1TranslationRegime__0 = impure { lean: "boundaries.S1TranslationRegime__0" } : bits(2) -> bits(2) effect {escape, rreg, undef}
-
 val ELUsingAArch32 = impure { lean: "boundaries.ELUsingAArch32" } : bits(2) -> bool effect {escape, rreg, undef}
 
 val HavePACExt = impure { lean: "boundaries.HavePACExt" } : unit -> bool
@@ -183,7 +183,46 @@ val HaveVirtHostExt = impure { lean: "boundaries.HaveVirtHostExt" } : unit -> bo
 
 val ELIsInHost = impure { lean: "boundaries.ELIsInHost" } : bits(2) -> bool effect {escape, rreg, undef}
 
+val get_SCR = impure { lean: "boundaries.get_SCR" } : unit -> bits(32) effect {rreg, undef}
+
 overload SignExtend = {SignExtend__1}
+val HaveEL : bits(2) -> bool effect {escape}
+
+function HaveEL el = {
+    if el == EL1 | el == EL0 then {
+        return(true)
+    } else {
+        if el == EL2 then {
+            return(CFG_ID_AA64PFR0_EL1_EL2 != 0x0)
+        } else {
+            if el == EL3 then {
+                return(CFG_ID_AA64PFR0_EL1_EL3 != 0x0)
+            } else {
+                assert(false);
+                false
+            }
+        }
+    }
+}
+
+val S1TranslationRegime__0 : bits(2) -> bits(2) effect {escape, rreg, undef}
+
+function S1TranslationRegime__0 el = {
+    if el != EL0 then {
+        return(el)
+    } else {
+        if (HaveEL(EL3) & ELUsingAArch32(EL3)) & [get_SCR()[0]] == 0b0 then {
+            return(EL3)
+        } else {
+            if HaveVirtHostExt() & ELIsInHost(el) then {
+                return(EL2)
+            } else {
+                return(EL1)
+            }
+        }
+    }
+}
+
 overload S1TranslationRegime = {S1TranslationRegime__0}
 val AddrTop : forall ('IsInstr : Bool).
   (bits(64), bool('IsInstr), bits(2)) -> {'top, 'top in {31, 55, 63}. int('top)} effect {escape, rreg, undef}
