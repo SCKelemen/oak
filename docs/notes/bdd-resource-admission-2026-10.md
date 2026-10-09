@@ -155,3 +155,39 @@ go test -p 1 -run '^$' -bench '^BenchmarkBDDOperationMemo$' -benchtime=3x -bench
 All RSS values above are sampled observations at 100 ms intervals, not hard
 peak guarantees. They support hosted validation of the mitigation, not a claim
 that the full native race suite has already passed.
+
+### Hosted Stage2 result: passed; full native job still incomplete
+
+The same reviewed resource tree (`69999f4f1da5cc3514c0eed773bd9c4ef4ebf653`)
+was published at `8932bbc9b8f21e340920db4301f0b43b1028cc89`. In
+[the required native ARM64 job](https://github.com/SCKelemen/oak/actions/runs/37988724114/job/114017143856),
+the unchanged `TestE2ENativeStage2ReplicaProvenUnderEscalatedBudget` passed in
+679.65 seconds, running from 21:02:33 to 21:13:53 UTC on 2026-10-09. This is the
+actual race-enabled native test: it requires proofs of all eight named
+functions and native execution returning 42, not only the local semantic probe.
+
+Across the 23 Stage2 resource observations, sampled at 30-second intervals:
+
+- Peak aggregate process-tree RSS: 8,912,068,608 bytes.
+- Minimum available host memory: 6,607,769,600 bytes.
+- Maximum swap used: zero bytes.
+- Observed cgroup OOM and OOM-kill counters: zero.
+
+The runner survived Stage2 and successfully uploaded its terminal
+[diagnostic artifact](https://github.com/SCKelemen/oak/actions/runs/37988724114/artifacts/11648430332).
+The BLAKE3 package/reference test also passed in 802.53 seconds, and BLAKE3
+compression-boundary execution passed in 189.99 seconds.
+
+This validates the targeted Stage2 resource repair on the hosted runner. It
+is not a full native-suite pass: the job subsequently failed global-aggregate
+proof assertions and reached the existing 90-minute compiler deadline during
+`TestE2ENativeLiteralsVerdicts`. Its final active stack was runnable in
+`componentBlaster` before order admission, rather than waiting on the admission
+semaphore. Those later failures remain separate open validation work. No
+resource limit, original node allowance, test requirement or timeout was changed
+in response to the hosted measurements.
+
+Preserved full-log SHA-256:
+`5b842f9c7c354d00a2b9ad8afcbf177ef9655f2ad1515bd8be50c3169fcee318`.
+The successful Stage2 observations do not turn the provisional admission
+estimates into a hard RSS bound or guarantee success for arbitrary workloads.
