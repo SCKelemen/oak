@@ -22,6 +22,7 @@ import Oak.WasmControl
 import Oak.WasmCalls
 import Oak.WasmModule
 import Oak.WasmCallComposition
+import Oak.WasmConditionalSource
 import Oak.WasmTyping
 import Oak.Effects
 import Oak.EffectRows
