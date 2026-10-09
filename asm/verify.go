@@ -5534,6 +5534,10 @@ type oakLowering struct {
 
 	// expandCallApplications recovers body-level proofs after machine inlining.
 	expandCallApplications bool
+	// machineApplications restricts source abstractions to call boundaries
+	// still present in the machine execution. nil keeps the ordinary policy;
+	// an empty non-nil map expands every source call from its body.
+	machineApplications map[string]bool
 	// returnSlot names the local the body builds in the result area
 	// (ReturnSlotLocal); its large array fields are span memories, as
 	// are those of the frame locals in spanFieldLocals (the backend's
@@ -10799,6 +10803,7 @@ func verifyExecutionWithApplications(fn *Function, sig *ast.FunctionStatement, o
 	}
 	lowering := prepareLowering(fn, sig, nil)
 	lowering.expandCallApplications = expandCalls
+	lowering.machineApplications = machineCallApplications(asmTerm, exec)
 	lowering.resultChunk = chunk
 	lowering.machineTrap = exec.trap
 	for _, event := range exec.loops {
