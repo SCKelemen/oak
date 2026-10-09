@@ -21,7 +21,7 @@ open LogicalOp
 open BranchType
 open ArchVersion
 
-/-- Type quantifiers: k_ex6688_ : Bool, k_ex6687_ : Bool -/
+/-- Type quantifiers: k_ex7895_ : Bool, k_ex7894_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -583,6 +583,62 @@ def BranchTo (boundaries : Boundaries) (target : (BitVec k_N)) (branch_type : Br
       writeReg _PC (← (AArch64_BranchAddr boundaries (BitVec.slice target 0 64))))
   writeReg __PC_changed true
 
+def ThisInstr (_ : Unit) : SailM (BitVec 32) := do
+  readReg __currentInstr
+
+/-- Type quantifiers: N : Int -/
+def ThisInstrAddr {N : _} : SailM (BitVec N) := do
+  assert ((N == 64) || ((N == 32) && (← (UsingAArch32 ())))) "return.sail:529.47-529.48"
+  (pure (BitVec.slice (← readReg _PC) 0 N))
+
+def Halted (_ : Unit) : SailM Bool := do
+  (pure (! (((BitVec.slice (← readReg EDSCR) 0 6) == 0b000001#6) || ((BitVec.slice
+            (← readReg EDSCR) 0 6) == 0b000010#6))))
+
+def AArch64_ExecutingBTIInstr (_ : Unit) : SailM Bool := do
+  if ((! (← (HaveBTIExt ()))) : Bool)
+  then (pure false)
+  else
+    (do
+      let instr ← do (ThisInstr ())
+      let CRm ← (( do (undefined_bitvector 4) ) : SailM (BitVec 4) )
+      let op2 ← (( do (undefined_bitvector 3) ) : SailM (BitVec 3) )
+      if (((((BitVec.slice instr 22 10) == 0b1101010100#10) && ((BitVec.slice instr 12 10) == 0b0000110010#10)) && ((BitVec.slice
+               instr 0 5) == 0b11111#5)) : Bool)
+      then
+        (let CRm : (BitVec 4) := (BitVec.slice instr 8 4)
+        let op2 : (BitVec 3) := (BitVec.slice instr 5 3)
+        (pure ((CRm == 0x4#4) && ((BitVec.join1 [(BitVec.access op2 0)]) == 0#1))))
+      else (pure false))
+
+def AArch64_ExecutingBROrBLROrRetInstr (_ : Unit) : SailM Bool := do
+  if ((! (← (HaveBTIExt ()))) : Bool)
+  then (pure false)
+  else
+    (do
+      let instr ← do (ThisInstr ())
+      let opc ← (( do (undefined_bitvector 4) ) : SailM (BitVec 4) )
+      if ((((BitVec.slice instr 25 7) == 0b1101011#7) && ((BitVec.slice instr 16 5) == 0b11111#5)) : Bool)
+      then
+        (let opc : (BitVec 4) := (BitVec.slice instr 21 4)
+        (pure (opc != 0x5#4)))
+      else (pure false))
+
+def BranchTargetCheck (boundaries : Boundaries) (_ : Unit) : SailM Unit := do
+  assert ((← (HaveBTIExt ())) && (! (← (UsingAArch32 ())))) "return.sail:576.43-576.44"
+  if (((((← readReg InGuardedPage) && ((← readReg PSTATE).BTYPE != 0b00#2)) && (! (← readReg BTypeCompatible))) && (! (← (Halted
+             ())))) : Bool)
+  then
+    (do
+      let pc ← (( do (ThisInstrAddr (N := 64)) ) : SailM (BitVec 64) )
+      (boundaries.AArch64_BranchTargetException (BitVec.slice pc 0 52)))
+  else (pure ())
+  let branch_instr ← do (AArch64_ExecutingBROrBLROrRetInstr ())
+  let bti_instr ← do (AArch64_ExecutingBTIInstr ())
+  if ((! (branch_instr || bti_instr)) : Bool)
+  then writeReg BTypeNext 0b00#2
+  else (pure ())
+
 def initialize_registers (_ : Unit) : SailM Unit := do
   writeReg _PC (← (undefined_bitvector 64))
   writeReg __PC_changed (← (undefined_bool ()))
@@ -598,6 +654,9 @@ def initialize_registers (_ : Unit) : SailM Unit := do
   writeReg BTypeNext (← (undefined_bitvector 2))
   writeReg __unconditional (← (undefined_bool ()))
   writeReg SEE (← (undefined_int ()))
+  writeReg __currentInstr (← (undefined_bitvector 32))
+  writeReg EDSCR (← (undefined_bitvector 32))
+  writeReg BTypeCompatible (← (undefined_bool ()))
 
 def sail_model_init (x_0 : Unit) : SailM Unit := do
   writeReg CFG_ID_AA64PFR0_EL1_EL0 0x2#4

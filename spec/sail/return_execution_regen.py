@@ -8,7 +8,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 LEAN = HERE / 'lean'
 PROFILE = HERE / 'repros/guarded_mutation/guarded_profile'
-PINS = {'aarch64.sail':'9cdcf786f76223fb4bb0ca1fc52dbef3b62d7b2f3a4e22ab118935e03d4dd6bc', 'aarch_types.sail':'f87f0dda7183442c253cd3e3cd4073999911c858702e099151bf313df428769a', 'aarch_mem.sail':'5764f0a9282825f63edf30b5fd50811ae5c85ab2a3f6104334e00d26cf6d5592', 'prelude.sail':'c372a54eb3a4cb43da6f09d989690048f6778db79783a0a13ae2884538cb03fc', 'aarch_decode.sail':'61a57876f4ac9b10849bf90bcd9bb74f6336737015cb3a5b1e1ebd85f11e6ae7'}
+PINS = {'main.sail':'9831f30fe70bd10bb65dd9055b1dc29da3c3c1789d257b8a1788cc75d11c9cb9','aarch64.sail':'9cdcf786f76223fb4bb0ca1fc52dbef3b62d7b2f3a4e22ab118935e03d4dd6bc', 'aarch_types.sail':'f87f0dda7183442c253cd3e3cd4073999911c858702e099151bf313df428769a', 'aarch_mem.sail':'5764f0a9282825f63edf30b5fd50811ae5c85ab2a3f6104334e00d26cf6d5592', 'prelude.sail':'c372a54eb3a4cb43da6f09d989690048f6778db79783a0a13ae2884538cb03fc', 'aarch_decode.sail':'61a57876f4ac9b10849bf90bcd9bb74f6336737015cb3a5b1e1ebd85f11e6ae7'}
 def require(ok, message):
     if not ok: raise RuntimeError(message)
 def sha(data): return hashlib.sha256(data).hexdigest()
@@ -55,6 +55,15 @@ def source_fragment():
     body=decl('aarch_mem.sail','function','AddrTop')
     source+=strengthened+body
     for name in ['Hint_Branch','AArch64_BranchAddr','BranchTo']: source+=both('aarch_mem.sail',name)
+    # Intact BTI control helpers. The exception body remains an arbitrary cut;
+    # the supported BTYPE=00 theorem proves it cannot be called.
+    for file,name in [('aarch_mem.sail','__currentInstr'),('aarch_mem.sail','EDSCR'),('aarch64.sail','BTypeCompatible')]: source+=decl(file,'register',name)
+    source+=cut('aarch64.sail','AArch64_BranchTargetException')
+    for file,names in [('aarch_mem.sail',['ThisInstr','ThisInstrAddr','Halted']),('aarch64.sail',['AArch64_ExecutingBTIInstr','AArch64_ExecutingBROrBLROrRetInstr','BranchTargetCheck'])]:
+        for name in names:
+            sig=decl(file,'val',name);body_fragment=decl(file,'function',name)
+            source+=sig+body_fragment
+            queries[name]={'signature_sha256':sha(sig.encode()),'unchanged_body_sha256':sha(body_fragment.encode())}
     provenance={'original_signature':signature,'strengthened_signature':strengthened,'original_signature_sha256':sha(signature.encode()),'strengthened_signature_sha256':sha(strengthened.encode()),'unchanged_body_sha256':sha(body.encode())}
     return source.encode(), provenance, queries
 
@@ -69,7 +78,7 @@ def frame(raw, namespace, interface, functions, boundary_type):
 def framed_outputs(raw, defs, scalar):
     out={}
     out['lean/ReturnExecution/Defs.lean']=(defs.decode().replace('import Sail\n','import Sail\nnamespace ReturnExecution\n')+'\nend ReturnExecution\n').encode()
-    out['lean/ReturnExecution/Generated.lean']=frame(raw,'ReturnExecution.Functions','Interface',['aget_SCR_GEN','IsSecureBelowEL3','ELUsingAArch32','S1TranslationRegime__0','AddrTop','AArch64_BranchAddr','BranchTo'],'Boundaries')
+    out['lean/ReturnExecution/Generated.lean']=frame(raw,'ReturnExecution.Functions','Interface',['aget_SCR_GEN','IsSecureBelowEL3','ELUsingAArch32','S1TranslationRegime__0','AddrTop','AArch64_BranchAddr','BranchTo','BranchTargetCheck'],'Boundaries')
     out['lean/ReturnExecution/ScalarGenerated.lean']=frame(scalar,'ReturnExecution.ScalarFunctions','ScalarInterface',['LSL','ShiftReg','__PostDecode','integer_logical_shiftedreg','integer_logical_shiftedreg_decode','branch_unconditional_register','branch_unconditional_register_decode','decode64'],'ScalarBoundaries')
     out['lean/ReturnExecution/ScalarInterface.lean']=(LEAN/'ScalarExecution/Interface.lean').read_text().replace('ScalarExecution','ReturnExecution').replace('Boundaries','ScalarBoundaries').encode()
     text=(LEAN/'ScalarExecutionBridge.lean').read_text().replace('import ScalarExecution\n','import ReturnScalar\n').replace('namespace Oak.SailBridge.Scalar','namespace Oak.SailBridge.ExtendedScalar').replace('end Oak.SailBridge.Scalar','end Oak.SailBridge.ExtendedScalar').replace('ScalarExecution.Functions','ReturnExecution.ScalarFunctions').replace('ScalarExecution','ReturnExecution').replace('Boundaries','ScalarBoundaries')
