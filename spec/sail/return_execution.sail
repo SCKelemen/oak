@@ -508,3 +508,80 @@ function BranchTo (target, branch_type) = {
     return()
 }
 
+register __currentInstr : bits(32)
+
+register EDSCR : bits(32)
+
+register BTypeCompatible : bool
+
+val AArch64_BranchTargetException = impure { lean: "boundaries.AArch64_BranchTargetException" } : bits(52) -> unit effect {escape, rreg, undef, wreg}
+
+val ThisInstr : unit -> bits(32) effect {rreg}
+
+function ThisInstr () = {
+    __currentInstr
+}
+
+val ThisInstrAddr : forall ('N : Int).
+  implicit('N) -> bits('N) effect {escape, rreg}
+
+function ThisInstrAddr N = {
+    assert('N == 64 | 'N == 32 & UsingAArch32());
+    slice(_PC, 0, 'N)
+}
+
+val Halted : unit -> bool effect {rreg}
+
+function Halted () = {
+    ~(slice(EDSCR, 0, 6) == 0b000001 | slice(EDSCR, 0, 6) == 0b000010)
+}
+
+val AArch64_ExecutingBTIInstr : unit -> bool effect {rreg, undef}
+
+function AArch64_ExecutingBTIInstr () = {
+    if ~(HaveBTIExt()) then {
+        return(false)
+    };
+    let instr = ThisInstr();
+    CRm : bits(4) = undefined : bits(4);
+    op2 : bits(3) = undefined : bits(3);
+    if (slice(instr, 22, 10) == 0b1101010100 & slice(instr, 12, 10) == 0b0000110010) & slice(instr, 0, 5) == 0b11111 then {
+        CRm = slice(instr, 8, 4);
+        op2 = slice(instr, 5, 3);
+        return(CRm == 0x4 & [op2[0]] == 0b0)
+    } else {
+        return(false)
+    }
+}
+
+val AArch64_ExecutingBROrBLROrRetInstr : unit -> bool effect {rreg, undef}
+
+function AArch64_ExecutingBROrBLROrRetInstr () = {
+    if ~(HaveBTIExt()) then {
+        return(false)
+    };
+    let instr = ThisInstr();
+    opc : bits(4) = undefined : bits(4);
+    if slice(instr, 25, 7) == 0b1101011 & slice(instr, 16, 5) == 0b11111 then {
+        opc = slice(instr, 21, 4);
+        return(opc != 0x5)
+    } else {
+        return(false)
+    }
+}
+
+val BranchTargetCheck : unit -> unit effect {escape, rreg, undef, wreg}
+
+function BranchTargetCheck () = {
+    assert(HaveBTIExt() & ~(UsingAArch32()));
+    if ((InGuardedPage & PSTATE.BTYPE != 0b00) & ~(BTypeCompatible)) & ~(Halted()) then {
+        let pc : bits(64) = ThisInstrAddr();
+        AArch64_BranchTargetException(slice(pc, 0, 52))
+    };
+    let branch_instr = AArch64_ExecutingBROrBLROrRetInstr();
+    let bti_instr = AArch64_ExecutingBTIInstr();
+    if ~(branch_instr | bti_instr) then {
+        BTypeNext = 0b00
+    }
+}
+
