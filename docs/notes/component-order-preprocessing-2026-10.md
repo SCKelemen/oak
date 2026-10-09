@@ -47,6 +47,22 @@ identity proof completed in 17.16 seconds; that initial probe's verdict-report
 lookup was incorrect and was replaced with the native test's emitted-diagnostic
 assertion in subsequent probes.
 
+With the component-order change, the same fresh normal-search `step_first`
+probe completed in 101.18 seconds. The optimized forms remained correctly
+witness-checked (36.35 and 33.99 seconds), and identity proved in 30.21 seconds:
+13 nested data-dependent loops coupled inductively, with 21 concrete inputs
+agreeing. Peak tree RSS was 1,338,097,664 bytes and minimum host-available
+memory was 6,711,009,280 bytes. The watchdog did not fire. The 100-second
+profile attributed only 0.03 CPU seconds to `componentBlockOrder`; all of
+`componentBlaster`, including temporary DAG-dump instrumentation, accounted
+for 3.99 CPU seconds. Ordinary BDD work remained the dominant cost.
+
+This targeted probe selects only `step_first` with `OAK_NATIVE_ONLY`; the
+other functions stay C for that diagnostic filter. The exact 13-loop
+source/assembly proof is performed before the final vector-callee fallback.
+It is not a whole-module native emission or execution pass, and the original
+native literals test and all of its assertions remain unchanged.
+
 The focused race run passes:
 
 - 500 seeded randomized differential comparisons against the old explicit
