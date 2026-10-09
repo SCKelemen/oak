@@ -109,3 +109,10 @@ outer-loop/ELF boundary. Per-word fetch theorems retain their original scope.
 generated loop callback under an explicit timer profile. Its finite iterator
 is separate from the original opaque full loop; no full-loop execution or
 termination claim is inferred.
+
+## Source-bound ELF loading
+
+[IMAGE.md](IMAGE.md) describes the checked full-ELF loader, explicit RX/RW PMA
+installation, derived fetch/frame placement and constructive source-clocked
+execution corollary. The separately checked function address remains the
+invocation boundary; ELF startup and reset reachability are not inferred.
