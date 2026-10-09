@@ -156,8 +156,10 @@ is a bootstrap kernel. The [decoded execution model](../../docs/spec/91-wasm-exe
 now composes these byte proofs with 49 straight-line scalar forms and explicit
 traps, plus structured blocks, loops, conditionals, branches and single-function
 returns in `Oak.WasmControl`, and isolated direct calls in `Oak.WasmCalls`.
-`Oak.WasmModule` adds binary decoding and closed-table linking. Validator
-correspondence, module-writer refinement and source-to-module verification remain open.
+`Oak.WasmModule` adds binary decoding and closed-table linking. `Oak.WasmTyping`
+proves type safety for accepted scalar sequences and their assembled bytes.
+Full validator correspondence, control/call type safety, module-writer refinement
+and source-to-module verification remain open.
 
 ## Remaining M7/M8 work
 
