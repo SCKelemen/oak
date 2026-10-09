@@ -20,8 +20,8 @@ func TestObjectsAgainstLLVMTools(t *testing.T) {
 	bin := strings.TrimSuffix(llvmMC, "llvm-mc")
 	objdump, nm := bin+"llvm-objdump", bin+"llvm-nm"
 	for _, tool := range []string{objdump, nm} {
-		if _, err := os.Stat(tool); err != nil {
-			t.Skipf("%s not present", tool)
+		if _, err := exec.LookPath(tool); err != nil {
+			requireOracle(t, tool+" not present: "+err.Error())
 		}
 	}
 	source, err := os.ReadFile("../examples/asm/kernels.arm64.oakasm")
