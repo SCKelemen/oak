@@ -7066,10 +7066,18 @@ func splitDecideOn(premise, a, b, cond *term, widthOf func(string) int, budget *
 func componentBlaster(names []string, widths map[string]int, premise, a, b *term) *blaster {
 	parent := map[string]string{}
 	find := func(x string) string {
-		for parent[x] != "" && parent[x] != x {
-			x = parent[x]
+		root := x
+		for parent[root] != "" && parent[root] != root {
+			root = parent[root]
 		}
-		return x
+		// Compress paths without changing the representative: its spelling
+		// participates in the sorted traversal of the weak links below.
+		for x != root {
+			next := parent[x]
+			parent[x] = root
+			x = next
+		}
+		return root
 	}
 	union := func(x, y string) {
 		rx, ry := find(x), find(y)
@@ -7206,50 +7214,12 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 	}
 	// Weak adjacency between blocks, and the order: from the sides' block
 	// along the weak links, reversed.
-	adjacent := map[string][]string{}
-	for _, members := range weak {
-		for i := range members {
-			for j := range members {
-				bi, bj := find(members[i]), find(members[j])
-				if bi != bj {
-					adjacent[bi] = append(adjacent[bi], bj)
-				}
-			}
-		}
-	}
 	var sideBlock string
 	for m := range sides {
 		sideBlock = find(m)
 		break
 	}
-	var order []string
-	queued := map[string]bool{}
-	if sideBlock != "" {
-		queue := []string{sideBlock}
-		queued[sideBlock] = true
-		for len(queue) > 0 {
-			block := queue[0]
-			queue = queue[1:]
-			order = append(order, block)
-			next := append([]string(nil), adjacent[block]...)
-			sort.Strings(next)
-			for _, n := range next {
-				if !queued[n] {
-					queued[n] = true
-					queue = append(queue, n)
-				}
-			}
-		}
-	}
-	for _, block := range blocks {
-		if !queued[block] {
-			queued[block] = true
-			order = append(order, block)
-		}
-	}
-	for i, j := 0, len(order)-1; i < j; i, j = i+1, j-1 {
-		order[i], order[j] = order[j], order[i]
-	}
+	order := componentBlockOrder(blocks, weak, sideBlock, find)
 	reserved := map[string]int{}
 	for _, block := range readBlocks {
 		reserved[block]++
@@ -7275,6 +7245,77 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 		fmt.Fprintf(os.Stderr, "verify: components apart: %s\n", strings.Join(show, " | "))
 	}
 	return newComponentBlaster(names, widths, blockOf, order, reserved, readBlock)
+}
+
+// componentBlockOrder walks the same weak adjacency as a clique for every
+// Boolean connective, without constructing those cliques. One connective can
+// mention hundreds of atoms from only a few strong components, and a nested
+// Boolean DAG repeats those atoms at many connectives. Materializing every
+// atom pair repeatedly spent minutes here, outside the diagram node budget.
+//
+// A connective is a hyperedge. The first reached block queues all its members,
+// so expanding it again from another block cannot discover anything new. Sort
+// the newly adjacent blocks before queuing, as the explicit-clique traversal
+// did; preserve its representatives, disconnected-block order and reversal.
+func componentBlockOrder(blocks []string, weak [][]string, sideBlock string, find func(string) string) []string {
+	members := make([][]string, len(weak))
+	incident := map[string][]int{}
+	for edge, atoms := range weak {
+		seen := map[string]bool{}
+		for _, atom := range atoms {
+			block := find(atom)
+			if !seen[block] {
+				seen[block] = true
+				members[edge] = append(members[edge], block)
+			}
+		}
+		if len(members[edge]) < 2 {
+			continue
+		}
+		for _, block := range members[edge] {
+			incident[block] = append(incident[block], edge)
+		}
+	}
+	var order []string
+	queued := map[string]bool{}
+	expanded := make([]bool, len(weak))
+	if sideBlock != "" {
+		queue := []string{sideBlock}
+		queued[sideBlock] = true
+		for head := 0; head < len(queue); head++ {
+			block := queue[head]
+			order = append(order, block)
+			nextSet := map[string]bool{}
+			var next []string
+			for _, edge := range incident[block] {
+				if expanded[edge] {
+					continue
+				}
+				expanded[edge] = true
+				for _, neighbor := range members[edge] {
+					if !queued[neighbor] && !nextSet[neighbor] {
+						nextSet[neighbor] = true
+						next = append(next, neighbor)
+					}
+				}
+			}
+			sort.Strings(next)
+			for _, neighbor := range next {
+				queued[neighbor] = true
+				queue = append(queue, neighbor)
+			}
+		}
+	}
+	for _, block := range blocks {
+		if !queued[block] {
+			queued[block] = true
+			order = append(order, block)
+		}
+	}
+	for i, j := 0, len(order)-1; i < j; i, j = i+1, j-1 {
+		order[i], order[j] = order[j], order[i]
+	}
+	return order
 }
 
 // verifyOff reports a rule named in OAK_VERIFY_OFF (a comma list): the
