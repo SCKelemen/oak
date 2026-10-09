@@ -7,9 +7,9 @@
     "unchanged_body_sha256": "ab4db1fc2ab8aaa15cb5de7547be0149c40f93d4cb18d6b0b8e2f7700eaee582"
   },
   "files": {
-    "return_execution.sail": "348caa9fa997bf9a28b4ee3319c24f2a94d2314a22e8f487a5c22f7d1ca05a06",
+    "return_execution.sail": "f287afb9371340e0c4102a18496988464ad7b4139994c800a01929e6fbf734d8",
     "return_execution_vector.sail": "bb11bdbed65daa83716cbf4a1a40b6e5702751af492b9264f134b1fd06257f83",
-    "lean/ReturnExecution/Raw.lean": "a8e264c52ada38ad2490d7fad1e48b4e5e97f491f5881eac797c73381e36df05",
+    "lean/ReturnExecution/Raw.lean": "4822ea760f956bc0ce78f0693bc0c894d6ff2064997e07e2bf4ddc38161535c5",
     "lean/ReturnExecution/RawDefs.lean": "d25508bfdc2f44c3b206b08fdaf7dfa194d62ca073ee339c5adf192e66ae0dc7",
     "lean/ScalarExecution/Raw.lean": "db0b8ed93db97925f152d508f3c2020230c13c09cf5ea29942a4666d3df24f83",
     "lean/ScalarExecution/RawDefs.lean": "4599759ae12f5aff5af70c4fcc35fb4fff1d56bbfa6ef94c8997426fedaeac01",
@@ -29,6 +29,10 @@
     "HavePACExt": {
       "signature_sha256": "d5119a41fc148a15b116ed088f4d035bd1215df645348e4faffb75b6eb69d206",
       "unchanged_body_sha256": "72931a32f54e4ed8138463657cb664597b486e83d3c207183cc446e43a07405b"
+    },
+    "HaveBTIExt": {
+      "signature_sha256": "fe66f47c3979bcbcc2599159cad051a9becc67ae950b59de0baa23d0a0b3e9f6",
+      "unchanged_body_sha256": "be5d55889787015a008b22f7923e2aec3b848b5bcf32a9febb9d15dd768893ba"
     },
     "HaveAnyAArch32": {
       "signature_sha256": "7a50791cab4a63f6ba65352ee2023b863c9aa197c61a41568ab0cfd2f48227bb",

@@ -24,8 +24,9 @@ that erasing the new fields has precisely this effect.
 
 The supported return configuration is intentionally narrow: PSTATE.EL is EL1,
 TCR_EL1 is zero, and the concrete current-mode/EL-mode configuration profiles
-below are initialized. The scalar control profile still requires
-`HaveBTIExt()=false`. `install` installs the concrete generated current-mode and PAC queries.
+below are initialized. The composed instruction theorem explicitly requires
+`versions.v85 = false`, a nondefault BTI-disabled configuration. `install`
+installs the concrete generated current-mode, PAC and BTI feature queries.
 Eager queries in the exported model remain present; these premises cover them.
 Sign extension, host/EL2 configuration and nonzero-tag paths are not discharged.
 The remaining query cuts are explicit.
@@ -110,6 +111,23 @@ get_SCR and secure-only IMPDEF callback results outside the profile. Clearing
 SCR.RW, or clearing HCR.RW in the shown nonsecure configuration, instead yields
 AArch32=true. These controls retain branch/failure behavior; they do not prove
 boot/reset reachability, all EL configurations or execution of omitted bodies.
+
+`HaveBTIExt` is the intact pinned wrapper around `HasArchVersion(ARMv8p5)`
+(`aarch_mem.sail` lines 2039–2043), using the same five initialized version
+registers already in the profile. `haveBTI_run` proves the actual returned v8.5
+value and complete state preservation. All five eager reads remain; erasing
+each version register gives exact Unreachable failure. Constructive witnesses
+show both the pinned default true and explicitly configured false.
+
+The full existing instruction composition now uses concrete reads plus the
+explicit `versions.v85=false` condition; no global successful-pure callback
+equality is assumed. This condition excludes the pinned default true setting.
+`postdecode_enabled_boundary` instead proves that true forwards the complete
+`BranchTargetCheck` result, including arbitrary failure/state changes. It does
+not claim enabled-BTI instruction success, replace that body with a no-op, or
+expand into hint/exception execution. Default-enabled coverage requires binding
+ThisInstr to each decoded word and proving the real branch-target checks and
+BTypeNext updates. These obligations remain open.
 
 The pinned `BranchTo` body itself performs no target-alignment check.
 `aligned_return_observation` carries an explicit caller X30 alignment premise.

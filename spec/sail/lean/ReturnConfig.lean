@@ -55,4 +55,34 @@ theorem missing_v81 (s : State) (missing : s.regs.get? Register.__v81_implemente
  Pure.pure, EStateM.bind, EStateM.pure, MonadStateOf.get, MonadState.get,
  EStateM.get, getThe, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
 
+theorem haveBTI_run (s : State) (v : Values) (h : Initialized s v) :
+ (HaveBTIExt ()).run s = .ok v.v85 s := by
+ simp [HaveBTIExt,HasArchVersion,readReg,h.v81,h.v82,h.v83,h.v84,h.v85,
+ EStateM.run,Bind.bind,Pure.pure,EStateM.bind,EStateM.pure,
+ MonadStateOf.get,MonadState.get,EStateM.get,getThe]
+ cases v.v85 <;> rfl
+
+theorem bti_default_true (s : State) :
+ (HaveBTIExt ()).run (withValues s {}) = .ok true (withValues s {}) :=
+ haveBTI_run _ {} (withValues_valid s {})
+
+theorem bti_configured_false (s : State) :
+ (HaveBTIExt ()).run (withValues s {v85 := false}) = .ok false (withValues s {v85 := false}) :=
+ haveBTI_run _ _ (withValues_valid s {v85 := false})
+
+def withoutVersion (s : State) (r : Register) : State := {s with regs := s.regs.erase r}
+def versionRegisters : List Register := [.__v81_implemented,.__v82_implemented,
+ .__v83_implemented,.__v84_implemented,.__v85_implemented]
+
+theorem bti_each_missing_version (s : State) (v : Values) (r : Register)
+ (required : r ∈ versionRegisters) :
+ (HaveBTIExt ()).run (withoutVersion (withValues s v) r) =
+ .error .Unreachable (withoutVersion (withValues s v) r) := by
+ simp only [versionRegisters,List.mem_cons,List.mem_singleton,List.not_mem_nil,or_false] at required
+ rcases required with rfl|rfl|rfl|rfl|rfl
+ all_goals simp [HaveBTIExt,HasArchVersion,readReg,withoutVersion,withValues,
+ Std.ExtDHashMap.get?_erase,Std.ExtDHashMap.get?_insert,
+ EStateM.run,Bind.bind,Pure.pure,EStateM.bind,EStateM.pure,
+ MonadStateOf.get,MonadState.get,EStateM.get,getThe,throw,throwThe,MonadExceptOf.throw,EStateM.throw]
+
 end Oak.SailBridge.ReturnConfig

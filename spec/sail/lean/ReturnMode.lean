@@ -117,7 +117,7 @@ theorem missing_highest (s : State) (ps : ProcState) (v : Values) (h : Config s 
 theorem inconsistent_highest (s : State) (ps : ProcState) (v : Values) (h : Config s v)
  (pstate : s.regs.get? Register.PSTATE = some ps) (nrw : ps.nRW = 0)
  (highest : s.regs.get? Register.__highest_el_aarch32 = some true) :
- (UsingAArch32 ()).run s = .error (.Assertion "return.sail:256.22-256.23") s := by
+ (UsingAArch32 ()).run s = .error (.Assertion "return.sail:262.22-262.23") s := by
  have any : HaveAnyAArch32 () s = .ok (supports v) s := haveAny_run s v h
  cases hs : supports v <;>
  simp [UsingAArch32, HighestELUsingAArch32, any, hs, readReg, pstate, nrw,
@@ -128,7 +128,7 @@ theorem inconsistent_highest (s : State) (ps : ProcState) (v : Values) (h : Conf
 theorem inconsistent_unsupported (s : State) (ps : ProcState) (v : Values) (h : Config s v)
  (pstate : s.regs.get? Register.PSTATE = some ps) (nrw : ps.nRW = 1)
  (unsupported : supports v = false) :
- (UsingAArch32 ()).run s = .error (.Assertion "return.sail:253.25-253.26") s := by
+ (UsingAArch32 ()).run s = .error (.Assertion "return.sail:259.25-259.26") s := by
  have any : HaveAnyAArch32 () s = .ok (supports v) s := haveAny_run s v h
  simp [UsingAArch32, any, unsupported, readReg, pstate, nrw, PreSail.assert,
  EStateM.run, Bind.bind, Pure.pure, EStateM.bind, EStateM.pure,

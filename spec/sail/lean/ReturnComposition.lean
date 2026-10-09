@@ -8,20 +8,30 @@ def install (scalar : ScalarBoundaries) (returns : Boundaries) : ScalarBoundarie
  {scalar with
   UsingAArch32 := ReturnExecution.Functions.UsingAArch32
   HavePACExt := ReturnExecution.Functions.HavePACExt
+  HaveBTIExt := ReturnExecution.Functions.HaveBTIExt
   BranchTo := fun target kind => ReturnExecution.Functions.BranchTo returns target kind}
 
 def finalState (op : Oak.BitwiseFunction.Op) (s : State) (bank : Oak.SailBridge.ExtendedScalar.Bank) : State :=
  Oak.SailBridge.Return.put (Oak.SailBridge.Return.put (Oak.SailBridge.ExtendedScalar.requestState op s bank) ._PC bank[30]) .__PC_changed true
 
 private theorem quiet (scalar : ScalarBoundaries) (returns : Boundaries)
- (bti : scalar.HaveBTIExt () = pure false) (s : State)
+ (s : State) (versions : ReturnConfig.Values) (cfg : ReturnConfig.Initialized s versions)
+ (disabled : versions.v85 = false)
  (ps : ProcState) (mv : ReturnMode.Values) (h : ReturnMode.Ready s ps mv) :
  Oak.SailBridge.ExtendedScalar.QuietControl (install scalar returns) s := by
  constructor
- · simp [install, bti, EStateM.run, Pure.pure, EStateM.pure]
+ · simpa [install, disabled] using ReturnConfig.haveBTI_run s versions cfg
  · exact ReturnMode.using_run s ps mv h
 
 /-- These actual instruction updates touch no architectural-version register. -/
+theorem versions_after_logical_control (op : Oak.BitwiseFunction.Op) (s : State)
+ (v : ReturnConfig.Values) (h : ReturnConfig.Initialized s v) :
+ ReturnConfig.Initialized (Oak.SailBridge.ExtendedScalar.logicalControlState
+  (Oak.SailBridge.ExtendedScalar.externalOp op) s) v := by
+ rcases h with ⟨h1,h2,h3,h4,h5⟩
+ constructor <;> simp_all [Oak.SailBridge.ExtendedScalar.logicalControlState,
+ Oak.SailBridge.ExtendedScalar.put,Std.ExtDHashMap.get?_insert]
+
 theorem versions_after_ret_control (op : Oak.BitwiseFunction.Op) (s : State)
  (bank : Oak.SailBridge.ExtendedScalar.Bank) (v : ReturnConfig.Values)
  (h : ReturnConfig.Initialized s v) :
@@ -138,9 +148,10 @@ theorem elMode_final_ready (op : Oak.BitwiseFunction.Op) (s : State)
  Nonempty (ReturnELMode.Ready (finalState op s bank)) := ⟨elMode_after_return op s bank h⟩
 
 theorem exact_bytes_return (scalar : ScalarBoundaries) (returns : Boundaries)
- (bti : scalar.HaveBTIExt () = pure false)
+
  (s : State) (bank : Oak.SailBridge.ExtendedScalar.Bank) (op : Oak.BitwiseFunction.Op)
  (versions : ReturnConfig.Values) (config : ReturnConfig.Initialized s versions)
+ (disabled : versions.v85 = false)
  (elMode : ReturnELMode.Ready s)
  (initialized : s.regs.get? ReturnExecution.Register._R = some bank)
  (ps : ProcState) (modeValues : ReturnMode.Values) (mode : ReturnMode.Ready s ps modeValues)
@@ -150,8 +161,8 @@ theorem exact_bytes_return (scalar : ScalarBoundaries) (returns : Boundaries)
  (Oak.SailBridge.ExtendedScalar.executeBytes (install scalar returns) (Oak.AArch64BitwiseFunction.functionBytes op)).run s =
  .ok () (finalState op s bank) := by
  rw [Oak.SailBridge.ExtendedScalar.function_bytes_to_return_request (install scalar returns) s bank op initialized
-  (quiet scalar returns bti _ ps modeValues (mode_after_logical_control op s bank ps modeValues mode))
-  (quiet scalar returns bti _ ps modeValues (mode_after_ret_control op s bank ps modeValues mode)) versions.v83
+  (quiet scalar returns _ versions (versions_after_logical_control op s versions config) disabled ps modeValues (mode_after_logical_control op s bank ps modeValues mode))
+  (quiet scalar returns _ versions (versions_after_ret_control op s bank versions config) disabled ps modeValues (mode_after_ret_control op s bank ps modeValues mode)) versions.v83
   (ReturnConfig.havePAC_run _ versions (versions_after_ret_control op s bank versions config))]
  change (ReturnExecution.Functions.BranchTo returns bank[30] .BranchType_RET).run
   (Oak.SailBridge.ExtendedScalar.requestState op s bank) = _
@@ -172,12 +183,29 @@ theorem ret_missing_version (scalar : ScalarBoundaries) (returns : Boundaries)
 
 /-- BTI=false does not erase the exported PostDecode's eager concrete mode read. -/
 theorem postdecode_missing_pstate (scalar : ScalarBoundaries) (returns : Boundaries)
- (s : State) (bti : (scalar.HaveBTIExt ()).run s = .ok false s)
+ (s : State) (versions : ReturnConfig.Values) (cfg : ReturnConfig.Initialized s versions)
+ (disabled : versions.v85 = false)
  (missing : s.regs.get? Register.PSTATE = none) :
  (ReturnExecution.ScalarFunctions.__PostDecode (install scalar returns) ()).run s =
  .error .Unreachable s := by
- exact Oak.SailBridge.ExtendedScalar.postdecode_eager_failure _ s s .Unreachable bti
+ exact Oak.SailBridge.ExtendedScalar.postdecode_eager_failure _ s s .Unreachable
+  (by simpa [install, disabled] using ReturnConfig.haveBTI_run s versions cfg)
   (ReturnMode.missing_pstate s missing)
+
+/-- The default-enabled query forwards the complete BranchTargetCheck result;
+this is not an enabled-BTI instruction success theorem. -/
+theorem postdecode_enabled_boundary (scalar : ScalarBoundaries) (returns : Boundaries)
+ (s : State) (versions : ReturnConfig.Values) (cfg : ReturnConfig.Initialized s versions)
+ (enabled : versions.v85 = true) (ps : ProcState) (mv : ReturnMode.Values)
+ (mode : ReturnMode.Ready s ps mv) :
+ (ReturnExecution.ScalarFunctions.__PostDecode (install scalar returns) ()).run s =
+ (scalar.BranchTargetCheck ()).run s := by
+ have feature : ReturnExecution.Functions.HaveBTIExt () s = .ok true s := by
+  simpa [EStateM.run, enabled] using ReturnConfig.haveBTI_run s versions cfg
+ have current : ReturnExecution.Functions.UsingAArch32 () s = .ok false s :=
+  ReturnMode.using_run s ps mv mode
+ simp [ReturnExecution.ScalarFunctions.__PostDecode,install,feature,current,
+ EStateM.run,Bind.bind,Pure.pure,EStateM.bind,EStateM.pure]
 
 theorem final_observations (op : Oak.BitwiseFunction.Op) (s : State) (bank : Oak.SailBridge.ExtendedScalar.Bank) :
  (finalState op s bank).regs.get? ReturnExecution.Register._PC = some bank[30] ∧
