@@ -2,6 +2,7 @@
 """Run the reviewed host-only ARM64 inventory; a skipped test is not a pass."""
 import argparse
 import collections
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,8 @@ import re
 import subprocess
 import sys
 import tempfile
+
+from native_arm64_resources import ResourceTelemetry
 
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / '.github/scripts/native_arm64_inventory.json'
@@ -166,6 +169,11 @@ def main():
     args = parser.parse_args()
     if args.check == args.run:
         parser.error('choose exactly one of --check or --run')
+    with ResourceTelemetry(REPO) if args.run else nullcontext():
+        execute(args)
+
+
+def execute(args):
     os.chdir(REPO)
     manifest = json.loads(MANIFEST.read_text())
     source = subprocess.run(['go', 'run', './.github/scripts/native_arm64'],

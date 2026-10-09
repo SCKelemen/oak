@@ -3,11 +3,15 @@ import io
 import json
 from pathlib import Path
 import re
+import select
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
 import native_arm64 as gate
+import native_arm64_resources as resources
 
 
 def event(action, name=None):
@@ -154,6 +158,220 @@ class SourceInventoryTests(unittest.TestCase):
         self.manifest['children']['./compiler']['TestMissing'] = ['child']
         with self.assertRaises(ValueError):
             gate.check_inventory(self.manifest, self.source)
+
+
+class ResourceTelemetryTests(unittest.TestCase):
+    def test_sample_count_line_size_and_frequency_are_bounded(self):
+        output = io.StringIO()
+        with mock.patch.object(resources.os, 'getppid', return_value=42), \
+             mock.patch.object(resources, 'snapshot', return_value={'mem_available_bytes': 123}) as snapshot, \
+             mock.patch.object(resources.time, 'sleep') as sleep, \
+             mock.patch.object(resources.sys, 'stderr', output):
+            resources.sample(42, Path('.'))
+        lines = output.getvalue().splitlines(keepends=True)
+        self.assertEqual(len(lines), 481)
+        self.assertEqual(snapshot.call_count, 481)
+        self.assertEqual(sleep.call_args_list, [mock.call(30)] * 480)
+        self.assertLess(len(output.getvalue().encode()), 1024 * 1024)
+        for index, line in enumerate(lines):
+            self.assertLessEqual(len(line.encode()), resources.MAX_LINE_BYTES)
+            record = json.loads(line.removeprefix('NATIVE_ARM64_RESOURCE '))
+            self.assertEqual(record['sample'], index + 1)
+            self.assertRegex(record['timestamp'], r'^\d{4}-\d\d-\d\dT.*\+00:00$')
+
+    def test_sampler_failure_and_oversize_output_stop_without_error_dump(self):
+        for failure in (RuntimeError('private details'), {'bad': 'private details' * 300}):
+            output = io.StringIO()
+            kwargs = {'side_effect': failure} if isinstance(failure, Exception) else {'return_value': failure}
+            with mock.patch.object(resources.os, 'getppid', return_value=42), \
+                 mock.patch.object(resources, 'snapshot', **kwargs), \
+                 mock.patch.object(resources.time, 'sleep') as sleep, \
+                 mock.patch.object(resources.sys, 'stderr', output):
+                resources.sample(42, Path('.'))
+            self.assertEqual(len(output.getvalue().splitlines()), 1)
+            self.assertIn('sampler_failed', output.getvalue())
+            self.assertNotIn('private details', output.getvalue())
+            sleep.assert_not_called()
+
+    def test_closed_log_and_orphan_do_not_raise_or_keep_sampling(self):
+        with mock.patch.object(resources.sys.stderr, 'write', side_effect=OSError('closed')):
+            resources.notice('sampler_failed')
+        with mock.patch.object(resources.os, 'getppid', return_value=1), \
+             mock.patch.object(resources, 'snapshot') as snapshot:
+            resources.sample(42, Path('.'))
+        snapshot.assert_not_called()
+
+    def test_start_failure_preserves_success_and_original_test_exit(self):
+        for status in (None, 37):
+            output = io.StringIO()
+            with mock.patch.object(sys, 'argv', ['native_arm64.py', '--run']), \
+                 mock.patch.object(gate, 'execute', side_effect=None if status is None else SystemExit(status)) as execute, \
+                 mock.patch.object(resources.subprocess, 'Popen', side_effect=OSError('private details')), \
+                 mock.patch.object(resources.sys, 'stderr', output):
+                if status is None:
+                    self.assertIsNone(gate.main())
+                else:
+                    with self.assertRaises(SystemExit) as failure:
+                        gate.main()
+                    self.assertEqual(failure.exception.code, status)
+                execute.assert_called_once()
+            self.assertIn('sampler_start_failed', output.getvalue())
+            self.assertNotIn('private details', output.getvalue())
+
+    def test_source_only_check_does_not_launch_sampler(self):
+        with mock.patch.object(sys, 'argv', ['native_arm64.py', '--check']), \
+             mock.patch.object(gate, 'execute') as execute, \
+             mock.patch.object(gate, 'ResourceTelemetry') as telemetry:
+            gate.main()
+        telemetry.assert_not_called()
+        execute.assert_called_once()
+
+    def test_live_sampler_is_reaped_on_success_or_test_exception(self):
+        original_popen = subprocess.Popen
+        def capture(*args, **kwargs):
+            return original_popen(*args, **kwargs, stderr=subprocess.PIPE, text=True)
+        for status in (None, 37):
+            telemetry = resources.ResourceTelemetry(Path.cwd())
+            with mock.patch.object(resources.subprocess, 'Popen', side_effect=capture):
+                try:
+                    with telemetry:
+                        process = telemetry.process
+                        self.assertIsNotNone(process)
+                        self.assertTrue(select.select([process.stderr], [], [], 5)[0], 'sampler did not emit')
+                        line = process.stderr.readline()
+                        record = json.loads(line.removeprefix('NATIVE_ARM64_RESOURCE '))
+                        self.assertIn('mem_available_bytes', record)
+                        self.assertIn('runner_rss_bytes', record)
+                        self.assertLessEqual(len(line.encode()), resources.MAX_LINE_BYTES)
+                        if status is not None:
+                            raise SystemExit(status)
+                except SystemExit as error:
+                    self.assertEqual(error.code, status)
+            self.assertIsNotNone(process.poll())
+            self.assertEqual(process.wait(timeout=1), 0)
+            process.stderr.close()
+
+    def test_already_failed_sampler_and_stubborn_sampler_are_reaped(self):
+        with subprocess.Popen([sys.executable, '-c', 'raise SystemExit(73)']) as process:
+            self.assertEqual(process.wait(timeout=5), 73)
+            telemetry = resources.ResourceTelemetry(Path('.'))
+            telemetry.process = process
+            self.assertFalse(telemetry.__exit__(None, None, None))
+            self.assertEqual(process.returncode, 73)
+        process = mock.Mock()
+        process.wait.side_effect = [subprocess.TimeoutExpired('sampler', 1), -9]
+        telemetry.process = process
+        self.assertFalse(telemetry.__exit__(SystemExit, SystemExit(37), None))
+        process.terminate.assert_called_once()
+        process.kill.assert_called_once()
+        self.assertEqual(process.wait.call_args_list, [mock.call(timeout=1), mock.call(timeout=1)])
+
+    def test_cleanup_failure_never_replaces_test_error(self):
+        process = mock.Mock()
+        process.wait.side_effect = OSError('private details')
+        telemetry = resources.ResourceTelemetry(Path('.'))
+        telemetry.process = process
+        output = io.StringIO()
+        with mock.patch.object(resources.sys, 'stderr', output):
+            self.assertFalse(telemetry.__exit__(SystemExit, SystemExit(37), None))
+        process.kill.assert_called_once()
+        self.assertIn('sampler_cleanup_failed', output.getvalue())
+        self.assertNotIn('private details', output.getvalue())
+
+    def test_process_rss_is_numeric_descendants_only_and_scan_is_capped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc = Path(directory)
+            for pid, parent, rss in ((10, 1, 10), (11, 10, 20), (12, 11, 30), (13, 1, 1000)):
+                (proc / str(pid)).mkdir()
+                (proc / str(pid) / 'status').write_text(
+                    f'Name:\tprivate-name\nPPid:\t{parent}\nVmRSS:\t{rss} kB\n')
+            with mock.patch.object(resources, 'PROC', proc):
+                sample = resources.process_rss(10)
+                self.assertEqual(sample['runner_rss_bytes'], 10 * 1024)
+                self.assertEqual(sample['tree_rss_sum_bytes'], 60 * 1024)
+                self.assertEqual(sample['tree_max_rss_bytes'], 30 * 1024)
+                self.assertEqual(sample['tree_processes'], 3)
+                self.assertNotIn('private-name', str(sample))
+                with mock.patch.object(resources, 'MAX_PROCESSES', 2):
+                    self.assertEqual(resources.process_rss(10)['process_scan'], 'capped')
+
+    def test_cgroup_visible_ancestors_and_oom_counters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            proc, mount = root / 'proc', root / 'cgroup'
+            (proc / '10').mkdir(parents=True)
+            (proc / 'self').mkdir()
+            (proc / '10/cgroup').write_text('0::/runner/job\n')
+            (proc / 'self/mountinfo').write_text(f'1 0 0:1 / {mount} rw - cgroup2 cgroup rw\n')
+            # A genuine cgroup v2 root has no memory.current or memory.max.
+            for suffix, current, maximum in (('runner', 500, '800'), ('runner/job', 300, '1000')):
+                path = mount / suffix
+                path.mkdir(parents=True, exist_ok=True)
+                (path / 'memory.current').write_text(str(current))
+                (path / 'memory.max').write_text(maximum)
+            (mount / 'cgroup.controllers').write_text('memory\n')
+            leaf = mount / 'runner/job'
+            (leaf / 'memory.events').write_text('oom 3\noom_kill 2\noom_group_kill 1\n')
+            with mock.patch.object(resources, 'PROC', proc):
+                sample = resources.cgroup_memory(10)
+                self.assertEqual(sample['cgroup_current_bytes'], 300)
+                self.assertEqual(sample['cgroup_limit_bytes'], 1000)
+                self.assertEqual(sample['cgroup_headroom_bytes'], 300)
+                self.assertEqual(sample['cgroup_oom'], 3)
+                self.assertEqual(sample['cgroup_oom_kill'], 2)
+                self.assertEqual(sample['cgroup_oom_group_kill'], 1)
+                # A partially missing root interface is not an unlimited root.
+                (mount / 'memory.current').write_text('600')
+                self.assertEqual(resources.cgroup_memory(10)['cgroup_headroom_bytes'], resources.UNSUPPORTED)
+                (mount / 'memory.current').unlink()
+                # Missing non-root ancestor accounting remains unsupported.
+                (mount / 'runner/memory.current').unlink()
+                self.assertEqual(resources.cgroup_memory(10)['cgroup_headroom_bytes'], resources.UNSUPPORTED)
+                (mount / 'runner/memory.current').write_text('500')
+                # A delegated mount must account for its boundary as well.
+                (proc / 'self/mountinfo').write_text(f'1 0 0:1 /runner {mount / "runner"} rw - cgroup2 cgroup rw\n')
+                self.assertEqual(resources.cgroup_memory(10)['cgroup_headroom_bytes'], 300)
+                (mount / 'runner/memory.current').unlink()
+                (mount / 'runner/memory.max').unlink()
+                self.assertEqual(resources.cgroup_memory(10)['cgroup_headroom_bytes'], resources.UNSUPPORTED)
+                (leaf / 'memory.events').unlink()
+                self.assertEqual(resources.cgroup_memory(10)['cgroup_oom'], resources.UNSUPPORTED)
+                (proc / '10/cgroup').write_text('5:memory:/legacy\n')
+                self.assertTrue(all(value == resources.UNSUPPORTED for value in resources.cgroup_memory(10).values()))
+
+    def test_unreadable_or_missing_mount_is_not_an_unlimited_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            mount = Path(directory)
+            self.assertFalse(resources.root_without_memory_limit(Path('/'), mount))
+            (mount / 'cgroup.controllers').write_text('memory\n')
+            self.assertTrue(resources.root_without_memory_limit(Path('/'), mount))
+            self.assertFalse(resources.root_without_memory_limit(Path('/delegated'), mount))
+            self.assertFalse(resources.root_without_memory_limit(Path('/'), mount / 'gone'))
+            (mount / 'cgroup.type').write_text('domain\n')
+            self.assertFalse(resources.root_without_memory_limit(Path('/'), mount))
+            (mount / 'cgroup.type').unlink()
+            original_stat = Path.stat
+            def unreadable(path, *args, **kwargs):
+                if path == mount / 'memory.current':
+                    raise PermissionError('unreadable')
+                return original_stat(path, *args, **kwargs)
+            with mock.patch.object(Path, 'stat', unreadable):
+                self.assertFalse(resources.root_without_memory_limit(Path('/'), mount))
+
+    def test_missing_fields_are_explicit_and_reads_are_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'meminfo').write_text('MemTotal: 100 kB\nSwapTotal: 0 kB\n')
+            with mock.patch.object(resources, 'PROC', root), \
+                 mock.patch.object(resources.os, 'statvfs', side_effect=OSError('missing')):
+                sample = resources.snapshot(10, root)
+            self.assertEqual(sample['mem_total_bytes'], 102400)
+            self.assertEqual(sample['mem_available_bytes'], resources.UNSUPPORTED)
+            self.assertEqual(sample['swap_total_bytes'], 0)
+            self.assertEqual(sample['swap_free_bytes'], resources.UNSUPPORTED)
+            self.assertEqual(sample['disk_available_bytes'], resources.UNSUPPORTED)
+            self.assertEqual(sample['runner_rss_bytes'], resources.UNSUPPORTED)
+            self.assertEqual(resources.read_text(root / 'meminfo', 2), '')
 
 
 if __name__ == '__main__':
