@@ -8,11 +8,11 @@ candidate commit before merging.
 
 ## Scope and runner
 
-The reviewed inventory contains 198 ARM64-host-dependent roots. Linux ARM64
-executes 196 roots (192 compiler, two CLI, one assembler differential, one test
-runner dispatch) and 57 named children. This includes all 192 ARM-host roots
+The reviewed inventory contains 199 ARM64-host-dependent roots. Linux ARM64
+executes 197 roots (192 compiler, two CLI, one assembler differential, one test
+runner dispatch, and one feature-attribute regression) and 59 named children. This includes all 192 ARM-host roots
 observed skipped in the former A–R shard, except the separately scoped SME test,
-plus `TestVerdictCache` and the four non-compiler roots.
+plus `TestVerdictCache` and the five non-compiler roots.
 
 Only two detected ARM64 roots are excluded, individually, in `EXCLUSIONS`:
 
@@ -62,16 +62,20 @@ Official runner/toolchain and platform references, checked 2026-10-09:
    dynamically computed host predicates or imported helper behavior.
 3. The executor requires native Linux/ARM64 host and target, CGO for `-race`, a
    real host `cc`, and the runtime ISA probe. Missing tools/host features fail.
+   Before the compiler suite, the feature-attribute regression compiles all four
+   AArch64 catalog attributes with actual GCC and Clang, at baseline and stronger
+   architectures. Both named compiler children are required; skips fail.
 4. Each anchored exact root selector is checked against the actual Go `-list`
    inventory. Execution uses `-race -count=1`, no inherited reducing `GOFLAGS`,
-   and the existing 90-minute compiler / 45-minute other-package deadlines.
+   and the existing 90-minute compiler / 45-minute other-package deadlines
+   (five minutes for the small feature-attribute regression).
 5. Every selected root and named child must emit exactly one `run` and `pass`,
    followed by one package `pass`. Any failure, skip, missing/duplicate result,
    unexpected test, malformed JSON, or failed Go process fails the job. A parent
    test passing cannot conceal a missing or skipped child.
 
 The job's 240-minute upper bound accommodates the existing serial package
-limits (90 + 45 + 45 + 45 minutes) and setup. It is an upper bound, not a runtime
+limits (5 + 90 + 45 + 45 + 45 minutes) and setup. It is an upper bound, not a runtime
 estimate. Existing x86 race partitions/timeouts and compatibility aggregates are
 unchanged. Superseded first-attempt PR jobs cancel independently; manual reruns
 and non-PR jobs remain independent, matching the existing cancellation policy.

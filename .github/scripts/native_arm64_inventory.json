@@ -205,6 +205,9 @@
     },
     "./testrunner": {
       "TestDispatchClaimsAreChecked": "testrunner/dispatch_test.go"
+    },
+    "./semir": {
+      "TestCPUFeatureAttributesCompile": "semir/cpu_compile_test.go"
     }
   },
   "skip_sites": {
@@ -709,6 +712,9 @@
     ],
     "wasm/encoding/lean_test.go::TestWasmEncodingMatchesLean": [
       "t.Skip(\"lake unavailable; formal CI requires this oracle\")"
+    ],
+    "semir/cpu_compile_test.go::TestCPUFeatureAttributesCompile": [
+      "t.Skipf(\"AArch64 %s compiler unavailable: %v\", family, err)"
     ]
   },
   "children": {
@@ -785,6 +791,12 @@
         "31",
         "32",
         "33"
+      ]
+    },
+    "./semir": {
+      "TestCPUFeatureAttributesCompile": [
+        "gcc",
+        "clang"
       ]
     }
   }

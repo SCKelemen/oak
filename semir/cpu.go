@@ -38,15 +38,18 @@ func upper(s string) string {
 	return string(b)
 }
 
+// AArch64 target extensions use the additive +feature spelling accepted by
+// both GCC and Clang. Request only an added feature, without specifying a
+// replacement architecture or dropping other command-line baseline features.
 var cpuFeatures = [...]CPUFeature{
-	{Name: "sve", Arch: "arm64", BaselineMacro: "__ARM_FEATURE_SVE", Attribute: `__attribute__((target("sve")))`, Bit: 0, Mode: "sve"},
-	{Name: "sve2", Arch: "arm64", BaselineMacro: "__ARM_FEATURE_SVE2", Attribute: `__attribute__((target("sve2")))`, Bit: 1, Mode: "sve"},
+	{Name: "sve", Arch: "arm64", BaselineMacro: "__ARM_FEATURE_SVE", Attribute: `__attribute__((target("+sve")))`, Bit: 0, Mode: "sve"},
+	{Name: "sve2", Arch: "arm64", BaselineMacro: "__ARM_FEATURE_SVE2", Attribute: `__attribute__((target("+sve2")))`, Bit: 1, Mode: "sve"},
 	{Name: "rvv", Arch: "riscv64", BaselineMacro: "__riscv_vector", Attribute: `__attribute__((target("arch=+v")))`, Bit: 2, Mode: "rvv"},
 	// FEAT_CRC32 and FEAT_SHA256: the hash package's AArch64 kernels
 	// (stdlib/hash.arm64.oakasm) are realizations dispatched on these, so
 	// an ARMv8.0 core without them runs the portable bodies.
-	{Name: "crc", Arch: "arm64", BaselineMacro: "__ARM_FEATURE_CRC32", Attribute: `__attribute__((target("crc")))`, Bit: 3},
-	{Name: "sha2", Arch: "arm64", BaselineMacro: "__ARM_FEATURE_SHA2", Attribute: `__attribute__((target("sha2")))`, Bit: 4},
+	{Name: "crc", Arch: "arm64", BaselineMacro: "__ARM_FEATURE_CRC32", Attribute: `__attribute__((target("+crc")))`, Bit: 3},
+	{Name: "sha2", Arch: "arm64", BaselineMacro: "__ARM_FEATURE_SHA2", Attribute: `__attribute__((target("+sha2")))`, Bit: 4},
 }
 
 // CPUFeatures returns the fixed catalog by value.

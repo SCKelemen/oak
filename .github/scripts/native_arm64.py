@@ -24,7 +24,7 @@ EXCLUSIONS = {
 }
 # Preserve the limits of the existing partitions; run packages serially in one
 # bounded job rather than duplicating the broad x86 suite or creating a matrix.
-TIMEOUTS = {'./compiler': '90m', '.': '45m', './asm': '45m', './testrunner': '45m'}
+TIMEOUTS = {'./semir': '5m', './compiler': '90m', '.': '45m', './asm': '45m', './testrunner': '45m'}
 
 
 def normalize(discovered):

@@ -131,8 +131,8 @@ class SourceInventoryTests(unittest.TestCase):
 
     def test_exact_coverage_and_platform_exclusions(self):
         selected = gate.check_inventory(self.manifest, self.source)
-        self.assertEqual({p: len(n) for p, n in selected.items()}, {'.': 2, './asm': 1, './compiler': 192, './testrunner': 1})
-        self.assertEqual(sum(len(c) for roots in self.manifest['children'].values() for c in roots.values()), 57)
+        self.assertEqual({p: len(n) for p, n in selected.items()}, {'.': 2, './asm': 1, './compiler': 192, './testrunner': 1, './semir': 1})
+        self.assertEqual(sum(len(c) for roots in self.manifest['children'].values() for c in roots.values()), 59)
         for package, name in gate.EXCLUSIONS:
             self.assertNotIn(name, selected[package])
 
