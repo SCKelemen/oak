@@ -161,10 +161,9 @@ func substituteNamedADTParameters(typ Type, bindings map[string]Type) Type {
 		}
 		return t
 	case *ArrayType:
-		return &ArrayType{
-			Length: t.Length, IsSlice: t.IsSlice, IsSpan: t.IsSpan,
-			ElementType: substituteNamedADTParameters(t.ElementType, bindings),
-		}
+		result := *t
+		result.ElementType = substituteNamedADTParameters(t.ElementType, bindings)
+		return &result
 	case *GenericType:
 		arguments := make([]Type, len(t.TypeArgs))
 		for i, argument := range t.TypeArgs {

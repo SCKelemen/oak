@@ -96,7 +96,9 @@ func (tc *TypeChecker) variantPayloadType(parent Type, variant *object.ADTVarian
 	if !reachable {
 		return nil
 	}
-	return tc.instantiateStoredType(variant.Payload, bindings)
+	// Use the checked payload, just as ordinary pattern typing does. Its
+	// stored spelling is source syntax, not necessarily an atomic type name.
+	return tc.instantiatedVariantPayload(adtName, variant, bindings)
 }
 
 func literalMatchesCoverageType(typ Type, expr ast.Expression) bool {
