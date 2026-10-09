@@ -34,18 +34,19 @@ def source_fragment():
     source=raw['aarch_mem.sail'].split('\nval ',1)[0]+'\n'+prelude
     for name in ['LogicalOp','ShiftType','BranchType','ArchVersion']: source+=decl('aarch_types.sail','enum',name)
     source+=decl('aarch_types.sail','struct','ProcState')+decl('prelude.sail','union','exception')
-    for name in ['_PC','__PC_changed','PSTATE','TCR_EL1','TCR_EL2','TCR_EL3','__highest_el_aarch32']: source+=decl('aarch_mem.sail','register',name)
+    for name in ['_PC','__PC_changed','PSTATE','TCR_EL1','TCR_EL2','TCR_EL3','__highest_el_aarch32','SCR_EL3','HCR_EL2']: source+=decl('aarch_mem.sail','register',name)
     for file,name in [('aarch_mem.sail','_R'),('aarch_mem.sail','InGuardedPage'),('aarch64.sail','BTypeNext'),('aarch64.sail','__unconditional'),('aarch_decode.sail','SEE')]: source+=decl(file,'register',name)
     for name in ['CFG_ID_AA64PFR0_EL1_EL0','CFG_ID_AA64PFR0_EL1_EL1','CFG_ID_AA64PFR0_EL1_EL2','CFG_ID_AA64PFR0_EL1_EL3','__v81_implemented','__v82_implemented','__v83_implemented','__v84_implemented','__v85_implemented']: source+=decl('aarch_mem.sail','register configuration',name)
     for name in ['EL0','EL1','EL2','EL3']: source+=decl('aarch_mem.sail','let',name)
     for name in ['ZeroExtend__0','ZeroExtend__1']: source+=both('aarch_mem.sail',name)
     source+='overload ZeroExtend = {ZeroExtend__0, ZeroExtend__1}\n'
-    for name in ['IsInHost','SignExtend__1','ELUsingAArch32','HaveVirtHostExt','ELIsInHost','get_SCR']: source+=cut('aarch_mem.sail',name)
+    for name in ['IsInHost','SignExtend__1','ELIsInHost','get_SCR','__IMPDEF_boolean']: source+=cut('aarch_mem.sail',name)
     source+='overload SignExtend = {SignExtend__1}\n'
     queries={}
-    for name in ['HaveEL','S1TranslationRegime__0','HasArchVersion','HavePACExt','HaveAnyAArch32','HighestELUsingAArch32','UsingAArch32']:
+    for name in ['HaveEL','HasArchVersion','HavePACExt','HaveAnyAArch32','HighestELUsingAArch32','UsingAArch32','HaveVirtHostExt','HaveSecureEL2Ext','aget_SCR_GEN','HighestEL','IsSecureBelowEL3','HaveAArch32EL','ELStateUsingAArch32K','ELStateUsingAArch32','ELUsingAArch32','S1TranslationRegime__0']:
         signature=decl('aarch_mem.sail','val',name);body=decl('aarch_mem.sail','function',name)
         source+=signature+body
+        if name=='aget_SCR_GEN': source+='overload SCR_GEN = {aget_SCR_GEN}\n'
         queries[name]={'signature_sha256':sha(signature.encode()),'unchanged_body_sha256':sha(body.encode())}
     source+='overload S1TranslationRegime = {S1TranslationRegime__0}\n'
     signature=decl('aarch_mem.sail','val','AddrTop')
@@ -68,7 +69,7 @@ def frame(raw, namespace, interface, functions, boundary_type):
 def framed_outputs(raw, defs, scalar):
     out={}
     out['lean/ReturnExecution/Defs.lean']=(defs.decode().replace('import Sail\n','import Sail\nnamespace ReturnExecution\n')+'\nend ReturnExecution\n').encode()
-    out['lean/ReturnExecution/Generated.lean']=frame(raw,'ReturnExecution.Functions','Interface',['S1TranslationRegime__0','AddrTop','AArch64_BranchAddr','BranchTo'],'Boundaries')
+    out['lean/ReturnExecution/Generated.lean']=frame(raw,'ReturnExecution.Functions','Interface',['aget_SCR_GEN','IsSecureBelowEL3','ELUsingAArch32','S1TranslationRegime__0','AddrTop','AArch64_BranchAddr','BranchTo'],'Boundaries')
     out['lean/ReturnExecution/ScalarGenerated.lean']=frame(scalar,'ReturnExecution.ScalarFunctions','ScalarInterface',['LSL','ShiftReg','__PostDecode','integer_logical_shiftedreg','integer_logical_shiftedreg_decode','branch_unconditional_register','branch_unconditional_register_decode','decode64'],'ScalarBoundaries')
     out['lean/ReturnExecution/ScalarInterface.lean']=(LEAN/'ScalarExecution/Interface.lean').read_text().replace('ScalarExecution','ReturnExecution').replace('Boundaries','ScalarBoundaries').encode()
     text=(LEAN/'ScalarExecutionBridge.lean').read_text().replace('import ScalarExecution\n','import ReturnScalar\n').replace('namespace Oak.SailBridge.Scalar','namespace Oak.SailBridge.ExtendedScalar').replace('end Oak.SailBridge.Scalar','end Oak.SailBridge.ExtendedScalar').replace('ScalarExecution.Functions','ReturnExecution.ScalarFunctions').replace('ScalarExecution','ReturnExecution').replace('Boundaries','ScalarBoundaries')

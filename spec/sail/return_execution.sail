@@ -136,6 +136,10 @@ register TCR_EL3 : bits(32)
 
 register __highest_el_aarch32 : bool
 
+register SCR_EL3 : bits(32)
+
+register HCR_EL2 : bits(64)
+
 register _R : vector(31, dec, bits(64))
 
 register InGuardedPage : bool
@@ -191,13 +195,11 @@ val IsInHost = impure { lean: "boundaries.IsInHost" } : unit -> bool effect {esc
 val SignExtend__1 = impure { lean: "boundaries.SignExtend__1" } : forall ('M : Int) ('N : Int), 'M >= 0.
   (implicit('N), bits('M)) -> bits('N) effect {escape}
 
-val ELUsingAArch32 = impure { lean: "boundaries.ELUsingAArch32" } : bits(2) -> bool effect {escape, rreg, undef}
-
-val HaveVirtHostExt = impure { lean: "boundaries.HaveVirtHostExt" } : unit -> bool
-
 val ELIsInHost = impure { lean: "boundaries.ELIsInHost" } : bits(2) -> bool effect {escape, rreg, undef}
 
 val get_SCR = impure { lean: "boundaries.get_SCR" } : unit -> bits(32) effect {rreg, undef}
+
+val __IMPDEF_boolean = impure { lean: "boundaries.__IMPDEF_boolean" } : string -> bool effect {escape}
 
 overload SignExtend = {SignExtend__1}
 val HaveEL : bits(2) -> bool effect {escape}
@@ -214,24 +216,6 @@ function HaveEL el = {
             } else {
                 assert(false);
                 false
-            }
-        }
-    }
-}
-
-val S1TranslationRegime__0 : bits(2) -> bits(2) effect {escape, rreg, undef}
-
-function S1TranslationRegime__0 el = {
-    if el != EL0 then {
-        return(el)
-    } else {
-        if (HaveEL(EL3) & ELUsingAArch32(EL3)) & [get_SCR()[0]] == 0b0 then {
-            return(EL3)
-        } else {
-            if HaveVirtHostExt() & ELIsInHost(el) then {
-                return(EL2)
-            } else {
-                return(EL1)
             }
         }
     }
@@ -272,6 +256,168 @@ function UsingAArch32 () = {
         assert(aarch32)
     };
     aarch32
+}
+
+val HaveVirtHostExt : unit -> bool
+
+function HaveVirtHostExt () = {
+    HasArchVersion(ARMv8p1)
+}
+
+val HaveSecureEL2Ext : unit -> bool
+
+function HaveSecureEL2Ext () = {
+    HasArchVersion(ARMv8p4)
+}
+
+val aget_SCR_GEN : unit -> bits(32) effect {escape, rreg, undef}
+
+function aget_SCR_GEN () = {
+    assert(HaveEL(EL3));
+    r : bits(32) = undefined : bits(32);
+    if HighestELUsingAArch32() then {
+        r = get_SCR()
+    } else {
+        r = SCR_EL3
+    };
+    r
+}
+
+overload SCR_GEN = {aget_SCR_GEN}
+val HighestEL : unit -> bits(2) effect {escape}
+
+function HighestEL () = {
+    if HaveEL(EL3) then {
+        return(EL3)
+    } else {
+        if HaveEL(EL2) then {
+            return(EL2)
+        } else {
+            return(EL1)
+        }
+    }
+}
+
+val IsSecureBelowEL3 : unit -> bool effect {escape, rreg, undef}
+
+function IsSecureBelowEL3 () = {
+    if HaveEL(EL3) then {
+        return([SCR_GEN()[0]] == 0b0)
+    } else {
+        if HaveEL(EL2) & (~(HaveSecureEL2Ext()) | HighestELUsingAArch32()) then {
+            return(false)
+        } else {
+            return(__IMPDEF_boolean("Secure-only implementation"))
+        }
+    }
+}
+
+val HaveAArch32EL : bits(2) -> bool effect {escape, rreg}
+
+function HaveAArch32EL el = {
+    if ~(HaveEL(el)) then {
+        return(false)
+    } else {
+        if ~(HaveAnyAArch32()) then {
+            return(false)
+        } else {
+            if HighestELUsingAArch32() then {
+                return(true)
+            } else {
+                if el == HighestEL() then {
+                    return(false)
+                } else {
+                    if el == EL0 then {
+                        return(true)
+                    } else {
+                        match el {
+                          ? if ? == EL0 => {
+                              return(CFG_ID_AA64PFR0_EL1_EL0 == 0x2)
+                          },
+                          ? if ? == EL1 => {
+                              return(CFG_ID_AA64PFR0_EL1_EL1 == 0x2)
+                          },
+                          ? if ? == EL2 => {
+                              return(CFG_ID_AA64PFR0_EL1_EL2 == 0x2)
+                          },
+                          ? if ? == EL3 => {
+                              return(CFG_ID_AA64PFR0_EL1_EL3 == 0x2)
+                          }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+val ELStateUsingAArch32K : forall ('secure : Bool).
+  (bits(2), bool('secure)) -> (bool, bool) effect {escape, rreg, undef}
+
+function ELStateUsingAArch32K (el, secure) = {
+    aarch32 : bool = undefined : bool;
+    known : bool = undefined : bool;
+    known = true;
+    aarch32_at_el1 : bool = undefined : bool;
+    aarch32_below_el3 : bool = undefined : bool;
+    if ~(HaveAArch32EL(el)) then {
+        aarch32 = false
+    } else {
+        if HighestELUsingAArch32() then {
+            aarch32 = true
+        } else {
+            aarch32_below_el3 = HaveEL(EL3) & [SCR_EL3[10]] == 0b0;
+            aarch32_at_el1 = aarch32_below_el3 | ((HaveEL(EL2) & (HaveSecureEL2Ext() & [SCR_EL3[18]] == 0b1 | ~(secure))) & [HCR_EL2[31]] == 0b0) & ~(([HCR_EL2[34]] == 0b1 & [HCR_EL2[27]] == 0b1) & HaveVirtHostExt());
+            if el == EL0 & ~(aarch32_at_el1) then {
+                if PSTATE.EL == EL0 then {
+                    aarch32 = PSTATE.nRW == 0b1
+                } else {
+                    known = false
+                }
+            } else {
+                aarch32 = aarch32_below_el3 & el != EL3 | aarch32_at_el1 & (el == EL1 | el == EL0)
+            }
+        }
+    };
+    if ~(known) then {
+        aarch32 = undefined : bool
+    };
+    return((known, aarch32))
+}
+
+val ELStateUsingAArch32 : forall ('secure : Bool).
+  (bits(2), bool('secure)) -> bool effect {escape, rreg, undef}
+
+function ELStateUsingAArch32 (el, secure) = {
+    aarch32 : bool = undefined : bool;
+    known : bool = undefined : bool;
+    (known, aarch32) = ELStateUsingAArch32K(el, secure);
+    assert(known);
+    aarch32
+}
+
+val ELUsingAArch32 : bits(2) -> bool effect {escape, rreg, undef}
+
+function ELUsingAArch32 el = {
+    ELStateUsingAArch32(el, IsSecureBelowEL3())
+}
+
+val S1TranslationRegime__0 : bits(2) -> bits(2) effect {escape, rreg, undef}
+
+function S1TranslationRegime__0 el = {
+    if el != EL0 then {
+        return(el)
+    } else {
+        if (HaveEL(EL3) & ELUsingAArch32(EL3)) & [get_SCR()[0]] == 0b0 then {
+            return(EL3)
+        } else {
+            if HaveVirtHostExt() & ELIsInHost(el) then {
+                return(EL2)
+            } else {
+                return(EL1)
+            }
+        }
+    }
 }
 
 overload S1TranslationRegime = {S1TranslationRegime__0}

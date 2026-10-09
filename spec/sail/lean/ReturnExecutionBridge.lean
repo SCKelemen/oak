@@ -1,4 +1,4 @@
-import ReturnMode
+import ReturnELMode
 import Std.Data.ExtDHashMap.Lemmas
 namespace Oak.SailBridge.Return
 open ReturnExecution ReturnExecution.Functions Sail PreSail
@@ -62,9 +62,6 @@ theorem regime_el0_missing (b : Boundaries) (s : State)
  EStateM.run, Bind.bind, Pure.pure, EStateM.bind, EStateM.pure,
  MonadStateOf.get, MonadState.get, EStateM.get, getThe, throw, throwThe, MonadExceptOf.throw, EStateM.throw]
 
-structure QueryProfile (b : Boundaries) : Prop where
- a32 : b.ELUsingAArch32 EL1 = pure false
-
 def put (s : State) (r : ReturnExecution.Register) (v : ReturnExecution.RegisterType r) : State :=
  {s with regs := s.regs.insert r v}
 private theorem undefined_bits_eq (width : Nat) :
@@ -74,21 +71,24 @@ private theorem undefined_bits_eq (width : Nat) :
  change EStateM.Result.ok (0 : BitVec width) {state with choiceState := ()} = .ok _ state
  rw [← hc]
 
-theorem addrTop_el1_no_tags (b : Boundaries) (q : QueryProfile b) (s : State)
+theorem addrTop_el1_no_tags (b : Boundaries) (s : State)
  (versions : ReturnConfig.Values) (config : ReturnConfig.Initialized s versions)
+ (elMode : ReturnELMode.Ready s)
  (tcr : s.regs.get? ReturnExecution.Register.TCR_EL1 = some (0 : BitVec 64))
  (address : BitVec 64) :
  (AddrTop b address true EL1).run s = .ok 63 s := by
+ have a32 : ELUsingAArch32 b EL1 s = .ok false s := ReturnELMode.el1_run b s elMode versions config
  have pac : HavePACExt () s = .ok versions.v83 s := ReturnConfig.havePAC_run s versions config
  cases hv : versions.v83 <;>
  by_cases h : BitVec.join1 [BitVec.access address 55] = (1#1 : BitVec 1)
- all_goals simp +decide [h, AddrTop, haveEL_el1, regime_el1, q.a32, pac, hv, undefined_bits_eq,
+ all_goals simp +decide [h, AddrTop, haveEL_el1, regime_el1, a32, pac, hv, undefined_bits_eq,
  readReg, PreSail.assert, tcr, EStateM.run,
  Bind.bind, Pure.pure, EStateM.bind, EStateM.pure, MonadStateOf.get,
  EStateM.get, MonadState.get, getThe]
 
-theorem branchAddr_el1_no_tags (b : Boundaries) (q : QueryProfile b) (s : State)
+theorem branchAddr_el1_no_tags (b : Boundaries) (s : State)
  (versions : ReturnConfig.Values) (config : ReturnConfig.Initialized s versions)
+ (elMode : ReturnELMode.Ready s)
  (ps : ProcState) (modeValues : ReturnMode.Values) (mode : ReturnMode.Ready s ps modeValues)
  (pstate : s.regs.get? ReturnExecution.Register.PSTATE = some ps)
  (el : ps.EL = EL1)
@@ -96,13 +96,14 @@ theorem branchAddr_el1_no_tags (b : Boundaries) (q : QueryProfile b) (s : State)
  (address : BitVec 64) :
  (AArch64_BranchAddr b address).run s = .ok address s := by
  have modeRun : UsingAArch32 () s = .ok false s := ReturnMode.using_run s ps modeValues mode
- have top : AddrTop b address true EL1 s = .ok 63 s := addrTop_el1_no_tags b q s versions config tcr address
+ have top : AddrTop b address true EL1 s = .ok 63 s := addrTop_el1_no_tags b s versions config elMode tcr address
  simp +decide [AArch64_BranchAddr, modeRun, pstate, el, top, readReg,
  PreSail.assert, EStateM.run, Bind.bind, Pure.pure, EStateM.bind, EStateM.pure,
  MonadStateOf.get, MonadState.get, EStateM.get, getThe]
 
-theorem branchTo64_el1_no_tags (b : Boundaries) (q : QueryProfile b) (s : State)
+theorem branchTo64_el1_no_tags (b : Boundaries) (s : State)
  (versions : ReturnConfig.Values) (config : ReturnConfig.Initialized s versions)
+ (elMode : ReturnELMode.Ready s)
  (ps : ProcState) (modeValues : ReturnMode.Values) (mode : ReturnMode.Ready s ps modeValues)
  (pstate : s.regs.get? ReturnExecution.Register.PSTATE = some ps)
  (el : ps.EL = EL1)
@@ -113,7 +114,7 @@ theorem branchTo64_el1_no_tags (b : Boundaries) (q : QueryProfile b) (s : State)
  have modeRun : UsingAArch32 () s = .ok false s := ReturnMode.using_run s ps modeValues mode
  have sliced : BitVec.slice address 0 64 = address := by simp [BitVec.slice]
  have branch : AArch64_BranchAddr b address s = .ok address s :=
-  branchAddr_el1_no_tags b q s versions config ps modeValues mode pstate el tcr address
+  branchAddr_el1_no_tags b s versions config elMode ps modeValues mode pstate el tcr address
  simp +decide [BranchTo, Hint_Branch, modeRun, Sail.BitVec.length, sliced,
  branch, put, PreSail.assert, writeReg, EStateM.run, Bind.bind, Pure.pure,
  EStateM.bind, EStateM.pure, modify, modifyGet, MonadStateOf.modifyGet, EStateM.modifyGet]
