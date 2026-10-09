@@ -24,6 +24,12 @@ and enforces a standard-logical-axiom allowlist with `audit.py`.
 Production Go parser/compiler correctness and runtime implementation correctness
 are separate boundaries.
 
+The separate, bounded `WasmNumericSource` reader now checks the original official
+scalar numeric dispatch bytes. `source_to_core_checked_numeric` composes that
+binding with the complete existing theorem above. It checks AND/OR/XOR's builtin
+selection, width 32 and the two original operands; it does **not** import the
+opaque builtin implementations or the module/instantiation/invocation rules.
+
 ## Files and proofs
 
 - `WasmCoreBitwiseProjection.lean`: i32 bit-string result relation, unique result,
@@ -40,6 +46,14 @@ are separate boundaries.
   these proofs; their implementations and behavior were not changed.
 - `WasmCoreSource.lean`: composes all of these with original source grammar and
   the existing typed `LoweringRefinement.evalX` result.
+- `WasmNumericSource.lean`: complete-byte lexical/ownership checking for five
+  pinned dependency files, a closed typed numeric-dispatch AST, parametric
+  denotation, and a bridge to `numeric_agrees` / `numeric_bits`.
+- `NumericControls.lean`: kernel-decided wrong-operator/builtin/width/operand,
+  duplicate/conflict, source-boundary, lexical-hiding and ownership mutations.
+- `numeric-sources.json`, `numeric_sources.py`: exact-byte retrieval/provenance,
+  kept separate from the Lean semantic checker. Downloaded originals are ignored
+  rather than vendored. No SpecTec, Coq or extra Lean installation is needed.
 - `Audit.lean`: prints axioms of the central proof terms.
 
 The grammar relations do not invoke the loader or admission predicate.
@@ -134,6 +148,80 @@ Lean BitVec operations satisfy it; `numeric_unique` proves uniqueness.
 `signed_unsigned_bits` proves signed and unsigned host integer presentations
 convert back to identical 32-bit words, including words with bit 31 set.
 
+## Kernel-checked official numeric wiring
+
+`WasmNumericSource.accepts` consumes every original byte in these files, all at
+revision `970c4116e644e2bf7acb39aab8b733db14ccdf28`:
+
+- `0.1-aux.vars.spectec`: the width metavariable `N` has domain `nat`.
+- `1.1-syntax.values.spectec`: unsigned range and `iN(N) = uN(N)`.
+- `1.2-syntax.types.spectec`: numeric/integer domains, `nt`, all `$size` cases,
+  and `$sizenn(nt) = $size(nt)`.
+- `1.3-syntax.instructions.spectec`: numeric value domains and integer/float
+  operator membership.
+- `3.1-numerics.scalar.spectec`: primitive signatures and builtin declarations,
+  the dispatch signature and **every** `$binop_` equation. Other clauses have
+  explicit disjoint constructor patterns; catchalls are not silently skipped.
+
+Original bytes are represented by their unchanged natural octet values, avoiding
+repeated machine-word coercions during kernel reduction. The lexer rejects
+non-ASCII values explicitly; no modular conversion or truncation is used.
+
+The source reader preserves declaration ownership across the full files, with
+file identity and an exact ordered declaration inventory. It rejects duplicates,
+extra equations, wrong-file definitions, local-premise variable declarations,
+unsupported protected syntax fragments,
+metavariable or constructor rebinding, and unrecognized protected declarations.
+Unrelated bodies are opaque, but cannot hide a later declaration: the lexer
+accounts for quoted strings, line comments, numeral/identifier boundaries,
+identifier-ending symbolic tokens and all upstream declaration keywords. Block
+comments, escaped protected names and unsupported declaration forms fail closed.
+The checked grammar also preserves significant name-parenthesis adjacency,
+blank-line gaps, hint positions, ellipses and numeric holes. No caller-supplied
+source span can bypass the full scan.
+
+`checked_dispatches` exposes the exact three typed dispatch expressions.
+`checked_call` and `checked_denote` quantify over **arbitrary** primitive
+interpretations, preserving the selected primitive, literal width 32, and both
+ordered operands. Thus an operand swap cannot be concealed by the commutativity
+of BitVec AND/OR/XOR. `checked_numeric_bits` instantiates this wiring with the
+reviewed BitVec interpretation and uses the existing pointwise bit theorem.
+`source_to_core_checked_numeric` retains every validation, allocation, export,
+invocation, return and original-source claim of `source_to_core`.
+
+This is a restrictive, reviewed source grammar and its kernel-checked denotation,
+**not a proof of equivalence with the full upstream lexer/parser/elaborator**.
+It does not validate opaque unrelated bodies or other files in the upstream
+profile, establish a global theorem over the full SpecTec repository, or derive
+builtin bit semantics from their declarations. The normative bit-string prose
+in `document/core/exec/numerics.rst` remains the reviewed primitive interpretation.
+The other manual Core transcription/representation boundaries below remain.
+
+The required formal CI lane fetches the five complete pinned originals, verifies
+byte provenance, then emits their full literal byte lists into a Lean theorem.
+An untrusted `NumericCertificate.lean` emitter proposes numeric-only JSON data for
+small lexer-computation checkpoints so the kernel does not need to normalize all 67,817 bytes at once.
+The Go gate checks a bounded, exact JSON schema and supplies fixed theorem names,
+statements and proof templates; emitter output cannot inject Lean commands or
+choose imports. Each checkpoint is a theorem about the **unchanged unsplit lexer**, with arbitrary
+remaining bytes and accumulator, and explicit fuel, byte offsets and line state.
+The kernel checks each transition by reduction, exact full-byte reconstruction,
+and their composition to the unsplit lexer/parser result. No chunk is interpreted
+by restarting a lexer. The final fact is still `accepts actualOfficial = true`.
+Thus wrong spans, omitted/reordered bytes or invented tokens cannot replace the
+original input. The Python/Go preparation code, emitter and checksums cannot
+substitute a proposed AST or establish that theorem.
+Each original file gets a freshly generated, kernel-checked, axiom-audited
+temporary evidence module. A separate generated module imports those same-run
+results, proves the combined `accepts` fact, and composes it with all three actual
+Oak sources and compiler-emitted full Wasm modules. Dependency-resolution checks
+require the five evidence imports to be exactly the freshly generated files;
+there is no stale-evidence fallback. This staging limits proof-reduction memory
+and does not restart the parser within an original file. Missing originals are fatal when
+`OAK_REQUIRE_WASM_LEAN=1`. Small mutation controls supplement, rather than replace,
+this full-file integration gate. All generated and static theorem closures are
+checked against the standard-logical-axiom allowlist.
+
 ## Trust ledger and remaining external boundary
 
 The following representation choices are **manual specializations of the pinned
@@ -157,10 +245,13 @@ rules**, not independently verified translations:
    locals/store. Unused outer-state components and type-context components are
    omitted. The successful reduction is not a general determinism/type-safety
    theorem for every malformed or unsupported configuration.
-5. The DSL rules, bit-string conventions and these simplifications were manually
-   read and transcribed. A checked importer or a proof of an embedding into an
-   independently mechanized complete Core semantics is still needed to remove
-   this trust boundary. Hashes and Lean axiom audits do not remove it.
+5. The module, binary, validation and invocation DSL rules, bit-string
+   conventions and these simplifications were manually read and transcribed.
+   The numeric opcode/width/operand wiring alone now has a bounded original-byte
+   checker. Its grammar/interpretation is reviewed, not proved equivalent to the
+   upstream implementation. A broader checked importer or proof of embedding in
+   independently mechanized complete Core semantics is still needed. Hashes and
+   Lean axiom audits alone do not remove that boundary.
 6. Production Go implementation refinement, runtime/host embedding correctness,
    resource exhaustion and unrepresented Wasm features remain outside this work.
 
@@ -176,13 +267,24 @@ With the repository's Lean 4.33.1 environment:
 ```sh
 cd spec/lean
 lake build Oak.WasmCoreSource
+lake env lean ../wasm-core/NumericControls.lean
 lake env lean ../wasm-core/Audit.lean
+cd ../..
+python3 -B spec/wasm-core/numeric_sources.py --fetch
+python3 -B spec/wasm-core/test_numeric_sources.py
+OAK_REQUIRE_WASM_LEAN=1 go test ./compiler -run '^TestWasmCore' -count=1 -timeout=45m -v
+python3 spec/wasm-core/audit.py
 ```
+
+`OAK_WASM_NUMERIC_SOURCES` or `numeric_sources.py --source-dir` selects an existing
+source directory. Fetching only fills missing originals and never replaces
+mismatched bytes. Verification without `--fetch` is offline and mandatory.
 
 Only standard Lean axioms `propext`, `Classical.choice`, `Quot.sound` occur in the
 central theorem closure; there is no `sorryAx`, custom semantics axiom, native
-computation axiom or external solver oracle. Audit results concern the actual
-local definitions, not correctness of their source transcription.
+computation axiom or external solver oracle. Audit results concern the actual local definitions, including the bounded
+numeric source reader. They do not prove equivalence of that reader or the
+remaining manual transcription with full upstream semantics.
 
 ## Longer-term route
 

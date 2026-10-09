@@ -169,10 +169,20 @@ jobs:
           OAK_REQUIRE_WASM_TESTS: '1'
         run: go test ./compiler -run '^TestWasm(Execution|Control|Calls)(Lean|Engine)$' -count=1 -timeout=20m -v
 
-      - name: Check actual source and compiled Wasm modules against restricted Core
+      - name: Prepare complete pinned official Wasm numeric sources
+        run: python3 -B spec/wasm-core/numeric_sources.py --fetch
+
+      - name: Check official Wasm numeric source provenance controls
+        run: python3 -B spec/wasm-core/test_numeric_sources.py
+
+      - name: Check actual source and compiled Wasm modules against source-checked numeric Core
         env:
           OAK_REQUIRE_WASM_LEAN: '1'
-        run: go test ./compiler -run '^TestWasmCoreSourceMatchesLean$' -count=1 -timeout=10m -v
+        run: go test ./compiler -run '^TestWasmCore' -count=1 -timeout=45m -v
+
+      - name: Check official Wasm numeric semantic rejection controls
+        working-directory: spec/lean
+        run: lake env lean ../wasm-core/NumericControls.lean
 
       - name: Audit restricted Wasm Core theorem axioms
         run: python3 spec/wasm-core/audit.py

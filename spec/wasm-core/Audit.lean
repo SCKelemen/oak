@@ -13,3 +13,11 @@ import Oak.WasmCoreSource
 #print axioms Oak.WasmCoreModule.instantiate
 #print axioms Oak.WasmCoreModule.invocation_success
 #print axioms Oak.WasmCoreSource.source_to_core
+#print axioms Oak.WasmNumericSource.accepts_parse
+#print axioms Oak.WasmNumericSource.checked_dispatches
+#print axioms Oak.WasmNumericSource.checked_width
+#print axioms Oak.WasmNumericSource.checked_call
+#print axioms Oak.WasmNumericSource.checked_denote
+#print axioms Oak.WasmNumericSource.checked_numeric_agrees
+#print axioms Oak.WasmNumericSource.checked_numeric_bits
+#print axioms Oak.WasmCoreSource.source_to_core_checked_numeric
