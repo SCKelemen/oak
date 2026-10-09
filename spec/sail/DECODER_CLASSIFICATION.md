@@ -3,8 +3,10 @@
 This is a kernel-checked classifier for the complete, ordered **embedded
 AArch64 clause region**. It is not execution of Sail's full generated decoder,
 not a verified Sail parser, and not a proof of general Sail/ASL-to-Lean
-faithfulness. The complete-file-to-clause extraction remains a named, trusted
-Python/CI boundary.
+faithfulness. The standalone classifier retains a complete-file-to-clause extraction
+boundary. The downstream [complete-source partition](DECODER_PARTITION.md)
+now checks the exact ordered byte coverage in Lean, against an independently
+copied input; external file acquisition and Sail parser meaning remain explicit.
 
 ## Input and provenance
 
@@ -13,7 +15,8 @@ The unmodified `decoder_classification_source.sail` is
 [rems-project/sail-arm at 1bf2e557](https://github.com/rems-project/sail-arm/blob/1bf2e5574ba9d704639a28401b6a387dcb113cae/arm-v8.5-a/model/aarch_decode.sail).
 Its 833,374 bytes have SHA256
 `61a57876f4ac9b10849bf90bcd9bb74f6336737015cb3a5b1e1ebd85f11e6ae7`.
-The 917 AArch64 clauses occupy 432,399 bytes excluding inter-clause separators.
+The 917 AArch64 clause bodies occupy 431,483 bytes. Their 916 single-LF
+separators bring the complete suffix to 432,399 bytes.
 Their SEE indices are 1026 through 1942, in that order.
 
 `decoder_classification.py` checks the complete pin and exact prefix pin,
@@ -24,8 +27,10 @@ text, malformed headers/bodies, missing/extra/duplicate/reordered clauses,
 changed guards/writes, invalid widths and argument-order changes. It also
 checks every generated certificate module against deterministic regeneration.
 
-Those checks are **trusted extraction checks**, not kernel proofs of parser
-completeness or of the absence of other Sail declarations. The source pin,
+Those Python checks alone are **trusted extraction checks**, not kernel proofs
+of parser completeness or of the absence of other Sail declarations. The
+downstream partition proof independently checks their exact byte coverage;
+it still does not prove Sail parser completeness. The source pin,
 complete-file inventory and retained original file make the boundary
 reviewable; they do not erase it.
 
