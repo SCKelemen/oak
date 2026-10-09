@@ -71,6 +71,21 @@ func formulaBindingCases(t *testing.T) []formulaBindingCase {
 	} {
 		cases = append(cases, formulaBindingCase{"literal order/multiplicity", encode(pair[0], ""), encode(pair[1], ""), false})
 	}
+	// Identity may succeed on malformed clause syntax. Whole-record soundness
+	// must derive decoder locality from the checker, not identity alone.
+	for _, mutation := range []struct {
+		name  string
+		index int
+		value uint32
+	}{
+		{"matching oversized initial length", 8, ^uint32(0)},
+		{"matching invalid literal", 9, 4},
+		{"matching zero length with trailing payload", 8, 0},
+	} {
+		f, r := append([]uint32(nil), formula...), append([]uint32(nil), record...)
+		f[mutation.index], r[mutation.index] = mutation.value, mutation.value
+		cases = append(cases, formulaBindingCase{mutation.name, f, r, true})
+	}
 	return cases
 }
 
@@ -176,7 +191,7 @@ func TestLRATFormulaBindingMatchesLean(t *testing.T) {
 		t.Skip("lake not on PATH; formal CI requires the Lean replay")
 	}
 	var source strings.Builder
-	source.WriteString("import Oak.LRATFormulaBinding\n\n")
+	source.WriteString("import Oak.LRATFormulaBinding\nimport Oak.LRATBindingExtracted\n\n")
 	list := func(words []uint32) string {
 		items := make([]string, len(words))
 		for i, word := range words {
@@ -190,6 +205,7 @@ func TestLRATFormulaBindingMatchesLean(t *testing.T) {
 			t.Fatalf("%s: production binding %t, want %t", c.name, got, c.want)
 		}
 		fmt.Fprintf(&source, "example : Oak.LRATFormulaBinding.matchesFormula %s %s = %t := by decide\n", list(c.formula), list(c.record), got)
+		fmt.Fprintf(&source, "example : Oak.LRATBinding.lrat_matches_formula #%s #%s %d = some %t := by decide\n", list(c.formula), list(c.record), len(c.formula)+1, got)
 	}
 	path := filepath.Join(t.TempDir(), "FormulaBindingPins.lean")
 	if err := os.WriteFile(path, []byte(source.String()), 0600); err != nil {
@@ -197,7 +213,7 @@ func TestLRATFormulaBindingMatchesLean(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	for _, args := range [][]string{{"build", "Oak.LRATFormulaBinding"}, {"env", "lean", path}} {
+	for _, args := range [][]string{{"build", "Oak.LRATFormulaBinding", "Oak.LRATBindingExtracted"}, {"env", "lean", path}} {
 		cmd := exec.CommandContext(ctx, lake, args...)
 		cmd.Dir = filepath.Join("spec", "lean")
 		if out, err := cmd.CombinedOutput(); err != nil {

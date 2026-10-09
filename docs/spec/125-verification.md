@@ -299,10 +299,22 @@ The LRAT CI gate pins this theorem's full contract and rejects dependencies
 on axioms other than Lean's foundational `propext`, `Classical.choice`, and
 `Quot.sound`.
 
-This establishes whole-record soundness for the extracted word checker.
-Universal composition with the independent expected-formula identity gate,
-extraction correctness, allocation/FFI semantics, and compiled ARM64/RV64
-executables remain separate obligations.
+`Oak.LRATChecker.production_bound_record_sound` (in `Oak.LRATBoundRecord`)
+composes this result with the extracted production `lrat_matches_formula`
+gate. Acceptance of both calls refutes the independently retained expected
+formula, decoded with the same natural-cursor semantics. The binding loop
+proves exact equality of every initial payload word and the clause count.
+A separate induction on successful initial parsing proves decoder locality:
+no clause length or literal can escape that shared payload. This matters
+because identity alone may accept matching malformed clause lengths. The
+composition assumes only the two accepted calls, with independent fuel
+values; it adds no framing, decoder-equality, or scratch-state premises.
+CI checks binding extraction drift, the complete theorem contract and
+foundational-axiom whitelist, and matching malformed-payload regressions.
+
+This establishes expected-formula soundness for the extracted binding gate
+and word checker. Extraction correctness, allocation/FFI semantics, and
+compiled ARM64/RV64 executables remain separate obligations.
 
 At the clause
 boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists for raw
