@@ -21,7 +21,7 @@ open LogicalOp
 open BranchType
 open ArchVersion
 
-/-- Type quantifiers: k_ex3843_ : Bool, k_ex3842_ : Bool -/
+/-- Type quantifiers: k_ex4151_ : Bool, k_ex4150_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -251,7 +251,7 @@ def EL3 : (BitVec 2) := 0b11#2
 
 /-- Type quantifiers: k_M : Nat, N : Int, k_M ≥ 0 -/
 def ZeroExtend__0 (x : (BitVec k_M)) (N : Int) : SailM (BitVec N) := do
-  assert (N ≥b (Sail.BitVec.length x)) "return.sail:173.18-173.19"
+  assert (N ≥b (Sail.BitVec.length x)) "return.sail:179.18-179.19"
   (pure ((Zeros (N -i (Sail.BitVec.length x))) +++ x))
 
 /-- Type quantifiers: k_M : Nat, N : Int, k_M ≥ 0 -/
@@ -271,7 +271,7 @@ def HaveEL (el : (BitVec 2)) : SailM Bool := do
           then (pure ((← readReg CFG_ID_AA64PFR0_EL1_EL3) != 0x0#4))
           else
             (do
-              assert false "return.sail:211.28-211.29"
+              assert false "return.sail:215.28-215.29"
               throw Error.Exit)))
 
 def S1TranslationRegime__0 (el : (BitVec 2)) : SailM (BitVec 2) := do
@@ -294,9 +294,25 @@ def HasArchVersion (version : ArchVersion) : SailM Bool := do
 def HavePACExt (_ : Unit) : SailM Bool := do
   (HasArchVersion ARMv8p3)
 
+def HaveAnyAArch32 (_ : Unit) : SailM Bool := do
+  (pure (((((← readReg CFG_ID_AA64PFR0_EL1_EL0) == 0x2#4) || ((← readReg CFG_ID_AA64PFR0_EL1_EL1) == 0x2#4)) || ((← readReg CFG_ID_AA64PFR0_EL1_EL2) == 0x2#4)) || ((← readReg CFG_ID_AA64PFR0_EL1_EL3) == 0x2#4)))
+
+def HighestELUsingAArch32 (_ : Unit) : SailM Bool := do
+  readReg __highest_el_aarch32
+
+def UsingAArch32 (_ : Unit) : SailM Bool := do
+  let aarch32 ← do (pure ((← readReg PSTATE).nRW == 1#1))
+  if ((! (← (HaveAnyAArch32 ()))) : Bool)
+  then assert (! aarch32) "return.sail:269.25-269.26"
+  else (pure ())
+  if ((← (HighestELUsingAArch32 ())) : Bool)
+  then assert aarch32 "return.sail:272.22-272.23"
+  else (pure ())
+  (pure aarch32)
+
 /-- Type quantifiers: k_IsInstr : Bool -/
 def AddrTop (address : (BitVec 64)) (IsInstr : Bool) (el : (BitVec 2)) : SailM Int := do
-  assert (← (HaveEL el)) "return.sail:253.21-253.22"
+  assert (← (HaveEL el)) "return.sail:282.21-282.22"
   let regime ← do (S1TranslationRegime__0 el)
   let tbi ← (( do (undefined_bitvector 1) ) : SailM (BitVec 1) )
   let tbid ← (( do (undefined_bitvector 1) ) : SailM (BitVec 1) )
@@ -377,7 +393,7 @@ def AddrTop (address : (BitVec 64)) (IsInstr : Bool) (el : (BitVec 2)) : SailM I
                           (pure (tbi, tbid)))
                       else
                         (do
-                          assert false "Pattern match failure at return.sail:260.8-286.9"
+                          assert false "Pattern match failure at return.sail:289.8-315.9"
                           throw Error.Exit) ) : SailM ((BitVec 1) × (BitVec 1)) )
                     (pure (tbi, tbid))) ) : SailM ((BitVec 1) × (BitVec 1)) )
               (pure (tbi, tbid))) ) : SailM ((BitVec 1) × (BitVec 1)) )
@@ -390,9 +406,9 @@ def Hint_Branch (hint : BranchType) : Unit :=
   ()
 
 def AArch64_BranchAddr (vaddress : (BitVec 64)) : SailM (BitVec 64) := do
-  assert (! (← (boundaries.UsingAArch32 ()))) "return.sail:300.28-300.29"
+  assert (! (← (UsingAArch32 ()))) "return.sail:329.28-329.29"
   let msbit ← do (AddrTop vaddress true (← readReg PSTATE).EL)
-  assert ((msbit +i 1) ≥b 0) "return.sail:302.25-302.26"
+  assert ((msbit +i 1) ≥b 0) "return.sail:331.25-331.26"
   if ((msbit == 63) : Bool)
   then (pure vaddress)
   else
@@ -408,11 +424,11 @@ def BranchTo (target : (BitVec k_N)) (branch_type : BranchType) : SailM Unit := 
   if (((Sail.BitVec.length target) == 32) : Bool)
   then
     (do
-      assert (← (boundaries.UsingAArch32 ())) "return.sail:320.29-320.30"
+      assert (← (UsingAArch32 ())) "return.sail:349.29-349.30"
       writeReg _PC (← (ZeroExtend__1 (N := 64) target)))
   else
     (do
-      assert (((Sail.BitVec.length target) == 64) && (! (← (boundaries.UsingAArch32 ())))) "return.sail:323.43-323.44"
+      assert (((Sail.BitVec.length target) == 64) && (! (← (UsingAArch32 ())))) "return.sail:352.43-352.44"
       writeReg _PC (← (AArch64_BranchAddr (BitVec.slice target 0 64))))
   writeReg __PC_changed true
 
@@ -423,6 +439,7 @@ def initialize_registers (_ : Unit) : SailM Unit := do
   writeReg TCR_EL1 (← (undefined_bitvector 64))
   writeReg TCR_EL2 (← (undefined_bitvector 64))
   writeReg TCR_EL3 (← (undefined_bitvector 32))
+  writeReg __highest_el_aarch32 (← (undefined_bool ()))
   writeReg _R (← (undefined_vector 31 (← (undefined_bitvector 64))))
   writeReg InGuardedPage (← (undefined_bool ()))
   writeReg BTypeNext (← (undefined_bitvector 2))
@@ -430,6 +447,8 @@ def initialize_registers (_ : Unit) : SailM Unit := do
   writeReg SEE (← (undefined_int ()))
 
 def sail_model_init (x_0 : Unit) : SailM Unit := do
+  writeReg CFG_ID_AA64PFR0_EL1_EL0 0x2#4
+  writeReg CFG_ID_AA64PFR0_EL1_EL1 0x2#4
   writeReg CFG_ID_AA64PFR0_EL1_EL2 0x2#4
   writeReg CFG_ID_AA64PFR0_EL1_EL3 0x2#4
   writeReg __v81_implemented true
