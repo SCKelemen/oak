@@ -9677,23 +9677,31 @@ func (x *pathExecutor) frameSpanAccess(instr Instruction, state *symbolicState, 
 }
 
 // globalArrayShape reads a writable top-level array's shape from its
-// declared type text (`(u8[64])`, the type printer's spelling of
-// `[64]u8`): the element size in bytes, the element count, and the
-// element's signedness. Only arrays of integer scalars are spans; a
-// record or an array of records stays outside.
+// declared type text (`[64]u8`, the type printer's spelling, or the
+// legacy internal `u8[64]`): the element size in bytes, element count and
+// signedness. Only arrays of integer scalars are spans; a record or an
+// array of records stays outside.
 func globalArrayShape(global Global) (elem int64, count int64, signed bool, ok bool) {
 	if !global.Aggregate {
 		return 0, 0, false, false
 	}
-	m := globalArrayType.FindStringSubmatch(global.Type)
-	if m == nil {
+	typeText := global.Type
+	if strings.HasPrefix(typeText, "(") && strings.HasSuffix(typeText, ")") {
+		typeText = typeText[1 : len(typeText)-1]
+	}
+	var scalar, countText string
+	if m := globalArrayPrefixType.FindStringSubmatch(typeText); m != nil {
+		countText, scalar = m[1], m[2]
+	} else if m := globalArrayLegacyType.FindStringSubmatch(typeText); m != nil {
+		scalar, countText = m[1], m[2]
+	} else {
 		return 0, 0, false, false
 	}
-	count, err := strconv.ParseInt(m[2], 10, 64)
+	count, err := strconv.ParseInt(countText, 10, 64)
 	if err != nil || count <= 0 {
 		return 0, 0, false, false
 	}
-	switch m[1] {
+	switch scalar {
 	case "u8", "i8":
 		elem = 1
 	case "u16", "i16":
@@ -9705,13 +9713,16 @@ func globalArrayShape(global Global) (elem int64, count int64, signed bool, ok b
 	default:
 		return 0, 0, false, false
 	}
-	if elem*count != global.Size {
+	// Divide the positive allocation size instead of multiplying the count:
+	// an overflowing descriptor must not wrap into an apparently valid span.
+	if global.Size <= 0 || global.Size/elem != count || global.Size%elem != 0 {
 		return 0, 0, false, false
 	}
-	return elem, count, m[1][0] == 'i', true
+	return elem, count, scalar[0] == 'i', true
 }
 
-var globalArrayType = regexp.MustCompile(`^\(?([ui](?:8|16|32|64))\[([0-9]+)\]\)?$`)
+var globalArrayPrefixType = regexp.MustCompile(`^\[([0-9]+)\]([ui](?:8|16|32|64))$`)
+var globalArrayLegacyType = regexp.MustCompile(`^([ui](?:8|16|32|64))\[([0-9]+)\]$`)
 
 // declareGlobalArrays makes the program's writable top-level arrays
 // readable and writable as spans named by the global (the machine side
