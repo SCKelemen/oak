@@ -85,6 +85,11 @@ jobs:
           OAK_REQUIRE_LRAT_RECORD_LEAN: '1'
         run: go test ./compiler -run '^TestLRATKernel' -count=1 -timeout=10m -v
 
+      - name: Check exact formula binding and concrete soundness
+        env:
+          OAK_REQUIRE_LRAT_BINDING_LEAN: '1'
+        run: go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean)$' -count=1 -timeout=10m -v
+
   lean:
     # Proof-branch iterations use the dedicated gates above. PR and
     # specification runs still check the complete formal specification.

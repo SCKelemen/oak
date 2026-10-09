@@ -39,9 +39,9 @@ theorem matches_word {formula record : List Nat}
 /-- Decode precisely the declared initial region, refusing truncated lengths,
 clause bodies crossing the endpoint, and unused trailing words. -/
 def decodeInitial (words : Array UInt32) (at_ end_ : Nat) : Nat → Option (List RupCheck.Clause)
-  | 0 => if at_ = end_ then some [] else none
+  | 0 => if at_ = end_ ∧ end_ ≤ words.size then some [] else none
   | count + 1 => do
-    if at_ < end_ then
+    if at_ < end_ ∧ end_ ≤ words.size then
       let n := (words.getD at_ 0).toNat
       if at_ + 1 + n ≤ end_ then
         let rest ← decodeInitial words (at_ + 1 + n) end_ count
@@ -61,12 +61,12 @@ theorem decodeInitial_transfer (count : Nat) (formula record : Array UInt32)
     simp only [decodeInitial] at decoded
     split at decoded <;> simp_all [LRATChecker.initialClauses]
   | succ count ih =>
-    by_cases header : at_ < end_
-    · have lengthWord := same at_ (by omega) header
+    by_cases header : at_ < end_ ∧ end_ ≤ formula.size
+    · have lengthWord := same at_ (by omega) header.1
       by_cases fits : at_ + 1 + (formula.getD at_ 0).toNat ≤ end_
       · simp only [decodeInitial, header, fits, ite_true] at decoded
         cases restRun : decodeInitial formula (at_ + 1 + (formula.getD at_ 0).toNat) end_ count with
-        | none => simp [restRun] at decoded
+        | none => simp only [restRun, bind, Option.bind, reduceCtorEq] at decoded
         | some rest =>
           simp only [restRun, bind, Option.bind, Option.pure_def, Option.some.injEq] at decoded
           rw [← decoded, LRATChecker.initialClauses, ← lengthWord]
@@ -79,8 +79,8 @@ theorem decodeInitial_transfer (count : Nat) (formula record : Array UInt32)
           intro k member
           have hk := List.mem_range.mp member
           rw [same (at_ + 1 + k) (by omega) (by omega)]
-      · simp [decodeInitial, header, fits] at decoded
-    · simp [decodeInitial, header] at decoded
+      · simp only [decodeInitial, header, fits, ite_true, ite_false, reduceCtorEq] at decoded
+    · simp only [decodeInitial, header, ite_false, reduceCtorEq] at decoded
 
 /-- An accepted production record refutes the independently supplied CNF
 when exact formula binding succeeds and that expected CNF decodes fully.
