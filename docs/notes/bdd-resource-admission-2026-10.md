@@ -105,3 +105,53 @@ process RSS is Go live heap or that race metadata was reclaimed.
 
 Local semantic probes do not execute ARM64 code. Actual native race CI and its
 existing all-eight proof/reference requirements remain the acceptance check.
+
+### Frozen candidate evidence (2026-10-09)
+
+The implementation at `f6c45625a4dae9b701053217c62cfc93572f9f7c`, based on
+`9f29884bcc8dd7af72f0a8362063f1fe25aeeb6f`, passed 53 focused race-test roots
+covering the policies above, representative loops/abstract applications, and
+cache serialization/retry. Total wall time including builds was 62.86 seconds;
+sampled peak process-tree RSS was 1,096,302,592 bytes. Tests also distinguish
+negative/zero internal node balances from memory denial: terminal-only proofs
+remain possible, while a new node fails deterministically without tainting
+cacheability.
+
+A fresh all-eight semantic probe on that exact implementation passed all of
+translate, unmap_page, map_page, walk_leaf, alloc_table, reset, check_range and
+free_table, including their required state/span writes. It used the unchanged
+Stage2 source, Linux ARM64 target, normal optimizer, InlineHelpers=true,
+OAK_VERIFY_BUDGET=high and OAK_VERIFY_CACHE=0. Test runtime was 180.65 seconds
+(205.79 seconds including compilation), with 2,699,624,448 bytes sampled peak
+process-tree RSS and 6,288,887,808 bytes minimum available host memory. The
+external diagnostic ceilings were 4 GiB RSS / 240 seconds, with 2 GiB available
+memory and 512 MiB free disk floors. Neither the watchdog nor admission denied
+work. The diagnostic harness does not enter the repository or replace native
+execution. Log SHA-256:
+`a5a741f7ac445bab6189a0dec03071828ef9d6891b8db890db4e8d7b22cda97d`.
+
+A development-candidate race probe on the 9.7 GiB host **did not prove**
+translate. It completed with explicit memory-admission-denied witness evidence:
+136.48 seconds total, 4,133,797,888 bytes sampled peak RSS and 4,747,362,304 bytes
+minimum available memory. No 16-million-node order ran: the 5,799,235,584-byte
+race-adjusted reservation plus host headroom did not fit after the base orders.
+Go HeapAlloc dropped to about 7 MiB while process RSS remained around 2.8–3.1 GB,
+so the difference cannot be described as a live BDD heap. This run preceded the
+classification-only correction for negative logical balances. The conservative
+production thresholds were retained; hosted native/race completion is pending.
+
+A controlled existing-node memo microbenchmark used all 32,768 canonical nodes
+of the four-variable universe and 65,536 XOR operations per iteration. Across
+three runs of three iterations, the growing cache retained 4 MiB and took
+5.82–7.11 ms/iteration; a deliberately tiny 1 MiB cap retained 1 MiB, evicted
+13 times and took 10.75–11.13 ms/iteration. Both returned every exact expected
+result with the same 32,768 nodes. The small cap deliberately measures the
+storage/recomputation tradeoff; the production cap remains 64 MiB. Command:
+
+```sh
+go test -p 1 -run '^$' -bench '^BenchmarkBDDOperationMemo$' -benchtime=3x -benchmem -count=3 ./asm
+```
+
+All RSS values above are sampled observations at 100 ms intervals, not hard
+peak guarantees. They support hosted validation of the mitigation, not a claim
+that the full native race suite has already passed.
