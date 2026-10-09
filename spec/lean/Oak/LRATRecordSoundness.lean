@@ -97,6 +97,7 @@ theorem checker_eq_body (words starts lengths : Array UInt32) (alive : Array UIn
 structure HeaderValid (words starts lengths : Array UInt32) (alive : Array UInt8) (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32) (h : HeaderData) : Prop where
   variables_eq : h.variables = words.getD 1 0
   count_eq : h.clause_count = words.getD 2 0
+  literalEnd_eq : h.literal_end.toNat = 8 + (words.getD 3 0).toNat
   startBound : 8 ≤ h.literal_end.toNat
   literalCapacity : h.literal_end.toNat ≤ words.size
   fullCapacity : (h.literal_end + h.step_words).toNat ≤ words.size
@@ -131,6 +132,7 @@ theorem parseHeader_valid (words starts lengths : Array UInt32) (alive : Array U
   constructor
   · rfl
   · rfl
+  · exact sum
   · change 8 ≤ (LRAT_HEADER_WORDS + words.getD 3 0).toNat
     rw [sum]; omega
   · change (LRAT_HEADER_WORDS + words.getD 3 0).toNat ≤ words.size

@@ -70,9 +70,9 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       # Track the complete LRAT proof independently of unrelated formal modules.
-      - name: Build production LRAT whole-record proof
+      - name: Build production LRAT bound-record proof
         working-directory: spec/lean
-        run: lake build Oak.LRATBoundSoundness
+        run: lake build Oak.LRATBoundSoundness Oak.LRATBoundRecord
 
       - name: Set up Go
         uses: actions/setup-go@v5

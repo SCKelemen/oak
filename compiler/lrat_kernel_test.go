@@ -182,6 +182,10 @@ func TestLRATKernelRUPExtract(t *testing.T) {
 	lratKernelExtract(t, "LRATRUP", []string{"lrat_rup"})
 }
 
+func TestLRATKernelBindingExtract(t *testing.T) {
+	lratKernelExtract(t, "LRATBinding", []string{"lrat_matches_formula"})
+}
+
 func TestLRATKernelCheckerExtract(t *testing.T) {
 	lratKernelExtract(t, "LRATChecker", []string{"lrat_check"})
 }
@@ -358,7 +362,7 @@ func TestLRATKernelRecordSoundness(t *testing.T) {
 		}
 		t.Skip("lake not on PATH; formal CI requires whole-record soundness")
 	}
-	source := `import Oak.LRATRecordSoundness
+	source := `import Oak.LRATBoundRecord
 open Oak.LRATChecker
 example (words starts lengths : Array UInt32) (alive : Array UInt8)
     (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32) (fuel : Nat)
@@ -366,6 +370,16 @@ example (words starts lengths : Array UInt32) (alive : Array UInt8)
     (run : lrat_check words starts lengths alive store assign trail out fuel = some (LRAT_ACCEPTED, s, l, v, t, x, y, o)) :
     ¬ ∃ a, InitialModels words (words.getD 2 0).toNat 8 a :=
   production_record_sound words starts lengths alive store assign trail out fuel s l v t x y o run
+example (formula words starts lengths : Array UInt32) (alive : Array UInt8)
+    (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32) (bindingFuel fuel : Nat)
+    (s l : Array UInt32) (v : Array UInt8) (t : Array UInt32) (x : Array UInt8) (y o : Array UInt32)
+    (binding : Oak.LRATBinding.lrat_matches_formula formula words bindingFuel = some true)
+    (run : lrat_check words starts lengths alive store assign trail out fuel = some (LRAT_ACCEPTED, s, l, v, t, x, y, o)) :
+    ¬ ∃ a, InitialModels formula (formula.getD 2 0).toNat 8 a :=
+  production_bound_record_sound formula words starts lengths alive store assign trail out bindingFuel fuel s l v t x y o binding run
+#print axioms Oak.LRATChecker.production_binding_exact
+#print axioms Oak.LRATChecker.initial_loop_locality
+#print axioms Oak.LRATChecker.production_bound_record_sound
 #print axioms Oak.LRATChecker.production_initialization
 #print axioms Oak.LRATChecker.steps_loop_models
 #print axioms Oak.LRATChecker.checker_eq_body
@@ -377,7 +391,7 @@ example (words starts lengths : Array UInt32) (alive : Array UInt8)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	for _, args := range [][]string{{"build", "Oak.LRATRecordSoundness"}, {"env", "lean", path}} {
+	for _, args := range [][]string{{"build", "Oak.LRATBoundRecord"}, {"env", "lean", path}} {
 		cmd := exec.CommandContext(ctx, lake, args...)
 		cmd.Dir = filepath.Join("..", "spec", "lean")
 		out, err := cmd.CombinedOutput()

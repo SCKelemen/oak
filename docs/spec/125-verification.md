@@ -299,10 +299,22 @@ The LRAT CI gate pins this theorem's full contract and rejects dependencies
 on axioms other than Lean's foundational `propext`, `Classical.choice`, and
 `Quot.sound`.
 
-This establishes whole-record soundness for the extracted word checker.
-Universal composition with the independent expected-formula identity gate,
-extraction correctness, allocation/FFI semantics, and compiled ARM64/RV64
-executables remain separate obligations.
+`Oak.LRATChecker.production_bound_record_sound` (in `Oak.LRATBoundRecord`)
+composes this result with the extracted production `lrat_matches_formula`
+gate. Acceptance of both calls refutes the independently retained expected
+formula, decoded with the same natural-cursor semantics. The binding loop
+proves exact equality of every initial payload word and the clause count.
+A separate induction on successful initial parsing proves decoder locality:
+no clause length or literal can escape that shared payload. This matters
+because identity alone may accept matching malformed clause lengths. The
+composition assumes only the two accepted calls, with independent fuel
+values; it adds no framing, decoder-equality, or scratch-state premises.
+CI checks binding extraction drift, the complete theorem contract and
+foundational-axiom whitelist, and matching malformed-payload regressions.
+
+This establishes expected-formula soundness for the extracted binding gate
+and word checker. Extraction correctness, allocation/FFI semantics, and
+compiled ARM64/RV64 executables remain separate obligations.
 
 At the clause
 boundary, `Oak.TseitinCNF` proves that the exact signed-literal lists for raw
@@ -444,13 +456,16 @@ exact consumption of the declared initial region. The theorem assumes neither
 an abstract RUP derivation nor an arbitrary shared decoder. Successful expected
 CNF decoding is an explicit hypothesis; deriving it from a source-to-CNF emitter
 remains separate.
-The 64-case raw-word corpus runs through the production Go predicate, the
+The 67-case raw-word corpus runs through the production Go predicate, the
 compiled Oak predicate and acceptance wrapper, and kernel-replayed Lean
 examples in formal CI. The dedicated LRAT job also pins the concrete composition
-contract, tests malformed decoder boundaries, and rejects proof holes. Refinement
-of the production identity loops to the list predicate remains bounded
-correspondence; source-to-CNF correctness and native compilation of the checker
-remain separate proof obligations.
+contract, tests malformed decoder boundaries, and rejects proof holes. The
+stronger `Oak.LRATChecker.production_bound_record_sound` theorem described above
+uses the extracted production identity loop directly and derives initial-decoder
+locality from successful checking, without an expected-decoding hypothesis.
+Correspondence with the separate list predicate is still checked on the corpus;
+it is not a premise of that stronger theorem. Source-to-CNF correctness and
+native compilation of the checker remain separate proof obligations.
 `-cnf dir` writes every bit-level
 obligation's clauses as DIMACS (`name.cnf`) for any solver or checker to
 read; the clause engine agrees with the diagram engine input for input over
