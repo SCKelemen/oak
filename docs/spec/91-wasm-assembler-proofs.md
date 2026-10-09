@@ -212,13 +212,16 @@ blocks, loops, branches, conditionals and single-function returns.
 `Oak.WasmCalls` adds direct calls with isolated frames in a closed function table;
 `Oak.WasmModule` now decodes binary metadata and links that table. Structural
 decoding and byte correctness still do not imply module validity.
+`Oak.WasmTyping` proves scalar type preservation and absence of model diagnostics
+for accepted straight-line sequences, including their assembled bytes; full
+control-polymorphic module validation remains open.
 
 ## Remaining parity obligations
 
 | Boundary | Required next work |
 | --- | --- |
 | Implementation refinement | Prove Go encoder and exact module parser/type-validator correspondence; discharge compiler/extractor correspondence beyond the stated modeling boundary |
-| Decoded semantics | Extend the proved scalar/control byte-to-execution bridge with validator correspondence and typed execution preservation/progress |
+| Decoded semantics | Extend scalar type safety through control/calls and prove full validator correspondence |
 | Compiler correctness | Source/OptIR-to-decoded-Wasm refinement, edge-copy and structured/dispatch control proofs, certificate identity and authoritative admission |
 | Language/library coverage | Narrow integers, conversions and checked shifts; memory/aggregates/globals; explicit float/SIMD/atomic profiles; corresponding stdlib coverage |
 | Modules and environment | Oak module writer and symbolic linking, layout/index/section-length proofs, declared browser/WASI imports and runtime contracts |

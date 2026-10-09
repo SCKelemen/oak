@@ -409,10 +409,39 @@ ill-typed structural-acceptance boundary. These are 342 kernel claims in 205 row
 The 60 structural refusals are also checked against the production validator.
 Formal CI requires the new module engine and Lean gates.
 
+## Scalar type safety
+
+`Oak.WasmTyping` checks reachable straight-line stacks and local types for all
+49 modeled scalar forms. It checks encoding validity before converting local
+indices, rejects unsupported instructions, and composes stack effects across
+arbitrary-length sequences.
+
+`step_safe` and `sequence_safe` prove that every accepted program, on any concrete
+state matching its input types, either returns the predicted operand stack and
+unchanged local types or raises an explicit Core trap. No arithmetic-value
+precondition is required. `accepted_no_diagnostic` excludes malformed,
+unsupported, stack-underflow, width-mismatch and local-index errors.
+`sequence_encodable` establishes an encoding exists; `bytes_safe` transfers the
+same safety property through assembled bytes with any external suffix.
+
+This checker is deliberately conservative after `unreachable`: it retains the
+current type stack instead of implementing the full validator's polymorphic
+stack. For example, `unreachable; i32.add` is valid in the production validator
+and engine but refused by this checker. This is soundness for the named scalar
+model, not completeness or universal refinement of the Go module validator.
+Control-flow joins, branches, calls and untaken paths remain outside this theorem.
+
+`compiler/wasm_typing_test.go` compares 825 instruction/stack contracts with the
+Go validator and independent engine, then checks the unreachable boundary as a
+826th module. Its Lean corpus checks 888 kernel claims: the 825 contracts,
+55 composed execution fixtures and eight refusal/boundary cases. Formal CI
+requires both typing gates. Principal safety theorems use only Lean's standard
+axioms, with no proof holes or custom axioms.
+
 ## Next boundary
 
-Prove validator correspondence and typed execution preservation/progress for the
-closed scalar profile, including untaken paths. Then connect compiler selection,
-control lowering and module emission to source semantics. Imports, memory/globals,
-and wider target coverage remain open. `TranslationVerified` remains false;
-verified-mode refusal is unchanged.
+Extend typed execution safety through structured control and calls, including
+untaken paths and the full polymorphic validator. Prove production validator
+correspondence, then connect compiler selection, control lowering and module
+emission to source semantics. Imports, memory/globals and wider target coverage
+remain open. `TranslationVerified` remains false; verified-mode refusal is unchanged.
