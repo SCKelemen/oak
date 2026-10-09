@@ -425,6 +425,9 @@ func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []
 		form = index.linearAt(32)
 	}
 	for _, known := range bl.selects {
+		if bl.exceeded() {
+			return nil
+		}
 		if known.span != span || len(known.idx) != len(idx) {
 			continue
 		}
@@ -472,6 +475,9 @@ func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []
 // a span, each an equality over the 32 index bits; the node budget bounds
 // it like everything else.
 func (bl *blaster) consistency() int {
+	if bl.exceeded() {
+		return bddFalse
+	}
 	cons := bddTrue
 	if len(bl.selects) == 0 {
 		return cons
@@ -521,6 +527,9 @@ func (bl *blaster) consistency() int {
 	forms := make([]*linearForm, len(bl.selects))
 	bounds := newIndexBoundsMemo()
 	for k := range bl.selects {
+		if bl.exceeded() {
+			return bddFalse
+		}
 		if bl.selects[k].index != nil {
 			forms[k] = bl.selects[k].index.linearAt(32)
 		}
@@ -530,6 +539,9 @@ func (bl *blaster) consistency() int {
 		formA := forms[k]
 		aVal := bl.varsBits(a.vars, len(a.vars))
 		for l := k + 1; l < len(bl.selects); l++ {
+			if bl.exceeded() {
+				return bddFalse
+			}
 			b := bl.selects[l]
 			if b.span != a.span {
 				continue
@@ -549,6 +561,9 @@ func (bl *blaster) consistency() int {
 		}
 		// The constant-index reads of the span are parameters (`v[3]`).
 		for _, name := range bl.params {
+			if bl.exceeded() {
+				return bddFalse
+			}
 			if rootParam(name) != a.span || len(name) <= len(a.span)+2 || name[len(a.span)] != '[' {
 				continue
 			}
@@ -599,6 +614,9 @@ func (bl *blaster) blast(t *term) []int {
 		return cached
 	}
 	out := bl.blastUncached(t)
+	if bl.exceeded() {
+		return nil
+	}
 	if out != nil {
 		bl.memo[t] = out
 	}
@@ -1133,6 +1151,9 @@ func (bl *blaster) counterexample(x, y int) map[string]uint64 {
 // a node.
 func (bl *blaster) counterexampleOf(node int) map[string]uint64 {
 	assignment := bl.bdd.satisfyingPath(node)
+	if bl.exceeded() {
+		return nil
+	}
 	env := make(map[string]uint64, len(bl.params))
 	for variable, value := range assignment {
 		owner, isParam := bl.owners[variable]
@@ -1149,6 +1170,9 @@ func (bl *blaster) counterexampleOf(node int) map[string]uint64 {
 	// the evaluation computes the operation itself, which is what tells a
 	// difference under the abstraction from a counterexample).
 	for _, sel := range bl.selects {
+		if bl.exceeded() {
+			return nil
+		}
 		if sel.index == nil {
 			continue
 		}

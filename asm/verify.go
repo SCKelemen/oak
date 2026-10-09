@@ -30,7 +30,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/SCKelemen/oak/ast"
@@ -12944,24 +12943,10 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	// order, and a body that is small under some order is decided in that
 	// order's time.
 	blasters := equalityBlasters(names, params, asmTerm, oakTerm)
-	var stop atomic.Bool
-	type attempt struct {
-		verdict  Verdict
-		exceeded bool
-	}
-	results := make(chan attempt, len(blasters))
-	for _, bl := range blasters {
-		bl.bdd.stop = &stop
-		go func(bl *blaster) {
-			verdict, exceeded := blastEqual(bl, fn, names, asmTerm, oakTerm, domain, width, note)
-			results <- attempt{verdict, exceeded}
-		}(bl)
-	}
-	for range blasters {
-		if a := <-results; !a.exceeded {
-			stop.Store(true)
-			return a.verdict
-		}
+	if verdict, decided := raceBDDOrders(blasters, func(bl *blaster) (Verdict, bool) {
+		return blastEqual(bl, fn, names, asmTerm, oakTerm, domain, width, note)
+	}); decided {
+		return verdict
 	}
 	if termEquivalent(truncate(asmTerm, width), truncate(oakTerm, width), width, map[[3]any]bool{}) {
 		// The same term on both sides up to the width adapters' masks (a
@@ -12985,22 +12970,14 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	// before. Only small terms claim the time: a large term past the
 	// budget stays evidence.
 	if budget := escalatedNodeBudget(); budget > 0 && termSize(asmTerm, map[*term]int{})+termSize(oakTerm, map[*term]int{}) <= escalationTermNodes {
-		var stopEscalated atomic.Bool
 		escalated := equalityBlasters(names, params, asmTerm, oakTerm)
-		escalatedResults := make(chan attempt, len(escalated))
 		for _, bl := range escalated {
 			bl.withBudget(budget)
-			bl.bdd.stop = &stopEscalated
-			go func(bl *blaster) {
-				verdict, exceeded := blastEqual(bl, fn, names, asmTerm, oakTerm, domain, width, note)
-				escalatedResults <- attempt{verdict, exceeded}
-			}(bl)
 		}
-		for range escalated {
-			if a := <-escalatedResults; !a.exceeded {
-				stopEscalated.Store(true)
-				return a.verdict
-			}
+		if verdict, decided := raceBDDOrders(escalated, func(bl *blaster) (Verdict, bool) {
+			return blastEqual(bl, fn, names, asmTerm, oakTerm, domain, width, note)
+		}); decided {
+			return verdict
 		}
 	}
 	if abstractCalls {
@@ -13123,6 +13100,9 @@ func blastEqual(bl *blaster, fn *Function, names []string, asmTerm, oakTerm, dom
 			return Verdict{}, true
 		}
 		env := bl.counterexampleOf(differs)
+		if bl.exceeded() {
+			return Verdict{}, true
+		}
 		if asmTerm.eval(env) == oakTerm.eval(env) && (hasUninterpreted(asmTerm) || hasUninterpreted(oakTerm)) {
 			// The diagrams abstract an uninterpreted operation — a quotient
 			// at another width, or one under an arm the other side folds

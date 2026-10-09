@@ -3,7 +3,6 @@ package asm
 import (
 	"fmt"
 	"sort"
-	"sync/atomic"
 
 	"github.com/SCKelemen/oak/ast"
 )
@@ -248,27 +247,13 @@ func decideLowered(lowered *loweredTheorem) Decision {
 	// depend on the order, and a theorem that is small under some order is
 	// decided in that order's time rather than after the others' failures.
 	blasters := lowered.blasters()
-	var stop atomic.Bool
-	type attempt struct {
-		decision Decision
-		exceeded bool
-	}
-	results := make(chan attempt, len(blasters))
 	// Number the shared term DAG once before the variable-order attempts run.
 	// Each attempt gets private value/stamp storage without writing term ids.
 	evaluator := newTermEvaluator(append([]*term{t}, traps...)...)
-	for _, bl := range blasters {
-		bl.bdd.stop = &stop
-		go func(bl *blaster, evaluator *termEvaluator) {
-			decision, exceeded := decideBlasted(bl, traps, t, names, evaluator)
-			results <- attempt{decision, exceeded}
-		}(bl, evaluator.fork())
-	}
-	for range blasters {
-		if a := <-results; !a.exceeded {
-			stop.Store(true)
-			return a.decision
-		}
+	if decision, decided := raceBDDOrders(blasters, func(bl *blaster) (Decision, bool) {
+		return decideBlasted(bl, traps, t, names, evaluator.fork())
+	}); decided {
+		return decision
 	}
 	return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exceeded its node budget"}
 }
@@ -468,6 +453,9 @@ func decideBlasted(bl *blaster, traps []*term, t *term, names []string, evaluato
 				return Decision{Kind: DecisionUndecided, Message: "the diagrams fire a trap only under an uninterpreted application; its evidence interpretation cannot establish a source-level trap"}, false
 			}
 			env := bl.counterexample(bits[0], bddFalse)
+			if bl.exceeded() {
+				return Decision{}, true
+			}
 			if evaluator.evaluate(trap, env) == 0 {
 				return Decision{Kind: DecisionUndecided, Message: "the diagrams fire a trap only under the abstraction of an uninterpreted operation; the body does not trap at the assignment they chose"}, false
 			}
@@ -489,6 +477,9 @@ func decideBlasted(bl *blaster, traps []*term, t *term, names []string, evaluato
 		return Decision{Kind: DecisionUndecided, Message: "the diagrams differ under an uninterpreted application; its evidence interpretation cannot establish a source-level counterexample"}, false
 	}
 	env := bl.counterexample(bits[0], bddTrue)
+	if bl.exceeded() {
+		return Decision{}, true
+	}
 	if evaluator.evaluate(t, env) == 1 {
 		return Decision{Kind: DecisionUndecided, Message: "the diagrams differ only under the abstraction of an uninterpreted operation; the claim holds at the assignment they chose"}, false
 	}
