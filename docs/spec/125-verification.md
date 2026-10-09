@@ -435,7 +435,8 @@ A proof for a different embedded formula does not count, even when its
 dimensions match. The word certificate is neither printed nor parsed on
 the way; an external solver's certificate is text, checked as before.
 `Oak.LRATFormulaBinding` models this identity gate. The concrete composition
-in `Oak.LRATBoundSoundness.production_bound_record_sound` connects exact
+in `Oak.LRATFormulaBinding.production_bound_record_sound` (module
+`Oak.LRATBoundSoundness`) connects exact
 formula identity to `production_record_sound`: an accepted production record
 refutes the independently supplied, successfully decoded expected CNF. Its
 natural-cursor decoder checks array bounds, each length-prefixed clause, and

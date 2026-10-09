@@ -64,7 +64,7 @@ theorem decodeInitial_transfer (count : Nat) (formula record : Array UInt32)
     by_cases header : at_ < end_ ∧ end_ ≤ formula.size
     · have lengthWord := same at_ (by omega) header.1
       by_cases fits : at_ + 1 + (formula.getD at_ 0).toNat ≤ end_
-      · simp only [decodeInitial, header, fits, ite_true] at decoded
+      · simp only [decodeInitial, header, fits, and_self, ite_true] at decoded
         cases restRun : decodeInitial formula (at_ + 1 + (formula.getD at_ 0).toNat) end_ count with
         | none => simp only [restRun, bind, Option.bind, reduceCtorEq] at decoded
         | some rest =>
@@ -79,7 +79,7 @@ theorem decodeInitial_transfer (count : Nat) (formula record : Array UInt32)
           intro k member
           have hk := List.mem_range.mp member
           rw [same (at_ + 1 + k) (by omega) (by omega)]
-      · simp only [decodeInitial, header, fits, ite_true, ite_false, reduceCtorEq] at decoded
+      · simp only [decodeInitial, header, fits, and_self, ite_true, ite_false, reduceCtorEq] at decoded
     · simp only [decodeInitial, header, ite_false, reduceCtorEq] at decoded
 
 /-- An accepted production record refutes the independently supplied CNF

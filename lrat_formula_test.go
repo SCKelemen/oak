@@ -205,6 +205,9 @@ example (formula record starts lengths : Array UInt32)
     ¬ ∃ a, ∀ clause ∈ clauses, Oak.RupCheck.SatisfiesClause a clause :=
   production_bound_record_sound formula record starts lengths alive store assign trail out
     fuel s l v t x y o clauses bound decoded run
+example : Oak.LRATFormulaBinding.decodeInitial #[1, 0, 1, 1] 0 4 2 =
+    some [Oak.LRATChecker.inputClause #[1, 0, 1, 1] 1 1,
+      Oak.LRATChecker.inputClause #[1, 0, 1, 1] 3 1] := by decide
 example : Oak.LRATFormulaBinding.decodeInitial #[] 0 0 0 = some [] := by decide
 example : Oak.LRATFormulaBinding.decodeInitial #[0] 0 1 1 = some [[]] := by decide
 example : Oak.LRATFormulaBinding.decodeInitial #[] 0 1 1 = none := by decide
