@@ -255,7 +255,7 @@ func decideLowered(lowered *loweredTheorem) Decision {
 	}); decided {
 		return decision
 	}
-	return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exceeded its node budget"}
+	return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exhausted its " + bddExhaustionReason(blasters)}
 }
 
 // witnessRefutation evaluates the lowered theorem on the fixed witness
@@ -318,9 +318,11 @@ func DecideWithOrder(sig *ast.FunctionStatement, functions map[string]*ast.Funct
 			continue
 		}
 		evaluator := newTermEvaluator(append([]*term{lowered.claim}, lowered.traps...)...)
-		decision, exceeded := decideBlasted(bl, lowered.traps, lowered.claim, lowered.names, evaluator)
-		if exceeded {
-			return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exceeded its node budget under the " + order + " order"}
+		decision, decided := raceBDDOrders([]*blaster{bl}, func(bl *blaster) (Decision, bool) {
+			return decideBlasted(bl, lowered.traps, lowered.claim, lowered.names, evaluator)
+		})
+		if !decided {
+			return Decision{Kind: DecisionUndecided, Message: "the bit-level decision exhausted its " + bddExhaustionReason([]*blaster{bl}) + " under the " + order + " order"}
 		}
 		return decision
 	}

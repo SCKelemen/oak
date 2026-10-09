@@ -40,6 +40,10 @@ import (
 type Verdict struct {
 	Kind    VerdictKind
 	Message string
+	// TransientResourceExhausted prevents persisting a negative result that
+	// overlapped temporary admission pressure, possibly in a concurrent
+	// query. It is false for proven results and concrete mismatches.
+	TransientResourceExhausted bool `json:"-"`
 	// Callees are the program functions the verdict took at their Oak
 	// bodies (call summaries, docs/spec/94-assembler.md §8): a proven
 	// verdict is relative to theirs, so the verified profile accepts the
@@ -10606,7 +10610,8 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 // chunk against the same chunk packed from the Oak body's value; the
 // verdict is proof only when both are proven, otherwise the first that
 // is not.
-func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
+func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) (verdict Verdict) {
+	defer trackBDDResourceExhaustion(&verdict)()
 	if only := os.Getenv("OAK_VERIFY_ONLY"); only != "" && !verifyOnlyNames(only, fn.Name) {
 		// A diagnostic switch: one function verified, every other unit
 		// trusted without a look (its verdict is never cached).
@@ -12953,6 +12958,7 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	}); decided {
 		return verdict
 	}
+	memoryExhausted := bddOrdersMemoryExhausted(blasters)
 	if termEquivalent(truncate(asmTerm, width), truncate(oakTerm, width), width, map[[3]any]bool{}) {
 		// The same term on both sides up to the width adapters' masks (a
 		// quotient times a divisor, say, whose diagram no budget affords):
@@ -12984,11 +12990,16 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 		}); decided {
 			return verdict
 		}
+		memoryExhausted = memoryExhausted || bddOrdersMemoryExhausted(escalated)
 	}
 	if abstractCalls {
-		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (abstract call applications remain undecided) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
+		return Verdict{Kind: VerdictTrusted, TransientResourceExhausted: memoryExhausted, Message: fmt.Sprintf("asm unit %s: not verified (abstract call applications remain undecided) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 	}
-	return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
+	reason := "node budget"
+	if memoryExhausted {
+		reason = "memory admission allowance"
+	}
+	return Verdict{Kind: VerdictWitnessed, TransientResourceExhausted: memoryExhausted, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exhausted its %s)", fn.Name, reason)}
 }
 
 // equalityBlasters builds the variable orders for an equality: interleaved

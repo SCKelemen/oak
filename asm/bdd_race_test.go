@@ -13,16 +13,19 @@ func TestBDDOrderRaceJoinsCancelledWorkers(t *testing.T) {
 	for iteration := 0; iteration < 10; iteration++ {
 		blasters := []*blaster{newBlaster(nil, nil), newBlaster(nil, nil), newBlaster(nil, nil)}
 		started, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		thirdStarted := make(chan struct{})
 		returned := make(chan bool, 1)
 		var finished atomic.Int32
 		go func() {
-			result, decided := raceBDDOrders(blasters, func(bl *blaster) (int, bool) {
+			result, decided := testRaceBDDOrders(blasters, func(bl *blaster) (int, bool) {
 				defer finished.Add(1)
 				if bl == blasters[0] {
 					<-started
+					<-thirdStarted
 					return 7, false
 				}
 				if bl == blasters[2] {
+					close(thirdStarted)
 					return 99, true // an undecided result cannot win
 				}
 				close(started)
@@ -67,7 +70,7 @@ func TestBDDOrderRaceAllExhausted(t *testing.T) {
 		for i := range blasters {
 			blasters[i] = newBlaster(nil, nil)
 		}
-		if _, decided := raceBDDOrders(blasters, func(bl *blaster) (int, bool) {
+		if _, decided := testRaceBDDOrders(blasters, func(bl *blaster) (int, bool) {
 			bl.bdd.exceeded = true
 			return 1, false // even a misreported placeholder cannot win
 		}); decided {
@@ -138,7 +141,7 @@ func TestBDDParallelProofSemantics(t *testing.T) {
 					for _, bl := range blasters {
 						bl.withBudget(budget)
 					}
-					verdict, decided := raceBDDOrders(blasters, func(bl *blaster) (Verdict, bool) {
+					verdict, decided := testRaceBDDOrders(blasters, func(bl *blaster) (Verdict, bool) {
 						return blastEqual(bl, &Function{Name: "parallel"}, names, tc.a, tc.b, nil, 4, "")
 					})
 					if decided != (budget > 1) || decided && verdict.Kind != tc.want {
@@ -154,7 +157,7 @@ func TestBDDParallelProofSemantics(t *testing.T) {
 					for _, bl := range blasters {
 						bl.withBudget(budget)
 					}
-					decision, decided := raceBDDOrders(blasters, func(bl *blaster) (Decision, bool) {
+					decision, decided := testRaceBDDOrders(blasters, func(bl *blaster) (Decision, bool) {
 						return decideBlasted(bl, nil, claim, names, evaluator.fork())
 					})
 					want := DecisionProven
@@ -199,10 +202,20 @@ func TestBDDInterruptionKeepsCNFDispatch(t *testing.T) {
 
 func TestBDDOrderRaceRejectsCancelledResult(t *testing.T) {
 	bl := newBlaster(nil, nil)
-	if _, decided := raceBDDOrders([]*blaster{bl}, func(bl *blaster) (Verdict, bool) {
+	if _, decided := testRaceBDDOrders([]*blaster{bl}, func(bl *blaster) (Verdict, bool) {
 		bl.bdd.stop.Store(true)
 		return Verdict{Kind: VerdictProven}, false
 	}); decided {
 		t.Fatal("a nominal result from an interrupted worker became a proof")
 	}
+}
+
+// Lifecycle/semantic tests need deterministic concurrency, independently of
+// the machine's current available RAM. Admission limits have separate tests.
+func testRaceBDDOrders[T any](blasters []*blaster, run func(*blaster) (T, bool)) (T, bool) {
+	var capacity uint64
+	for _, bl := range blasters {
+		capacity += bddOrderEstimate(bl.bdd.budget)
+	}
+	return raceBDDOrdersAdmitted(blasters, run, newBDDOrderAdmission(func() uint64 { return capacity }))
 }

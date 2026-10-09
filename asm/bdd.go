@@ -51,9 +51,16 @@ type uniqueTable struct {
 	count   int
 }
 
+// opMemoMaxSlots bounds this disposable cache independently of the node
+// allowance. Eviction only makes apply/ite recompute; canonical nodes live in
+// the separate, non-evicting unique table.
+const opMemoMaxSlots = 1 << 22 // 64 MiB of flat entries
+
 type opTable struct {
-	entries []opEntry // result1 == 0 marks an empty slot
-	count   int
+	entries  []opEntry // result1 == 0 marks an empty slot
+	count    int
+	maxSlots int
+	resets   uint64
 }
 
 func hashMix(a, b, c uint32) uint32 {
@@ -69,6 +76,9 @@ func newUniqueTable(capacity int) *uniqueTable {
 }
 
 func (t *uniqueTable) lookup(variable, low, high int32) (int32, bool) {
+	if len(t.entries) == 0 {
+		return 0, false
+	}
 	mask := uint32(len(t.entries) - 1)
 	for i := hashMix(uint32(variable), uint32(low), uint32(high)) & mask; ; i = (i + 1) & mask {
 		e := &t.entries[i]
@@ -85,6 +95,9 @@ func (t *uniqueTable) lookup(variable, low, high int32) (int32, bool) {
 func (t *uniqueTable) insert(variable, low, high, node int32, interrupted func() bool) bool {
 	if interrupted() {
 		return false
+	}
+	if len(t.entries) == 0 {
+		t.entries = make([]uniqueEntry, 1<<16)
 	}
 	if 2*(t.count+1) > len(t.entries) && !t.grow(interrupted) {
 		return false
@@ -126,10 +139,13 @@ func (t *uniqueTable) grow(interrupted func() bool) bool {
 }
 
 func newOpTable(capacity int) *opTable {
-	return &opTable{entries: make([]opEntry, capacity)}
+	return &opTable{entries: make([]opEntry, capacity), maxSlots: opMemoMaxSlots}
 }
 
 func (t *opTable) lookup(op, a, b int32) (int32, bool) {
+	if len(t.entries) == 0 {
+		return 0, false
+	}
 	mask := uint32(len(t.entries) - 1)
 	for i := hashMix(uint32(op), uint32(a), uint32(b)) & mask; ; i = (i + 1) & mask {
 		e := &t.entries[i]
@@ -147,8 +163,23 @@ func (t *opTable) insert(op, a, b, result int32, interrupted func() bool) bool {
 	if interrupted() {
 		return false
 	}
-	if 2*(t.count+1) > len(t.entries) && !t.grow(interrupted) {
-		return false
+	if len(t.entries) == 0 {
+		t.entries = make([]opEntry, 1<<16)
+	}
+	if 2*(t.count+1) > len(t.entries) {
+		if len(t.entries) >= t.maxSlots {
+			// Individual deletion would break linear-probe chains. Forget
+			// the complete cache instead, without reallocating its storage.
+			// Every retained result is exact; a miss is recomputed normally.
+			clear(t.entries)
+			t.count = 0
+			t.resets++
+			if interrupted() {
+				return false
+			}
+		} else if !t.grow(interrupted) {
+			return false
+		}
 	}
 	t.place(opEntry{op, a, b, result + 1})
 	t.count++
@@ -191,6 +222,9 @@ type bdd struct {
 	memo     *opTable
 	budget   int
 	exceeded bool
+	// completedNodes survives storage release for proof-cost accounting.
+	completedNodes  int
+	memoryExhausted bool
 	// stop, when set, ends this diagram as if its budget were exceeded:
 	// another variable order over the same terms has already decided.
 	stop *atomic.Bool
@@ -203,7 +237,9 @@ const (
 )
 
 func newBDD(budget int) *bdd {
-	b := &bdd{unique: newUniqueTable(1 << 16), memo: newOpTable(1 << 16), budget: budget}
+	// Candidate orders may wait for admission. Allocate their large tables
+	// lazily on first use, after the owner has acquired its reservation.
+	b := &bdd{unique: newUniqueTable(0), memo: newOpTable(0), budget: budget}
 	b.nodes = []bddNode{{variable: bddTerminalVar}}
 	return b
 }

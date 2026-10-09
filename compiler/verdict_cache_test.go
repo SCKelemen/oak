@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -314,5 +315,42 @@ func TestVerdictCacheMachineCalleesAgreeWithStrictResolver(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestVerdictCacheRetriesTransientResourceExhaustion(t *testing.T) {
+	dir := t.TempDir()
+	key := strings.Repeat("b", 64)
+	for _, kind := range []asm.VerdictKind{asm.VerdictWitnessed, asm.VerdictTrusted} {
+		denied := asm.Verdict{Kind: kind, Message: "temporary resource exhaustion", TransientResourceExhausted: true}
+		storeVerdict(dir, key, denied)
+		if got, ok := cachedVerdict(dir, key, nil); ok {
+			t.Fatalf("transient result persisted: %+v", got)
+		}
+	}
+	// A later proof under the identical semantic key must be stored normally.
+	proved := asm.Verdict{Kind: asm.VerdictProven, Message: "actual proof after memory recovered"}
+	storeVerdict(dir, key, proved)
+	if got, ok := cachedVerdict(dir, key, nil); !ok || got.Kind != asm.VerdictProven {
+		t.Fatalf("recovered proof missing: %+v %v", got, ok)
+	}
+	// Deterministic negative results retain the previous caching behavior.
+	for i, kind := range []asm.VerdictKind{asm.VerdictTrusted, asm.VerdictWitnessed, asm.VerdictMismatch} {
+		key := fmt.Sprintf("%064x", i+20)
+		storeVerdict(dir, key, asm.Verdict{Kind: kind, Message: "deterministic result"})
+		if got, ok := cachedVerdict(dir, key, nil); !ok || got.Kind != kind {
+			t.Fatalf("deterministic result no longer cached: %+v %v", got, ok)
+		}
+	}
+}
+
+func TestVerdictTransientStatusDoesNotChangeJSON(t *testing.T) {
+	stable := asm.Verdict{Kind: asm.VerdictWitnessed, Message: "evidence"}
+	transient := stable
+	transient.TransientResourceExhausted = true
+	a, errA := json.Marshal(stable)
+	b, errB := json.Marshal(transient)
+	if errA != nil || errB != nil || string(a) != string(b) {
+		t.Fatalf("ephemeral state changed serialized verdict: %s / %s", a, b)
 	}
 }

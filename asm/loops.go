@@ -32,7 +32,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/SCKelemen/oak/ast"
@@ -6878,11 +6877,7 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 	if cb := componentBlaster(names, widths, premise, a, b); cb != nil && !verifyOff("components") {
 		blasters = append(blasters, cb)
 	}
-	var stop atomic.Bool
-	type attempt struct{ holds, decided bool }
-	results := make(chan attempt, len(blasters))
 	for _, bl := range blasters {
-		bl.bdd.stop = &stop
 		if budget != nil {
 			// One implication spends no more than the proof has left: the
 			// shared budget bounds the diagrams as they grow, not only the
@@ -6895,26 +6890,17 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 				bl.bdd.budget = budget.remaining
 			}
 		}
-		go func(bl *blaster) {
-			holds, decided := impliesEqualUnder(bl, premise, a, b, width)
-			results <- attempt{holds, decided}
-		}(bl)
 	}
-	holds, decided = false, false
-	for range blasters {
-		// The first order to finish decides; the rest stop at their next
-		// node, and every racer has returned before its diagram is read.
-		if r := <-results; r.decided && !decided {
-			holds, decided = r.holds, true
-			stop.Store(true)
-		}
-	}
+	holds, decided = raceBDDOrders(blasters, func(bl *blaster) (bool, bool) {
+		holds, decided := impliesEqualUnder(bl, premise, a, b, width)
+		return holds, !decided
+	})
 	if budget != nil {
 		// The decision cost the proof its largest diagram: undecided ones
 		// near the per-decision budget exhaust the proof's in a few tries.
 		spent := 0
 		for _, bl := range blasters {
-			if n := len(bl.bdd.nodes); n > spent {
+			if n := bl.bdd.completedNodes; n > spent {
 				spent = n
 			}
 		}
@@ -6933,7 +6919,7 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 			fmt.Fprintf(os.Stderr, "  a: %s\n  b: %s\n", a, b)
 		}
 		for _, bl := range blasters {
-			fmt.Fprintf(os.Stderr, "  order %s: %d bdd nodes, exceeded=%v, budget %d\n", bl.label, len(bl.bdd.nodes), bl.bdd.exceeded, bl.bdd.budget)
+			fmt.Fprintf(os.Stderr, "  order %s: %d bdd nodes, memory exhausted=%v, budget %d\n", bl.label, bl.bdd.completedNodes, bl.bdd.memoryExhausted, bl.bdd.budget)
 		}
 	}
 	if !branching {
@@ -7844,6 +7830,11 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 	sort.Strings(names)
 	bl := newBlaster(names, widths)
 	bl.bdd = newBDD(pruneNodeBudget)
+	finish, admitted := admitBDDStandalone(bl, false)
+	if !admitted {
+		return terms // an optional simplification cannot claim a proof
+	}
+	defer finish()
 	pBits := bl.blast(premise)
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
 	if pBits == nil || bl.bdd.exceeded || pBits[0] == bddTrue {
@@ -8364,14 +8355,19 @@ func diagnoseBlast(bl *blaster, premise, t *term) {
 		nb.memo = nil
 		nb.owners = map[int]variableOwner{}
 		nb.assumed = false
-		p := nb.blast(premise)
-		if p != nil && p[0] != bddTrue {
-			nb.assume, nb.assumed = p[0], true
-		}
 		return &nb
 	}
 	size := func(t *term) int {
 		nb := fresh()
+		finish, admitted := admitBDDStandalone(nb, true)
+		if !admitted {
+			return -1 // optional nested diagnostic, not a proof result
+		}
+		defer finish()
+		p := nb.blast(premise)
+		if p != nil && p[0] != bddTrue {
+			nb.assume, nb.assumed = p[0], true
+		}
 		before := len(nb.bdd.nodes)
 		nb.blast(t)
 		if nb.bdd.exceeded {
@@ -8555,6 +8551,11 @@ func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool,
 			// each alone, under a fresh diagram of the decision's budget.
 			for k, c := range conjunctsOf(premise) {
 				probe := bl.fresh(loopDecisionNodeBudget) // the same order, a fresh diagram
+				finish, admitted := admitBDDStandalone(probe, true)
+				if !admitted {
+					fmt.Fprintln(os.Stderr, "verify: premise diagnostic skipped: memory admission allowance")
+					continue
+				}
 				bits := probe.blast(c)
 				n, _ := dagNodes(1<<20, c)
 				show := 160
@@ -8571,6 +8572,7 @@ func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool,
 						}
 					}
 				}
+				finish()
 				if exceeded {
 					blastCulprits(bl, c, 2)
 				}
@@ -9160,6 +9162,11 @@ func blastCulprits(bl *blaster, t *term, maxReports int) int {
 	cost := func(u *term) (int, bool) {
 		probe := newBlaster(bl.params, bl.widths)
 		probe.bdd = newBDD(loopDecisionNodeBudget)
+		finish, admitted := admitBDDStandalone(probe, true)
+		if !admitted {
+			return 0, true // optional nested diagnostic
+		}
+		defer finish()
 		bits := probe.blast(u)
 		return len(probe.bdd.nodes), bits == nil || probe.bdd.exceeded
 	}
