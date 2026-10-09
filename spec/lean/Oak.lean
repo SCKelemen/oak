@@ -20,6 +20,7 @@ import Oak.AArch64MinimalStartup
 import Oak.RiscVFramedBitwise
 import Oak.WasmControl
 import Oak.WasmCalls
+import Oak.WasmModule
 import Oak.Effects
 import Oak.EffectRows
 import Oak.OptIRCallSummaryCertificate
