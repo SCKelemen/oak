@@ -54,6 +54,10 @@ func TestLRATKernelRawWords(t *testing.T) {
 	add("invalid second initial clause", record(1, []uint32{1, 1, 1, 2}, nil, 2), -1)
 	add("truncated second initial clause", record(1, []uint32{1, 1, 2, 0}, nil, 2), -1)
 	add("extra initial length word", record(1, []uint32{1, 1, 0}, nil, 1), -1)
+	add("initial count omits contradictory clause", record(1, []uint32{1, 1, 1, 0}, []uint32{0, 3, 0, 2, 1, 2}, 1), -1)
+	add("initial count reaches proof prefix", record(1, []uint32{1, 1, 1, 0}, []uint32{0, 4, 0, 2, 1, 2}, 3), -1)
+	add("initial clause body crosses into proof", record(1, []uint32{2, 1}, []uint32{0, 2, 0, 1, 1}, 1), -1)
+	add("initial empty with unused payload", record(0, []uint32{0, 0}, nil, 1), -1)
 	add("empty deletion advances", record(1, []uint32{1, 1, 1, 0},
 		[]uint32{1, 2, 0, 0, 3, 0, 2, 1, 2}, 2), 0)
 	add("deletion then addition", record(1, []uint32{1, 1, 1, 1, 1, 0},
@@ -362,7 +366,7 @@ func TestLRATKernelRecordSoundness(t *testing.T) {
 		}
 		t.Skip("lake not on PATH; formal CI requires whole-record soundness")
 	}
-	source := `import Oak.LRATBoundRecord
+	source := `import Oak.LRATAdmission
 open Oak.LRATChecker
 example (words starts lengths : Array UInt32) (alive : Array UInt8)
     (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32) (fuel : Nat)
@@ -377,6 +381,25 @@ example (formula words starts lengths : Array UInt32) (alive : Array UInt8)
     (run : lrat_check words starts lengths alive store assign trail out fuel = some (LRAT_ACCEPTED, s, l, v, t, x, y, o)) :
     ¬ ∃ a, InitialModels formula (formula.getD 2 0).toNat 8 a :=
   production_bound_record_sound formula words starts lengths alive store assign trail out bindingFuel fuel s l v t x y o binding run
+example (words starts lengths : Array UInt32) (alive : Array UInt8)
+    (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32) (fuel : Nat)
+    (s l : Array UInt32) (v : Array UInt8) (t : Array UInt32) (x : Array UInt8) (y o : Array UInt32)
+    (run : lrat_check words starts lengths alive store assign trail out fuel = some (LRAT_ACCEPTED, s, l, v, t, x, y, o)) :
+    Oak.LRATFormulaBinding.decodeInitial words 8 (8 + (words.getD 3 0).toNat) (words.getD 2 0).toNat =
+      some (initialClauses words 8 (words.getD 2 0).toNat) :=
+  production_record_decodes words starts lengths alive store assign trail out fuel s l v t x y o run
+example (formula words starts lengths : Array UInt32) (alive : Array UInt8)
+    (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32) (bindingFuel fuel : Nat)
+    (s l : Array UInt32) (v : Array UInt8) (t : Array UInt32) (x : Array UInt8) (y o : Array UInt32)
+    (binding : Oak.LRATBinding.lrat_matches_formula formula words bindingFuel = some true)
+    (run : lrat_check words starts lengths alive store assign trail out fuel = some (LRAT_ACCEPTED, s, l, v, t, x, y, o)) :
+    ∃ clauses, Oak.LRATFormulaBinding.decodeInitial formula 8 (8 + (formula.getD 3 0).toNat)
+        (formula.getD 2 0).toNat = some clauses ∧
+      ¬ ∃ a, ∀ clause ∈ clauses, Oak.RupCheck.SatisfiesClause a clause :=
+  production_bound_cnf_sound formula words starts lengths alive store assign trail out bindingFuel fuel s l v t x y o binding run
+#print axioms Oak.LRATChecker.initial_loop_decodes
+#print axioms Oak.LRATChecker.production_record_decodes
+#print axioms Oak.LRATChecker.production_bound_cnf_sound
 #print axioms Oak.LRATChecker.production_binding_exact
 #print axioms Oak.LRATChecker.initial_loop_locality
 #print axioms Oak.LRATChecker.production_bound_record_sound
@@ -391,7 +414,7 @@ example (formula words starts lengths : Array UInt32) (alive : Array UInt8)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	for _, args := range [][]string{{"build", "Oak.LRATBoundRecord"}, {"env", "lean", path}} {
+	for _, args := range [][]string{{"build", "Oak.LRATAdmission"}, {"env", "lean", path}} {
 		cmd := exec.CommandContext(ctx, lake, args...)
 		cmd.Dir = filepath.Join("..", "spec", "lean")
 		out, err := cmd.CombinedOutput()

@@ -312,6 +312,19 @@ values; it adds no framing, decoder-equality, or scratch-state premises.
 CI checks binding extraction drift, the complete theorem contract and
 foundational-axiom whitelist, and matching malformed-payload regressions.
 
+`Oak.LRATChecker.production_record_decodes` (in `Oak.LRATAdmission`) derives
+successful bounded decoding directly from an accepted checker call. The proof
+follows the actual initial-clause loop and final cursor check: each length and
+literal body stays inside the declared region, the clause counter terminates
+at the declared count, and no trailing payload remains. This establishes that
+the total decoder used in the soundness proof denotes a completely framed CNF.
+`production_bound_cnf_sound` combines the same traversal with the production
+binding gate to produce a successfully decoded, unsatisfiable expected CNF.
+Its only premises are the two accepted calls; expected-decoder success is now
+a conclusion. CI pins both contracts and audits their transitive axioms.
+Regressions cover clause-count disagreement, empty clauses with unused payload,
+and initial clause bodies crossing into the proof section.
+
 This establishes expected-formula soundness for the extracted binding gate
 and word checker. Extraction correctness, allocation/FFI semantics, and
 compiled ARM64/RV64 executables remain separate obligations.
@@ -456,14 +469,16 @@ exact consumption of the declared initial region. The theorem assumes neither
 an abstract RUP derivation nor an arbitrary shared decoder. Successful expected
 CNF decoding is an explicit hypothesis; deriving it from a source-to-CNF emitter
 remains separate.
-The 67-case raw-word corpus runs through the production Go predicate, the
+The 69-case raw-word corpus runs through the production Go predicate, the
 compiled Oak predicate and acceptance wrapper, and kernel-replayed Lean
 examples in formal CI. The dedicated LRAT job also pins the concrete composition
 contract, tests malformed decoder boundaries, and rejects proof holes. The
 stronger `Oak.LRATChecker.production_bound_record_sound` theorem described above
 uses the extracted production identity loop directly and derives initial-decoder
 locality from successful checking, without an expected-decoding hypothesis.
-Correspondence with the separate list predicate is still checked on the corpus;
+`Oak.LRATChecker.production_bound_cnf_sound` additionally concludes successful
+bounded decoding of that expected CNF. Correspondence with the separate list
+predicate is still checked on the corpus;
 it is not a premise of that stronger theorem. Source-to-CNF correctness and
 native compilation of the checker remain separate proof obligations.
 `-cnf dir` writes every bit-level

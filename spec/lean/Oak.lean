@@ -267,6 +267,7 @@ import Oak.LRATRecord
 import Oak.LRATSteps
 import Oak.LRATRecordSoundness
 import Oak.LRATBoundRecord
+import Oak.LRATAdmission
 import Oak.LRATFormulaBinding
 import Oak.ClauseAgreement
 import Oak.SATModel

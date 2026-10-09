@@ -112,6 +112,7 @@ theorem binding_loop_exact (fuel : Nat) (formula record : Array UInt32)
 /-- Exact production binding properties needed by the independent decoder. -/
 structure BindingExact (formula record : Array UInt32) : Prop where
   count : formula.getD 2 0 = record.getD 2 0
+  literalWords : formula.getD 3 0 = record.getD 3 0
   end_eq : 8 + (record.getD 3 0).toNat = formula.size.toUInt32.toNat
   payload : ∀ k, 8 ≤ k → k < 8 + (record.getD 3 0).toNat →
     record.getD k 0 = formula.getD k 0
@@ -153,7 +154,7 @@ theorem production_binding_exact (formula record : Array UInt32) (fuel : Nat)
       have := UInt32.le_iff_toNat_le.mp fs
       change 8 ≤ formula.size.toUInt32.toNat at this
       omega
-    refine ⟨count, endEq, ?_⟩
+    refine ⟨count, words, endEq, ?_⟩
     intro k lower upper
     exact (payload k lower (by rw [endEq] at upper; exact upper)).symm
 

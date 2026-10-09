@@ -79,6 +79,8 @@ func formulaBindingCases(t *testing.T) []formulaBindingCase {
 		value uint32
 	}{
 		{"matching oversized initial length", 8, ^uint32(0)},
+		{"matching too few declared clauses", 2, 1},
+		{"matching too many declared clauses", 2, 3},
 		{"matching invalid literal", 9, 4},
 		{"matching zero length with trailing payload", 8, 0},
 	} {
