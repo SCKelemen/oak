@@ -62,6 +62,8 @@ on:
       - 'spec/lean-sail429/**'
       - 'spec/lean/Oak/ByteFields.lean'
       - 'spec/lean/Oak/BitwiseSource.lean'
+      - 'spec/lean/Oak/ArmDecoderClassification/**'
+      - 'compiler/arm_decoder_classification_test.go'
       - 'spec/lean/Oak/RiscVFramedBitwise.lean'
       - 'compiler/rv64_framed_bitwise_lean_test.go'
       - '.github/workflows/formal-sail.yml'
@@ -99,7 +101,8 @@ jobs:
   sail:
     name: Sail bridges and oracles
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Includes serial, bounded validation of 917 source-classification certificates.
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -194,6 +197,29 @@ jobs:
           python3 spec/sail/audit_scalar.py
           python3 spec/sail/return_execution_regen.py --check-source
           python3 spec/sail/audit_return.py
+
+      - name: Check complete Arm decoder source classification and negative controls
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          python3 spec/sail/test_decoder_classification.py
+          python3 spec/sail/check_decoder_classification.py \
+            --build-dir "$RUNNER_TEMP/oak-arm-decoder-classification"
+          python3 spec/sail/check_decoder_byte_binding.py \
+            --build-dir "$RUNNER_TEMP/oak-arm-decoder-classification"
+          OAK_REQUIRE_ARM_CLASSIFICATION=1 \
+            OAK_ARM_CLASSIFICATION_LIB="$RUNNER_TEMP/oak-arm-decoder-classification" \
+            go test ./compiler -run '^TestArmDecoderClassificationCompilerBytes$' -count=1 -v -timeout=5m
+
+      - name: Preserve decoder classification kernel checks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-decoder-classification
+          path: |
+            ${{ runner.temp }}/oak-arm-decoder-classification/*.json
+            ${{ runner.temp }}/oak-arm-decoder-classification/*.log
+          if-no-files-found: ignore
 
       - name: Cache checksummed guarded-generator dependency downloads
         uses: actions/cache@v4
