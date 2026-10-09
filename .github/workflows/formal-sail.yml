@@ -66,6 +66,7 @@ on:
       - 'spec/lean/Oak/ArmDecoderPartition/**'
       - 'compiler/arm_decoder_partition_test.go'
       - 'compiler/arm_decoder_classification_test.go'
+      - 'compiler/arm_bti_execution_test.go'
       - 'spec/lean/Oak/RiscVFramedBitwise.lean'
       - 'compiler/rv64_framed_bitwise_lean_test.go'
       - '.github/workflows/formal-sail.yml'
@@ -199,6 +200,7 @@ jobs:
           python3 spec/sail/audit_scalar.py
           python3 spec/sail/return_execution_regen.py --check-source
           python3 spec/sail/audit_return.py
+          go test ./compiler -run '^TestArmBTIEnabledCompilerBytes$' -count=1 -v -timeout=5m
 
       - name: Check complete Arm decoder source classification and negative controls
         timeout-minutes: 40
@@ -274,6 +276,7 @@ jobs:
             --output-dir "$RUNNER_TEMP/oak-guarded-return-regressions" \
             2>&1 | tee "$RUNNER_TEMP/oak-guarded-return-regressions.log"
           python3 spec/sail/audit_return.py
+          go test ./compiler -run '^TestArmBTIEnabledCompilerBytes$' -count=1 -v -timeout=5m
 
       - name: Preserve guarded-build provenance and regression logs
         if: always()

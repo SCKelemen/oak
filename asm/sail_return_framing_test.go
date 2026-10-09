@@ -66,7 +66,7 @@ func TestSailScalarExecutionReturnFraming(t *testing.T) {
 	}
 	defs := strings.ReplaceAll(string(read("lean/ReturnExecution/RawDefs.lean")), "import Sail\n", "import Sail\nnamespace ReturnExecution\n") + "\nend ReturnExecution\n"
 	compare("lean/ReturnExecution/Defs.lean", defs)
-	compare("lean/ReturnExecution/Generated.lean", frame(string(read("lean/ReturnExecution/Raw.lean")), "ReturnExecution.Functions", "Interface", "Boundaries", []string{"aget_SCR_GEN", "IsSecureBelowEL3", "ELUsingAArch32", "S1TranslationRegime__0", "AddrTop", "AArch64_BranchAddr", "BranchTo"}))
+	compare("lean/ReturnExecution/Generated.lean", frame(string(read("lean/ReturnExecution/Raw.lean")), "ReturnExecution.Functions", "Interface", "Boundaries", []string{"aget_SCR_GEN", "IsSecureBelowEL3", "ELUsingAArch32", "S1TranslationRegime__0", "AddrTop", "AArch64_BranchAddr", "BranchTo", "BranchTargetCheck"}))
 	compare("lean/ReturnExecution/ScalarGenerated.lean", frame(string(read("lean/ScalarExecution/Raw.lean")), "ReturnExecution.ScalarFunctions", "ScalarInterface", "ScalarBoundaries", []string{"LSL", "ShiftReg", "__PostDecode", "integer_logical_shiftedreg", "integer_logical_shiftedreg_decode", "branch_unconditional_register", "branch_unconditional_register_decode", "decode64"}))
 	iface := strings.ReplaceAll(string(read("lean/ScalarExecution/Interface.lean")), "ScalarExecution", "ReturnExecution")
 	compare("lean/ReturnExecution/ScalarInterface.lean", strings.ReplaceAll(iface, "Boundaries", "ScalarBoundaries"))
