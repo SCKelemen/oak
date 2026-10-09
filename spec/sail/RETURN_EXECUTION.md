@@ -187,6 +187,49 @@ loader behavior, exception delivery, authentication, or a Linux EL0 run.
 about hardware branch prediction. Failed mode queries preserve their complete
 error and post-state in `branchTo64_query_failure`.
 
+## Original source to enabled execution
+
+`ReturnBTISource.accepted_source_execution` now binds the original canonical
+ASCII source bytes and complete eight-byte compiler function body in one theorem.
+Admission checks the existing `BitwiseSource` parser/grammar and the exact
+ARM64/AAPCS64-u32 body; it does not accept a source hash or reconstructed AST.
+For every pair of u32 inputs, arbitrary upper halves of X0/X1, arbitrary remaining
+register-bank values and callbacks, and the explicit initialized enabled context,
+it derives all of the following:
+
+- Named-source `Means` and successful evaluation in the existing typed
+  `BitwiseSourceLowering.toExpr` / `LoweringRefinement.evalX` model, for every fuel.
+- Successful execution of that same entire body through
+  `ReturnBTIExecution.executeBytes`, with the exact complete final state.
+- The source result zero-extended into X0, every other bank entry preserved,
+  actual return to incoming X30, PC-changed true, current instruction RET and
+  BTypeNext zero.
+- Every PSTATE field and every register outside the seven explicit written
+  cells preserved, including absent cells, plus memory, tags, choice state,
+  cycle count and output preserved.
+
+`ReturnBTISourceControls.initialized_source_success` constructs the context for
+every input pair, arbitrary explicit upper-half values, and both guarded-page
+settings. It proves nonvacuity by initialization rather than assuming an
+execution succeeds. Controls reject every single-bit body mutation, incomplete
+or trailing bytes, wrong target/ABI, and changed source names, parameter order,
+operators, widths, bindings or suffixes. Universal source/body replay lemmas
+reject any changed original identity, including mathematically equivalent source.
+
+The required `TestArmBTIEnabledCompilerBytes` gate sends the unchanged source to
+the production compiler, extracts the whole named relocation-free ELF function,
+serializes those same source and body bytes into Lean, and instantiates the
+source/execution and initialized all-input theorems for AND/OR/XOR. It checks
+negative source/body replays and audits every generated public theorem closure.
+The existing return audit automatically covers every new public library theorem;
+only `propext`, `Classical.choice` and `Quot.sound` are allowed.
+
+This remains the existing restricted canonical grammar and initialized,
+prefetched selected-decoder model. ELF extraction is operational evidence,
+not a proved ELF loader or compiler implementation. There is still no actual
+full-decoder/fetch/reset/OS, arbitrary Oak parser, exporter-to-source or hardware
+equivalence theorem, and `TranslationVerified` is not promoted.
+
 ## Two generator provenances, one proved state relation
 
 The scalar raw bytes remain exactly the official pinned Sail 0.20.2 export,

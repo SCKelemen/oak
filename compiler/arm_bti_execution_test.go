@@ -14,8 +14,9 @@ import (
 	"github.com/SCKelemen/oak/target"
 )
 
-// Pins production compiler/ELF bytes to the concrete BTI-enabled selected-decoder
-// theorem. Prefetched-word dispatch, initial-state and parser/export boundaries remain.
+// Pins unchanged original source and complete production compiler/ELF function
+// bytes to the typed-source/concrete BTI-enabled execution theorem. Restricted
+// grammar, prefetched dispatch, initialized context and export boundaries remain.
 func TestArmBTIEnabledCompilerBytes(t *testing.T) {
 	lake, err := exec.LookPath("lake")
 	if err != nil {
@@ -25,7 +26,7 @@ func TestArmBTIEnabledCompilerBytes(t *testing.T) {
 		t.Skip("formal Sail lane requires Lean")
 	}
 	if os.Getenv("OAK_ARM_BTI_LIB") == "" {
-		artifact := filepath.Join("..", "spec", "sail", "lean", ".lake", "build", "lib", "lean", "ReturnBTIExecution.olean")
+		artifact := filepath.Join("..", "spec", "sail", "lean", ".lake", "build", "lib", "lean", "ReturnBTISourceControls.olean")
 		if _, err := os.Stat(artifact); err != nil {
 			if os.Getenv("OAK_REQUIRE_ORACLES") == "1" {
 				t.Fatalf("required BTI proof graph: %v", err)
@@ -34,40 +35,91 @@ func TestArmBTIEnabledCompilerBytes(t *testing.T) {
 		}
 	}
 	var proof strings.Builder
-	proof.WriteString("import ReturnBTIExecution\nopen Oak.SailBridge ReturnExecution Sail PreSail Oak.AArch64BitwiseFunction\n")
+	proof.WriteString("import ReturnBTISourceControls\nopen Oak.SailBridge ReturnExecution Sail PreSail\nset_option maxRecDepth 8192\n")
+	list := func(bytes []byte) string {
+		values := make([]string, len(bytes))
+		for i, b := range bytes {
+			values[i] = fmt.Sprint(b)
+		}
+		return "[" + strings.Join(values, ",") + "]"
+	}
+	wanted := map[string]bool{}
 	for _, tc := range []struct{ op, symbol string }{{"and", "&"}, {"or", "|"}, {"xor", "^"}} {
 		original := fmt.Sprintf("mix: (a: u32, b: u32): u32 = a %s b\n", tc.symbol)
 		code := sourceBitwiseFunctionBytes(t, original, "mix", target.ArchArm64)
 		if len(code) != 8 {
 			t.Fatalf("unexpected function extent: %x", code)
 		}
-		var values []string
-		for _, b := range code {
-			values = append(values, fmt.Sprint(b))
+		// The exact same original is compiled above and serialized here. Neither
+		// a source hash nor reconstructed source/AST is accepted as its identity.
+		fmt.Fprintf(&proof, "namespace ActualBTISource_%s\ndef source : List UInt8 := %s\ndef body : List UInt8 := %s\ndef claim : Oak.BitwiseSource.Decl := ⟨[109,105,120], [97], [98], .%s⟩\n", tc.op, list([]byte(original)), list(code), tc.op)
+		proof.WriteString(`theorem admitted : ReturnBTISource.accepts source claim .arm64 .aapcs64U32 body = true := by decide +kernel
+ theorem source_identity : source = Oak.BitwiseSource.render claim := by decide +kernel
+ theorem body_identity : body = Oak.AArch64BitwiseFunction.functionBytes claim.op := by decide +kernel
+ theorem compiled_source
+  (scalar : ScalarBoundaries) (returns : Boundaries)
+  (s : ReturnConfig.State) (ps : ProcState) (v : ReturnConfig.Values) (mv : ReturnMode.Values)
+  (guarded compatible : Bool) (h : ReturnBTI.Context s ps v mv guarded compatible)
+  (elMode : ReturnELMode.Ready s) (el : ps.EL = ReturnExecution.Functions.EL1)
+  (tcr : s.regs.get? Register.TCR_EL1 = some 0#64)
+  (bank : ExtendedScalar.Bank) (initialized : s.regs.get? Register._R = some bank)
+  (left right : BitVec 32) (hleft : bank[0].extractLsb' 0 32 = left)
+  (hright : bank[1].extractLsb' 0 32 = right) (fuel : Nat) :
+  ReturnBTISource.Outcome source body claim scalar returns s bank left right fuel :=
+  ReturnBTISource.accepted_source_execution admitted scalar returns s ps v mv guarded compatible h
+   elMode el tcr bank initialized left right hleft hright fuel
+ theorem compiled_initialized (scalar : ScalarBoundaries) (returns : Boundaries)
+  (s : ReturnConfig.State) (ps : ProcState) (bank : ExtendedScalar.Bank)
+  (left right upperLeft upperRight : BitVec 32) (guarded : Bool) (fuel : Nat) :
+  ReturnBTISource.Outcome source body claim scalar returns
+   (ReturnBTISourceControls.initial s ps bank left right upperLeft upperRight guarded)
+   (ReturnBTISourceControls.inputBank bank left right upperLeft upperRight) left right fuel :=
+  ReturnBTISourceControls.initialized_source_success admitted scalar returns s ps bank
+   left right upperLeft upperRight guarded fuel
+ theorem source_replay (changed : List UInt8) (different : changed ≠ source) :
+  ReturnBTISource.accepts changed claim .arm64 .aapcs64U32 body = false :=
+  ReturnBTISource.refuses_source_replay changed body claim .arm64 .aapcs64U32
+   (by simpa [← source_identity] using different)
+ theorem body_replay (changed : List UInt8) (different : changed ≠ body) :
+  ReturnBTISource.accepts source claim .arm64 .aapcs64U32 changed = false :=
+  ReturnBTISource.refuses_body_replay source changed claim .arm64 .aapcs64U32
+   (by simpa [← body_identity] using different)
+ theorem body_bit_mutations : ((List.range 8).all fun index => (List.range 8).all fun bit =>
+  !(ReturnBTISource.accepts source claim .arm64 .aapcs64U32
+   (body.set index (body.getD index 0 ^^^ UInt8.ofNat (2^bit))))) = true := by decide +kernel
+ theorem body_extent :
+  ReturnBTISource.accepts source claim .arm64 .aapcs64U32 body.dropLast = false ∧
+  ReturnBTISource.accepts source claim .arm64 .aapcs64U32 (body ++ [0]) = false := by decide +kernel
+`)
+		otherSymbol := "&"
+		if tc.symbol == "&" {
+			otherSymbol = "|"
 		}
-		literal := "[" + strings.Join(values, ",") + "]"
-		fmt.Fprintf(&proof, "theorem bytes_%s : functionBytes .%s = %s := by decide +kernel\n", tc.op, tc.op, literal)
-		fmt.Fprintf(&proof, `theorem compiled_execution_%[1]s
- (scalar : ScalarBoundaries) (returns : Boundaries)
- (s : ReturnConfig.State) (ps : ProcState) (v : ReturnConfig.Values) (mv : ReturnMode.Values)
- (guarded compatible : Bool) (h : ReturnBTI.Context s ps v mv guarded compatible)
- (elMode : ReturnELMode.Ready s) (el : ps.EL = ReturnExecution.Functions.EL1)
- (tcr : s.regs.get? Register.TCR_EL1 = some 0#64)
- (bank : ExtendedScalar.Bank) (initialized : s.regs.get? Register._R = some bank) :
- (ReturnBTIExecution.executeBytes scalar returns %[2]s).run s =
- .ok () (ReturnBTIExecution.finalState .%[1]s s bank) := by
- rw [← bytes_%[1]s]
- exact ReturnBTIExecution.exact_bytes_return scalar returns s ps v mv guarded compatible h elMode el tcr bank initialized .%[1]s
-#print axioms compiled_execution_%[1]s
-`, tc.op, literal)
-		mutated := append([]byte(nil), code...)
-		mutated[0] ^= 1
-		var bad []string
-		for _, b := range mutated {
-			bad = append(bad, fmt.Sprint(b))
+		changedSources := []string{
+			strings.Replace(original, "mix:", "other:", 1),
+			fmt.Sprintf("mix: (b: u32, a: u32): u32 = b %s a\n", tc.symbol),
+			strings.Replace(original, " "+tc.symbol+" ", " "+otherSymbol+" ", 1),
+			strings.Replace(original, "a: u32", "a: u64", 1),
+			strings.Replace(original, "): u32", "): u64", 1),
+			strings.Replace(original, " = a ", " = b ", 1),
+			strings.TrimSuffix(original, "\n") + "\r\n",
+			original + "// comment\n",
+			original + original,
 		}
-		fmt.Fprintf(&proof, "example : (functionBytes .%s) ≠ ([%s] : List UInt8) := by decide +kernel\n", tc.op, strings.Join(bad, ","))
-		t.Logf("original source %q -> exact ARM bytes %x -> concrete BTI-enabled execution", original, code)
+		for i, changed := range changedSources {
+			fmt.Fprintf(&proof, "theorem changed_source_%d : ReturnBTISource.accepts %s claim .arm64 .aapcs64U32 body = false := by decide +kernel\n", i, list([]byte(changed)))
+		}
+		for _, name := range []string{"admitted", "source_identity", "body_identity", "compiled_source", "compiled_initialized", "source_replay", "body_replay", "body_bit_mutations", "body_extent"} {
+			wanted["ActualBTISource_"+tc.op+"."+name] = true
+			fmt.Fprintf(&proof, "#print axioms %s\n", name)
+		}
+		for i := range changedSources {
+			name := fmt.Sprintf("changed_source_%d", i)
+			wanted["ActualBTISource_"+tc.op+"."+name] = true
+			fmt.Fprintf(&proof, "#print axioms %s\n", name)
+		}
+		fmt.Fprintf(&proof, "end ActualBTISource_%s\n", tc.op)
+		t.Logf("unchanged original source %q + complete ARM body %x -> typed source and concrete BTI-enabled execution", original, code)
 	}
 	path := filepath.Join(t.TempDir(), "CompilerBTIEnabled.lean")
 	if err := os.WriteFile(path, []byte(proof.String()), 0600); err != nil {
@@ -89,11 +141,11 @@ func TestArmBTIEnabledCompilerBytes(t *testing.T) {
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("compiler BTI execution pin: %v\n%s", err, output)
 	} else {
-		matches := regexp.MustCompile(`'compiled_execution_(and|or|xor)' depends on axioms: \[([^]]*)\]`).FindAllStringSubmatch(string(output), -1)
+		matches := regexp.MustCompile(`'([^']+)' (?:depends on axioms: \[([^]]*)\]|does not depend on any axioms)`).FindAllStringSubmatch(string(output), -1)
 		seen := map[string]bool{}
 		for _, match := range matches {
-			if seen[match[1]] {
-				t.Fatalf("duplicate closure: %s", match[1])
+			if seen[match[1]] || !wanted[match[1]] {
+				t.Fatalf("unexpected/duplicate closure: %s", match[1])
 			}
 			seen[match[1]] = true
 			for _, axiom := range strings.Split(match[2], ",") {
@@ -104,8 +156,8 @@ func TestArmBTIEnabledCompilerBytes(t *testing.T) {
 				}
 			}
 		}
-		if len(seen) != 3 {
-			t.Fatalf("missing compiler-BTI execution closure audit: %s", output)
+		if len(seen) != len(wanted) {
+			t.Fatalf("missing compiler-source-BTI execution closure audit: %s", output)
 		}
 	}
 }

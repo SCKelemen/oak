@@ -176,7 +176,7 @@ jobs:
         env:
           OAK_REQUIRE_WASM_LEAN: '1'
           OAK_REQUIRE_WASM_TESTS: '1'
-        run: go test ./compiler -run '^TestWasm(Execution|Control|Calls|Module|Typing|CallComposition)(Lean|Engine)$' -count=1 -timeout=20m -v
+        run: go test ./compiler -run '^TestWasm(Execution|Control|Calls|Module|Typing|CallComposition|ConditionalSource)(Lean|Engine)$' -count=1 -timeout=20m -v
 
       - name: Prepare complete pinned official Wasm numeric sources
         run: python3 -B spec/wasm-core/numeric_sources.py --fetch

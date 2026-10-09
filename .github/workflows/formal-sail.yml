@@ -63,6 +63,8 @@ on:
       - 'spec/lean/Oak/ByteFields.lean'
       - 'spec/lean/Oak/BitwiseSource.lean'
       - 'spec/lean/Oak/ArmDecoderClassification/**'
+      - 'spec/lean/Oak/ArmDecoderPartition/**'
+      - 'compiler/arm_decoder_partition_test.go'
       - 'compiler/arm_decoder_classification_test.go'
       - 'compiler/arm_bti_execution_test.go'
       - 'spec/lean/Oak/RiscVFramedBitwise.lean'
@@ -212,6 +214,29 @@ jobs:
           OAK_REQUIRE_ARM_CLASSIFICATION=1 \
             OAK_ARM_CLASSIFICATION_LIB="$RUNNER_TEMP/oak-arm-decoder-classification" \
             go test ./compiler -run '^TestArmDecoderClassificationCompilerBytes$' -count=1 -v -timeout=5m
+
+      - name: Check complete original Arm source byte partition
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          python3 spec/sail/test_decoder_partition.py
+          python3 spec/sail/check_decoder_partition.py \
+            --source external/sail-arm/arm-v8.5-a/model/aarch_decode.sail \
+            --classification-dir "$RUNNER_TEMP/oak-arm-decoder-classification" \
+            --build-dir "$RUNNER_TEMP/oak-arm-decoder-partition" --jobs 2
+          OAK_REQUIRE_ARM_PARTITION=1 \
+            OAK_ARM_PARTITION_LIB="$RUNNER_TEMP/oak-arm-decoder-partition" \
+            go test ./compiler -run '^TestArmDecoderPartitionCompilerBytes$' -count=1 -v -timeout=5m
+
+      - name: Preserve original-source partition kernel checks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-decoder-partition
+          path: |
+            ${{ runner.temp }}/oak-arm-decoder-partition/*.json
+            ${{ runner.temp }}/oak-arm-decoder-partition/*.log
+          if-no-files-found: warn
 
       - name: Preserve decoder classification kernel checks
         if: always()
