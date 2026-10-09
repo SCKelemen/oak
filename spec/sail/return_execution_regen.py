@@ -43,7 +43,7 @@ def source_fragment():
     for name in ['IsInHost','SignExtend__1','ELIsInHost','get_SCR','__IMPDEF_boolean']: source+=cut('aarch_mem.sail',name)
     source+='overload SignExtend = {SignExtend__1}\n'
     queries={}
-    for name in ['HaveEL','HasArchVersion','HavePACExt','HaveAnyAArch32','HighestELUsingAArch32','UsingAArch32','HaveVirtHostExt','HaveSecureEL2Ext','aget_SCR_GEN','HighestEL','IsSecureBelowEL3','HaveAArch32EL','ELStateUsingAArch32K','ELStateUsingAArch32','ELUsingAArch32','S1TranslationRegime__0']:
+    for name in ['HaveEL','HasArchVersion','HavePACExt','HaveBTIExt','HaveAnyAArch32','HighestELUsingAArch32','UsingAArch32','HaveVirtHostExt','HaveSecureEL2Ext','aget_SCR_GEN','HighestEL','IsSecureBelowEL3','HaveAArch32EL','ELStateUsingAArch32K','ELStateUsingAArch32','ELUsingAArch32','S1TranslationRegime__0']:
         signature=decl('aarch_mem.sail','val',name);body=decl('aarch_mem.sail','function',name)
         source+=signature+body
         if name=='aget_SCR_GEN': source+='overload SCR_GEN = {aget_SCR_GEN}\n'

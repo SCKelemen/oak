@@ -233,6 +233,12 @@ function HavePACExt () = {
     HasArchVersion(ARMv8p3)
 }
 
+val HaveBTIExt : unit -> bool
+
+function HaveBTIExt () = {
+    HasArchVersion(ARMv8p5)
+}
+
 val HaveAnyAArch32 : unit -> bool
 
 function HaveAnyAArch32 () = {
