@@ -84,11 +84,14 @@ inductive Register : Type where
   | __v81_implemented
   | CFG_ID_AA64PFR0_EL1_EL3
   | CFG_ID_AA64PFR0_EL1_EL2
+  | CFG_ID_AA64PFR0_EL1_EL1
+  | CFG_ID_AA64PFR0_EL1_EL0
   | SEE
   | __unconditional
   | BTypeNext
   | InGuardedPage
   | _R
+  | __highest_el_aarch32
   | TCR_EL3
   | TCR_EL2
   | TCR_EL1
@@ -106,11 +109,14 @@ abbrev RegisterType : Register → Type
   | .__v81_implemented => Bool
   | .CFG_ID_AA64PFR0_EL1_EL3 => (BitVec 4)
   | .CFG_ID_AA64PFR0_EL1_EL2 => (BitVec 4)
+  | .CFG_ID_AA64PFR0_EL1_EL1 => (BitVec 4)
+  | .CFG_ID_AA64PFR0_EL1_EL0 => (BitVec 4)
   | .SEE => Int
   | .__unconditional => Bool
   | .BTypeNext => (BitVec 2)
   | .InGuardedPage => Bool
   | ._R => (Vector (BitVec 64) 31)
+  | .__highest_el_aarch32 => Bool
   | .TCR_EL3 => (BitVec 32)
   | .TCR_EL2 => (BitVec 64)
   | .TCR_EL1 => (BitVec 64)
@@ -125,7 +131,7 @@ instance : Inhabited (RegisterRef RegisterType (BitVec 2)) where
 instance : Inhabited (RegisterRef RegisterType (BitVec 32)) where
   default := .Reg TCR_EL3
 instance : Inhabited (RegisterRef RegisterType (BitVec 4)) where
-  default := .Reg CFG_ID_AA64PFR0_EL1_EL2
+  default := .Reg CFG_ID_AA64PFR0_EL1_EL0
 instance : Inhabited (RegisterRef RegisterType (BitVec 64)) where
   default := .Reg _PC
 instance : Inhabited (RegisterRef RegisterType Bool) where

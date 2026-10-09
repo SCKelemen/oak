@@ -34,16 +34,16 @@ def source_fragment():
     source=raw['aarch_mem.sail'].split('\nval ',1)[0]+'\n'+prelude
     for name in ['LogicalOp','ShiftType','BranchType','ArchVersion']: source+=decl('aarch_types.sail','enum',name)
     source+=decl('aarch_types.sail','struct','ProcState')+decl('prelude.sail','union','exception')
-    for name in ['_PC','__PC_changed','PSTATE','TCR_EL1','TCR_EL2','TCR_EL3']: source+=decl('aarch_mem.sail','register',name)
+    for name in ['_PC','__PC_changed','PSTATE','TCR_EL1','TCR_EL2','TCR_EL3','__highest_el_aarch32']: source+=decl('aarch_mem.sail','register',name)
     for file,name in [('aarch_mem.sail','_R'),('aarch_mem.sail','InGuardedPage'),('aarch64.sail','BTypeNext'),('aarch64.sail','__unconditional'),('aarch_decode.sail','SEE')]: source+=decl(file,'register',name)
-    for name in ['CFG_ID_AA64PFR0_EL1_EL2','CFG_ID_AA64PFR0_EL1_EL3','__v81_implemented','__v82_implemented','__v83_implemented','__v84_implemented','__v85_implemented']: source+=decl('aarch_mem.sail','register configuration',name)
+    for name in ['CFG_ID_AA64PFR0_EL1_EL0','CFG_ID_AA64PFR0_EL1_EL1','CFG_ID_AA64PFR0_EL1_EL2','CFG_ID_AA64PFR0_EL1_EL3','__v81_implemented','__v82_implemented','__v83_implemented','__v84_implemented','__v85_implemented']: source+=decl('aarch_mem.sail','register configuration',name)
     for name in ['EL0','EL1','EL2','EL3']: source+=decl('aarch_mem.sail','let',name)
     for name in ['ZeroExtend__0','ZeroExtend__1']: source+=both('aarch_mem.sail',name)
     source+='overload ZeroExtend = {ZeroExtend__0, ZeroExtend__1}\n'
-    for name in ['UsingAArch32','IsInHost','SignExtend__1','ELUsingAArch32','HaveVirtHostExt','ELIsInHost','get_SCR']: source+=cut('aarch_mem.sail',name)
+    for name in ['IsInHost','SignExtend__1','ELUsingAArch32','HaveVirtHostExt','ELIsInHost','get_SCR']: source+=cut('aarch_mem.sail',name)
     source+='overload SignExtend = {SignExtend__1}\n'
     queries={}
-    for name in ['HaveEL','S1TranslationRegime__0','HasArchVersion','HavePACExt']:
+    for name in ['HaveEL','S1TranslationRegime__0','HasArchVersion','HavePACExt','HaveAnyAArch32','HighestELUsingAArch32','UsingAArch32']:
         signature=decl('aarch_mem.sail','val',name);body=decl('aarch_mem.sail','function',name)
         source+=signature+body
         queries[name]={'signature_sha256':sha(signature.encode()),'unchanged_body_sha256':sha(body.encode())}

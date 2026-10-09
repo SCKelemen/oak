@@ -34,6 +34,7 @@ theorem exact_bytes_simulation (oldBase : ScalarExecution.Boundaries)
  (bank : Scalar.Bank) (op : Oak.BitwiseFunction.Op)
  (initialized : extended.regs.get? ReturnExecution.Register._R = some bank)
  (ps : ReturnExecution.ProcState)
+ (modeValues : ReturnMode.Values) (mode : ReturnMode.Ready extended ps modeValues)
  (pstate : extended.regs.get? ReturnExecution.Register.PSTATE = some ps)
  (el : ps.EL = ReturnExecution.Functions.EL1)
  (tcr : extended.regs.get? ReturnExecution.Register.TCR_EL1 = some (0 : BitVec 64)) :
@@ -44,7 +45,7 @@ theorem exact_bytes_simulation (oldBase : ScalarExecution.Boundaries)
    .ok () (ConcreteReturn.finalState op extended bank) ∧
  Related (Scalar.requestState op old bank) (ConcreteReturn.finalState op extended bank) := by
  refine ⟨original_observation oldBase old bank op (related.bank.trans initialized), ?_, ?_⟩
- · exact ConcreteReturn.exact_bytes_return scalar returns q bti extended bank op versions config initialized ps pstate el tcr
+ · exact ConcreteReturn.exact_bytes_return scalar returns q bti extended bank op versions config initialized ps modeValues mode pstate el tcr
  · exact final_related old extended related op bank
 
 /-- The original official scalar observation commutes with total projection.

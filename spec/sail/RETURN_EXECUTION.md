@@ -23,9 +23,9 @@ no-op. `ReturnStateProjection.project_final` and the execution simulation prove
 that erasing the new fields has precisely this effect.
 
 The supported return configuration is intentionally narrow: PSTATE.EL is EL1,
-TCR_EL1 is zero, and the following cut actions must be successful and read-only:
-`ELUsingAArch32(EL1)=false` and `UsingAArch32()=false`. The scalar control profile additionally requires
-`HaveBTIExt()=false`. `install` shares the mode action and installs the concrete generated PAC query.
+TCR_EL1 is zero, and the remaining mode cut must be successful and read-only:
+`ELUsingAArch32(EL1)=false`. The scalar control profile additionally requires
+`HaveBTIExt()=false`. `install` installs the concrete generated current-mode and PAC queries.
 Eager queries in the exported model remain present; these premises cover them.
 Sign extension, host/EL2 configuration and nonzero-tag paths are not discharged.
 The remaining query cuts are explicit.
@@ -58,9 +58,28 @@ observations. They do not prove hardware reset, startup or EL1 reachability.
 Both PAC values produce the same bounded plain-RET result when TCR_EL1 is zero.
 The scalar RET query and both eager AddrTop calls execute the concrete body;
 configuration preservation is proved through the actual logical/RET/PC writes.
-`QueryProfile` therefore contains only the two remaining mode-query premises.
+`QueryProfile` now contains only the remaining EL-specific mode-query premise.
 The old scalar observation still uses an explicit projected callback profile;
 its PAC value is immaterial on this exact non-authenticating RET path.
+
+`UsingAArch32` is also the intact pinned export, with `HaveAnyAArch32` and
+`HighestELUsingAArch32` (pinned `aarch_mem.sail` lines 848–852, 1895–1899,
+3882–3894). `ReturnMode.Ready` explicitly requires all four CFG_EL0..EL3
+register values, PSTATE with nRW=0, and `__highest_el_aarch32=false`.
+`using_run` proves the concrete action returns false with the complete state
+unchanged. Actual scalar logical/RET and return-PC writes preserve these facts.
+No globally equal-to-pure current-mode callback premise remains.
+
+The source configuration defaults for these four registers are 0x2. The
+constructive `withValues` witness accepts arbitrary configuration values and
+sets the two current-mode facts explicitly, preserving the bank, TCR, PAC
+version profile and memory. This is a nonvacuity witness, not a proof of reset,
+boot or EL1 reachability. All four CFG reads occur eagerly. Separate negative
+controls preserve missing-register failures for PSTATE, every CFG register,
+and the highest-mode register, and retain both inconsistent-configuration
+assertion failures. `postdecode_missing_pstate` shows that BTI=false still
+permits the exported eager mode read to fail. `ELUsingAArch32(EL1)` remains an
+explicit cut; this change does not equate current mode with EL-specific mode.
 
 The pinned `BranchTo` body itself performs no target-alignment check.
 `aligned_return_observation` carries an explicit caller X30 alignment premise.

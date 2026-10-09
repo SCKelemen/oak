@@ -108,3 +108,6 @@ name = "ReturnSimulation"
 
 [[lean_lib]]
 name = "ReturnConfig"
+
+[[lean_lib]]
+name = "ReturnMode"

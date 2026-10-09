@@ -134,6 +134,8 @@ register TCR_EL2 : bits(64)
 
 register TCR_EL3 : bits(32)
 
+register __highest_el_aarch32 : bool
+
 register _R : vector(31, dec, bits(64))
 
 register InGuardedPage : bool
@@ -143,6 +145,10 @@ register BTypeNext : bits(2)
 register __unconditional : bool
 
 register SEE : int
+
+register configuration CFG_ID_AA64PFR0_EL1_EL0 : bits(4) = 0x2
+
+register configuration CFG_ID_AA64PFR0_EL1_EL1 : bits(4) = 0x2
 
 register configuration CFG_ID_AA64PFR0_EL1_EL2 : bits(4) = 0x2
 
@@ -180,8 +186,6 @@ val ZeroExtend__1 : forall ('M : Int) ('N : Int), 'M >= 0.
 function ZeroExtend__1 (N, x) = ZeroExtend__0(x, N)
 
 overload ZeroExtend = {ZeroExtend__0, ZeroExtend__1}
-val UsingAArch32 = impure { lean: "boundaries.UsingAArch32" } : unit -> bool effect {escape, rreg}
-
 val IsInHost = impure { lean: "boundaries.IsInHost" } : unit -> bool effect {escape, rreg, undef}
 
 val SignExtend__1 = impure { lean: "boundaries.SignExtend__1" } : forall ('M : Int) ('N : Int), 'M >= 0.
@@ -243,6 +247,31 @@ val HavePACExt : unit -> bool
 
 function HavePACExt () = {
     HasArchVersion(ARMv8p3)
+}
+
+val HaveAnyAArch32 : unit -> bool
+
+function HaveAnyAArch32 () = {
+    ((CFG_ID_AA64PFR0_EL1_EL0 == 0x2 | CFG_ID_AA64PFR0_EL1_EL1 == 0x2) | CFG_ID_AA64PFR0_EL1_EL2 == 0x2) | CFG_ID_AA64PFR0_EL1_EL3 == 0x2
+}
+
+val HighestELUsingAArch32 : unit -> bool effect {rreg}
+
+function HighestELUsingAArch32 () = {
+    __highest_el_aarch32
+}
+
+val UsingAArch32 : unit -> bool effect {escape, rreg}
+
+function UsingAArch32 () = {
+    let aarch32 = PSTATE.nRW == 0b1;
+    if ~(HaveAnyAArch32()) then {
+        assert(~(aarch32))
+    };
+    if HighestELUsingAArch32() then {
+        assert(aarch32)
+    };
+    aarch32
 }
 
 overload S1TranslationRegime = {S1TranslationRegime__0}

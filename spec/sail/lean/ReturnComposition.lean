@@ -6,7 +6,7 @@ abbrev State := Oak.SailBridge.Return.State
 
 def install (scalar : ScalarBoundaries) (returns : Boundaries) : ScalarBoundaries :=
  {scalar with
-  UsingAArch32 := returns.UsingAArch32
+  UsingAArch32 := ReturnExecution.Functions.UsingAArch32
   HavePACExt := ReturnExecution.Functions.HavePACExt
   BranchTo := fun target kind => ReturnExecution.Functions.BranchTo returns target kind}
 
@@ -14,9 +14,12 @@ def finalState (op : Oak.BitwiseFunction.Op) (s : State) (bank : Oak.SailBridge.
  Oak.SailBridge.Return.put (Oak.SailBridge.Return.put (Oak.SailBridge.ExtendedScalar.requestState op s bank) ._PC bank[30]) .__PC_changed true
 
 private theorem quiet (scalar : ScalarBoundaries) (returns : Boundaries)
- (q : Oak.SailBridge.Return.QueryProfile returns) (bti : scalar.HaveBTIExt () = pure false) (s : State) :
+ (bti : scalar.HaveBTIExt () = pure false) (s : State)
+ (ps : ProcState) (mv : ReturnMode.Values) (h : ReturnMode.Ready s ps mv) :
  Oak.SailBridge.ExtendedScalar.QuietControl (install scalar returns) s := by
- constructor <;> simp [install, bti, q.usingA32, EStateM.run, Pure.pure, EStateM.pure]
+ constructor
+ · simp [install, bti, EStateM.run, Pure.pure, EStateM.pure]
+ · exact ReturnMode.using_run s ps mv h
 
 /-- These actual instruction updates touch no architectural-version register. -/
 theorem versions_after_ret_control (op : Oak.BitwiseFunction.Op) (s : State)
@@ -46,22 +49,80 @@ theorem versions_after_return (op : Oak.BitwiseFunction.Op) (s : State)
  rcases versions_after_request op s bank v h with ⟨h1,h2,h3,h4,h5⟩
  constructor <;> simp_all [finalState, Oak.SailBridge.Return.put, Std.ExtDHashMap.get?_insert]
 
+theorem mode_after_logical_control (op : Oak.BitwiseFunction.Op) (s : State)
+ (bank : Oak.SailBridge.ExtendedScalar.Bank) (ps : ProcState) (v : ReturnMode.Values)
+ (h : ReturnMode.Ready s ps v) : ReturnMode.Ready (Oak.SailBridge.ExtendedScalar.logicalControlState (Oak.SailBridge.ExtendedScalar.externalOp op) s) ps v := by
+ rcases h with ⟨⟨h0,h1,h2,h3⟩,hh,hp,hn⟩
+ constructor
+ · constructor <;> simp_all [finalState, Oak.SailBridge.Return.put,
+     Oak.SailBridge.ExtendedScalar.requestState, Oak.SailBridge.ExtendedScalar.retControlState,
+     Oak.SailBridge.ExtendedScalar.afterLogical, Oak.SailBridge.ExtendedScalar.logicalControlState,
+     Oak.SailBridge.ExtendedScalar.put, Std.ExtDHashMap.get?_insert]
+ all_goals simp_all [finalState, Oak.SailBridge.Return.put,
+     Oak.SailBridge.ExtendedScalar.requestState, Oak.SailBridge.ExtendedScalar.retControlState,
+     Oak.SailBridge.ExtendedScalar.afterLogical, Oak.SailBridge.ExtendedScalar.logicalControlState,
+     Oak.SailBridge.ExtendedScalar.put, Std.ExtDHashMap.get?_insert]
+
+theorem mode_after_ret_control (op : Oak.BitwiseFunction.Op) (s : State)
+ (bank : Oak.SailBridge.ExtendedScalar.Bank) (ps : ProcState) (v : ReturnMode.Values)
+ (h : ReturnMode.Ready s ps v) : ReturnMode.Ready (Oak.SailBridge.ExtendedScalar.retControlState (Oak.SailBridge.ExtendedScalar.afterLogical (Oak.SailBridge.ExtendedScalar.externalOp op) s bank)) ps v := by
+ rcases h with ⟨⟨h0,h1,h2,h3⟩,hh,hp,hn⟩
+ constructor
+ · constructor <;> simp_all [finalState, Oak.SailBridge.Return.put,
+     Oak.SailBridge.ExtendedScalar.requestState, Oak.SailBridge.ExtendedScalar.retControlState,
+     Oak.SailBridge.ExtendedScalar.afterLogical, Oak.SailBridge.ExtendedScalar.logicalControlState,
+     Oak.SailBridge.ExtendedScalar.put, Std.ExtDHashMap.get?_insert]
+ all_goals simp_all [finalState, Oak.SailBridge.Return.put,
+     Oak.SailBridge.ExtendedScalar.requestState, Oak.SailBridge.ExtendedScalar.retControlState,
+     Oak.SailBridge.ExtendedScalar.afterLogical, Oak.SailBridge.ExtendedScalar.logicalControlState,
+     Oak.SailBridge.ExtendedScalar.put, Std.ExtDHashMap.get?_insert]
+
+theorem mode_after_request (op : Oak.BitwiseFunction.Op) (s : State)
+ (bank : Oak.SailBridge.ExtendedScalar.Bank) (ps : ProcState) (v : ReturnMode.Values)
+ (h : ReturnMode.Ready s ps v) : ReturnMode.Ready (Oak.SailBridge.ExtendedScalar.requestState op s bank) ps v := by
+ rcases h with ⟨⟨h0,h1,h2,h3⟩,hh,hp,hn⟩
+ constructor
+ · constructor <;> simp_all [finalState, Oak.SailBridge.Return.put,
+     Oak.SailBridge.ExtendedScalar.requestState, Oak.SailBridge.ExtendedScalar.retControlState,
+     Oak.SailBridge.ExtendedScalar.afterLogical, Oak.SailBridge.ExtendedScalar.logicalControlState,
+     Oak.SailBridge.ExtendedScalar.put, Std.ExtDHashMap.get?_insert]
+ all_goals simp_all [finalState, Oak.SailBridge.Return.put,
+     Oak.SailBridge.ExtendedScalar.requestState, Oak.SailBridge.ExtendedScalar.retControlState,
+     Oak.SailBridge.ExtendedScalar.afterLogical, Oak.SailBridge.ExtendedScalar.logicalControlState,
+     Oak.SailBridge.ExtendedScalar.put, Std.ExtDHashMap.get?_insert]
+
+theorem mode_after_return (op : Oak.BitwiseFunction.Op) (s : State)
+ (bank : Oak.SailBridge.ExtendedScalar.Bank) (ps : ProcState) (v : ReturnMode.Values)
+ (h : ReturnMode.Ready s ps v) : ReturnMode.Ready (finalState op s bank) ps v := by
+ rcases h with ⟨⟨h0,h1,h2,h3⟩,hh,hp,hn⟩
+ constructor
+ · constructor <;> simp_all [finalState, Oak.SailBridge.Return.put,
+     Oak.SailBridge.ExtendedScalar.requestState, Oak.SailBridge.ExtendedScalar.retControlState,
+     Oak.SailBridge.ExtendedScalar.afterLogical, Oak.SailBridge.ExtendedScalar.logicalControlState,
+     Oak.SailBridge.ExtendedScalar.put, Std.ExtDHashMap.get?_insert]
+ all_goals simp_all [finalState, Oak.SailBridge.Return.put,
+     Oak.SailBridge.ExtendedScalar.requestState, Oak.SailBridge.ExtendedScalar.retControlState,
+     Oak.SailBridge.ExtendedScalar.afterLogical, Oak.SailBridge.ExtendedScalar.logicalControlState,
+     Oak.SailBridge.ExtendedScalar.put, Std.ExtDHashMap.get?_insert]
+
 theorem exact_bytes_return (scalar : ScalarBoundaries) (returns : Boundaries)
  (q : Oak.SailBridge.Return.QueryProfile returns) (bti : scalar.HaveBTIExt () = pure false)
  (s : State) (bank : Oak.SailBridge.ExtendedScalar.Bank) (op : Oak.BitwiseFunction.Op)
  (versions : ReturnConfig.Values) (config : ReturnConfig.Initialized s versions)
  (initialized : s.regs.get? ReturnExecution.Register._R = some bank)
- (ps : ProcState) (pstate : s.regs.get? ReturnExecution.Register.PSTATE = some ps)
+ (ps : ProcState) (modeValues : ReturnMode.Values) (mode : ReturnMode.Ready s ps modeValues)
+ (pstate : s.regs.get? ReturnExecution.Register.PSTATE = some ps)
  (el : ps.EL = ReturnExecution.Functions.EL1)
  (tcr : s.regs.get? ReturnExecution.Register.TCR_EL1 = some (0 : BitVec 64)) :
  (Oak.SailBridge.ExtendedScalar.executeBytes (install scalar returns) (Oak.AArch64BitwiseFunction.functionBytes op)).run s =
  .ok () (finalState op s bank) := by
  rw [Oak.SailBridge.ExtendedScalar.function_bytes_to_return_request (install scalar returns) s bank op initialized
-  (quiet scalar returns q bti _) (quiet scalar returns q bti _) versions.v83
+  (quiet scalar returns bti _ ps modeValues (mode_after_logical_control op s bank ps modeValues mode))
+  (quiet scalar returns bti _ ps modeValues (mode_after_ret_control op s bank ps modeValues mode)) versions.v83
   (ReturnConfig.havePAC_run _ versions (versions_after_ret_control op s bank versions config))]
  change (ReturnExecution.Functions.BranchTo returns bank[30] .BranchType_RET).run
   (Oak.SailBridge.ExtendedScalar.requestState op s bank) = _
- exact Oak.SailBridge.Return.branchTo64_el1_no_tags returns q (Oak.SailBridge.ExtendedScalar.requestState op s bank) versions (versions_after_request op s bank versions config) ps
+ exact Oak.SailBridge.Return.branchTo64_el1_no_tags returns q (Oak.SailBridge.ExtendedScalar.requestState op s bank) versions (versions_after_request op s bank versions config) ps modeValues (mode_after_request op s bank ps modeValues mode)
   (by simpa [Oak.SailBridge.ExtendedScalar.requestState, Oak.SailBridge.ExtendedScalar.retControlState, Oak.SailBridge.ExtendedScalar.afterLogical, Oak.SailBridge.ExtendedScalar.logicalControlState, Oak.SailBridge.ExtendedScalar.put, Std.ExtDHashMap.get?_insert] using pstate) el
   (by simpa [Oak.SailBridge.ExtendedScalar.requestState, Oak.SailBridge.ExtendedScalar.retControlState, Oak.SailBridge.ExtendedScalar.afterLogical, Oak.SailBridge.ExtendedScalar.logicalControlState, Oak.SailBridge.ExtendedScalar.put, Std.ExtDHashMap.get?_insert] using tcr) bank[30] .BranchType_RET
 
@@ -75,6 +136,15 @@ theorem ret_missing_version (scalar : ScalarBoundaries) (returns : Boundaries)
  apply Oak.SailBridge.ExtendedScalar.ret_eager_pac_failure
  exact ReturnConfig.missing_v81 _ (by
   simpa [Oak.SailBridge.ExtendedScalar.put, Std.ExtDHashMap.get?_insert] using missing)
+
+/-- BTI=false does not erase the exported PostDecode's eager concrete mode read. -/
+theorem postdecode_missing_pstate (scalar : ScalarBoundaries) (returns : Boundaries)
+ (s : State) (bti : (scalar.HaveBTIExt ()).run s = .ok false s)
+ (missing : s.regs.get? Register.PSTATE = none) :
+ (ReturnExecution.ScalarFunctions.__PostDecode (install scalar returns) ()).run s =
+ .error .Unreachable s := by
+ exact Oak.SailBridge.ExtendedScalar.postdecode_eager_failure _ s s .Unreachable bti
+  (ReturnMode.missing_pstate s missing)
 
 theorem final_observations (op : Oak.BitwiseFunction.Op) (s : State) (bank : Oak.SailBridge.ExtendedScalar.Bank) :
  (finalState op s bank).regs.get? ReturnExecution.Register._PC = some bank[30] ∧
