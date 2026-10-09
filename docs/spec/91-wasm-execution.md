@@ -5,8 +5,9 @@ byte execution for the straight-line part of the scalar profile. It connects
 the [proved assembler output](91-wasm-assembler-proofs.md) to execution in this
 model. `Oak.WasmControl` extends it with structured labels, branches, loops,
 and returns. `Oak.WasmCalls` adds isolated direct calls in a closed function
-table. These are not a complete Core interpreter or a source-to-Wasm compiler
-proof.
+table. `Oak.WasmModule` decodes complete binaries and links that table from
+their type/function/code sections. These are not a complete Core interpreter or
+a source-to-Wasm compiler proof.
 
 ## Reference and supported boundary
 
@@ -344,10 +345,74 @@ Formal CI requires the new engine and Lean corpus. As with the earlier layers,
 these finite comparisons support the model but do not prove the Go encoder,
 compiler, engine, module writer, or the complete official semantics correct.
 
+## Binary module decoding and closed-table instantiation
+
+`Oak.WasmModule` removes the requirement to supply function signatures, locals,
+and export indices beside the binary. `decode` reads them from complete modules,
+links function-section type indices to code-section bodies, and constructs the
+closed function table used by `WasmCalls`. `invokeExport` resolves a UTF-8 export
+name and invokes its actual function index. The reference is Core's
+[binary module grammar](https://webassembly.github.io/spec/core/binary/modules.html),
+restricted to Oak's existing four-section scalar shape.
+
+The format requires the Wasm 1 magic/version and exactly one type, function,
+export, and code section in that order, with no trailing bytes. Each section and
+function body must consume its declared byte region exactly. Type indices can
+be repeated or permuted; function order is determined by the function section,
+not the type table. Function/code count disagreement and unknown type indices
+refuse. Export names must be nonempty valid UTF-8, unique, and at most 256 bytes;
+only in-bounds function exports are supported.
+
+The decoder reuses `WasmLEB` and `WasmInstruction`, including legal padded LEB
+encodings. It checks declared local-group budgets before expanding them, reads
+all body tokens, requires the final function end delimiter, and checks control
+nesting. Bounds are 1 MiB/module, 128 types/functions/exports, 64 parameters,
+one result, 16,449 parameters plus locals per function, 65,536 total locals
+including parameters, and 262,144 instructions including function ends.
+
+There are no imports, start functions, tables, memory, or globals in this profile,
+so instantiation here is closed-table linking without ambient state or start
+execution. Per-call zero initialization remains in `WasmCalls.activate`.
+Unsupported sections/instructions refuse rather than being silently omitted.
+
+**Structural decoding is not module validation.** The Lean decoder does not
+perform the Go validator's full stack typing, local/call/branch index checks in
+all instructions, or stack/control-depth limits. An ill-typed module can decode
+and later receive a model diagnostic; untaken invalid paths may not execute.
+This is not a replacement for `wasm/check.Validate`, a validator correspondence
+proof, or a new verified-mode admission path. `none` means structural/name
+refusal; `some (.error ...)` distinguishes a subsequent execution diagnostic,
+trap, or runtime-fuel exhaustion.
+
+| Theorem | Result |
+| --- | --- |
+| `take_region`, `sized_region` | A successful length-delimited parse consumes exactly its isolated declared region and preserves its external suffix |
+| `tokens_decodeMany` | Successful byte-budget body decoding agrees with the existing instruction decoder and leaves no body bytes unexamined |
+| `localGroups_budget` | Local-group expansion cannot exceed the checked remaining budget |
+| `link_lengths` | Linking preserves both function and body vector lengths; no truncating zip |
+| `link_member` | Every linked function receives its indexed signature and corresponding body/local declaration, for arbitrary type-table order and reuse |
+| `decode_linked` | Every decoded module comes from its own parsed metadata and passed structural admission |
+| `export_bounds`, `decoded_export_bounds` | Every admitted/decoded export index lies inside the linked function table |
+| `invoke_decoded` | Named binary invocation agrees with invocation of the resolved function in that decoded table for any arguments and runtime fuel |
+
+These laws establish framing, linking and model composition. They do not prove
+that the complete binary decoder matches the full official grammar or the Go
+parser for all inputs, nor that typed execution is safe for every valid module.
+
+`compiler/wasm_module_test.go` checks 143 complete modules: the 133 call scenarios,
+permuted/shared type tables, padded section lengths, nonzero UTF-8 exports,
+grouped locals, and six complete artifacts from the production `wasm.Emit`
+module emitter. All pass the independent Go validator and Node/Deno execution.
+The Lean corpus checks invocation results, exact decoded signatures/locals/tokens
+for 137 fixtures, 60 malformed-module refusals, an unknown export, and a deliberate
+ill-typed structural-acceptance boundary. These are 342 kernel claims in 205 rows.
+The 60 structural refusals are also checked against the production validator.
+Formal CI requires the new module engine and Lean gates.
+
 ## Next boundary
 
-Connect binary modules, index resolution, and instantiation to the function-table
-model. Prove validator correspondence and typed execution preservation/progress,
-then compiler structured/dispatch control and instruction selection refinement.
-Imports, memory/globals, and the wider target profile also remain open.
-`TranslationVerified` remains false; verified-mode refusal is unchanged.
+Prove validator correspondence and typed execution preservation/progress for the
+closed scalar profile, including untaken paths. Then connect compiler selection,
+control lowering and module emission to source semantics. Imports, memory/globals,
+and wider target coverage remain open. `TranslationVerified` remains false;
+verified-mode refusal is unchanged.

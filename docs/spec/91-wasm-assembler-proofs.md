@@ -210,14 +210,15 @@ semantics for 49 straight-line scalar forms and composes execution through the
 actual assembled bytes. `Oak.WasmControl` extends that bridge to structured
 blocks, loops, branches, conditionals and single-function returns.
 `Oak.WasmCalls` adds direct calls with isolated frames in a closed function table;
-byte correctness still does not imply module validity.
+`Oak.WasmModule` now decodes binary metadata and links that table. Structural
+decoding and byte correctness still do not imply module validity.
 
 ## Remaining parity obligations
 
 | Boundary | Required next work |
 | --- | --- |
 | Implementation refinement | Prove Go encoder and exact module parser/type-validator correspondence; discharge compiler/extractor correspondence beyond the stated modeling boundary |
-| Decoded semantics | Extend the proved scalar/control byte-to-execution bridge to binary modules, index resolution, instantiation and typed execution preservation |
+| Decoded semantics | Extend the proved scalar/control byte-to-execution bridge with validator correspondence and typed execution preservation/progress |
 | Compiler correctness | Source/OptIR-to-decoded-Wasm refinement, edge-copy and structured/dispatch control proofs, certificate identity and authoritative admission |
 | Language/library coverage | Narrow integers, conversions and checked shifts; memory/aggregates/globals; explicit float/SIMD/atomic profiles; corresponding stdlib coverage |
 | Modules and environment | Oak module writer and symbolic linking, layout/index/section-length proofs, declared browser/WASI imports and runtime contracts |
