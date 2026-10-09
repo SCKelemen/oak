@@ -30,6 +30,7 @@ theorem exact_bytes_simulation (oldBase : ScalarExecution.Boundaries)
  (scalar : ReturnExecution.ScalarBoundaries) (returns : ReturnExecution.Boundaries)
  (q : Return.QueryProfile returns) (bti : scalar.HaveBTIExt () = pure false)
  (old : Scalar.State) (extended : Return.State) (related : Related old extended)
+ (versions : ReturnConfig.Values) (config : ReturnConfig.Initialized extended versions)
  (bank : Scalar.Bank) (op : Oak.BitwiseFunction.Op)
  (initialized : extended.regs.get? ReturnExecution.Register._R = some bank)
  (ps : ReturnExecution.ProcState)
@@ -43,7 +44,7 @@ theorem exact_bytes_simulation (oldBase : ScalarExecution.Boundaries)
    .ok () (ConcreteReturn.finalState op extended bank) ∧
  Related (Scalar.requestState op old bank) (ConcreteReturn.finalState op extended bank) := by
  refine ⟨original_observation oldBase old bank op (related.bank.trans initialized), ?_, ?_⟩
- · exact ConcreteReturn.exact_bytes_return scalar returns q bti extended bank op initialized ps pstate el tcr
+ · exact ConcreteReturn.exact_bytes_return scalar returns q bti extended bank op versions config initialized ps pstate el tcr
  · exact final_related old extended related op bank
 
 /-- The original official scalar observation commutes with total projection.

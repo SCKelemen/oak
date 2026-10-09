@@ -19,8 +19,9 @@ open ShiftType
 open Register
 open LogicalOp
 open BranchType
+open ArchVersion
 
-/-- Type quantifiers: k_ex3227_ : Bool, k_ex3226_ : Bool -/
+/-- Type quantifiers: k_ex3843_ : Bool, k_ex3842_ : Bool -/
 def neq_bool (x : Bool) (y : Bool) : Bool :=
   (! (x == y))
 
@@ -190,6 +191,28 @@ def num_of_BranchType (arg_ : BranchType) : Int :=
   | .BranchType_RESET => 8
   | .BranchType_UNKNOWN => 9
 
+def undefined_ArchVersion (_ : Unit) : SailM ArchVersion := do
+  (internal_pick [ARMv8p0, ARMv8p1, ARMv8p2, ARMv8p3, ARMv8p4, ARMv8p5])
+
+/-- Type quantifiers: arg_ : Nat, 0 ≤ arg_ ∧ arg_ ≤ 5 -/
+def ArchVersion_of_num (arg_ : Nat) : ArchVersion :=
+  match arg_ with
+  | 0 => ARMv8p0
+  | 1 => ARMv8p1
+  | 2 => ARMv8p2
+  | 3 => ARMv8p3
+  | 4 => ARMv8p4
+  | _ => ARMv8p5
+
+def num_of_ArchVersion (arg_ : ArchVersion) : Int :=
+  match arg_ with
+  | .ARMv8p0 => 0
+  | .ARMv8p1 => 1
+  | .ARMv8p2 => 2
+  | .ARMv8p3 => 3
+  | .ARMv8p4 => 4
+  | .ARMv8p5 => 5
+
 def undefined_ProcState (_ : Unit) : SailM ProcState := do
   (pure { N := ← (undefined_bitvector 1)
           Z := ← (undefined_bitvector 1)
@@ -228,7 +251,7 @@ def EL3 : (BitVec 2) := 0b11#2
 
 /-- Type quantifiers: k_M : Nat, N : Int, k_M ≥ 0 -/
 def ZeroExtend__0 (x : (BitVec k_M)) (N : Int) : SailM (BitVec N) := do
-  assert (N ≥b (Sail.BitVec.length x)) "return.sail:161.18-161.19"
+  assert (N ≥b (Sail.BitVec.length x)) "return.sail:173.18-173.19"
   (pure ((Zeros (N -i (Sail.BitVec.length x))) +++ x))
 
 /-- Type quantifiers: k_M : Nat, N : Int, k_M ≥ 0 -/
@@ -248,7 +271,7 @@ def HaveEL (el : (BitVec 2)) : SailM Bool := do
           then (pure ((← readReg CFG_ID_AA64PFR0_EL1_EL3) != 0x0#4))
           else
             (do
-              assert false "return.sail:201.28-201.29"
+              assert false "return.sail:211.28-211.29"
               throw Error.Exit)))
 
 def S1TranslationRegime__0 (boundaries : Boundaries) (el : (BitVec 2)) : SailM (BitVec 2) := do
@@ -265,9 +288,15 @@ def S1TranslationRegime__0 (boundaries : Boundaries) (el : (BitVec 2)) : SailM (
           then (pure EL2)
           else (pure EL1)))
 
+def HasArchVersion (version : ArchVersion) : SailM Bool := do
+  (pure ((((((version == ARMv8p0) || ((version == ARMv8p1) && (← readReg __v81_implemented))) || ((version == ARMv8p2) && (← readReg __v82_implemented))) || ((version == ARMv8p3) && (← readReg __v83_implemented))) || ((version == ARMv8p4) && (← readReg __v84_implemented))) || ((version == ARMv8p5) && (← readReg __v85_implemented))))
+
+def HavePACExt (_ : Unit) : SailM Bool := do
+  (HasArchVersion ARMv8p3)
+
 /-- Type quantifiers: k_IsInstr : Bool -/
 def AddrTop (boundaries : Boundaries) (address : (BitVec 64)) (IsInstr : Bool) (el : (BitVec 2)) : SailM Int := do
-  assert (← (HaveEL el)) "return.sail:231.21-231.22"
+  assert (← (HaveEL el)) "return.sail:253.21-253.22"
   let regime ← do (S1TranslationRegime__0 boundaries el)
   let tbi ← (( do (undefined_bitvector 1) ) : SailM (BitVec 1) )
   let tbid ← (( do (undefined_bitvector 1) ) : SailM (BitVec 1) )
@@ -286,7 +315,7 @@ def AddrTop (boundaries : Boundaries) (address : (BitVec 64)) (IsInstr : Bool) (
                 then (pure (BitVec.join1 [(BitVec.access (← readReg TCR_EL1) 38)]))
                 else (pure (BitVec.join1 [(BitVec.access (← readReg TCR_EL1) 37)]))
               let tbid ← (( do
-                if ((← (boundaries.HavePACExt ())) : Bool)
+                if ((← (HavePACExt ())) : Bool)
                 then
                   (do
                     if (((BitVec.join1 [(BitVec.access address 55)]) == 1#1) : Bool)
@@ -309,7 +338,7 @@ def AddrTop (boundaries : Boundaries) (address : (BitVec 64)) (IsInstr : Bool) (
                             then (pure (BitVec.join1 [(BitVec.access (← readReg TCR_EL2) 38)]))
                             else (pure (BitVec.join1 [(BitVec.access (← readReg TCR_EL2) 37)]))
                           let tbid ← (( do
-                            if ((← (boundaries.HavePACExt ())) : Bool)
+                            if ((← (HavePACExt ())) : Bool)
                             then
                               (do
                                 if (((BitVec.join1 [(BitVec.access address 55)]) == 1#1) : Bool)
@@ -324,7 +353,7 @@ def AddrTop (boundaries : Boundaries) (address : (BitVec 64)) (IsInstr : Bool) (
                           let tbi ←
                             (pure (BitVec.join1 [(BitVec.access (← readReg TCR_EL2) 20)]))
                           let tbid ← (( do
-                            if ((← (boundaries.HavePACExt ())) : Bool)
+                            if ((← (HavePACExt ())) : Bool)
                             then
                               (do
                                 (pure (BitVec.join1 [(BitVec.access (← readReg TCR_EL2) 29)])))
@@ -340,7 +369,7 @@ def AddrTop (boundaries : Boundaries) (address : (BitVec 64)) (IsInstr : Bool) (
                           let tbi ←
                             (pure (BitVec.join1 [(BitVec.access (← readReg TCR_EL3) 20)]))
                           let tbid ← (( do
-                            if ((← (boundaries.HavePACExt ())) : Bool)
+                            if ((← (HavePACExt ())) : Bool)
                             then
                               (do
                                 (pure (BitVec.join1 [(BitVec.access (← readReg TCR_EL3) 29)])))
@@ -348,12 +377,12 @@ def AddrTop (boundaries : Boundaries) (address : (BitVec 64)) (IsInstr : Bool) (
                           (pure (tbi, tbid)))
                       else
                         (do
-                          assert false "Pattern match failure at return.sail:238.8-264.9"
+                          assert false "Pattern match failure at return.sail:260.8-286.9"
                           throw Error.Exit) ) : SailM ((BitVec 1) × (BitVec 1)) )
                     (pure (tbi, tbid))) ) : SailM ((BitVec 1) × (BitVec 1)) )
               (pure (tbi, tbid))) ) : SailM ((BitVec 1) × (BitVec 1)) )
         (pure (tbi, tbid)) ) : SailM ((BitVec 1) × (BitVec 1)) )
-      if (((tbi == 1#1) && (((! (← (boundaries.HavePACExt ()))) || (tbid == 0#1)) || (! IsInstr))) : Bool)
+      if (((tbi == 1#1) && (((! (← (HavePACExt ()))) || (tbid == 0#1)) || (! IsInstr))) : Bool)
       then (pure 55)
       else (pure 63))
 
@@ -361,9 +390,9 @@ def Hint_Branch (hint : BranchType) : Unit :=
   ()
 
 def AArch64_BranchAddr (boundaries : Boundaries) (vaddress : (BitVec 64)) : SailM (BitVec 64) := do
-  assert (! (← (boundaries.UsingAArch32 ()))) "return.sail:278.28-278.29"
+  assert (! (← (boundaries.UsingAArch32 ()))) "return.sail:300.28-300.29"
   let msbit ← do (AddrTop boundaries vaddress true (← readReg PSTATE).EL)
-  assert ((msbit +i 1) ≥b 0) "return.sail:280.25-280.26"
+  assert ((msbit +i 1) ≥b 0) "return.sail:302.25-302.26"
   if ((msbit == 63) : Bool)
   then (pure vaddress)
   else
@@ -379,11 +408,11 @@ def BranchTo (boundaries : Boundaries) (target : (BitVec k_N)) (branch_type : Br
   if (((Sail.BitVec.length target) == 32) : Bool)
   then
     (do
-      assert (← (boundaries.UsingAArch32 ())) "return.sail:298.29-298.30"
+      assert (← (boundaries.UsingAArch32 ())) "return.sail:320.29-320.30"
       writeReg _PC (← (ZeroExtend__1 (N := 64) target)))
   else
     (do
-      assert (((Sail.BitVec.length target) == 64) && (! (← (boundaries.UsingAArch32 ())))) "return.sail:301.43-301.44"
+      assert (((Sail.BitVec.length target) == 64) && (! (← (boundaries.UsingAArch32 ())))) "return.sail:323.43-323.44"
       writeReg _PC (← (AArch64_BranchAddr boundaries (BitVec.slice target 0 64))))
   writeReg __PC_changed true
 
@@ -403,6 +432,11 @@ def initialize_registers (_ : Unit) : SailM Unit := do
 def sail_model_init (x_0 : Unit) : SailM Unit := do
   writeReg CFG_ID_AA64PFR0_EL1_EL2 0x2#4
   writeReg CFG_ID_AA64PFR0_EL1_EL3 0x2#4
+  writeReg __v81_implemented true
+  writeReg __v82_implemented true
+  writeReg __v83_implemented true
+  writeReg __v84_implemented true
+  writeReg __v85_implemented true
   (initialize_registers ())
 
 end ReturnExecution.Functions

@@ -32,18 +32,18 @@ def source_fragment():
     prelude=(HERE/'str_execution_regen.go').read_text().split('const fragmentPrelude = `',1)[1].rsplit('`',1)[0]
     prelude=prelude[prelude.index('default Order'):].replace('str_execution_vector.sail','return_vector.sail')
     source=raw['aarch_mem.sail'].split('\nval ',1)[0]+'\n'+prelude
-    for name in ['LogicalOp','ShiftType','BranchType']: source+=decl('aarch_types.sail','enum',name)
+    for name in ['LogicalOp','ShiftType','BranchType','ArchVersion']: source+=decl('aarch_types.sail','enum',name)
     source+=decl('aarch_types.sail','struct','ProcState')+decl('prelude.sail','union','exception')
     for name in ['_PC','__PC_changed','PSTATE','TCR_EL1','TCR_EL2','TCR_EL3']: source+=decl('aarch_mem.sail','register',name)
     for file,name in [('aarch_mem.sail','_R'),('aarch_mem.sail','InGuardedPage'),('aarch64.sail','BTypeNext'),('aarch64.sail','__unconditional'),('aarch_decode.sail','SEE')]: source+=decl(file,'register',name)
-    for name in ['CFG_ID_AA64PFR0_EL1_EL2','CFG_ID_AA64PFR0_EL1_EL3']: source+=decl('aarch_mem.sail','register configuration',name)
+    for name in ['CFG_ID_AA64PFR0_EL1_EL2','CFG_ID_AA64PFR0_EL1_EL3','__v81_implemented','__v82_implemented','__v83_implemented','__v84_implemented','__v85_implemented']: source+=decl('aarch_mem.sail','register configuration',name)
     for name in ['EL0','EL1','EL2','EL3']: source+=decl('aarch_mem.sail','let',name)
     for name in ['ZeroExtend__0','ZeroExtend__1']: source+=both('aarch_mem.sail',name)
     source+='overload ZeroExtend = {ZeroExtend__0, ZeroExtend__1}\n'
-    for name in ['UsingAArch32','IsInHost','SignExtend__1','ELUsingAArch32','HavePACExt','HaveVirtHostExt','ELIsInHost','get_SCR']: source+=cut('aarch_mem.sail',name)
+    for name in ['UsingAArch32','IsInHost','SignExtend__1','ELUsingAArch32','HaveVirtHostExt','ELIsInHost','get_SCR']: source+=cut('aarch_mem.sail',name)
     source+='overload SignExtend = {SignExtend__1}\n'
     queries={}
-    for name in ['HaveEL','S1TranslationRegime__0']:
+    for name in ['HaveEL','S1TranslationRegime__0','HasArchVersion','HavePACExt']:
         signature=decl('aarch_mem.sail','val',name);body=decl('aarch_mem.sail','function',name)
         source+=signature+body
         queries[name]={'signature_sha256':sha(signature.encode()),'unchanged_body_sha256':sha(body.encode())}
@@ -88,7 +88,7 @@ def main():
         source,provenance,queries=source_fragment()
         require(source==(HERE/'return_execution.sail').read_bytes(),'source extraction drift')
         require(provenance==manifest['AddrTop_adapter'],'signature/body provenance drift')
-        require(queries==manifest['EL1_query_bodies'],'query declaration provenance drift')
+        require(queries==manifest['query_bodies'],'query declaration provenance drift')
     if args.regenerate:
         profile=json.loads((PROFILE/'profile.json').read_text())
         sys.path.insert(0,str(PROFILE))

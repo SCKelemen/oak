@@ -7,17 +7,17 @@
     "unchanged_body_sha256": "ab4db1fc2ab8aaa15cb5de7547be0149c40f93d4cb18d6b0b8e2f7700eaee582"
   },
   "files": {
-    "return_execution.sail": "483aabc4cddd928f5b9538777fe368e2c88e6283a110956d58e9e556a9eab6ba",
+    "return_execution.sail": "5ede5c6a6b5b9e4c7819f7b626a7e0876f5b2e60eec948babda3b20804b30a2f",
     "return_execution_vector.sail": "bb11bdbed65daa83716cbf4a1a40b6e5702751af492b9264f134b1fd06257f83",
-    "lean/ReturnExecution/Raw.lean": "31775db96858d062bb78976361f2c3ea2ea20b1cb9c31e4b0609fc53c3a21719",
-    "lean/ReturnExecution/RawDefs.lean": "e58e0907f5c8017c0e41a8b450a3fd87079475ba16a8f3e302e8386e4b0c3283",
+    "lean/ReturnExecution/Raw.lean": "1378e5bae50c6c4992ff709a8fd4380a26b7692611bbf13cffbe54b9ca9b11d5",
+    "lean/ReturnExecution/RawDefs.lean": "5400a48b2474aefeb8ea6d118a5452232ec86ec4c1d7cc1f601ee2b0aa62b22f",
     "lean/ScalarExecution/Raw.lean": "db0b8ed93db97925f152d508f3c2020230c13c09cf5ea29942a4666d3df24f83",
     "lean/ScalarExecution/RawDefs.lean": "4599759ae12f5aff5af70c4fcc35fb4fff1d56bbfa6ef94c8997426fedaeac01",
     "lean/ScalarExecution/Interface.lean": "6032a5b9f082f9b903bb07c546bb114ce7ef567d86d9a036f7a916cc07d4cef0",
     "lean/ScalarExecutionBridge.lean": "539d94c8e4c1d0e3adb77299c1921cecd89ed2cb3d792c6a6e771d2c4ea6b56d",
     "repros/guarded_mutation/guarded_profile/no-shadow.patch": "3a9cc1be0e4f098b48976fd31d38bfa580c9f1afad1aece43db149c44bcc199b"
   },
-  "EL1_query_bodies": {
+  "query_bodies": {
     "HaveEL": {
       "signature_sha256": "b8065d67832396b3cb4efc21ae7ca2f3d3823a9cd0f006702d98326065a4ee6b",
       "unchanged_body_sha256": "18d50ba895481dddd633c3093334c607123fcbec6408a4c14c4d528abb90e26a"
@@ -25,6 +25,14 @@
     "S1TranslationRegime__0": {
       "signature_sha256": "8d3f02273c58b73526e01c6e2b40a22935976589d81c9a31d0f19488ab46d8e9",
       "unchanged_body_sha256": "b23a22c6642933d61d4fa1488c6c81745674a67f98a06921fd0a7235fd1ab589"
+    },
+    "HasArchVersion": {
+      "signature_sha256": "9942e24d2ce7d2bd834ca786c48533581c0c970428ab95243aab69871d27a868",
+      "unchanged_body_sha256": "467a3fbaa69c16d92c3032f4cafbcacebdba9fba43bf8fcb4179253f601d4aa2"
+    },
+    "HavePACExt": {
+      "signature_sha256": "d5119a41fc148a15b116ed088f4d035bd1215df645348e4faffb75b6eb69d206",
+      "unchanged_body_sha256": "72931a32f54e4ed8138463657cb664597b486e83d3c207183cc446e43a07405b"
     }
   }
 }

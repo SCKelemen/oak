@@ -24,9 +24,8 @@ that erasing the new fields has precisely this effect.
 
 The supported return configuration is intentionally narrow: PSTATE.EL is EL1,
 TCR_EL1 is zero, and the following cut actions must be successful and read-only:
-`ELUsingAArch32(EL1)=false`, `HavePACExt()=false`, and
-`UsingAArch32()=false`. The scalar control profile additionally requires
-`HaveBTIExt()=false`. `install` shares the mode/PAC actions between components.
+`ELUsingAArch32(EL1)=false` and `UsingAArch32()=false`. The scalar control profile additionally requires
+`HaveBTIExt()=false`. `install` shares the mode action and installs the concrete generated PAC query.
 Eager queries in the exported model remain present; these premises cover them.
 Sign extension, host/EL2 configuration and nonzero-tag paths are not discharged.
 The remaining query cuts are explicit.
@@ -35,12 +34,33 @@ The intact pinned `HaveEL` and `S1TranslationRegime__0` bodies are now exported
 with the same guarded profile. `haveEL_el1` and `regime_el1` prove their actions
 equal `pure true` and `pure EL1` for every state and every remaining callback,
 without configuration initialization or callback-success premises. Their source
-signature/body hashes are checked in `EL1_query_bodies` in the manifest. The
+signature/body hashes are checked in `query_bodies` in the manifest. The
 configuration registers used by their other branches are represented explicitly;
 `haveEL_el2_missing` and `regime_el0_missing` retain `Unreachable` and the complete
 unchanged state when the required register is absent. EL0 retains a `get_SCR`
 cut and is not covered by the successful-return profile. These checks establish
 the generated-model paths, not general original-source/export equivalence.
+
+The PAC query is now the intact pinned `HavePACExt`/`HasArchVersion` export,
+with `ArchVersion` and all five `__v81_implemented` through `__v85_implemented`
+configuration registers (pinned `aarch_mem.sail` lines 361–369, 1901–1905,
+1973–1977; `aarch_types.sail` line 312). `ReturnConfig.Initialized` gives explicit register
+values, not callback-success assumptions. `havePAC_run` proves successful,
+state-preserving execution returning the v8.3 value. The generated expression
+reads all five registers eagerly, including versions irrelevant to the result;
+these reads are not erased. A missing v8.1 register fails with `Unreachable`
+and preserves the state. `ret_missing_version` additionally proves the installed
+RET decoder retains its preceding `__unconditional = true` write on this failure.
+Constructive `withValues` witnesses support both the
+pinned default `true` and a configured `false`, preserving prior bank/PSTATE/TCR
+observations. They do not prove hardware reset, startup or EL1 reachability.
+
+Both PAC values produce the same bounded plain-RET result when TCR_EL1 is zero.
+The scalar RET query and both eager AddrTop calls execute the concrete body;
+configuration preservation is proved through the actual logical/RET/PC writes.
+`QueryProfile` therefore contains only the two remaining mode-query premises.
+The old scalar observation still uses an explicit projected callback profile;
+its PAC value is immaterial on this exact non-authenticating RET path.
 
 The pinned `BranchTo` body itself performs no target-alignment check.
 `aligned_return_observation` carries an explicit caller X30 alignment premise.

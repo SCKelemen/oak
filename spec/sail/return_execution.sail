@@ -81,6 +81,8 @@ enum BranchType = {
   BranchType_UNKNOWN
 }
 
+enum ArchVersion = {ARMv8p0, ARMv8p1, ARMv8p2, ARMv8p3, ARMv8p4, ARMv8p5}
+
 struct ProcState = {
   N : bits(1),
   Z : bits(1),
@@ -146,6 +148,16 @@ register configuration CFG_ID_AA64PFR0_EL1_EL2 : bits(4) = 0x2
 
 register configuration CFG_ID_AA64PFR0_EL1_EL3 : bits(4) = 0x2
 
+register configuration __v81_implemented : bool = true
+
+register configuration __v82_implemented : bool = true
+
+register configuration __v83_implemented : bool = true
+
+register configuration __v84_implemented : bool = true
+
+register configuration __v85_implemented : bool = true
+
 let EL0 : bits(2) = 0b00
 
 let EL1 : bits(2) = 0b01
@@ -176,8 +188,6 @@ val SignExtend__1 = impure { lean: "boundaries.SignExtend__1" } : forall ('M : I
   (implicit('N), bits('M)) -> bits('N) effect {escape}
 
 val ELUsingAArch32 = impure { lean: "boundaries.ELUsingAArch32" } : bits(2) -> bool effect {escape, rreg, undef}
-
-val HavePACExt = impure { lean: "boundaries.HavePACExt" } : unit -> bool
 
 val HaveVirtHostExt = impure { lean: "boundaries.HaveVirtHostExt" } : unit -> bool
 
@@ -221,6 +231,18 @@ function S1TranslationRegime__0 el = {
             }
         }
     }
+}
+
+val HasArchVersion : ArchVersion -> bool
+
+function HasArchVersion version = {
+    ((((version == ARMv8p0 | version == ARMv8p1 & __v81_implemented) | version == ARMv8p2 & __v82_implemented) | version == ARMv8p3 & __v83_implemented) | version == ARMv8p4 & __v84_implemented) | version == ARMv8p5 & __v85_implemented
+}
+
+val HavePACExt : unit -> bool
+
+function HavePACExt () = {
+    HasArchVersion(ARMv8p3)
 }
 
 overload S1TranslationRegime = {S1TranslationRegime__0}
