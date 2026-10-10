@@ -34,6 +34,16 @@ import (
 func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker) nativeLowering {
 	var diagnostics []*diagnostic.Diagnostic
 	result := nativeLowering{Verdicts: map[string]asm.Verdict{}, Fallbacks: map[string]string{}}
+	var buildReport *NativeBuildReport
+	buildRows := map[string]*NativeBuildFunction{}
+	if comp.nativeBuildReport != nil {
+		inventory := nativeBuildInventory(root)
+		buildReport = &NativeBuildReport{SchemaVersion: 1, Inventory: inventory, Functions: make([]NativeBuildFunction, len(inventory.Eligible))}
+		for i, input := range inventory.Eligible {
+			buildReport.Functions[i] = NativeBuildFunction{Input: input, Status: "unfinished", Callees: []string{}, Validations: []NativeBuildCandidate{}}
+			buildRows[input.Name] = &buildReport.Functions[i]
+		}
+	}
 	functions := map[string]*ast.FunctionStatement{}
 	externs := map[string]*ast.FunctionStatement{}
 	records := map[string]*ast.RecordLiteral{}
@@ -170,7 +180,22 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 				finish(considered, materialized, validations, err != nil || !returned)
 			}()
 			selection, err = driver.withMaterializationRecipe(func() (*opt.Selection, error) {
-				return search.Run(fn.Name.Value, opt.Identity(nativegen.PlainLane(lane)), facts, driver)
+				if row := buildRows[fn.Name.Value]; row != nil {
+					row.Considered = 1
+				}
+				selected, failure := search.Run(fn.Name.Value, opt.Identity(nativegen.PlainLane(lane)), facts, driver)
+				if row := buildRows[fn.Name.Value]; row != nil && selected != nil {
+					row.Considered, row.Materialized = selected.Considered, selected.Materialized
+					chosen := nativeBuildCandidate(driver, selected.Candidate, selected.Verdict)
+					row.Selected = &chosen
+					// Preserve the actual selection's dependencies even when
+					// the later vector-callee fixpoint demotes this body to C.
+					row.Callees = append([]string{}, driver.verdicts[selected.Candidate.Body.(*asm.Function)].Callees...)
+					for _, validation := range selected.Validations {
+						row.Validations = append(row.Validations, nativeBuildCandidate(driver, validation.Candidate, validation.Verdict))
+					}
+				}
+				return selected, failure
 			})
 			returned = true
 			return selection, err
@@ -306,6 +331,10 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	}
 	result.Report = report
 	result.Functions, result.Data, result.Diagnostics = lowered, data, diagnostics
+	if buildReport != nil {
+		finishNativeBuildReport(buildReport, result)
+		comp.nativeBuildReport(*buildReport)
+	}
 	return result
 }
 

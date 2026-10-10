@@ -121,6 +121,23 @@ def load_shards(selected, manifest, plan_path):
     return result
 
 
+def source_contents_digest(repo):
+    raw = subprocess.check_output(['git', 'ls-files', '-z'], cwd=repo)
+    if not isinstance(raw, bytes) or not raw.endswith(b'\0'):
+        raise ValueError('missing tracked source inventory')
+    paths = raw[:-1].split(b'\0')
+    if not paths or len(paths) != len(set(paths)):
+        raise ValueError('empty or duplicate tracked source inventory')
+    hasher = hashlib.sha256()
+    for raw_path in paths:
+        path = Path(os.fsdecode(raw_path))
+        if path.is_absolute() or '..' in path.parts:
+            raise ValueError('invalid tracked source path')
+        sha = hashlib.sha256(_file_bytes(repo / path)).hexdigest()
+        hasher.update(str(len(raw_path)).encode() + b':' + raw_path + b':' + sha.encode() + b'\n')
+    return hasher.hexdigest()
+
+
 def identity(repo, manifest_path, plan_path, shard, env=None):
     """Bind evidence to this exact source, reviewed inventory, plan, and CI attempt."""
     if shard not in SHARDS:
@@ -134,10 +151,16 @@ def identity(repo, manifest_path, plan_path, shard, env=None):
     if (not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', source_sha)
             or env.get('GITHUB_SHA') != source_sha):
         raise ValueError('checkout HEAD must equal GITHUB_SHA')
+    source_tree = subprocess.check_output(
+        ['git', 'rev-parse', 'HEAD^{tree}'], cwd=repo, text=True).strip()
+    if not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', source_tree):
+        raise ValueError('invalid checkout source tree')
     return {
         'schema_version': 1,
         'shard': shard,
         'source_sha': source_sha,
+        'source_tree': source_tree,
+        'source_contents_sha256': source_contents_digest(repo),
         'inventory_sha256': hashlib.sha256(_file_bytes(manifest_path)).hexdigest(),
         'plan_sha256': hashlib.sha256(_file_bytes(plan_path)).hexdigest(),
         'run_id': env['GITHUB_RUN_ID'],
@@ -170,22 +193,17 @@ def _artifact_files(directory, packages):
         label = 'root' if package == '.' else package[2:].replace('/', '-')
         required.update((label + '.jsonl', label + '-status.json'))
         optional.add(label + '-passed.json')
-    found = set()
-    for path in directory.iterdir():
-        _no_symlinks(path)
-        if not stat.S_ISREG(path.stat().st_mode):
-            raise ValueError(f'unexpected non-file in shard artifact: {path}')
-        found.add(path.name)
-    if not required <= found or found - required - optional:
-        raise ValueError(f'{directory.name}: incorrect evidence files; '
-                         f'missing={sorted(required - found)}, '
-                         f'extra={sorted(found - required - optional)}')
+    import native_arm64_prerequisite as prerequisite
+    if '.' in packages:
+        required.update(prerequisite.required_files())
+    prerequisite._exact_files(directory, required, optional)
 
 
 def aggregate(repo, directory, manifest_path, plan_path, matrix_result, env=None):
     """Revalidate every lane's raw evidence; absence or cancellation never passes."""
     # Lazy import keeps the execution runner free to import the shard helpers.
     import native_arm64 as runner
+    import native_arm64_prerequisite as prerequisite
 
     if matrix_result != 'success':
         raise ValueError(f'every native ARM64 matrix child must succeed; result={matrix_result!r}')
@@ -232,12 +250,32 @@ def aggregate(repo, directory, manifest_path, plan_path, matrix_result, env=None
                 or receipt['packages'] != sorted(packages)):
             raise ValueError(f'{shard}: unsuccessful or mismatched lane receipt')
 
+        prepared = None
+        if shard == 'support':
+            prepared = prerequisite.validate(repo, artifact, packages['.'], expected_identity)
         for package, names in packages.items():
             label = 'root' if package == '.' else package[2:].replace('/', '-')
             status = _read_json(artifact / (label + '-status.json'))
-            _schema(status, ('schema_version', 'returncode', 'command'), f'{shard} {package} status')
-            command = ['go', 'test', '-json', '-race', '-count=1', '-timeout', runner.TIMEOUTS[package],
-                       '-p', '1', package, '-run', runner.pattern(names)]
+            fields = ['schema_version', 'returncode', 'command']
+            if package == '.':
+                fields += ['harness_sha256', 'success_sha256', 'environment',
+                           'timeout_seconds', 'elapsed_seconds', 'timed_out']
+                command = prerequisite.root_command(prepared['directory'], names)
+            else:
+                command = ['go', 'test', '-json', '-race', '-count=1', '-timeout', runner.TIMEOUTS[package],
+                           '-p', '1', package, '-run', runner.pattern(names)]
+            _schema(status, fields, f'{shard} {package} status')
+            if package == '.' and (
+                    status['harness_sha256'] != prepared['harness_sha256']
+                    or status['success_sha256'] != prepared['success_sha256']
+                    or status['environment'] != {prerequisite.ENVIRONMENT: str(Path(prepared['directory']) / prerequisite.NATIVE)}):
+                raise ValueError('root runtime did not use the verified native prover and race harness')
+            if package == '.':
+                runtime_seconds = int(runner.TIMEOUTS[package][:-1]) * 60
+                elapsed = prerequisite._duration(status['elapsed_seconds'], 'root runtime elapsed')
+                if (type(status['timeout_seconds']) is not int or status['timeout_seconds'] != runtime_seconds
+                        or status['timed_out'] is not False or elapsed > runtime_seconds):
+                    raise ValueError('root runtime exceeded or changed its 45-minute wall deadline')
             if type(status['returncode']) is not int or status['returncode'] != 0:
                 raise ValueError(f'{shard} {package}: missing successful Go exit status')
             if status['command'] != command:

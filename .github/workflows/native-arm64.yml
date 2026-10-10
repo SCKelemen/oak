@@ -46,7 +46,10 @@ jobs:
           go mod verify
           go test -race -count=1 ./.github/scripts/native_arm64
           python3 -m unittest discover -s .github/scripts -p 'test_native_arm64*.py' -v
-      - name: Execute the exact reviewed native shard
+      # Support spends at most 90 minutes total building one race harness and
+      # its verified native prover, then keeps the 5+45+45+45 package limits.
+      # This leaves 10 minutes of the unchanged job bound for setup/evidence.
+      - name: Execute the exact reviewed native shard and strict prerequisite
         run: python3 .github/scripts/native_arm64.py --run --shard '${{ matrix.shard }}'
       - name: Preserve native execution evidence
         if: always()

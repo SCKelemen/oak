@@ -7068,6 +7068,13 @@ func splitDecideOn(premise, a, b, cond *term, widthOf func(string) int, budget *
 // read, then the arena facts, where any interleaving multiplied the table
 // by the facts).
 func componentBlaster(names []string, widths map[string]int, premise, a, b *term) *blaster {
+	// The atom graph is immutable during this call. Reuse only its ordered
+	// leaf walks; every query still registers reads and builds its own members.
+	atoms := newComponentAtoms()
+	return componentBlasterWithAtoms(names, widths, premise, a, b, atoms.walk)
+}
+
+func componentBlasterWithAtoms(names []string, widths map[string]int, premise, a, b *term, walkAtoms func(*term, func(*term))) *blaster {
 	parent := map[string]string{}
 	find := func(x string) string {
 		root := x
@@ -7098,30 +7105,16 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 	// atoms gathers the parameters and reads beneath a term (not those
 	// inside a read's index: the index relates the read to the memory,
 	// not its value to the index's parameters).
-	var atoms func(t *term, into map[string]bool, seen map[*term]bool)
-	atoms = func(t *term, into map[string]bool, seen map[*term]bool) {
-		if t == nil || seen[t] {
-			return
-		}
-		seen[t] = true
-		switch t.kind {
-		case termParam:
-			into[t.name] = true
-			return
-		case termConst:
-			return
-		case termSelect:
-			key := readKey(read{t.name, t.left})
-			reads[key] = read{t.name, t.left}
+	atoms := func(t *term, into map[string]bool) {
+		walkAtoms(t, func(leaf *term) {
+			if leaf.kind == termParam {
+				into[leaf.name] = true
+				return
+			}
+			key := readKey(read{leaf.name, leaf.left})
+			reads[key] = read{leaf.name, leaf.left}
 			into[key] = true
-			return
-		}
-		atoms(t.cond, into, seen)
-		atoms(t.left, into, seen)
-		atoms(t.right, into, seen)
-		for _, arg := range t.args {
-			atoms(arg, into, seen)
-		}
+		})
 	}
 	linkAll := func(members map[string]bool) {
 		var first string
@@ -7148,18 +7141,18 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 		switch {
 		case t.kind == termCmp:
 			members := map[string]bool{}
-			atoms(t, members, map[*term]bool{})
+			atoms(t, members)
 			linkAll(members)
 		case t.kind == termSelect:
 			// The index's operands interleave among themselves (an adder
 			// over the base and the position); the read's value is a block
 			// of its own unless a comparison relates it.
 			members := map[string]bool{}
-			atoms(t.left, members, map[*term]bool{})
+			atoms(t.left, members)
 			linkAll(members)
 		case t.kind == termIte && t.width == 1, t.kind == termBinary && t.width == 1 && (t.op == "or" || t.op == "xor" || t.op == "and"):
 			members := map[string]bool{}
-			atoms(t, members, map[*term]bool{})
+			atoms(t, members)
 			if len(members) > 1 {
 				list := make([]string, 0, len(members))
 				for m := range members {
@@ -7184,8 +7177,8 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 	walk(a)
 	walk(b)
 	sides := map[string]bool{}
-	atoms(a, sides, map[*term]bool{})
-	atoms(b, sides, map[*term]bool{})
+	atoms(a, sides)
+	atoms(b, sides)
 	linkAll(sides)
 	for _, name := range names {
 		if parent[name] == "" {

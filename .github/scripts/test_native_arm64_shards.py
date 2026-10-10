@@ -1,7 +1,7 @@
 """Adversarial tests for the native ARM64 partition and aggregate contract.
 
 Fixtures replay the complete reviewed inventory without building or running Go.
-Every validator remains real; only the local git HEAD query is mocked.
+Every validator remains real; local Git identity and tracked-file queries are mocked.
 """
 import contextlib
 import copy
@@ -16,6 +16,7 @@ from unittest import mock
 
 import native_arm64 as runner
 import native_arm64_shards as gate
+import native_arm64_prerequisite as prerequisite
 
 
 class ShardEvidenceTests(unittest.TestCase):
@@ -25,6 +26,12 @@ class ShardEvidenceTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.repo = self.root / 'checkout'
         self.repo.mkdir()
+        for name in ('oaksolver.go', 'go.sum', 'stdlib/std.oak', 'stdlib/host.oak',
+                     '.github/scripts/native_prover_inventory.json',
+                     *('prove/solver/' + name for name in prerequisite.SOURCE_NAMES[:15])):
+            path = self.repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((runner.REPO / name).read_bytes())
         self.manifest_path = self.repo / 'inventory.json'
         self.manifest_path.write_bytes(runner.MANIFEST.read_bytes())
         self.manifest = json.loads(self.manifest_path.read_text())
@@ -45,7 +52,12 @@ class ShardEvidenceTests(unittest.TestCase):
         self.write_json(self.plan_path, self.plan)
         self.sha = 'a' * 40
         self.env = {'GITHUB_SHA': self.sha, 'GITHUB_RUN_ID': '12345', 'GITHUB_RUN_ATTEMPT': '2'}
-        patcher = mock.patch.object(gate.subprocess, 'check_output', return_value=self.sha + '\n')
+        def git_output(command, **kwargs):
+            if command == ['git', 'ls-files', '-z']:
+                return b''.join(path.relative_to(self.repo).as_posix().encode() + b'\0'
+                                for path in sorted(self.repo.rglob('*')) if path.is_file())
+            return self.sha + '\n'
+        patcher = mock.patch.object(gate.subprocess, 'check_output', side_effect=git_output)
         self.git = patcher.start()
         self.addCleanup(patcher.stop)
         self.results = self.root / 'results'
@@ -81,13 +93,23 @@ class ShardEvidenceTests(unittest.TestCase):
             self.write_json(artifact / 'source-inventory.json', self.source)
             self.write_json(artifact / 'lane-result.json',
                             dict(schema_version=1, shard=shard, success=True, packages=sorted(packages)))
+            prepared = None
+            if shard == 'support':
+                prepared = self.seed_prerequisite(artifact, packages['.'])
             for package, names in packages.items():
                 names = sorted(names)
                 label = self.label(package)
                 command = ['go', 'test', '-json', '-race', '-count=1', '-timeout', runner.TIMEOUTS[package],
                            '-p', '1', package, '-run', runner.pattern(names)]
+                extra = {}
+                if package == '.':
+                    command = prerequisite.root_command(prepared['directory'], names)
+                    extra = {'timeout_seconds': 2700, 'elapsed_seconds': 1, 'timed_out': False,
+                             'harness_sha256': prepared['harness_sha256'],
+                             'success_sha256': prepared['success_sha256'],
+                             'environment': {prerequisite.ENVIRONMENT: prepared['directory'] + '/native-prover'}}
                 self.write_json(artifact / (label + '-status.json'),
-                                dict(schema_version=1, returncode=0, command=command))
+                                dict(schema_version=1, returncode=0, command=command, **extra))
                 events = [self.event(package, 'start')]
                 for name in names:
                     events.append(self.event(package, 'run', name))
@@ -97,6 +119,95 @@ class ShardEvidenceTests(unittest.TestCase):
                     events.append(self.event(package, 'pass', name))
                 events.append(self.event(package, 'pass'))
                 self.write_events(artifact / (label + '.jsonl'), events)
+
+    def seed_prerequisite(self, artifact, names):
+        native = artifact / prerequisite.NATIVE
+        (native / 'source').mkdir(parents=True)
+        sources = prerequisite.source_bytes(self.repo)
+        for name, raw in sources.items():
+            (native / 'source' / name).write_bytes(raw)
+        def elf(kind):
+            raw = bytearray(128)
+            raw[:6] = b'\x7fELF\x02\x01'
+            raw[16:18] = kind.to_bytes(2, 'little')
+            raw[18:20] = (183).to_bytes(2, 'little')
+            return raw
+        (artifact / prerequisite.HARNESS).write_bytes(elf(2))
+        (native / 'asm.o').write_bytes(elf(1))
+        (native / 'solver').write_bytes(elf(2))
+        (native / 'program.c').write_text('/* fixture generated C */\n')
+        original = '/home/runner/work/oak/oak/native-arm64-results'
+        context = gate.identity(self.repo, self.manifest_path, self.plan_path, 'support', self.env)
+        inventory = json.loads((self.repo / '.github/scripts/native_prover_inventory.json').read_text())
+        cc = '/usr/bin/aarch64-linux-gnu-gcc-13'
+        runtime = '/usr/lib/aarch64-linux-gnu/libc.so.6'
+        dependencies = []
+        for line in (self.repo / 'go.sum').read_text().splitlines():
+            name, version, checksum = line.split()
+            if not version.endswith('/go.mod'):
+                dependencies.append({'Path': name, 'Version': version, 'Sum': checksum})
+        recipe = dict(schema_version=1,
+                      recipe_version='hybrid-native-c-v1/fresh-verdicts/default-search/race',
+                      context={k: v for k, v in context.items() if k != 'schema_version'},
+                      harness_sha256=prerequisite.digest(artifact / prerequisite.HARNESS),
+                      sources={name: hashlib.sha256(raw).hexdigest() for name, raw in sources.items()},
+                      support_sources={name: prerequisite.digest(self.repo / name)
+                                       for name in ('stdlib/std.oak', 'stdlib/host.oak')},
+                      inventory=inventory, platform='linux/arm64', target='linux/arm64',
+                      asm_mode='native', object_format='ELF', cpu='', c_opt_level=1,
+                      go_build=dict(version='go1.27.1',
+                                    main={'Path': runner.MODULE, 'Version': '(devel)'},
+                                    dependencies=dependencies,
+                                    settings={'-race': 'true', '-compiler': 'gc', '-buildmode': 'exe',
+                                              'CGO_ENABLED': '1', 'GOOS': 'linux', 'GOARCH': 'arm64'}),
+                      cc=dict(path=cc, sha256='c' * 64, version='GCC Free Software Foundation',
+                              args=prerequisite.CC_ARGS),
+                      toolchain_files={cc: 'c' * 64, runtime: 'd' * 64}, link_inputs=[])
+        self.write_json(native / 'recipe.json', recipe)
+        functions = []
+        for row in inventory['eligible']:
+            candidate = dict(name='fixture candidate', body_sha256='e' * 64,
+                             recipe_sha256='f' * 64, outcome='proven', message='fixture proof', cached=False)
+            functions.append(dict(input=row, status='proven', reason='fixture proof', callees=[],
+                                  considered=1, materialized=1, selected=candidate, validations=[candidate]))
+        self.write_json(native / 'report.json', dict(schema_version=1, inventory=inventory, functions=functions))
+        self.write_json(native / 'success.json', dict(
+            schema_version=1, recipe_sha256=prerequisite.digest(native / 'recipe.json'),
+            report_sha256=prerequisite.digest(native / 'report.json'),
+            program_sha256=prerequisite.digest(native / 'program.c'),
+            object_sha256=prerequisite.digest(native / 'asm.o'),
+            solver_sha256=prerequisite.digest(native / 'solver'),
+            link_command=[cc, *prerequisite.CC_ARGS, '-o', original + '/native-prover/solver',
+                          '/tmp/oak-build-fixture/program.c', '/tmp/oak-build-fixture/asm.o', '-lm'],
+            runtime_files={runtime: 'd' * 64}))
+        commands = prerequisite.commands(original, names)
+        for index, stage in enumerate(prerequisite.STAGES):
+            self.write_json(artifact / (stage + '-status.json'),
+                            dict(schema_version=1, command=commands[stage], returncode=0,
+                                 timeout_seconds=5400-index, elapsed_seconds=0.1, timed_out=False))
+            (artifact / (stage + '.log')).write_text('\n'.join(sorted(names)) + '\n' if index == 1 else '')
+        receipt = dict(schema_version=1, success=True, context=context, directory=original,
+                       budget_seconds=5400, elapsed_seconds=1,
+                       harness_sha256=prerequisite.digest(artifact / prerequisite.HARNESS),
+                       success_sha256=prerequisite.digest(native / 'success.json'))
+        self.write_json(artifact / 'prerequisite-status.json', receipt)
+        return receipt
+
+    def reseal_prerequisite(self):
+        artifact = self.artifact('support')
+        native = artifact / prerequisite.NATIVE
+        success = json.loads((native / 'success.json').read_text())
+        for field, filename in (('recipe_sha256', 'recipe.json'), ('report_sha256', 'report.json'),
+                                ('program_sha256', 'program.c'), ('object_sha256', 'asm.o'),
+                                ('solver_sha256', 'solver')):
+            success[field] = prerequisite.digest(native / filename)
+        self.write_json(native / 'success.json', success)
+        receipt = json.loads((artifact / 'prerequisite-status.json').read_text())
+        receipt['success_sha256'] = prerequisite.digest(native / 'success.json')
+        self.write_json(artifact / 'prerequisite-status.json', receipt)
+        status = json.loads((artifact / 'root-status.json').read_text())
+        status['success_sha256'] = receipt['success_sha256']
+        self.write_json(artifact / 'root-status.json', status)
 
     @staticmethod
     def write_events(path, events):
@@ -257,7 +368,9 @@ class ShardEvidenceTests(unittest.TestCase):
         self.assertEqual(actual['source_sha'], self.sha)
         self.assertEqual(actual['inventory_sha256'], hashlib.sha256(self.manifest_path.read_bytes()).hexdigest())
         self.assertEqual(actual['plan_sha256'], hashlib.sha256(self.plan_path.read_bytes()).hexdigest())
-        self.git.assert_called_with(['git', 'rev-parse', 'HEAD'], cwd=self.repo, text=True)
+        self.git.assert_any_call(['git', 'rev-parse', 'HEAD'], cwd=self.repo, text=True)
+        self.git.assert_any_call(['git', 'rev-parse', 'HEAD^{tree}'], cwd=self.repo, text=True)
+        self.git.assert_any_call(['git', 'ls-files', '-z'], cwd=self.repo)
         for field in self.env:
             env = dict(self.env)
             env.pop(field)
@@ -305,7 +418,8 @@ class ShardEvidenceTests(unittest.TestCase):
 
     def test_wrong_source_inventory_plan_run_attempt_or_shard_identity_fails(self):
         for field, value in (('schema_version', True), ('schema_version', 2), ('shard', 'compiler-b'),
-                             ('source_sha', 'b' * 40), ('inventory_sha256', '0' * 64),
+                             ('source_sha', 'b' * 40), ('source_tree', 'b' * 40),
+                             ('source_contents_sha256', '0' * 64), ('inventory_sha256', '0' * 64),
                              ('plan_sha256', '0' * 64), ('run_id', '12346'),
                              ('run_attempt', '1'), ('run_attempt', 2)):
             self.seed_artifacts()
@@ -317,7 +431,7 @@ class ShardEvidenceTests(unittest.TestCase):
                 self.reject()
 
     def test_changed_raw_manifest_or_plan_invalidates_recorded_identity(self):
-        for path in (self.manifest_path, self.plan_path):
+        for path in (self.manifest_path, self.plan_path, self.repo / 'oaksolver.go'):
             original = path.read_bytes()
             path.write_bytes(original + b'\n')
             with self.subTest(path=path):
@@ -486,6 +600,227 @@ class ShardEvidenceTests(unittest.TestCase):
         alias = self.root / 'alias'
         alias.symlink_to(self.root, target_is_directory=True)
         self.reject(directory=alias / 'results')
+
+    def test_every_native_prerequisite_file_is_mandatory(self):
+        for name in sorted(prerequisite.required_files()):
+            self.seed_artifacts()
+            (self.artifact('support') / name).unlink()
+            with self.subTest(name=name):
+                self.reject()
+
+    def test_native_stages_require_exact_commands_success_and_one_total_budget(self):
+        for stage in prerequisite.STAGES:
+            for key, value in (('returncode', 1), ('returncode', False), ('returncode', -9),
+                               ('timed_out', True), ('timed_out', 0), ('elapsed_seconds', -1),
+                               ('elapsed_seconds', 5401), ('timeout_seconds', 5401),
+                               ('timeout_seconds', 0), ('timeout_seconds', True),
+                               ('command', ['go', 'test', '-short'])):
+                self.seed_artifacts()
+                path = self.artifact('support') / (stage + '-status.json')
+                status = json.loads(path.read_text())
+                status[key] = value
+                self.write_json(path, status)
+                with self.subTest(stage=stage, key=key, value=value):
+                    self.reject()
+        for key, value in (('budget_seconds', 5401), ('budget_seconds', 5400.0),
+                           ('elapsed_seconds', 0.2), ('elapsed_seconds', 5401),
+                           ('success', False), ('harness_sha256', '0'*64),
+                           ('success_sha256', '0'*64), ('directory', '../other')):
+            self.seed_artifacts()
+            path = self.artifact('support') / 'prerequisite-status.json'
+            receipt = json.loads(path.read_text())
+            receipt[key] = value
+            self.write_json(path, receipt)
+            with self.subTest(key=key, value=value):
+                self.reject()
+
+    def test_root_executes_same_persisted_race_harness_and_native_artifact(self):
+        for key, value in (('harness_sha256', '0'*64), ('success_sha256', '0'*64),
+                           ('environment', {}), ('environment', {'OAK_NATIVE_PREREQUISITE': '/other'}),
+                           ('timeout_seconds', 2701), ('elapsed_seconds', 2701), ('timed_out', True)):
+            self.seed_artifacts()
+            path = self.artifact('support') / 'root-status.json'
+            status = json.loads(path.read_text())
+            status[key] = value
+            self.write_json(path, status)
+            with self.subTest(key=key):
+                self.reject()
+        self.seed_artifacts()
+        path = self.artifact('support') / 'root-status.json'
+        original = json.loads(path.read_text())
+        for index in range(len(original['command'])):
+            status = copy.deepcopy(original)
+            status['command'][index] = 'changed'
+            self.write_json(path, status)
+            with self.subTest(index=index):
+                self.reject()
+
+    def test_native_recipe_changes_fail_even_if_all_receipts_are_rehashed(self):
+        mutations = [
+            ('recipe_version', 'unverified'), ('target', 'linux/amd64'), ('asm_mode', 'c'),
+            ('object_format', 'MachO'), ('cpu', 'native'), ('c_opt_level', 2),
+            ('harness_sha256', '0'*64), ('sources.bdd.oak', '0'*64),
+            ('support_sources.stdlib/std.oak', '0'*64), ('support_sources.stdlib/host.oak', '0'*64),
+            ('context.source_sha', 'b'*40), ('context.source_tree', 'b'*40),
+            ('context.source_contents_sha256', '0'*64), ('context.run_id', '54321'),
+            ('context.run_attempt', '1'), ('context.shard', 'compiler-a'),
+            ('context.inventory_sha256', '0'*64), ('context.plan_sha256', '0'*64),
+            ('cc.path', '/usr/bin/other'), ('cc.sha256', '0'*64), ('cc.version', 'Clang'),
+            ('cc.args', ['-O0']), ('toolchain_files', {}), ('link_inputs', [{'Kind': 'object', 'Path': '/unreviewed'}]),
+            ('go_build.version', 'go1.26.0'), ('go_build.main', {'Path': 'other'}),
+            ('go_build.dependencies', []), ('go_build.settings.-race', 'false'),
+            ('go_build.settings.GOARCH', 'amd64'), ('go_build.settings.CGO_ENABLED', '0'),
+            ('go_build.settings.-tags', 'reduced'), ('go_build.settings.vcs.modified', 'true'),
+        ]
+        for key, value in mutations:
+            self.seed_artifacts()
+            path = self.artifact('support') / 'native-prover/recipe.json'
+            recipe = json.loads(path.read_text())
+            parent = recipe
+            parts = key.split('.', 2)
+            # Source file names deliberately include a literal dot.
+            if parts[0] in ('sources', 'support_sources'):
+                parent[parts[0]][key.split('.', 1)[1]] = value
+            else:
+                for part in parts[:-1]:
+                    parent = parent[part]
+                parent[parts[-1]] = value
+            self.write_json(path, recipe)
+            self.reseal_prerequisite()
+            with self.subTest(key=key):
+                self.reject()
+
+    def test_complete_hybrid_report_keeps_actual_verdicts_and_fallbacks(self):
+        path = self.artifact('support') / 'native-prover/report.json'
+        report = json.loads(path.read_text())
+        for row, outcome in zip(report['functions'], ('trusted', 'witnessed')):
+            row['status'] = outcome
+            row['selected']['outcome'] = outcome
+            row['validations'][0]['outcome'] = outcome
+        fallback = report['functions'][2]
+        fallback.update(status='c-fallback', reason='unsupported fixture lowering', selected=None, validations=[])
+        self.write_json(path, report)
+        self.reseal_prerequisite()
+        self.assertEqual(self.aggregate()['roots'], 198)
+
+    def test_missing_duplicate_unexpected_unfinished_and_false_report_records_fail(self):
+        for mutation in ('missing', 'duplicate', 'extra', 'reordered', 'wrong-input', 'unfinished',
+                         'error', 'wrong-verdict', 'no-validation', 'bad-body', 'bad-recipe',
+                         'cached', 'bad-count', 'empty-reason', 'extern-native', 'c-only',
+                         'duplicate-validation', 'unknown-callee', 'duplicate-callee', 'mismatched-fallback'):
+            self.seed_artifacts()
+            path = self.artifact('support') / 'native-prover/report.json'
+            report = json.loads(path.read_text())
+            row = report['functions'][0]
+            if mutation == 'missing':
+                report['functions'].pop()
+            elif mutation == 'duplicate':
+                report['functions'][1] = copy.deepcopy(row)
+            elif mutation == 'extra':
+                report['functions'].append(copy.deepcopy(row))
+            elif mutation == 'reordered':
+                report['functions'].reverse()
+            elif mutation == 'wrong-input':
+                row['input']['source_sha256'] = '0'*64
+            elif mutation in ('unfinished', 'error'):
+                row['status'] = mutation
+            elif mutation == 'wrong-verdict':
+                row['selected']['outcome'] = 'trusted'
+            elif mutation == 'no-validation':
+                row['validations'] = []
+            elif mutation in ('bad-body', 'bad-recipe'):
+                row['selected']['body_sha256' if mutation == 'bad-body' else 'recipe_sha256'] = ''
+            elif mutation == 'cached':
+                row['validations'][0]['cached'] = True
+            elif mutation == 'duplicate-validation':
+                row['validations'].append(copy.deepcopy(row['validations'][0]))
+            elif mutation == 'unknown-callee':
+                row['callees'] = ['missing']
+            elif mutation == 'duplicate-callee':
+                row['callees'] = [row['input']['name']] * 2
+            elif mutation == 'mismatched-fallback':
+                row['status'] = 'c-fallback'
+                row['selected']['outcome'] = 'mismatch'
+                row['validations'][0]['outcome'] = 'mismatch'
+            elif mutation == 'bad-count':
+                row['materialized'] = row['considered'] + 1
+            elif mutation == 'empty-reason':
+                row['reason'] = ''
+            elif mutation == 'extern-native':
+                report['inventory']['eligible'][0] = report['inventory']['externs'][0]
+            else:
+                for item in report['functions']:
+                    item.update(status='c-fallback', selected=None, validations=[])
+            self.write_json(path, report)
+            self.reseal_prerequisite()
+            with self.subTest(mutation=mutation):
+                self.reject()
+
+    def test_native_output_source_and_harness_bytes_are_independently_checked(self):
+        artifact = self.artifact('support')
+        for name in ('root-harness', 'native-prover/program.c', 'native-prover/asm.o',
+                     'native-prover/solver', 'native-prover/source/bdd.oak'):
+            self.seed_artifacts()
+            path = artifact / name
+            path.write_bytes(path.read_bytes() + b'changed')
+            with self.subTest(name=name):
+                self.reject()
+        for name in ('program.c', 'asm.o', 'solver'):
+            self.seed_artifacts()
+            (artifact / 'native-prover' / name).write_bytes(b'')
+            self.reseal_prerequisite()
+            with self.subTest(empty=name):
+                self.reject()
+
+    def test_actual_link_command_and_runtime_identities_are_required(self):
+        self.seed_artifacts()
+        path = self.artifact('support') / 'native-prover/success.json'
+        original = json.loads(path.read_text())
+        for index in range(len(original['link_command'])):
+            changed = copy.deepcopy(original)
+            changed['link_command'][index] = 'wrong'
+            self.write_json(path, changed)
+            self.reseal_prerequisite()
+            with self.subTest(index=index):
+                self.reject()
+        for value in ({}, {'/usr/lib/unexpected': 'a'*64}, {'relative.so': 'd'*64}):
+            changed = copy.deepcopy(original)
+            changed['runtime_files'] = value
+            self.write_json(path, changed)
+            self.reseal_prerequisite()
+            with self.subTest(runtime=value):
+                self.reject()
+
+    def test_native_json_and_nested_artifacts_fail_closed(self):
+        files = ('prerequisite-status.json', 'root-harness-build-status.json',
+                 'root-harness-list-status.json', 'native-prover-build-status.json',
+                 'native-prover/recipe.json', 'native-prover/report.json', 'native-prover/success.json')
+        for name in files:
+            for raw in ('{', '{}', 'null', '{"schema_version":1,"schema_version":1}'):
+                self.seed_artifacts()
+                (self.artifact('support') / name).write_text(raw)
+                with self.subTest(name=name, raw=raw):
+                    self.reject()
+        for name in ('native-prover/source/extra.oak', 'native-prover/extra.json', 'unexpected/nested.txt'):
+            self.seed_artifacts()
+            path = self.artifact('support') / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text('extra')
+            with self.subTest(name=name):
+                self.reject()
+        for name in ('root-harness', 'native-prover/solver', 'native-prover/source/bdd.oak'):
+            self.seed_artifacts()
+            path = self.artifact('support') / name
+            path.unlink()
+            path.symlink_to(self.repo / 'oaksolver.go')
+            with self.subTest(symlink=name):
+                self.reject()
+        self.seed_artifacts()
+        native = self.artifact('support') / 'native-prover'
+        destination = self.root / 'native-outside'
+        native.rename(destination)
+        native.symlink_to(destination, target_is_directory=True)
+        self.reject()
 
 
 if __name__ == '__main__':

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -673,6 +675,29 @@ func TestProveVerificationExample(t *testing.T) {
 // witness (`oak build -o binary driver.oak`, prove/solver/witness.oak),
 // which under `go test` is this binary.
 func TestMain(m *testing.M) {
+	if len(os.Args) == 3 && os.Args[1] == "native-prover-build" {
+		if err := buildNativeProverArtifact(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) == 3 && os.Args[1] == "native-prover-inventory" {
+		if err := nativeWriteSources(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		inventory, err := nativeFrontendInventory(os.Args[2])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(inventory); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "build" {
 		main()
 		return

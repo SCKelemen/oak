@@ -96,6 +96,45 @@ class ExecutionEvidenceTests(unittest.TestCase):
             self.assertEqual(popen.call_args.kwargs['env']['GOFLAGS'], '')
             self.assertTrue((Path(directory) / 'compiler-passed.json').exists())
 
+    def test_root_runtime_uses_persisted_harness_exact_test2json_flags_and_environment(self):
+        for changed in (False, True):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                (directory / 'identity.json').write_text('{}')
+                harness = directory / gate.prerequisite.HARNESS
+                harness.write_bytes(b'original race harness')
+                native = directory / gate.prerequisite.NATIVE
+                native.mkdir()
+                (native / 'success.json').write_text('{}')
+                prepared = {'directory': str(directory),
+                            'harness_sha256': gate.prerequisite.digest(harness),
+                            'success_sha256': gate.prerequisite.digest(native / 'success.json')}
+                events = [{'Package': gate.MODULE, 'Action': 'start'},
+                          {'Package': gate.MODULE, 'Action': 'run', 'Test': 'TestOne'},
+                          {'Package': gate.MODULE, 'Action': 'pass', 'Test': 'TestOne'},
+                          {'Package': gate.MODULE, 'Action': 'pass'}]
+                process = mock.Mock(stdout=io.StringIO(''.join(json.dumps(e)+'\n' for e in events)))
+                def finish(*args, **kwargs):
+                    if changed:
+                        harness.write_bytes(b'replaced race harness')
+                    return 0
+                process.wait.side_effect = finish
+                with mock.patch.object(gate.prerequisite, 'validate', return_value=prepared), \
+                     mock.patch.object(gate.subprocess, 'Popen', return_value=process) as popen, \
+                     mock.patch.object(gate.prerequisite.os, 'killpg') as killpg:
+                    if changed:
+                        with self.assertRaisesRegex(ValueError, 'changed during root runtime'):
+                            gate.run_package('.', ['TestOne'], {}, directory)
+                    else:
+                        gate.run_package('.', ['TestOne'], {}, directory)
+                self.assertTrue(popen.call_args.kwargs['start_new_session'])
+                killpg.assert_called_once()
+                self.assertEqual(popen.call_args.args[0],
+                                 ['go', 'tool', 'test2json', '-t', '-p', gate.MODULE, '--', str(harness),
+                                  '-test.v=test2json', '-test.count=1', '-test.timeout=45m', '-test.run=^(TestOne)$'])
+                self.assertEqual(popen.call_args.kwargs['env']['OAK_NATIVE_PREREQUISITE'], str(native))
+                self.assertEqual((directory / 'root-passed.json').exists(), not changed)
+
     def test_live_inventory_mismatch_and_subprocess_error_fail(self):
         result = mock.Mock(stdout='TestOneMore\nok\n')
         with mock.patch.object(gate.subprocess, 'run', return_value=result), self.assertRaises(ValueError):
@@ -186,6 +225,7 @@ class ShardExecutionTests(unittest.TestCase):
         self.preflight = self.stack.enter_context(mock.patch.object(gate, 'preflight'))
         self.live = self.stack.enter_context(mock.patch.object(gate, 'check_live_roots'))
         self.run = self.stack.enter_context(mock.patch.object(gate, 'run_package'))
+        self.prepare = self.stack.enter_context(mock.patch.object(gate.prerequisite, 'prepare'))
 
     def execute(self, shard, check=False):
         gate.execute(SimpleNamespace(check=check, shard=shard, results_dir=self.directory))
@@ -247,6 +287,25 @@ class ShardExecutionTests(unittest.TestCase):
             self.execute('support')
         self.assertEqual([call.args[0] for call in self.run.call_args_list], ['.', './asm', './testrunner'])
         self.assertFalse((self.directory / 'lane-result.json').exists())
+
+    def test_prerequisite_failure_blocks_root_but_keeps_independent_support(self):
+        self.prepare.side_effect = ValueError('native prerequisite failed')
+        with self.assertRaisesRegex(ValueError, 'native prerequisite failed'):
+            self.execute('support')
+        self.assertEqual([call.args[0] for call in self.run.call_args_list],
+                         ['./semir', './asm', './testrunner'])
+        self.assertEqual([call.args[0] for call in self.live.call_args_list],
+                         ['./semir', './asm', './testrunner'])
+        self.assertFalse((self.directory / 'lane-result.json').exists())
+
+    def test_support_prepares_one_harness_before_any_runtime(self):
+        order = []
+        self.prepare.side_effect = lambda *args: order.append('prepare')
+        self.run.side_effect = lambda package, *args: order.append(package)
+        self.execute('support')
+        self.assertEqual(order, ['prepare', './semir', '.', './asm', './testrunner'])
+        self.assertNotIn('.', [call.args[0] for call in self.live.call_args_list])
+        self.prepare.assert_called_once()
 
     def test_run_requires_explicit_shard_and_check_is_global(self):
         for argv in (['--run'], ['--check', '--shard', 'support']):

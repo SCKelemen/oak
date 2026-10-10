@@ -14,6 +14,7 @@ import tempfile
 
 from native_arm64_resources import ResourceTelemetry
 from native_arm64_shards import identity, load_shards
+import native_arm64_prerequisite as prerequisite
 
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / '.github/scripts/native_arm64_inventory.json'
@@ -161,28 +162,55 @@ def run_package(package, names, children, directory):
     log = directory / (label + '.jsonl')
     # Do not inherit GOFLAGS=-short/-run/-skip, which could silently reduce cases.
     env = dict(os.environ, GOFLAGS='')
-    command = ['go', 'test', '-json', '-race', '-count=1', '-timeout', TIMEOUTS[package],
-               '-p', '1', package, '-run', pattern(names)]
+    evidence = {}
+    if package == '.':
+        context = prerequisite._read_json(directory / 'identity.json')
+        prepared = prerequisite.validate(REPO, directory, names, context)
+        command = prerequisite.root_command(prepared['directory'], names)
+        env[prerequisite.ENVIRONMENT] = str(directory.absolute() / prerequisite.NATIVE)
+        evidence = {
+            'harness_sha256': prepared['harness_sha256'],
+            'success_sha256': prepared['success_sha256'],
+            'environment': {prerequisite.ENVIRONMENT: env[prerequisite.ENVIRONMENT]},
+        }
+    else:
+        env.pop(prerequisite.ENVIRONMENT, None)
+        command = ['go', 'test', '-json', '-race', '-count=1', '-timeout', TIMEOUTS[package],
+                   '-p', '1', package, '-run', pattern(names)]
     print(f'RUN {package}: {len(names)} roots, -race, timeout {TIMEOUTS[package]}', flush=True)
+    watchdog = None
     with log.open('w') as output:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True, env=env)
-        assert process.stdout is not None
-        events = []
-        parse_error = None
-        for line in process.stdout:
-            output.write(line)
-            output.flush()
-            try:
-                event = json.loads(line)
-                events.append(event)
-                if isinstance(event, dict) and event.get('Output'):
-                    print(event['Output'], end='', flush=True)
-            except json.JSONDecodeError as error:
-                parse_error = error
-        status = process.wait()
+        kwargs = {'start_new_session': True} if package == '.' else {}
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True, env=env, **kwargs)
+        if package == '.':
+            watchdog = prerequisite.RuntimeDeadline(process, int(TIMEOUTS[package][:-1]) * 60)
+        with watchdog if watchdog is not None else nullcontext():
+            assert process.stdout is not None
+            events = []
+            parse_error = None
+            for line in process.stdout:
+                output.write(line)
+                output.flush()
+                try:
+                    event = json.loads(line)
+                    events.append(event)
+                    if isinstance(event, dict) and event.get('Output'):
+                        print(event['Output'], end='', flush=True)
+                except json.JSONDecodeError as error:
+                    parse_error = error
+            status = process.wait()
+    if watchdog is not None:
+        evidence.update(watchdog.evidence())
     (directory / (label + '-status.json')).write_text(json.dumps({
-        'schema_version': 1, 'returncode': status, 'command': command,
+        'schema_version': 1, 'returncode': status, 'command': command, **evidence,
     }, indent=2) + '\n')
+    if package == '.' and (
+            prerequisite.digest(directory / prerequisite.HARNESS) != evidence['harness_sha256']
+            or prerequisite.digest(directory / prerequisite.NATIVE / 'success.json') != evidence['success_sha256']):
+        raise ValueError('native prover or race harness changed during root runtime')
+    if watchdog is not None and (watchdog.timed_out.is_set()
+                                  or watchdog.elapsed_seconds > watchdog.timeout_seconds):
+        raise ValueError('root runtime exceeded its 45-minute wall deadline')
     if status != 0:
         raise ValueError(f'{package}: go test failed with exit {status}; see {log}')
     if parse_error:
@@ -225,20 +253,34 @@ def execute(args):
     args.results_dir.mkdir(parents=True, exist_ok=True)
     if any(args.results_dir.iterdir()):
         raise ValueError('native results directory must be empty; stale receipts cannot be reused')
-    (args.results_dir / 'identity.json').write_text(json.dumps(
-        identity(REPO, MANIFEST, PLAN, args.shard), indent=2) + '\n')
+    context = identity(REPO, MANIFEST, PLAN, args.shard)
+    (args.results_dir / 'identity.json').write_text(json.dumps(context, indent=2) + '\n')
     (args.results_dir / 'source-inventory.json').write_text(source.stdout)
     preflight()
     packages = shards[args.shard]
     failures = []
+    prerequisite_failed = False
+    if args.shard == 'support':
+        try:
+            prerequisite.prepare(REPO, args.results_dir, packages['.'], context)
+        except (ValueError, subprocess.SubprocessError, OSError) as error:
+            prerequisite_failed = True
+            failures.append(str(error))
+            print(f'FAIL native prerequisite: {error}', file=sys.stderr, flush=True)
     for package in TIMEOUTS:
         if package not in packages:
+            continue
+        if package == '.' and prerequisite_failed:
+            # Root cannot consume a failed prerequisite. Preserve the earlier
+            # runner's independent support coverage after a shell/build failure.
+            print('FAIL .: prerequisite failed; root runtime was not run', file=sys.stderr, flush=True)
             continue
         names = packages[package]
         children = {root: required for root, required in manifest['children'].get(package, {}).items()
                     if root in names}
         try:
-            check_live_roots(package, names)
+            if package != '.':
+                check_live_roots(package, names)
             run_package(package, names, children, args.results_dir)
         except (ValueError, subprocess.CalledProcessError, OSError) as error:
             failures.append(str(error))

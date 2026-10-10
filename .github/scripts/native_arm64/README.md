@@ -72,9 +72,29 @@ Official runner/toolchain and platform references, checked 2026-10-09:
    `-O0`, `-O1`, and `-O2`, with and without checked dispatch and baseline CRC.
    Both compiler children of that regression are required as well.
 4. Each anchored exact root selector is checked against the actual Go `-list`
-   inventory. Execution uses `-race -count=1`, no inherited reducing `GOFLAGS`,
-   and the existing 90-minute compiler / 45-minute other-package deadlines
-   (five minutes for the small feature-attribute regression).
+   inventory. The support shard first builds one persistent root harness with
+   `go test -c -race`, checks its exact root list, and invokes its
+   `native-prover-build` mode. All three commands share a **90-minute total
+   deadline**; expiration kills the whole process group, including compiler and
+   linker descendants. Untracked files outside the new results tree fail before
+   the harness build. The native producer refuses incomplete, stale or changed
+   source/compiler/toolchain recipes and only writes its success receipt after
+   full lowering, verification and linking finish.
+   A failed prerequisite blocks root runtime and fails the lane; the independent
+   semir, asm and testrunner packages still execute under their existing limits.
+
+   Root runtime then executes those same harness bytes with
+   `go tool test2json -t -p github.com/SCKelemen/oak -- HARNESS
+   -test.v=test2json -test.count=1 -test.timeout=45m -test.run=EXACT_SELECTOR`.
+   `OAK_NATIVE_PREREQUISITE` names the absolute prerequisite directory; a bad or
+   missing artifact fails instead of rebuilding or falling back. A separate
+   45-minute wall watchdog bounds test2json, its harness and every descendant,
+   even if an orphan retains stdout after the harness exits. The process group
+   is cleaned up on timeout, normal completion and errors. The consumer
+   independently recreates the frontend inventory and current source/toolchain
+   recipe before using the solver. Other packages retain `-race -count=1`, no
+   inherited reducing `GOFLAGS`, and the existing 90-minute compiler / 45-minute
+   other-package deadlines (five minutes for the feature-attribute regression).
 5. The reviewed `native_arm64_shards.json` assigns every selected root exactly
    once. Required children inherit their root's shard. New/missing/duplicate roots
    or a misplaced package fail before execution.
@@ -88,13 +108,35 @@ Official runner/toolchain and platform references, checked 2026-10-09:
    artifacts to be present, and each lane to write a success receipt only after
    its commands and checks finish. It independently rereads the raw event streams,
    exact Go commands and exit codes, rather than trusting passed-test summaries.
-   Source checkout SHA, raw inventory/plan hashes, run ID, attempt and shard must
-   match the aggregate's checkout. Missing, cancelled, failed, duplicate, malformed,
-   truncated, mismatched or unexpected evidence fails closed.
+   Source checkout SHA, tree and tracked-content digest, raw inventory/plan
+   hashes, run ID, attempt and shard must match the aggregate's checkout. Missing, cancelled, failed, duplicate, malformed,
+   truncated, mismatched or unexpected evidence fails closed. For support, it
+   also reads the full prerequisite recipe and every function report, compares
+   all 17 exact solver input files and the core/host support-source hashes with
+   checkout bytes, and requires the reviewed
+   1,087 eligible functions and all 15 extern dependencies: 14 declared in the
+   solver inputs plus the imported host-write shim. The bodies comprise 1,067
+   solver declarations, 16 core-prelude helpers and four host helpers. None may
+   be omitted or duplicated. It
+   hashes the uploaded harness, generated C, native object and solver bytes;
+   build and runtime must identify the same harness and success manifest.
+
+   The report preserves the ordinary hybrid compiler outcomes: Proven,
+   Witnessed, Trusted, or a documented C fallback. These categories are not
+   relabeled as universal proof. Every native selection must have a matching
+   fresh validation record, every fallback needs its actual reason, and at
+   least one native body plus an ARM64 object are required. The x86 aggregate
+   can check compiler/linker commands and digest consistency, but cannot reread
+   the ARM runner's system compiler/header/library bytes. Those are independently
+   rebound by the native producer and consumer on the actual native host.
 
 Each native job retains the 240-minute upper bound. Compiler commands retain
-90 minutes per shard; support retains its serial 5 + 45 + 45 + 45-minute package
-limits. The final evidence-only aggregate has a 15-minute limit. Existing x86 race
+90 minutes per shard; support adds the single bounded 90-minute prerequisite
+and retains its serial 5 + 45 + 45 + 45-minute package limits. The 230-minute
+maximum for these phases leaves 10 minutes for setup, inventory/preflight and
+artifact upload. That remaining margin is a planning allowance, not evidence
+that a hosted run will finish; cold setup or runner contention can still hit
+240 minutes, and such a run must fail. The final evidence-only aggregate has a 15-minute limit. Existing x86 race
 partitions/timeouts and compatibility aggregates are unchanged. Superseded
 first-attempt PR jobs cancel independently, with the shard axis in every native
 concurrency key; manual reruns and non-PR jobs remain independent. Because every
@@ -158,7 +200,11 @@ python3 .github/scripts/native_arm64.py --run --shard compiler-a
 The workflow preserves raw JSON event streams, exact invocation/exit records,
 reviewed source inventory, identity, success receipt (only on success), and
 non-authoritative passed-test summaries in one `native-arm64-RUN-ATTEMPT-SHARD`
-artifact per shard, including partial streams on failure. Live resource telemetry
+artifact per shard, including partial streams on failure. Support additionally
+retains `root-harness`, all three preparation logs and command/status records,
+`prerequisite-status.json`, and the exact `native-prover/` tree: `recipe.json`,
+`report.json`, `success.json`, `program.c`, `asm.o`, `solver`, and the 17 files
+under `source/`. Unexpected files, directories and symlinks are rejected. Live resource telemetry
 and each runner/ISA preflight remain in the job logs. Keep those artifacts and
 logs when reporting hosted proof.
 
