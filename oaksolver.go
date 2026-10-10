@@ -800,6 +800,11 @@ solve_stream: (l: Layout, lw: Lower, ser: Ser, ser_raw: c.Ptr, out_raw: c.Ptr, d
 // directory under the temporary directory named by the sources' hash,
 // and returns the binary's path; a later run finds it built.
 func oakSolverBinary() (string, error) {
+	if directory := os.Getenv("OAK_NATIVE_PREREQUISITE"); directory != "" && os.Getenv("OAK_SOLVER_NATIVE") != "" {
+		// A configured prerequisite is mandatory: never rebuild or use the old
+		// size/mtime cache after a missing, stale, or invalid artifact.
+		return validateNativeProverArtifact(directory)
+	}
 	// The cache key covers the prover's sources and the compiler that
 	// builds them (the executable's size and modification time): a compiler
 	// change — an inliner rule, a backend lowering — yields a different

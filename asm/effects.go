@@ -137,7 +137,7 @@ func memoryAt(log []*spanWrite, index, base *term) *term {
 	}
 	type relation struct{ known, equal bool }
 	relations := map[*term]relation{}
-	bounds := map[*term]indexBounds{}
+	bounds := newIndexBoundsMemo()
 	var readBounds indexBounds
 	boundsReady := false
 	relate := func(other *term) (bool, bool) {
@@ -845,7 +845,7 @@ func alignReads(t *term, asmReads map[*term]spanRead, oakReads map[readKey][]*te
 			copied := *t
 			copied.cond, copied.left, copied.right = cond, left, right
 			copied.args = args
-			copied.id, copied.kbDone, copied.sigBits = 0, false, 0
+			copied.id, copied.sigBits = 0, 0
 			out = &copied
 		}
 	}

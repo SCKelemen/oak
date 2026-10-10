@@ -419,7 +419,10 @@ the C compiler is never asked to inline what it cannot. A function used as
 a value (its address is taken, including as an argument, local initializer,
 or aggregate member) is not forced inline: an indirect call need not have a
 compile-time-known target. Direct source inlining and ordinary C optimization
-remain available. The shape judgment is the
+remain available. A processor-feature dispatch realization is also not forced
+inline: its target attribute may require instructions the baseline wrapper
+cannot execute. The C compiler retains that boundary and may inline when
+the caller's target supports the realization's feature. The shape judgment is the
 discipline analyzer's call-graph and loop walk (`InlineHelperShape`), so the
 backend and the recursion policy share one authority.
 

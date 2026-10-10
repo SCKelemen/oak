@@ -51,9 +51,16 @@ type uniqueTable struct {
 	count   int
 }
 
+// opMemoMaxSlots bounds this disposable cache independently of the node
+// allowance. Eviction only makes apply/ite recompute; canonical nodes live in
+// the separate, non-evicting unique table.
+const opMemoMaxSlots = 1 << 22 // 64 MiB of flat entries
+
 type opTable struct {
-	entries []opEntry // result1 == 0 marks an empty slot
-	count   int
+	entries  []opEntry // result1 == 0 marks an empty slot
+	count    int
+	maxSlots int
+	resets   uint64
 }
 
 func hashMix(a, b, c uint32) uint32 {
@@ -69,6 +76,9 @@ func newUniqueTable(capacity int) *uniqueTable {
 }
 
 func (t *uniqueTable) lookup(variable, low, high int32) (int32, bool) {
+	if len(t.entries) == 0 {
+		return 0, false
+	}
 	mask := uint32(len(t.entries) - 1)
 	for i := hashMix(uint32(variable), uint32(low), uint32(high)) & mask; ; i = (i + 1) & mask {
 		e := &t.entries[i]
@@ -82,12 +92,19 @@ func (t *uniqueTable) lookup(variable, low, high int32) (int32, bool) {
 }
 
 // insert adds a key known to be absent.
-func (t *uniqueTable) insert(variable, low, high, node int32) {
-	if 2*(t.count+1) > len(t.entries) {
-		t.grow()
+func (t *uniqueTable) insert(variable, low, high, node int32, interrupted func() bool) bool {
+	if interrupted() {
+		return false
+	}
+	if len(t.entries) == 0 {
+		t.entries = make([]uniqueEntry, 1<<16)
+	}
+	if 2*(t.count+1) > len(t.entries) && !t.grow(interrupted) {
+		return false
 	}
 	t.place(uniqueEntry{variable, low, high, node + 1})
 	t.count++
+	return true
 }
 
 // place stores an entry known to be absent at its probe position.
@@ -100,21 +117,35 @@ func (t *uniqueTable) place(e uniqueEntry) {
 	t.entries[i] = e
 }
 
-func (t *uniqueTable) grow() {
-	old := t.entries
-	t.entries = make([]uniqueEntry, 2*len(old))
-	for _, e := range old {
+func (t *uniqueTable) grow(interrupted func() bool) bool {
+	if interrupted() {
+		return false
+	}
+	grown := newUniqueTable(2 * len(t.entries))
+	for i, e := range t.entries {
+		// A rehash can visit millions of slots without creating a node.
+		if i&1023 == 0 && interrupted() {
+			return false
+		}
 		if e.node1 != 0 {
-			t.place(e)
+			grown.place(e)
 		}
 	}
+	if interrupted() {
+		return false
+	}
+	t.entries = grown.entries
+	return true
 }
 
 func newOpTable(capacity int) *opTable {
-	return &opTable{entries: make([]opEntry, capacity)}
+	return &opTable{entries: make([]opEntry, capacity), maxSlots: opMemoMaxSlots}
 }
 
 func (t *opTable) lookup(op, a, b int32) (int32, bool) {
+	if len(t.entries) == 0 {
+		return 0, false
+	}
 	mask := uint32(len(t.entries) - 1)
 	for i := hashMix(uint32(op), uint32(a), uint32(b)) & mask; ; i = (i + 1) & mask {
 		e := &t.entries[i]
@@ -128,12 +159,31 @@ func (t *opTable) lookup(op, a, b int32) (int32, bool) {
 }
 
 // insert adds a key known to be absent.
-func (t *opTable) insert(op, a, b, result int32) {
+func (t *opTable) insert(op, a, b, result int32, interrupted func() bool) bool {
+	if interrupted() {
+		return false
+	}
+	if len(t.entries) == 0 {
+		t.entries = make([]opEntry, 1<<16)
+	}
 	if 2*(t.count+1) > len(t.entries) {
-		t.grow()
+		if len(t.entries) >= t.maxSlots {
+			// Individual deletion would break linear-probe chains. Forget
+			// the complete cache instead, without reallocating its storage.
+			// Every retained result is exact; a miss is recomputed normally.
+			clear(t.entries)
+			t.count = 0
+			t.resets++
+			if interrupted() {
+				return false
+			}
+		} else if !t.grow(interrupted) {
+			return false
+		}
 	}
 	t.place(opEntry{op, a, b, result + 1})
 	t.count++
+	return true
 }
 
 // place stores an entry known to be absent at its probe position.
@@ -146,14 +196,24 @@ func (t *opTable) place(e opEntry) {
 	t.entries[i] = e
 }
 
-func (t *opTable) grow() {
-	old := t.entries
-	t.entries = make([]opEntry, 2*len(old))
-	for _, e := range old {
+func (t *opTable) grow(interrupted func() bool) bool {
+	if interrupted() {
+		return false
+	}
+	grown := newOpTable(2 * len(t.entries))
+	for i, e := range t.entries {
+		if i&1023 == 0 && interrupted() {
+			return false
+		}
 		if e.result1 != 0 {
-			t.place(e)
+			grown.place(e)
 		}
 	}
+	if interrupted() {
+		return false
+	}
+	t.entries = grown.entries
+	return true
 }
 
 type bdd struct {
@@ -162,6 +222,9 @@ type bdd struct {
 	memo     *opTable
 	budget   int
 	exceeded bool
+	// completedNodes survives storage release for proof-cost accounting.
+	completedNodes  int
+	memoryExhausted bool
 	// stop, when set, ends this diagram as if its budget were exceeded:
 	// another variable order over the same terms has already decided.
 	stop *atomic.Bool
@@ -174,9 +237,21 @@ const (
 )
 
 func newBDD(budget int) *bdd {
-	b := &bdd{unique: newUniqueTable(1 << 16), memo: newOpTable(1 << 16), budget: budget}
+	// Candidate orders may wait for admission. Allocate their large tables
+	// lazily on first use, after the owner has acquired its reservation.
+	b := &bdd{unique: newUniqueTable(0), memo: newOpTable(0), budget: budget}
 	b.nodes = []bddNode{{variable: bddTerminalVar}}
 	return b
+}
+
+// interrupted latches cancellation as exhaustion. Every result produced after
+// this returns true is a placeholder, never a Boolean decision. Check before
+// cache and terminal fast paths too: neither needs to allocate a new node.
+func (b *bdd) interrupted() bool {
+	if !b.exceeded && b.stop != nil && b.stop.Load() {
+		b.exceeded = true
+	}
+	return b.exceeded
 }
 
 // variableOf is the variable of an edge's node; a terminal edge's is the
@@ -193,6 +268,9 @@ func (b *bdd) high(e int) int { return b.nodes[e>>1].high ^ (e & 1) }
 // (Oak.BddComplement.mk_complement), so every node's high edge is
 // positive and equal functions are one edge.
 func (b *bdd) mk(variable, low, high int) int {
+	if b.interrupted() {
+		return bddFalse
+	}
 	if low == high {
 		return low
 	}
@@ -201,13 +279,15 @@ func (b *bdd) mk(variable, low, high int) int {
 	if n, ok := b.unique.lookup(int32(variable), int32(low), int32(high)); ok {
 		return int(n)<<1 ^ flip
 	}
-	if len(b.nodes) >= b.budget || (b.stop != nil && b.stop.Load()) {
+	if len(b.nodes) >= b.budget {
 		b.exceeded = true
 		return bddFalse
 	}
+	n := len(b.nodes)
+	if !b.unique.insert(int32(variable), int32(low), int32(high), int32(n), b.interrupted) {
+		return bddFalse
+	}
 	b.nodes = append(b.nodes, bddNode{variable: variable, low: low, high: high})
-	n := len(b.nodes) - 1
-	b.unique.insert(int32(variable), int32(low), int32(high), int32(n))
 	return n<<1 ^ flip
 }
 
@@ -218,7 +298,7 @@ func (b *bdd) variable(v int) int { return b.mk(v, bddFalse, bddTrue) }
 func (b *bdd) not(a int) int { return a ^ 1 }
 
 func (b *bdd) apply(op, x, y int) int {
-	if b.exceeded {
+	if b.interrupted() {
 		return bddFalse
 	}
 	// Terminal cases, an operand equal to the other's complement included
@@ -295,8 +375,15 @@ func (b *bdd) apply(op, x, y int) int {
 	if vy == v {
 		yl, yh = b.low(y), b.high(y)
 	}
-	r := b.mk(v, b.apply(op, xl, yl), b.apply(op, xh, yh))
-	b.memo.insert(int32(op), int32(x), int32(y), int32(r))
+	lo := b.apply(op, xl, yl)
+	if b.interrupted() {
+		return bddFalse
+	}
+	hi := b.apply(op, xh, yh)
+	r := b.mk(v, lo, hi)
+	if !b.memo.insert(int32(op), int32(x), int32(y), int32(r), b.interrupted) {
+		return bddFalse
+	}
 	return r
 }
 
@@ -304,7 +391,7 @@ func (b *bdd) apply(op, x, y int) int {
 // conjunctions. Complement normalization gives each cache key one polarity.
 // Keys use c+4 in the operation field, disjoint from binary operations.
 func (b *bdd) ite(c, t, e int) int {
-	if b.exceeded {
+	if b.interrupted() {
 		return bddFalse
 	}
 	if c == bddTrue {
@@ -339,12 +426,17 @@ func (b *bdd) ite(c, t, e int) int {
 		el, eh = b.low(e), b.high(e)
 	}
 	lo := b.ite(cl, tl, el)
+	if b.interrupted() {
+		return bddFalse
+	}
 	hi := b.ite(ch, th, eh)
-	if b.exceeded {
+	if b.interrupted() {
 		return bddFalse
 	}
 	r := b.mk(v, lo, hi)
-	b.memo.insert(int32(c+4), int32(t), int32(e), int32(r))
+	if !b.memo.insert(int32(c+4), int32(t), int32(e), int32(r), b.interrupted) {
+		return bddFalse
+	}
 	return r ^ flip
 }
 
@@ -356,6 +448,9 @@ func (b *bdd) restrict(e, variable int, value bool) int {
 	memo := map[int]int{}
 	var walk func(e int) int
 	walk = func(e int) int {
+		if b.interrupted() {
+			return bddFalse
+		}
 		if e>>1 == 0 || b.variableOf(e) > variable {
 			return e
 		}
@@ -372,6 +467,9 @@ func (b *bdd) restrict(e, variable int, value bool) int {
 		} else {
 			out = b.mk(b.variableOf(e), walk(b.low(e)), walk(b.high(e)))
 		}
+		if b.interrupted() {
+			return bddFalse
+		}
 		memo[e] = out
 		return out
 	}
@@ -384,18 +482,24 @@ func (b *bdd) restrict(e, variable int, value bool) int {
 // the assignment lacks is false).
 func (b *bdd) holdsUnder(e int, assignment map[int]bool) bool {
 	for e>>1 != 0 {
+		if b.interrupted() {
+			return false
+		}
 		if assignment[b.variableOf(e)] {
 			e = b.high(e)
 		} else {
 			e = b.low(e)
 		}
 	}
-	return e == bddTrue
+	return !b.interrupted() && e == bddTrue
 }
 
 func (b *bdd) satisfyingPath(e int) map[int]bool {
 	assignment := map[int]bool{}
 	for e>>1 != 0 {
+		if b.interrupted() {
+			return nil
+		}
 		variable := b.variableOf(e)
 		if high := b.high(e); high != bddFalse {
 			assignment[variable] = true
@@ -404,6 +508,9 @@ func (b *bdd) satisfyingPath(e int) map[int]bool {
 			assignment[variable] = false
 			e = b.low(e)
 		}
+	}
+	if b.interrupted() {
+		return nil
 	}
 	return assignment
 }

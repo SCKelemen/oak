@@ -30,7 +30,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/SCKelemen/oak/ast"
@@ -41,6 +40,10 @@ import (
 type Verdict struct {
 	Kind    VerdictKind
 	Message string
+	// TransientResourceExhausted prevents persisting a negative result that
+	// overlapped temporary admission pressure, possibly in a concurrent
+	// query. It is false for proven results and concrete mismatches.
+	TransientResourceExhausted bool `json:"-"`
 	// Callees are the program functions the verdict took at their Oak
 	// bodies (call summaries, docs/spec/94-assembler.md §8): a proven
 	// verdict is relative to theirs, so the verified profile accepts the
@@ -1053,10 +1056,6 @@ type term struct {
 	right *term
 	cond  *term   // termIte
 	args  []*term // termApply, in semantic argument order
-	// The known-bits memo (knownBits, asm/floats_ops.go): set once computed.
-	kbDone  bool
-	kbValue uint64
-	kbKnown uint64
 	// sigBits is the significant-bits memo (significantBits): the count
 	// plus one, zero before it is computed. Canonicalization asks for it
 	// at every comparison, and the operands of a body's comparisons share
@@ -5539,6 +5538,10 @@ type oakLowering struct {
 
 	// expandCallApplications recovers body-level proofs after machine inlining.
 	expandCallApplications bool
+	// machineApplications restricts source abstractions to call boundaries
+	// still present in the machine execution. nil keeps the ordinary policy;
+	// an empty non-nil map expands every source call from its body.
+	machineApplications map[string]bool
 	// returnSlot names the local the body builds in the result area
 	// (ReturnSlotLocal); its large array fields are span memories, as
 	// are those of the frame locals in spanFieldLocals (the backend's
@@ -9674,23 +9677,31 @@ func (x *pathExecutor) frameSpanAccess(instr Instruction, state *symbolicState, 
 }
 
 // globalArrayShape reads a writable top-level array's shape from its
-// declared type text (`(u8[64])`, the type printer's spelling of
-// `[64]u8`): the element size in bytes, the element count, and the
-// element's signedness. Only arrays of integer scalars are spans; a
-// record or an array of records stays outside.
+// declared type text (`[64]u8`, the type printer's spelling, or the
+// legacy internal `u8[64]`): the element size in bytes, element count and
+// signedness. Only arrays of integer scalars are spans; a record or an
+// array of records stays outside.
 func globalArrayShape(global Global) (elem int64, count int64, signed bool, ok bool) {
 	if !global.Aggregate {
 		return 0, 0, false, false
 	}
-	m := globalArrayType.FindStringSubmatch(global.Type)
-	if m == nil {
+	typeText := global.Type
+	if strings.HasPrefix(typeText, "(") && strings.HasSuffix(typeText, ")") {
+		typeText = typeText[1 : len(typeText)-1]
+	}
+	var scalar, countText string
+	if m := globalArrayPrefixType.FindStringSubmatch(typeText); m != nil {
+		countText, scalar = m[1], m[2]
+	} else if m := globalArrayLegacyType.FindStringSubmatch(typeText); m != nil {
+		scalar, countText = m[1], m[2]
+	} else {
 		return 0, 0, false, false
 	}
-	count, err := strconv.ParseInt(m[2], 10, 64)
+	count, err := strconv.ParseInt(countText, 10, 64)
 	if err != nil || count <= 0 {
 		return 0, 0, false, false
 	}
-	switch m[1] {
+	switch scalar {
 	case "u8", "i8":
 		elem = 1
 	case "u16", "i16":
@@ -9702,13 +9713,16 @@ func globalArrayShape(global Global) (elem int64, count int64, signed bool, ok b
 	default:
 		return 0, 0, false, false
 	}
-	if elem*count != global.Size {
+	// Divide the positive allocation size instead of multiplying the count:
+	// an overflowing descriptor must not wrap into an apparently valid span.
+	if global.Size <= 0 || global.Size/elem != count || global.Size%elem != 0 {
 		return 0, 0, false, false
 	}
-	return elem, count, m[1][0] == 'i', true
+	return elem, count, scalar[0] == 'i', true
 }
 
-var globalArrayType = regexp.MustCompile(`^\(?([ui](?:8|16|32|64))\[([0-9]+)\]\)?$`)
+var globalArrayPrefixType = regexp.MustCompile(`^\[([0-9]+)\]([ui](?:8|16|32|64))$`)
+var globalArrayLegacyType = regexp.MustCompile(`^([ui](?:8|16|32|64))\[([0-9]+)\]$`)
 
 // declareGlobalArrays makes the program's writable top-level arrays
 // readable and writable as spans named by the global (the machine side
@@ -10607,7 +10621,8 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 // chunk against the same chunk packed from the Oak body's value; the
 // verdict is proof only when both are proven, otherwise the first that
 // is not.
-func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
+func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) (verdict Verdict) {
+	defer trackBDDResourceExhaustion(&verdict)()
 	if only := os.Getenv("OAK_VERIFY_ONLY"); only != "" && !verifyOnlyNames(only, fn.Name) {
 		// A diagnostic switch: one function verified, every other unit
 		// trusted without a look (its verdict is never cached).
@@ -10804,6 +10819,7 @@ func verifyExecutionWithApplications(fn *Function, sig *ast.FunctionStatement, o
 	}
 	lowering := prepareLowering(fn, sig, nil)
 	lowering.expandCallApplications = expandCalls
+	lowering.machineApplications = machineCallApplications(asmTerm, exec)
 	lowering.resultChunk = chunk
 	lowering.machineTrap = exec.trap
 	for _, event := range exec.loops {
@@ -12948,25 +12964,12 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	// order, and a body that is small under some order is decided in that
 	// order's time.
 	blasters := equalityBlasters(names, params, asmTerm, oakTerm)
-	var stop atomic.Bool
-	type attempt struct {
-		verdict  Verdict
-		exceeded bool
+	if verdict, decided := raceBDDOrders(blasters, func(bl *blaster) (Verdict, bool) {
+		return blastEqual(bl, fn, names, asmTerm, oakTerm, domain, width, note)
+	}); decided {
+		return verdict
 	}
-	results := make(chan attempt, len(blasters))
-	for _, bl := range blasters {
-		bl.bdd.stop = &stop
-		go func(bl *blaster) {
-			verdict, exceeded := blastEqual(bl, fn, names, asmTerm, oakTerm, domain, width, note)
-			results <- attempt{verdict, exceeded}
-		}(bl)
-	}
-	for range blasters {
-		if a := <-results; !a.exceeded {
-			stop.Store(true)
-			return a.verdict
-		}
-	}
+	memoryExhausted := bddOrdersMemoryExhausted(blasters)
 	if termEquivalent(truncate(asmTerm, width), truncate(oakTerm, width), width, map[[3]any]bool{}) {
 		// The same term on both sides up to the width adapters' masks (a
 		// quotient times a divisor, say, whose diagram no budget affords):
@@ -12989,28 +12992,25 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	// before. Only small terms claim the time: a large term past the
 	// budget stays evidence.
 	if budget := escalatedNodeBudget(); budget > 0 && termSize(asmTerm, map[*term]int{})+termSize(oakTerm, map[*term]int{}) <= escalationTermNodes {
-		var stopEscalated atomic.Bool
 		escalated := equalityBlasters(names, params, asmTerm, oakTerm)
-		escalatedResults := make(chan attempt, len(escalated))
 		for _, bl := range escalated {
 			bl.withBudget(budget)
-			bl.bdd.stop = &stopEscalated
-			go func(bl *blaster) {
-				verdict, exceeded := blastEqual(bl, fn, names, asmTerm, oakTerm, domain, width, note)
-				escalatedResults <- attempt{verdict, exceeded}
-			}(bl)
 		}
-		for range escalated {
-			if a := <-escalatedResults; !a.exceeded {
-				stopEscalated.Store(true)
-				return a.verdict
-			}
+		if verdict, decided := raceBDDOrders(escalated, func(bl *blaster) (Verdict, bool) {
+			return blastEqual(bl, fn, names, asmTerm, oakTerm, domain, width, note)
+		}); decided {
+			return verdict
 		}
+		memoryExhausted = memoryExhausted || bddOrdersMemoryExhausted(escalated)
 	}
 	if abstractCalls {
-		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (abstract call applications remain undecided) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
+		return Verdict{Kind: VerdictTrusted, TransientResourceExhausted: memoryExhausted, Message: fmt.Sprintf("asm unit %s: not verified (abstract call applications remain undecided) — trusted per docs/spec/94-assembler.md §5", fn.Name)}
 	}
-	return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exceeded its node budget)", fn.Name)}
+	reason := "node budget"
+	if memoryExhausted {
+		reason = "memory admission allowance"
+	}
+	return Verdict{Kind: VerdictWitnessed, TransientResourceExhausted: memoryExhausted, Message: fmt.Sprintf("asm unit %s: agrees with its Oak body on every witness input (evidence, not proof: the bit-level decision exhausted its %s)", fn.Name, reason)}
 }
 
 // equalityBlasters builds the variable orders for an equality: interleaved
@@ -13127,6 +13127,9 @@ func blastEqual(bl *blaster, fn *Function, names []string, asmTerm, oakTerm, dom
 			return Verdict{}, true
 		}
 		env := bl.counterexampleOf(differs)
+		if bl.exceeded() {
+			return Verdict{}, true
+		}
 		if asmTerm.eval(env) == oakTerm.eval(env) && (hasUninterpreted(asmTerm) || hasUninterpreted(oakTerm)) {
 			// The diagrams abstract an uninterpreted operation — a quotient
 			// at another width, or one under an arm the other side folds

@@ -57,10 +57,10 @@ func TestAArch64DispatchShape(t *testing.T) {
 		// Under oak test the claim is checked (docs/spec/93-simd.md section 6.2).
 		"#ifdef OAK_CHECK_DISPATCH",
 		`oak_dispatch_divergence( "count_sevens", "sve" )`,
-		`__attribute__((target("sve"))) u32 oak_count_sevens_sve( oak_view_u8 input )`,
+		`__attribute__((target("+sve"))) u32 oak_count_sevens_sve( oak_view_u8 input )`,
 		"oak_scalable_u8__sve chunk",
 		"oak_simd_load_active_u8__sve( input, offset, active )",
-		`__attribute__((target("sve"))) static inline oak_scalable_u8__sve oak_simd_load_active_u8__sve(`,
+		`__attribute__((target("+sve"))) static inline oak_scalable_u8__sve oak_simd_load_active_u8__sve(`,
 	} {
 		if !strings.Contains(generated, want) {
 			t.Errorf("generated C lacks %q:\n%s", want, generated)

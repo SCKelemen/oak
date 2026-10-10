@@ -15,6 +15,9 @@ func TestCPUFeatureCatalogIsExact(t *testing.T) {
 		if seenName[f.Name] || seenBit[f.Bit] {
 			t.Fatalf("duplicate feature name or bit: %+v", f)
 		}
+		if f.Arch == "arm64" && f.Attribute != `__attribute__((target("+`+f.Name+`")))` {
+			t.Fatalf("AArch64 feature must use its additive GCC/Clang attribute: %+v", f)
+		}
 		seenName[f.Name], seenBit[f.Bit] = true, true
 	}
 	sve, ok := LookupCPUFeature("sve")

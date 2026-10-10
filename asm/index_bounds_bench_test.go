@@ -54,3 +54,37 @@ func BenchmarkMemoryAtCommonBaseScaledRegions(b *testing.B) {
 		}
 	}
 }
+
+// The benchmarks above reuse their term graph between analyses. These
+// variants include fresh terms on every pass, so comparisons also measure
+// cold analysis rather than only the benefit of a previously warmed graph.
+func BenchmarkMemoryAtColdBoundedRegions(b *testing.B) {
+	benchmarkMemoryAtColdBoundedRegions(b, false)
+}
+
+func BenchmarkMemoryAtColdCommonBaseBoundedRegions(b *testing.B) {
+	benchmarkMemoryAtColdBoundedRegions(b, true)
+}
+
+func benchmarkMemoryAtColdBoundedRegions(b *testing.B, commonBase bool) {
+	b.ReportAllocs()
+	for b.Loop() {
+		base := paramTerm("base", 32)
+		index := binaryTerm("and", paramTerm("read", 32), constTerm(255, 32))
+		if commonBase {
+			index = binaryTerm("add", base, index)
+		}
+		log := make([]*spanWrite, 128)
+		for i := range log {
+			at := binaryTerm("add", constTerm(uint64((i+1)*256), 32), binaryTerm("and", paramTerm("write", 32), constTerm(255, 32)))
+			if commonBase {
+				at = binaryTerm("add", base, at)
+			}
+			log[i] = &spanWrite{index: at, value: constTerm(uint64(i+1), 32)}
+		}
+		initial := paramTerm("initial", 32)
+		if memoryAt(log, index, initial) != initial {
+			b.Fatal("disjoint writes remained in the read")
+		}
+	}
+}

@@ -125,7 +125,8 @@ type Compilation struct {
 	// diagnosticSink observes every diagnostic a stage gate sees, rejecting
 	// or not — how a driver surfaces informational findings such as the
 	// assembler's verification verdicts (docs/spec/94-assembler.md §8).
-	diagnosticSink func(*diagnostic.Diagnostic)
+	diagnosticSink    func(*diagnostic.Diagnostic)
+	nativeBuildReport func(NativeBuildReport)
 	// syntaxRewrites run on the parsed tree before checking, in order: how
 	// a driver adds declarations the program did not write, such as the
 	// prover's protocol obligations (docs/spec/125-verification.md §2a).

@@ -20,6 +20,12 @@ import (
 // packageapi.Enforce. Only declarations marked pub are public
 // (docs/spec/83-modules.md section 6); visibility is never inferred from
 // spelling (docs/spec/82-package-semver.md section 5).
+//
+// Older snapshots that discarded indexed type forms or alignment facts must
+// be regenerated from each version's original source before comparison. Those
+// erased contracts cannot be recovered from api.json; archive verification may
+// reject that lossy snapshot against its source. Unaffected identities keep
+// their existing spelling.
 func (comp Compilation) APISnapshot(version string) Stage[packageapi.Snapshot] {
 	return comp.Check().Then(func(model *SemanticModel) (packageapi.Snapshot, error) {
 		if _, err := packageapi.ParseVersion(version); err != nil {
@@ -48,6 +54,9 @@ func buildAPISnapshot(packageName, version string, model *SemanticModel, options
 // name and type text in the package's own spelling, so both routes yield the
 // snapshot a directory package would.
 func snapshotDeclarations(packageName, version string, program *ast.Program, checker *typechecker.TypeChecker, options Options, spell func(string) string) (packageapi.Snapshot, error) {
+	if err := validatePublicCallableRows(program); err != nil {
+		return packageapi.Snapshot{}, err
+	}
 	layouts, err := resolvePublicStructLayouts(program, options)
 	if err != nil {
 		return packageapi.Snapshot{}, fmt.Errorf("public ABI projection failed: %w", err)
@@ -340,6 +349,9 @@ func canonicalFunctionDeclaration(function *ast.FunctionStatement) (string, erro
 
 func canonicalTypeExpression(expression ast.Expression) (string, error) {
 	switch value := expression.(type) {
+	case *ast.IndexExpression:
+		identity, err := indexedTypeName(value, canonicalTypeExpression)
+		return canonicalTypeText(identity), err
 	case *ast.RecordLiteral:
 		names := make([]string, 0, len(value.Fields))
 		for name := range value.Fields {
@@ -360,6 +372,11 @@ func canonicalTypeExpression(expression ast.Expression) (string, error) {
 		}
 		return "record{" + strings.Join(fields, ",") + row + "}", nil
 	case *ast.FunctionTypeExpression:
+		// Callable rows are promises, including an explicitly empty row.
+		// Fail closed until their complete contract has an API identity.
+		if value.EffectsDeclared || len(value.Effects) != 0 {
+			return "", fmt.Errorf("API snapshots do not yet cover callable effect rows")
+		}
 		parameters := make([]string, 0, len(value.Parameters))
 		for _, parameter := range value.Parameters {
 			identity, err := canonicalTypeExpression(parameter)
@@ -545,6 +562,11 @@ func canonicalCheckedType(typ typechecker.Type) string {
 		} else if value.IsSlice {
 			prefix = "[]"
 		}
+		// Alignment is representation-free but strengthens the callable contract;
+		// dropping it would let a stronger requirement pass as a patch release.
+		if value.Align != 0 && (value.IsSlice || value.IsSpan) {
+			prefix = strings.TrimSuffix(prefix, "]") + "align " + strconv.FormatUint(uint64(value.Align), 10) + "]"
+		}
 		return prefix + canonicalCheckedType(value.ElementType)
 	case *typechecker.GenericType:
 		args := make([]string, 0, len(value.TypeArgs))
@@ -606,15 +628,26 @@ func canonicalTypeText(text string) string {
 		out.WriteString(word)
 		identifier = identifier[:0]
 	}
+	// Discard formatting whitespace, but never join distinct identifier or
+	// number tokens: [align 64]u8 must not collide with [align64]u8.
+	wordBoundary := false
 	for _, r := range text {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			if wordBoundary {
+				out.WriteByte(' ')
+				wordBoundary = false
+			}
 			identifier = append(identifier, r)
 			continue
 		}
-		flush()
-		if !unicode.IsSpace(r) {
-			out.WriteRune(r)
+		if unicode.IsSpace(r) {
+			wordBoundary = wordBoundary || len(identifier) != 0
+			flush()
+			continue
 		}
+		flush()
+		wordBoundary = false
+		out.WriteRune(r)
 	}
 	flush()
 	return out.String()

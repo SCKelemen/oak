@@ -1,0 +1,95 @@
+name: Native ARM64
+
+on:
+  push:
+    branches: [main, master, specification]
+  pull_request:
+    branches: [main, master, specification]
+
+permissions:
+  contents: read
+
+jobs:
+  native-shards:
+    name: Native ARM64 (${{ matrix.shard }})
+    # Standard public runners, at most two native jobs at once. The reviewed
+    # partition assigns every root exactly once; QEMU/x86 are separate coverage.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        shard: [support, compiler-a, compiler-b, compiler-c]
+    concurrency:
+      group: ${{ github.workflow }}-host-tests-${{ matrix.shard }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
+    env:
+      CGO_ENABLED: '1'
+      GOFLAGS: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Install native compiler and linker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential clang
+          uname -m
+          lscpu
+          go version
+          cc --version
+          clang --version
+      - name: Verify dependencies and coverage guard regressions
+        run: |
+          go mod verify
+          go test -race -count=1 ./.github/scripts/native_arm64
+          python3 -m unittest discover -s .github/scripts -p 'test_native_arm64*.py' -v
+      # Support spends at most 90 minutes total building one race harness and
+      # its verified native prover, then keeps the 5+45+45+45 package limits.
+      # This leaves 10 minutes of the unchanged job bound for setup/evidence.
+      - name: Execute the exact reviewed native shard and strict prerequisite
+        run: python3 .github/scripts/native_arm64.py --run --shard '${{ matrix.shard }}'
+      - name: Preserve native execution evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-arm64-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: native-arm64-results/
+          if-no-files-found: error
+          retention-days: 14
+
+  host-tests:
+    # Keep the original required-check display name on the strict aggregate.
+    name: Native ARM64 host tests
+    needs: native-shards
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download every native shard's raw evidence
+        id: evidence
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: native-arm64-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: native-arm64-artifacts/
+          merge-multiple: false
+      - name: Require all shards and revalidate complete unique coverage
+        if: ${{ always() }}
+        env:
+          MATRIX_RESULT: ${{ needs.native-shards.result }}
+          DOWNLOAD_OUTCOME: ${{ steps.evidence.outcome }}
+        run: |
+          # The validator runs even after missing/failed/cancelled dependencies.
+          # A failed download is independently fatal, even if files were written.
+          status=0
+          python3 .github/scripts/native_arm64_shards.py --aggregate \
+            --results-dir native-arm64-artifacts --matrix-result "$MATRIX_RESULT" || status=$?
+          if [ "$DOWNLOAD_OUTCOME" != success ]; then
+            echo 'Native ARM64 artifact download did not succeed' >&2
+            status=1
+          fi
+          exit "$status"

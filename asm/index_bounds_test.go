@@ -30,7 +30,7 @@ func TestIndexBoundsExhaustive(t *testing.T) {
 			}
 			terms = append(terms, n)
 		}
-		bounds := map[*term]indexBounds{}
+		bounds := newIndexBoundsMemo()
 		for x := uint64(0); x <= mask(width); x++ {
 			for y := uint64(0); y <= mask(width); y++ {
 				for g := uint64(0); g < 2; g++ {
@@ -69,7 +69,7 @@ func TestIndexBoundsWordEdges(t *testing.T) {
 			{"wrapping shift", binaryTerm("shl", x, constTerm(uint64(w-1), w)), 0, uint64(1) << uint(w-1)},
 		}
 		for _, c := range cases {
-			b := boundsAt(c.n, w, map[*term]indexBounds{})
+			b := boundsAt(c.n, w, newIndexBoundsMemo())
 			if b.lo != c.lo || b.hi != c.hi {
 				t.Fatalf("%d %s: %+v", w, c.name, b)
 			}
@@ -77,7 +77,7 @@ func TestIndexBoundsWordEdges(t *testing.T) {
 	}
 	// The native 64-bit addition wraps only when viewed as a 32-bit index.
 	n := binaryTerm("add", binaryTerm("and", paramTerm("x", 64), constTerm(255, 64)), constTerm(0xffffffff, 64))
-	b := boundsAt(n, 32, map[*term]indexBounds{})
+	b := boundsAt(n, 32, newIndexBoundsMemo())
 	if b.lo != 0 || b.hi != 0xffffffff {
 		t.Fatalf("truncation retained a non-wrapping interval: %+v", b)
 	}
@@ -128,7 +128,7 @@ func TestBoundedIndexSumsDisjointAfterCommonBase(t *testing.T) {
 	high := binaryTerm("add", constTerm(4, 4), binaryTerm("and", y, constTerm(3, 4)))
 	left := binaryTerm("add", base, low)
 	right := binaryTerm("add", high, base)
-	if !boundedIndexSumsDisjoint(left, right, 4, map[*term]indexBounds{}) {
+	if !boundedIndexSumsDisjoint(left, right, 4, newIndexBoundsMemo()) {
 		t.Fatal("common base hid disjoint bounded offsets")
 	}
 	for bv := uint64(0); bv < 16; bv++ {
@@ -145,16 +145,16 @@ func TestBoundedIndexSumsDisjointAfterCommonBase(t *testing.T) {
 	// Duplicated common terms are cancelled as a multiset.
 	doubleBaseLeft := binaryTerm("add", base, binaryTerm("add", low, base))
 	doubleBaseRight := binaryTerm("add", binaryTerm("add", base, high), base)
-	if !boundedIndexSumsDisjoint(doubleBaseLeft, doubleBaseRight, 4, map[*term]indexBounds{}) {
+	if !boundedIndexSumsDisjoint(doubleBaseLeft, doubleBaseRight, 4, newIndexBoundsMemo()) {
 		t.Fatal("duplicated common base was not cancelled as a multiset")
 	}
 	// A residual sum that can wrap has no ordinary interval proof.
 	wrapping := binaryTerm("add", base, binaryTerm("add", constTerm(14, 4), low))
 	overlapping := binaryTerm("add", base, binaryTerm("and", y, constTerm(3, 4)))
-	if boundedIndexSumsDisjoint(wrapping, overlapping, 4, map[*term]indexBounds{}) {
+	if boundedIndexSumsDisjoint(wrapping, overlapping, 4, newIndexBoundsMemo()) {
 		t.Fatal("wrapping residual sum was treated as an interval")
 	}
-	if boundedIndexSumsDisjoint(binaryTerm("add", paramTerm("a", 4), low), binaryTerm("add", paramTerm("b", 4), high), 4, map[*term]indexBounds{}) {
+	if boundedIndexSumsDisjoint(binaryTerm("add", paramTerm("a", 4), low), binaryTerm("add", paramTerm("b", 4), high), 4, newIndexBoundsMemo()) {
 		t.Fatal("distinct symbolic bases were cancelled")
 	}
 }

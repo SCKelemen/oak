@@ -32,10 +32,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/internal/nativetiming"
 )
 
 // loopShape is a recognized asm loop: a header label, an exit test (`cmp`
@@ -4326,6 +4326,8 @@ func hasReachConditions(asmLoops, oakLoops []*loopEvent) bool {
 }
 
 func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerms, oakTerms []*term, width int, abstractReach bool) Verdict {
+	finishTiming := nativetiming.BeginLoops(len(exec.loops), len(lowering.loops), exec.resultChunk, abstractReach)
+	defer finishTiming()
 	// A scalar result is one term a side; a record result through memory
 	// is its words (verifyChunk): one coupling proves them all. asmTerm
 	// stands for "there is a result".
@@ -4571,6 +4573,7 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 	// rather than the register that held it inside the body, which the
 	// header values (both zero) cannot tell apart.
 	stage(fmt.Sprintf("the witness pass (%d inputs, %d work)", checked, work))
+	nativetiming.Coupling(checked, work, len(slots))
 	defer func() { stage("the coupling and the decisions") }()
 	exitReadAsm := exitReadSymbols(asmLoops, asmTerms...)
 	exitReadOak := exitReadSymbols(oakLoops, oakTerms...)
@@ -6360,7 +6363,7 @@ func restoreLoopEntryMemories(t *term, ev *loopEvent, memo map[*term]*term, vali
 		return t
 	}
 	out := *t
-	out.kbDone, out.sigBits = false, 0
+	out.sigBits = 0
 	out.cond, out.left, out.right = cond, left, right
 	out.args = args
 	memo[t] = &out
@@ -6421,7 +6424,7 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 		return t
 	}
 	out := *t
-	out.kbDone, out.sigBits = false, 0
+	out.sigBits = 0
 	out.cond, out.left, out.right = cond, left, right
 	if lane, isExtraction := extractedLane(&out); isExtraction {
 		// A lane read out of a register the substitution made a pack of
@@ -6878,11 +6881,7 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 	if cb := componentBlaster(names, widths, premise, a, b); cb != nil && !verifyOff("components") {
 		blasters = append(blasters, cb)
 	}
-	var stop atomic.Bool
-	type attempt struct{ holds, decided bool }
-	results := make(chan attempt, len(blasters))
 	for _, bl := range blasters {
-		bl.bdd.stop = &stop
 		if budget != nil {
 			// One implication spends no more than the proof has left: the
 			// shared budget bounds the diagrams as they grow, not only the
@@ -6895,26 +6894,17 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 				bl.bdd.budget = budget.remaining
 			}
 		}
-		go func(bl *blaster) {
-			holds, decided := impliesEqualUnder(bl, premise, a, b, width)
-			results <- attempt{holds, decided}
-		}(bl)
 	}
-	holds, decided = false, false
-	for range blasters {
-		// The first order to finish decides; the rest stop at their next
-		// node, and every racer has returned before its diagram is read.
-		if r := <-results; r.decided && !decided {
-			holds, decided = r.holds, true
-			stop.Store(true)
-		}
-	}
+	holds, decided = raceBDDOrders(blasters, func(bl *blaster) (bool, bool) {
+		holds, decided := impliesEqualUnder(bl, premise, a, b, width)
+		return holds, !decided
+	})
 	if budget != nil {
 		// The decision cost the proof its largest diagram: undecided ones
 		// near the per-decision budget exhaust the proof's in a few tries.
 		spent := 0
 		for _, bl := range blasters {
-			if n := len(bl.bdd.nodes); n > spent {
+			if n := bl.bdd.completedNodes; n > spent {
 				spent = n
 			}
 		}
@@ -6933,7 +6923,7 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 			fmt.Fprintf(os.Stderr, "  a: %s\n  b: %s\n", a, b)
 		}
 		for _, bl := range blasters {
-			fmt.Fprintf(os.Stderr, "  order %s: %d bdd nodes, exceeded=%v, budget %d\n", bl.label, len(bl.bdd.nodes), bl.bdd.exceeded, bl.bdd.budget)
+			fmt.Fprintf(os.Stderr, "  order %s: %d bdd nodes, memory exhausted=%v, budget %d\n", bl.label, bl.bdd.completedNodes, bl.bdd.memoryExhausted, bl.bdd.budget)
 		}
 	}
 	if !branching {
@@ -7078,12 +7068,27 @@ func splitDecideOn(premise, a, b, cond *term, widthOf func(string) int, budget *
 // read, then the arena facts, where any interleaving multiplied the table
 // by the facts).
 func componentBlaster(names []string, widths map[string]int, premise, a, b *term) *blaster {
+	// The atom graph is immutable during this call. Reuse only its ordered
+	// leaf walks; every query still registers reads and builds its own members.
+	atoms := newComponentAtoms()
+	return componentBlasterWithAtoms(names, widths, premise, a, b, atoms.walk)
+}
+
+func componentBlasterWithAtoms(names []string, widths map[string]int, premise, a, b *term, walkAtoms func(*term, func(*term))) *blaster {
 	parent := map[string]string{}
 	find := func(x string) string {
-		for parent[x] != "" && parent[x] != x {
-			x = parent[x]
+		root := x
+		for parent[root] != "" && parent[root] != root {
+			root = parent[root]
 		}
-		return x
+		// Compress paths without changing the representative: its spelling
+		// participates in the sorted traversal of the weak links below.
+		for x != root {
+			next := parent[x]
+			parent[x] = root
+			x = next
+		}
+		return root
 	}
 	union := func(x, y string) {
 		rx, ry := find(x), find(y)
@@ -7100,30 +7105,16 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 	// atoms gathers the parameters and reads beneath a term (not those
 	// inside a read's index: the index relates the read to the memory,
 	// not its value to the index's parameters).
-	var atoms func(t *term, into map[string]bool, seen map[*term]bool)
-	atoms = func(t *term, into map[string]bool, seen map[*term]bool) {
-		if t == nil || seen[t] {
-			return
-		}
-		seen[t] = true
-		switch t.kind {
-		case termParam:
-			into[t.name] = true
-			return
-		case termConst:
-			return
-		case termSelect:
-			key := readKey(read{t.name, t.left})
-			reads[key] = read{t.name, t.left}
+	atoms := func(t *term, into map[string]bool) {
+		walkAtoms(t, func(leaf *term) {
+			if leaf.kind == termParam {
+				into[leaf.name] = true
+				return
+			}
+			key := readKey(read{leaf.name, leaf.left})
+			reads[key] = read{leaf.name, leaf.left}
 			into[key] = true
-			return
-		}
-		atoms(t.cond, into, seen)
-		atoms(t.left, into, seen)
-		atoms(t.right, into, seen)
-		for _, arg := range t.args {
-			atoms(arg, into, seen)
-		}
+		})
 	}
 	linkAll := func(members map[string]bool) {
 		var first string
@@ -7150,18 +7141,18 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 		switch {
 		case t.kind == termCmp:
 			members := map[string]bool{}
-			atoms(t, members, map[*term]bool{})
+			atoms(t, members)
 			linkAll(members)
 		case t.kind == termSelect:
 			// The index's operands interleave among themselves (an adder
 			// over the base and the position); the read's value is a block
 			// of its own unless a comparison relates it.
 			members := map[string]bool{}
-			atoms(t.left, members, map[*term]bool{})
+			atoms(t.left, members)
 			linkAll(members)
 		case t.kind == termIte && t.width == 1, t.kind == termBinary && t.width == 1 && (t.op == "or" || t.op == "xor" || t.op == "and"):
 			members := map[string]bool{}
-			atoms(t, members, map[*term]bool{})
+			atoms(t, members)
 			if len(members) > 1 {
 				list := make([]string, 0, len(members))
 				for m := range members {
@@ -7186,8 +7177,8 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 	walk(a)
 	walk(b)
 	sides := map[string]bool{}
-	atoms(a, sides, map[*term]bool{})
-	atoms(b, sides, map[*term]bool{})
+	atoms(a, sides)
+	atoms(b, sides)
 	linkAll(sides)
 	for _, name := range names {
 		if parent[name] == "" {
@@ -7220,50 +7211,12 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 	}
 	// Weak adjacency between blocks, and the order: from the sides' block
 	// along the weak links, reversed.
-	adjacent := map[string][]string{}
-	for _, members := range weak {
-		for i := range members {
-			for j := range members {
-				bi, bj := find(members[i]), find(members[j])
-				if bi != bj {
-					adjacent[bi] = append(adjacent[bi], bj)
-				}
-			}
-		}
-	}
 	var sideBlock string
 	for m := range sides {
 		sideBlock = find(m)
 		break
 	}
-	var order []string
-	queued := map[string]bool{}
-	if sideBlock != "" {
-		queue := []string{sideBlock}
-		queued[sideBlock] = true
-		for len(queue) > 0 {
-			block := queue[0]
-			queue = queue[1:]
-			order = append(order, block)
-			next := append([]string(nil), adjacent[block]...)
-			sort.Strings(next)
-			for _, n := range next {
-				if !queued[n] {
-					queued[n] = true
-					queue = append(queue, n)
-				}
-			}
-		}
-	}
-	for _, block := range blocks {
-		if !queued[block] {
-			queued[block] = true
-			order = append(order, block)
-		}
-	}
-	for i, j := 0, len(order)-1; i < j; i, j = i+1, j-1 {
-		order[i], order[j] = order[j], order[i]
-	}
+	order := componentBlockOrder(blocks, weak, sideBlock, find)
 	reserved := map[string]int{}
 	for _, block := range readBlocks {
 		reserved[block]++
@@ -7289,6 +7242,77 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 		fmt.Fprintf(os.Stderr, "verify: components apart: %s\n", strings.Join(show, " | "))
 	}
 	return newComponentBlaster(names, widths, blockOf, order, reserved, readBlock)
+}
+
+// componentBlockOrder walks the same weak adjacency as a clique for every
+// Boolean connective, without constructing those cliques. One connective can
+// mention hundreds of atoms from only a few strong components, and a nested
+// Boolean DAG repeats those atoms at many connectives. Materializing every
+// atom pair repeatedly spent minutes here, outside the diagram node budget.
+//
+// A connective is a hyperedge. The first reached block queues all its members,
+// so expanding it again from another block cannot discover anything new. Sort
+// the newly adjacent blocks before queuing, as the explicit-clique traversal
+// did; preserve its representatives, disconnected-block order and reversal.
+func componentBlockOrder(blocks []string, weak [][]string, sideBlock string, find func(string) string) []string {
+	members := make([][]string, len(weak))
+	incident := map[string][]int{}
+	for edge, atoms := range weak {
+		seen := map[string]bool{}
+		for _, atom := range atoms {
+			block := find(atom)
+			if !seen[block] {
+				seen[block] = true
+				members[edge] = append(members[edge], block)
+			}
+		}
+		if len(members[edge]) < 2 {
+			continue
+		}
+		for _, block := range members[edge] {
+			incident[block] = append(incident[block], edge)
+		}
+	}
+	var order []string
+	queued := map[string]bool{}
+	expanded := make([]bool, len(weak))
+	if sideBlock != "" {
+		queue := []string{sideBlock}
+		queued[sideBlock] = true
+		for head := 0; head < len(queue); head++ {
+			block := queue[head]
+			order = append(order, block)
+			nextSet := map[string]bool{}
+			var next []string
+			for _, edge := range incident[block] {
+				if expanded[edge] {
+					continue
+				}
+				expanded[edge] = true
+				for _, neighbor := range members[edge] {
+					if !queued[neighbor] && !nextSet[neighbor] {
+						nextSet[neighbor] = true
+						next = append(next, neighbor)
+					}
+				}
+			}
+			sort.Strings(next)
+			for _, neighbor := range next {
+				queued[neighbor] = true
+				queue = append(queue, neighbor)
+			}
+		}
+	}
+	for _, block := range blocks {
+		if !queued[block] {
+			queued[block] = true
+			order = append(order, block)
+		}
+	}
+	for i, j := 0, len(order)-1; i < j; i, j = i+1, j-1 {
+		order[i], order[j] = order[j], order[i]
+	}
+	return order
 }
 
 // verifyOff reports a rule named in OAK_VERIFY_OFF (a comma list): the
@@ -7800,7 +7824,7 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 		args, argsChanged := rewriteTermArgs(t.args, rewrite)
 		if cond != t.cond || left != t.left || right != t.right || argsChanged {
 			copy := *t
-			copy.kbDone, copy.sigBits = false, 0
+			copy.sigBits = 0
 			copy.cond, copy.left, copy.right = cond, left, right
 			copy.args = args
 			out = &copy
@@ -7844,6 +7868,11 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 	sort.Strings(names)
 	bl := newBlaster(names, widths)
 	bl.bdd = newBDD(pruneNodeBudget)
+	finish, admitted := admitBDDStandalone(bl, false)
+	if !admitted {
+		return terms // an optional simplification cannot claim a proof
+	}
+	defer finish()
 	pBits := bl.blast(premise)
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
 	if pBits == nil || bl.bdd.exceeded || pBits[0] == bddTrue {
@@ -7885,7 +7914,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 				c, l, r := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
 				if c != t.cond || l != t.left || r != t.right {
 					copy := *t
-					copy.kbDone, copy.sigBits = false, 0
+					copy.sigBits = 0
 					copy.cond, copy.left, copy.right = c, l, r
 					out = &copy
 				}
@@ -7917,7 +7946,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 				c, l, r := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
 				if c != t.cond || l != t.left || r != t.right {
 					copy := *t
-					copy.kbDone, copy.sigBits = false, 0
+					copy.sigBits = 0
 					copy.cond, copy.left, copy.right = c, l, r
 					out = &copy
 				}
@@ -7926,7 +7955,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 			l, r := rewrite(t.left), rewrite(t.right)
 			if l != t.left || r != t.right {
 				copy := *t
-				copy.kbDone, copy.sigBits = false, 0
+				copy.sigBits = 0
 				copy.left, copy.right = l, r
 				out = &copy
 			}
@@ -8364,14 +8393,19 @@ func diagnoseBlast(bl *blaster, premise, t *term) {
 		nb.memo = nil
 		nb.owners = map[int]variableOwner{}
 		nb.assumed = false
-		p := nb.blast(premise)
-		if p != nil && p[0] != bddTrue {
-			nb.assume, nb.assumed = p[0], true
-		}
 		return &nb
 	}
 	size := func(t *term) int {
 		nb := fresh()
+		finish, admitted := admitBDDStandalone(nb, true)
+		if !admitted {
+			return -1 // optional nested diagnostic, not a proof result
+		}
+		defer finish()
+		p := nb.blast(premise)
+		if p != nil && p[0] != bddTrue {
+			nb.assume, nb.assumed = p[0], true
+		}
 		before := len(nb.bdd.nodes)
 		nb.blast(t)
 		if nb.bdd.exceeded {
@@ -8555,6 +8589,11 @@ func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool,
 			// each alone, under a fresh diagram of the decision's budget.
 			for k, c := range conjunctsOf(premise) {
 				probe := bl.fresh(loopDecisionNodeBudget) // the same order, a fresh diagram
+				finish, admitted := admitBDDStandalone(probe, true)
+				if !admitted {
+					fmt.Fprintln(os.Stderr, "verify: premise diagnostic skipped: memory admission allowance")
+					continue
+				}
 				bits := probe.blast(c)
 				n, _ := dagNodes(1<<20, c)
 				show := 160
@@ -8571,6 +8610,7 @@ func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool,
 						}
 					}
 				}
+				finish()
 				if exceeded {
 					blastCulprits(bl, c, 2)
 				}
@@ -8693,6 +8733,8 @@ func refutedByValuationWithin(premise, a, b *term, names []string, widths map[st
 	// no random valuation, and an obligation over two distinct symbols
 	// (`off = found`, a wrong pairing) goes undecided instead of refuted.
 	bindings := premiseBindings(premise)
+	finishTiming := nativetiming.BeginValuation(len(evaluator.terms), len(names), len(targets), rounds, len(bindings))
+	defer func() { finishTiming(evaluator.gen) }()
 	settle := func(env map[string]uint64, pinned string) {
 		for pass := 0; pass < 3 && len(bindings) > 0; pass++ {
 			for _, bind := range bindings {
@@ -9160,6 +9202,11 @@ func blastCulprits(bl *blaster, t *term, maxReports int) int {
 	cost := func(u *term) (int, bool) {
 		probe := newBlaster(bl.params, bl.widths)
 		probe.bdd = newBDD(loopDecisionNodeBudget)
+		finish, admitted := admitBDDStandalone(probe, true)
+		if !admitted {
+			return 0, true // optional nested diagnostic
+		}
+		defer finish()
 		bits := probe.blast(u)
 		return len(probe.bdd.nodes), bits == nil || probe.bdd.exceeded
 	}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/internal/nativetiming"
 	"github.com/SCKelemen/oak/nativegen"
 	"github.com/SCKelemen/oak/opt"
 	"github.com/SCKelemen/oak/typechecker"
@@ -51,6 +52,10 @@ type nativeDriver struct {
 	verdicts  map[*asm.Function]asm.Verdict
 	verified  *int
 	fromCache *int
+
+	// Serialized recipe bytes for the current closed search only. The driver,
+	// its checked context, and this scope are not shared between goroutines.
+	materializationRecipe []byte
 }
 
 // Materialize lowers the candidate's lane configuration.
@@ -114,6 +119,13 @@ func (d *nativeDriver) Check(c *opt.Candidate) []string {
 // the same assembly, Oak body, reachable callees, declarations, and
 // compiler — keeps its verdict.
 func (d *nativeDriver) Validate(c *opt.Candidate) opt.Verdict {
+	candidateName := ""
+	if nativetiming.Enabled() {
+		candidateName = c.Name()
+	}
+	finish := nativetiming.BeginValidation(candidateName)
+	timingOutcome, timingCached := -1, false
+	defer func() { finish(timingOutcome, timingCached) }()
 	fn := c.Body.(*asm.Function)
 	start := time.Now()
 	key := ""
@@ -137,7 +149,9 @@ func (d *nativeDriver) Validate(c *opt.Candidate) opt.Verdict {
 		}
 		fmt.Fprintf(os.Stderr, "timing: %s (%s): %.2fs (%s%s)\n", d.source.Name.Value, c.Name(), time.Since(start).Seconds(), verdict.Kind, note)
 	}
-	return opt.Verdict{Outcome: outcomeOf(verdict.Kind), Message: verdict.Message, Cached: cached}
+	result := opt.Verdict{Outcome: outcomeOf(verdict.Kind), Message: verdict.Message, Cached: cached}
+	timingOutcome, timingCached = int(result.Outcome), result.Cached
+	return result
 }
 
 // ValidationFallback retains the downstream work of a blocked-fill candidate

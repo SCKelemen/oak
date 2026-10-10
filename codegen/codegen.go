@@ -2131,6 +2131,14 @@ func (cg *CodeGenerator) computeInlineHelpers(program *ast.Program) {
 		}
 		cg.inlineHelpers[name] = true
 	}
+	// A dispatch realization is compiled with its feature's target attribute,
+	// but its caller is the baseline wrapper. Forcing that call to inline
+	// crosses incompatible target options (even for a scalar leaf body).
+	// Preserve the target boundary for both ordinary and codec hot helpers;
+	// the C compiler may still inline where the baseline has the feature.
+	for name := range cg.realizationFeature {
+		delete(cg.inlineHelpers, name)
+	}
 }
 
 // codecHotHelpers are the standard library functions the derived JSON

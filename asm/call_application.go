@@ -29,6 +29,12 @@ func (lo *oakLowering) callApplicationArguments(callee *ast.FunctionStatement) (
 	if lo.concrete != nil || lo.expandCallApplications || !lo.finiteCallApplication(callee, map[string]bool{}) {
 		return nil, false
 	}
+	// A partially inlined wrapper and its surviving inner call are not the
+	// same uninterpreted application. Expand source-only wrappers, retaining
+	// the inner machine boundaries; never change the proof obligations.
+	if !lo.retainCallApplication(callee.Name.Value) {
+		return nil, false
+	}
 	var args []*term
 	bits := 0
 	for _, param := range callee.Parameters {
@@ -277,4 +283,84 @@ func callApplicationValue(callee string, typ *oakType, args []*term) (*oakValue,
 	return aggregateFrom(typ, "", func(path string, leaf *oakType) *term {
 		return applyTerm(callApplicationName(callee, path), leaf.width, args...)
 	})
+}
+
+// retainCallApplication applies only the source representation policy. The
+// ordinary purity, argument, profitability and proof checks still apply.
+func (lo *oakLowering) retainCallApplication(callee string) bool {
+	if lo.machineApplications == nil {
+		return true
+	}
+	prefix := callApplicationName(callee, "")
+	if lo.machineApplications[prefix] {
+		return true
+	}
+	for name := range lo.machineApplications {
+		if strings.HasPrefix(name, prefix+"[") || strings.HasPrefix(name, prefix+".") {
+			return true
+		}
+	}
+	return false
+}
+
+// machineCallApplications records the actual application boundaries before
+// lowering the source. A loop's final result can be only a fresh symbol: its
+// next values, conditions, traps and memories still contain the applications
+// that the source must retain. Each term in the shared DAG is visited once.
+func machineCallApplications(result *term, execution *pathExecutor) map[string]bool {
+	applications := map[string]bool{}
+	seen := map[*term]bool{}
+	var visit func(*term)
+	visit = func(t *term) {
+		if t == nil || seen[t] {
+			return
+		}
+		seen[t] = true
+		if t.kind == termApply {
+			applications[t.name] = true
+		}
+		visit(t.cond)
+		visit(t.left)
+		visit(t.right)
+		for _, arg := range t.args {
+			visit(arg)
+		}
+	}
+	visitMap := func(values map[string]*term) {
+		for _, value := range values {
+			visit(value)
+		}
+	}
+	visitWrites := func(logs map[string][]*spanWrite) {
+		for _, writes := range logs {
+			for _, write := range writes {
+				visit(write.index)
+				visit(write.value)
+				visit(write.guard)
+			}
+		}
+	}
+	visit(result)
+	if execution == nil {
+		return applications
+	}
+	for _, result := range execution.moreResults {
+		visit(result)
+	}
+	visit(execution.trap)
+	visitMap(execution.cells)
+	visitWrites(execution.writes)
+	for _, event := range execution.loops {
+		visit(event.cond)
+		visit(event.headerTrap)
+		visit(event.bodyTrap)
+		visit(event.reached)
+		visit(event.oakPath)
+		visitMap(event.header)
+		visitMap(event.fresh)
+		visitMap(event.next)
+		visitWrites(event.entry)
+		visitWrites(event.writes)
+	}
+	return applications
 }

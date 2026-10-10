@@ -231,6 +231,11 @@ func cachedVerdict(dir, key string, functions map[string]*ast.FunctionStatement)
 // storeVerdict writes a verdict under the key (a temporary file renamed
 // into place, so a concurrent build never reads a partial one).
 func storeVerdict(dir, key string, verdict asm.Verdict) {
+	// Host memory pressure is not part of the semantic cache key. Retry
+	// transient non-decisions on a later build instead of persisting them.
+	if verdict.TransientResourceExhausted {
+		return
+	}
 	if dir == "" || !validVerdictCacheKey(key) || !validVerdictKind(verdict.Kind) ||
 		!validVerdictCallees(verdict.Callees, nil, false) {
 		return
