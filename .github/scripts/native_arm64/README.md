@@ -27,8 +27,9 @@ Metal/device tests and QEMU/SVE tests are also separate platform/emulator scope;
 this workflow does not claim their coverage or change their checks.
 
 The runner is the standard `ubuntu-24.04-arm` image. Three compiler shards and
-one support shard run with at most two native jobs in parallel; packages within
-the support shard remain serial. These are not larger/custom runners. GitHub documents this standard runner as
+one support shard run with at most two native jobs in parallel. The matrix lists
+support first, alongside compiler-a, to prioritize the long shell test ahead of
+the remaining compiler shards; packages within support remain serial. These are not larger/custom runners. GitHub documents this standard runner as
 free in public repositories, with 4 vCPUs and 16 GB memory. No paid commitment,
 repository security change, or additional runner registration is needed. Queue
 availability and the actual runner image/CPU are established by the hosted run,
@@ -100,6 +101,19 @@ concurrency key; manual reruns and non-PR jobs remain independent. Because every
 artifact is bound to its run attempt, use **Re-run all jobs** for a new complete
 attempt; mixing earlier successful shards with rerun-only failed shards cannot
 satisfy this gate.
+
+## Native shell timing records
+
+`TestOakShellAgreesNative` enables an observation session before `runCLI` captures
+command output. It retains the original stderr writer, so status records remain
+in the Go test JSON stream and uploaded artifacts even if the package times out.
+The session samples every five seconds, with at most 1,024 records and 4 MiB of
+output including lifecycle records. It reports stable function/candidate IDs,
+ordinals, phase durations and structural work counts. Long IDs are shortened with
+a deterministic hash. It emits no source text, witness values, environment or
+arguments. Fast transitions can be coalesced; cumulative completed-work totals
+and the current search/candidate/phase ages identify sustained work. The session
+is enabled only for this shell test and is closed through test cleanup.
 
 ## Timing basis and limits of the partition
 

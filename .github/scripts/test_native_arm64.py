@@ -261,7 +261,7 @@ class WorkflowContractTests(unittest.TestCase):
         # checks the parsed workflow; these assertions pin the critical wiring.
         workflow = (gate.REPO / '.github/workflows/native-arm64.yml').read_text()
         native, aggregate = workflow.split('  host-tests:', 1)
-        self.assertIn('shard: [compiler-a, compiler-b, compiler-c, support]', native)
+        self.assertIn('shard: [support, compiler-a, compiler-b, compiler-c]', native)
         self.assertIn('fail-fast: false', native)
         self.assertIn('max-parallel: 2', native)
         self.assertIn('runs-on: ubuntu-24.04-arm', native)

@@ -12,6 +12,7 @@ import (
 	"github.com/SCKelemen/oak/codegen"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/evaluator"
+	"github.com/SCKelemen/oak/internal/nativetiming"
 	"github.com/SCKelemen/oak/lsp"
 	"github.com/SCKelemen/oak/nativegen"
 	"github.com/SCKelemen/oak/object"
@@ -158,9 +159,22 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// last. A refused or weaker form is reported as set aside.
 		driver := &nativeDriver{source: source, functions: functions, externs: externs, records: records, adts: adts, constants: constants, tc: tc, tcFingerprint: tcFingerprint, symbols: symbols, declarations: declarations, cacheDir: cacheDir, verdicts: map[*asm.Function]asm.Verdict{}, verified: &verified, fromCache: &fromCache}
 		facts := nativegen.FunctionFacts(source, tc)
-		selection, err := driver.withMaterializationRecipe(func() (*opt.Selection, error) {
-			return search.Run(fn.Name.Value, opt.Identity(nativegen.PlainLane(lane)), facts, driver)
-		})
+		selection, err := func() (selection *opt.Selection, err error) {
+			finish := nativetiming.BeginSearch(fn.Name.Value)
+			returned := false
+			defer func() {
+				considered, materialized, validations := 0, 0, 0
+				if selection != nil {
+					considered, materialized, validations = selection.Considered, selection.Materialized, len(selection.Validations)
+				}
+				finish(considered, materialized, validations, err != nil || !returned)
+			}()
+			selection, err = driver.withMaterializationRecipe(func() (*opt.Selection, error) {
+				return search.Run(fn.Name.Value, opt.Identity(nativegen.PlainLane(lane)), facts, driver)
+			})
+			returned = true
+			return selection, err
+		}()
 		if stats := driver.compileSession.ReallocationStats(); os.Getenv("OAK_NATIVE_TIMING") != "" && stats.Requests > 0 {
 			fmt.Fprintf(os.Stderr, "timing: %s allocation reuse: %d/%d hits, %d entries, %d retained payload bytes\n",
 				fn.Name.Value, stats.Hits, stats.Requests, stats.Entries, stats.PayloadBytes)

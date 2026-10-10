@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/internal/nativetiming"
 )
 
 // loopShape is a recognized asm loop: a header label, an exit test (`cmp`
@@ -4325,6 +4326,8 @@ func hasReachConditions(asmLoops, oakLoops []*loopEvent) bool {
 }
 
 func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerms, oakTerms []*term, width int, abstractReach bool) Verdict {
+	finishTiming := nativetiming.BeginLoops(len(exec.loops), len(lowering.loops), exec.resultChunk, abstractReach)
+	defer finishTiming()
 	// A scalar result is one term a side; a record result through memory
 	// is its words (verifyChunk): one coupling proves them all. asmTerm
 	// stands for "there is a result".
@@ -4570,6 +4573,7 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 	// rather than the register that held it inside the body, which the
 	// header values (both zero) cannot tell apart.
 	stage(fmt.Sprintf("the witness pass (%d inputs, %d work)", checked, work))
+	nativetiming.Coupling(checked, work, len(slots))
 	defer func() { stage("the coupling and the decisions") }()
 	exitReadAsm := exitReadSymbols(asmLoops, asmTerms...)
 	exitReadOak := exitReadSymbols(oakLoops, oakTerms...)
@@ -8736,6 +8740,8 @@ func refutedByValuationWithin(premise, a, b *term, names []string, widths map[st
 	// no random valuation, and an obligation over two distinct symbols
 	// (`off = found`, a wrong pairing) goes undecided instead of refuted.
 	bindings := premiseBindings(premise)
+	finishTiming := nativetiming.BeginValuation(len(evaluator.terms), len(names), len(targets), rounds, len(bindings))
+	defer func() { finishTiming(evaluator.gen) }()
 	settle := func(env map[string]uint64, pinned string) {
 		for pass := 0; pass < 3 && len(bindings) > 0; pass++ {
 			for _, bind := range bindings {
