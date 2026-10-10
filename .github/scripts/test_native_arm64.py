@@ -1,4 +1,5 @@
 import copy
+from contextlib import ExitStack
 import io
 import json
 from pathlib import Path
@@ -7,6 +8,7 @@ import select
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -79,6 +81,9 @@ class ExecutionEvidenceTests(unittest.TestCase):
                     gate.run_package('./compiler', ['TestOne'], {'TestOne': ['child']}, Path(directory))
                 self.assertFalse(list(Path(directory).glob('*-passed.json')))
                 self.assertEqual((Path(directory) / 'compiler.jsonl').read_text(), stream)
+                receipt = json.loads((Path(directory) / 'compiler-status.json').read_text())
+                self.assertEqual(receipt['returncode'], status)
+                self.assertEqual(receipt['command'][:5], ['go', 'test', '-json', '-race', '-count=1'])
 
     def test_run_preserves_race_timeout_and_uncached_execution(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -160,6 +165,123 @@ class SourceInventoryTests(unittest.TestCase):
             gate.check_inventory(self.manifest, self.source)
 
 
+class ShardExecutionTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name) / 'results'
+        self.manifest = json.loads(gate.MANIFEST.read_text())
+        self.source = {'roots': [], 'skips': []}
+        for package, roots in self.manifest['roots'].items():
+            self.source['roots'].extend(dict(package=package, test=name, file=file)
+                                       for name, file in roots.items())
+        for location, calls in self.manifest['skip_sites'].items():
+            file, function = location.split('::')
+            self.source['skips'].extend(dict(file=file, function=function, call=call) for call in calls)
+        self.stack = self.enterContext(ExitStack())
+        self.stack.enter_context(mock.patch.object(gate.os, 'chdir'))
+        self.stack.enter_context(mock.patch.object(gate.subprocess, 'run',
+                                 return_value=mock.Mock(stdout=json.dumps(self.source))))
+        self.stack.enter_context(mock.patch.object(gate, 'identity', return_value={'fixture': True}))
+        self.preflight = self.stack.enter_context(mock.patch.object(gate, 'preflight'))
+        self.live = self.stack.enter_context(mock.patch.object(gate, 'check_live_roots'))
+        self.run = self.stack.enter_context(mock.patch.object(gate, 'run_package'))
+
+    def execute(self, shard, check=False):
+        gate.execute(SimpleNamespace(check=check, shard=shard, results_dir=self.directory))
+
+    def test_every_shard_runs_only_its_own_roots_and_children(self):
+        selected = gate.select_tests(self.manifest)
+        shards = gate.load_shards(selected, self.manifest, gate.PLAN)
+        for shard, packages in shards.items():
+            with self.subTest(shard=shard):
+                self.directory = Path(self.temporary.name) / shard
+                self.run.reset_mock()
+                self.preflight.reset_mock()
+                self.execute(shard)
+                self.preflight.assert_called_once_with()
+                expected = []
+                for package in gate.TIMEOUTS:
+                    if package in packages:
+                        roots = packages[package]
+                        children = {root: names for root, names in self.manifest['children'].get(package, {}).items()
+                                    if root in roots}
+                        expected.append(mock.call(package, roots, children, self.directory))
+                self.assertEqual(self.run.call_args_list, expected)
+                receipt = json.loads((self.directory / 'lane-result.json').read_text())
+                self.assertEqual(receipt, dict(schema_version=1, shard=shard, success=True, packages=sorted(packages)))
+
+    def test_source_check_and_bad_shard_never_execute(self):
+        self.execute(None, check=True)
+        with self.assertRaises(ValueError):
+            self.execute('unreviewed')
+        self.preflight.assert_not_called()
+        self.run.assert_not_called()
+        self.assertFalse(self.directory.exists())
+
+    def test_stale_results_directory_never_reuses_a_receipt(self):
+        self.directory.mkdir()
+        (self.directory / 'lane-result.json').write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'must be empty'):
+            self.execute('support')
+        self.preflight.assert_not_called()
+        self.run.assert_not_called()
+
+    def test_preflight_failure_cannot_write_success_receipt(self):
+        self.preflight.side_effect = ValueError('wrong host')
+        with self.assertRaises(ValueError):
+            self.execute('compiler-a')
+        self.run.assert_not_called()
+        self.assertFalse((self.directory / 'lane-result.json').exists())
+
+    def test_support_collects_failures_but_never_writes_success(self):
+        self.run.side_effect = [ValueError('failure'), None, None, None]
+        with self.assertRaises(ValueError):
+            self.execute('support')
+        self.assertEqual([call.args[0] for call in self.run.call_args_list], ['./semir', '.', './asm', './testrunner'])
+        self.assertFalse((self.directory / 'lane-result.json').exists())
+
+    def test_live_selector_failure_is_fatal_and_remaining_support_runs(self):
+        self.live.side_effect = [ValueError('missing tool child'), None, None, None]
+        with self.assertRaises(ValueError):
+            self.execute('support')
+        self.assertEqual([call.args[0] for call in self.run.call_args_list], ['.', './asm', './testrunner'])
+        self.assertFalse((self.directory / 'lane-result.json').exists())
+
+    def test_run_requires_explicit_shard_and_check_is_global(self):
+        for argv in (['--run'], ['--check', '--shard', 'support']):
+            with mock.patch.object(sys, 'argv', ['native_arm64.py'] + argv), \
+                 mock.patch.object(sys, 'stderr', io.StringIO()), self.assertRaises(SystemExit):
+                gate.main()
+
+
+class WorkflowContractTests(unittest.TestCase):
+    def test_native_matrix_is_bounded_and_retains_required_aggregate(self):
+        # No YAML dependency is needed by the native guard. actionlint separately
+        # checks the parsed workflow; these assertions pin the critical wiring.
+        workflow = (gate.REPO / '.github/workflows/native-arm64.yml').read_text()
+        native, aggregate = workflow.split('  host-tests:', 1)
+        self.assertIn('shard: [compiler-a, compiler-b, compiler-c, support]', native)
+        self.assertIn('fail-fast: false', native)
+        self.assertIn('max-parallel: 2', native)
+        self.assertIn('runs-on: ubuntu-24.04-arm', native)
+        self.assertIn('timeout-minutes: 240', native)
+        self.assertIn('group: ${{ github.workflow }}-host-tests-${{ matrix.shard }}-', native)
+        self.assertIn("--run --shard '${{ matrix.shard }}'", native)
+        self.assertIn('name: native-arm64-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}', native)
+        self.assertIn('if-no-files-found: error', native)
+        self.assertNotIn('continue-on-error:', native)
+        self.assertIn('name: Native ARM64 host tests', aggregate)
+        self.assertIn('needs: native-shards', aggregate)
+        self.assertEqual(aggregate.count('if: ${{ always() }}'), 2)
+        self.assertIn('MATRIX_RESULT: ${{ needs.native-shards.result }}', aggregate)
+        self.assertIn('DOWNLOAD_OUTCOME: ${{ steps.evidence.outcome }}', aggregate)
+        self.assertIn('merge-multiple: false', aggregate)
+        self.assertIn('--matrix-result "$MATRIX_RESULT" || status=$?', aggregate)
+        self.assertIn('if [ "$DOWNLOAD_OUTCOME" != success ]; then', aggregate)
+        self.assertIn('exit "$status"', aggregate)
+
+
 class ResourceTelemetryTests(unittest.TestCase):
     def test_sample_count_line_size_and_frequency_are_bounded(self):
         output = io.StringIO()
@@ -204,7 +326,7 @@ class ResourceTelemetryTests(unittest.TestCase):
     def test_start_failure_preserves_success_and_original_test_exit(self):
         for status in (None, 37):
             output = io.StringIO()
-            with mock.patch.object(sys, 'argv', ['native_arm64.py', '--run']), \
+            with mock.patch.object(sys, 'argv', ['native_arm64.py', '--run', '--shard', 'support']), \
                  mock.patch.object(gate, 'execute', side_effect=None if status is None else SystemExit(status)) as execute, \
                  mock.patch.object(resources.subprocess, 'Popen', side_effect=OSError('private details')), \
                  mock.patch.object(resources.sys, 'stderr', output):

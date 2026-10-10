@@ -13,9 +13,11 @@ import sys
 import tempfile
 
 from native_arm64_resources import ResourceTelemetry
+from native_arm64_shards import identity, load_shards
 
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = REPO / '.github/scripts/native_arm64_inventory.json'
+PLAN = REPO / '.github/scripts/native_arm64_shards.json'
 MODULE = 'github.com/SCKelemen/oak'
 # These are scope exclusions, never allowed skips in the Linux run. Both remain
 # separate, explicitly uncovered platform obligations; Ubuntu ARM is not proof.
@@ -25,8 +27,8 @@ EXCLUSIONS = {
     ('./compiler', 'TestE2EMessageSendFoundation'):
         'requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)',
 }
-# Preserve the limits of the existing partitions; run packages serially in one
-# bounded job rather than duplicating the broad x86 suite or creating a matrix.
+# Preserve every per-package limit. The reviewed compiler partition avoids a
+# cumulative deadline without duplicating any test or widening its selector.
 TIMEOUTS = {'./semir': '5m', './compiler': '90m', '.': '45m', './asm': '45m', './testrunner': '45m'}
 
 
@@ -48,6 +50,10 @@ def check_inventory(manifest, discovered):
         if manifest[field] != actual[field]:
             raise ValueError(f'{field} changed: review the new/removed host guard or skip site '
                              'and update native_arm64_inventory.json; no automatic waiver')
+    return select_tests(manifest)
+
+
+def select_tests(manifest):
     selected = {package: sorted(names) for package, names in manifest['roots'].items()}
     if not selected or not any(selected.values()):
         raise ValueError('empty native ARM64 test inventory')
@@ -101,23 +107,45 @@ def validate_events(events, package, names, children):
     for root, required in children.items():
         expected.update(root + '/' + child for child in required)
     started, passed = collections.Counter(), collections.Counter()
-    package_pass = 0
+    package_start = package_pass = 0
     for event in events:
         if not isinstance(event, dict) or not isinstance(event.get('Action'), str):
             raise ValueError('malformed go test event')
         if event.get('Package') != import_path:
             raise ValueError(f'unexpected event package: {event.get("Package")}')
         action, name = event['Action'], event.get('Test')
+        if action not in ('start', 'run', 'pause', 'cont', 'pass', 'bench', 'fail', 'output', 'skip'):
+            raise ValueError(f'unknown go test action: {action}')
+        if name is not None and (not isinstance(name, str) or not name):
+            raise ValueError('malformed go test name')
+        if action in ('run', 'pause', 'cont') and name is None:
+            raise ValueError(f'go test {action} event is missing its test name')
         if action in ('fail', 'skip'):
             raise ValueError(f'{package}: {action}: {name or "package"}')
         if name and name not in expected:
             raise ValueError(f'{package}: unreviewed test/subtest: {name}')
+        if action == 'start':
+            if name is not None or package_start or started or package_pass:
+                raise ValueError(f'{package}: invalid package start ordering')
+            package_start += 1
+        if action in ('run', 'pass'):
+            if package_start != 1 or package_pass:
+                raise ValueError(f'{package}: test event outside the package lifecycle')
         if action == 'run' and name:
+            root = name.split('/', 1)[0]
+            if name != root and (started[root] != 1 or passed[root]):
+                raise ValueError(f'{package}: child outside its root lifecycle: {name}')
             started[name] += 1
         if action == 'pass':
             if name:
+                if started[name] != 1:
+                    raise ValueError(f'{package}: test passed before running: {name}')
+                if name in children and any(passed[name + '/' + child] != 1 for child in children[name]):
+                    raise ValueError(f'{package}: root passed before its required children: {name}')
                 passed[name] += 1
             else:
+                if any(passed[name] != 1 for name in expected):
+                    raise ValueError(f'{package}: package passed before its required tests')
                 package_pass += 1
     if package_pass != 1:
         raise ValueError(f'{package}: expected one successful package completion, got {package_pass}')
@@ -152,6 +180,9 @@ def run_package(package, names, children, directory):
             except json.JSONDecodeError as error:
                 parse_error = error
         status = process.wait()
+    (directory / (label + '-status.json')).write_text(json.dumps({
+        'schema_version': 1, 'returncode': status, 'command': command,
+    }, indent=2) + '\n')
     if status != 0:
         raise ValueError(f'{package}: go test failed with exit {status}; see {log}')
     if parse_error:
@@ -165,10 +196,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true', help='source/inventory checks only; no native claim')
     parser.add_argument('--run', action='store_true', help='require native host and execute the reviewed tests')
+    parser.add_argument('--shard', help='required with --run: a reviewed native shard name')
     parser.add_argument('--results-dir', type=Path, default=Path('native-arm64-results'))
     args = parser.parse_args()
     if args.check == args.run:
         parser.error('choose exactly one of --check or --run')
+    if args.run and not args.shard:
+        parser.error('--run requires an explicit reviewed --shard')
+    if args.check and args.shard:
+        parser.error('--check validates the complete partition, not one shard')
     with ResourceTelemetry(REPO) if args.run else nullcontext():
         execute(args)
 
@@ -179,15 +215,40 @@ def execute(args):
     source = subprocess.run(['go', 'run', './.github/scripts/native_arm64'],
                             check=True, text=True, stdout=subprocess.PIPE)
     selected = check_inventory(manifest, json.loads(source.stdout))
+    shards = load_shards(selected, manifest, PLAN)
     print('Reviewed native ARM64 roots: ' + str({p: len(n) for p, n in selected.items()}), flush=True)
+    print('Reviewed native ARM64 shards: ' + str({s: sum(map(len, p.values())) for s, p in shards.items()}), flush=True)
     if args.check:
         return
-    preflight()
+    if args.shard not in shards:
+        raise ValueError(f'unreviewed native shard: {args.shard}')
     args.results_dir.mkdir(parents=True, exist_ok=True)
+    if any(args.results_dir.iterdir()):
+        raise ValueError('native results directory must be empty; stale receipts cannot be reused')
+    (args.results_dir / 'identity.json').write_text(json.dumps(
+        identity(REPO, MANIFEST, PLAN, args.shard), indent=2) + '\n')
     (args.results_dir / 'source-inventory.json').write_text(source.stdout)
+    preflight()
+    packages = shards[args.shard]
+    failures = []
     for package in TIMEOUTS:
-        check_live_roots(package, selected[package])
-        run_package(package, selected[package], manifest['children'].get(package, {}), args.results_dir)
+        if package not in packages:
+            continue
+        names = packages[package]
+        children = {root: required for root, required in manifest['children'].get(package, {}).items()
+                    if root in names}
+        try:
+            check_live_roots(package, names)
+            run_package(package, names, children, args.results_dir)
+        except (ValueError, subprocess.CalledProcessError, OSError) as error:
+            failures.append(str(error))
+            print(f'FAIL {package}: {error}', file=sys.stderr, flush=True)
+    if failures:
+        raise ValueError('native shard failed:\n' + '\n'.join(failures))
+    (args.results_dir / 'lane-result.json').write_text(json.dumps({
+        'schema_version': 1, 'shard': args.shard, 'success': True,
+        'packages': sorted(packages),
+    }, indent=2) + '\n')
 
 
 if __name__ == '__main__':

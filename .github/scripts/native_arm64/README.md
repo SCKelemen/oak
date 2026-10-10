@@ -25,8 +25,9 @@ execution and are never allowed `skip` events inside the selected Linux run.
 Metal/device tests and QEMU/SVE tests are also separate platform/emulator scope;
 this workflow does not claim their coverage or change their checks.
 
-The runner is the standard `ubuntu-24.04-arm` image, one job with serial package
-commands, not a larger/custom runner. GitHub documents this standard runner as
+The runner is the standard `ubuntu-24.04-arm` image. Three compiler shards and
+one support shard run with at most two native jobs in parallel; packages within
+the support shard remain serial. These are not larger/custom runners. GitHub documents this standard runner as
 free in public repositories, with 4 vCPUs and 16 GB memory. No paid commitment,
 repository security change, or additional runner registration is needed. Queue
 availability and the actual runner image/CPU are established by the hosted run,
@@ -62,23 +63,58 @@ Official runner/toolchain and platform references, checked 2026-10-09:
    dynamically computed host predicates or imported helper behavior.
 3. The executor requires native Linux/ARM64 host and target, CGO for `-race`, a
    real host `cc`, and the runtime ISA probe. Missing tools/host features fail.
-   Before the compiler suite, the feature-attribute regression compiles all four
+   Once in the support shard, the feature-attribute regression compiles all four
    AArch64 catalog attributes with actual GCC and Clang, at baseline and stronger
    architectures. Both named compiler children are required; skips fail.
 4. Each anchored exact root selector is checked against the actual Go `-list`
    inventory. Execution uses `-race -count=1`, no inherited reducing `GOFLAGS`,
    and the existing 90-minute compiler / 45-minute other-package deadlines
    (five minutes for the small feature-attribute regression).
-5. Every selected root and named child must emit exactly one `run` and `pass`,
+5. The reviewed `native_arm64_shards.json` assigns every selected root exactly
+   once. Required children inherit their root's shard. New/missing/duplicate roots
+   or a misplaced package fail before execution.
+6. Every selected root and named child must emit exactly one `run` and `pass`,
    followed by one package `pass`. Any failure, skip, missing/duplicate result,
    unexpected test, malformed JSON, or failed Go process fails the job. A parent
    test passing cannot conceal a missing or skipped child.
 
-The job's 240-minute upper bound accommodates the existing serial package
-limits (5 + 90 + 45 + 45 + 45 minutes) and setup. It is an upper bound, not a runtime
-estimate. Existing x86 race partitions/timeouts and compatibility aggregates are
-unchanged. Superseded first-attempt PR jobs cancel independently; manual reruns
-and non-PR jobs remain independent, matching the existing cancellation policy.
+7. An always-run aggregate retains the **Native ARM64 host tests** check name.
+   It requires every matrix child and its artifact upload to succeed, all four
+   artifacts to be present, and each lane to write a success receipt only after
+   its commands and checks finish. It independently rereads the raw event streams,
+   exact Go commands and exit codes, rather than trusting passed-test summaries.
+   Source checkout SHA, raw inventory/plan hashes, run ID, attempt and shard must
+   match the aggregate's checkout. Missing, cancelled, failed, duplicate, malformed,
+   truncated, mismatched or unexpected evidence fails closed.
+
+Each native job retains the 240-minute upper bound. Compiler commands retain
+90 minutes per shard; support retains its serial 5 + 45 + 45 + 45-minute package
+limits. The final evidence-only aggregate has a 15-minute limit. Existing x86 race
+partitions/timeouts and compatibility aggregates are unchanged. Superseded
+first-attempt PR jobs cancel independently, with the shard axis in every native
+concurrency key; manual reruns and non-PR jobs remain independent. Because every
+artifact is bound to its run attempt, use **Re-run all jobs** for a new complete
+attempt; mixing earlier successful shards with rerun-only failed shards cannot
+satisfy this gate.
+
+## Timing basis and limits of the partition
+
+The static assignment was reviewed against run
+[38001894734](https://github.com/SCKelemen/oak/actions/runs/38001894734), source
+`80917e8942ae6a058fef66afe8978cd4bbd501d6`. That compiler invocation passed 90 roots
+with a cumulative reported 5,008.41 seconds before the unchanged 90-minute package
+deadline. The four largest completed roots were literals (1,267.85 s), C-backend
+dispatch (1,117.29 s), whole-package BLAKE3 (799.70 s), and Stage2 (672.80 s).
+`TestE2ENativeMapPageProvenByCases` was still running after 391.53 seconds, and
+101 later roots had not run. None of those 102 roots is claimed as passing.
+
+The three compiler shards contain 63, 65 and 64 roots respectively. The static
+plan records the measured durations, the unfinished MapPage lower bound, and a
+60-second planning reserve for each unmeasured root. Those estimates distribute
+heavy completed roots and leave tail capacity; they are neither runtime limits
+nor evidence of correctness. Future actual native execution must establish every
+root and child, including MapPage and the previously unexecuted tail. Membership
+is not dynamically changed by CI timings or completion order.
 
 ## Local validation and maintenance
 
@@ -86,20 +122,25 @@ From the repository root:
 
 ```sh
 go test -race -count=1 ./.github/scripts/native_arm64
-python3 -m unittest discover -s .github/scripts -p test_native_arm64.py -v
+python3 -m unittest discover -s .github/scripts -p 'test_native_arm64*.py' -v
 python3 .github/scripts/native_arm64.py --check
 ```
 
 These work on x86 and establish only the coverage gate's behavior. On native
-Linux ARM64 with the required tools, execute:
+Linux ARM64 with the required tools, a clean results directory, and the CI
+identity variables (`GITHUB_SHA` equal to checkout HEAD, positive `GITHUB_RUN_ID`
+and `GITHUB_RUN_ATTEMPT`), execute one explicitly selected shard:
 
 ```sh
-python3 .github/scripts/native_arm64.py --run
+python3 .github/scripts/native_arm64.py --run --shard compiler-a
 ```
 
-The workflow preserves JSON event streams, reviewed source inventory, and exact
-passed-test lists in its `native-arm64-*` artifact, including partial streams on
-failure. Keep that artifact and the runner/ISA logs when reporting hosted proof.
+The workflow preserves raw JSON event streams, exact invocation/exit records,
+reviewed source inventory, identity, success receipt (only on success), and
+non-authoritative passed-test summaries in one `native-arm64-RUN-ATTEMPT-SHARD`
+artifact per shard, including partial streams on failure. Live resource telemetry
+and each runner/ISA preflight remain in the job logs. Keep those artifacts and
+logs when reporting hosted proof.
 
 When a test/helper changes, inspect the source inventory difference first:
 
@@ -108,7 +149,7 @@ go run ./.github/scripts/native_arm64 > /tmp/native-arm64-inventory.json
 ```
 
 Update the reviewed manifest deliberately after classifying new roots/skip
-sites. A new ARM host test belongs in this required lane; a platform exception
+sites, then explicitly assign each new root in the static shard plan. A new ARM host test belongs in this required lane; a platform exception
 needs an individual reason and a distinct coverage obligation. Add or update
 exact child names when adding/removing table cases or specification-law files.
 Do not auto-refresh the manifest in CI, suppress execution skips, weaken a
