@@ -8,11 +8,12 @@ candidate commit before merging.
 
 ## Scope and runner
 
-The reviewed inventory contains 199 ARM64-host-dependent roots. Linux ARM64
-executes 197 roots (192 compiler, two CLI, one assembler differential, one test
-runner dispatch, and one feature-attribute regression) and 59 named children. This includes all 192 ARM-host roots
+The reviewed inventory contains 200 ARM64-host-dependent roots. Linux ARM64
+executes 198 roots (193 compiler, two CLI, one assembler differential, one test
+runner dispatch, and one feature-attribute regression) and 61 named children. This includes all 192 ARM-host roots
 observed skipped in the former A–R shard, except the separately scoped SME test,
-plus `TestVerdictCache` and the five non-compiler roots.
+plus `TestVerdictCache`, the dispatch target-boundary regression, and the five
+non-compiler roots.
 
 Only two detected ARM64 roots are excluded, individually, in `EXCLUSIONS`:
 
@@ -65,7 +66,10 @@ Official runner/toolchain and platform references, checked 2026-10-09:
    real host `cc`, and the runtime ISA probe. Missing tools/host features fail.
    Once in the support shard, the feature-attribute regression compiles all four
    AArch64 catalog attributes with actual GCC and Clang, at baseline and stronger
-   architectures. Both named compiler children are required; skips fail.
+   architectures. Both named compiler children are required; skips fail. The compiler lane also
+   compiles generated baseline-to-CRC dispatch calls with GCC and Clang, at
+   `-O0`, `-O1`, and `-O2`, with and without checked dispatch and baseline CRC.
+   Both compiler children of that regression are required as well.
 4. Each anchored exact root selector is checked against the actual Go `-list`
    inventory. Execution uses `-race -count=1`, no inherited reducing `GOFLAGS`,
    and the existing 90-minute compiler / 45-minute other-package deadlines
@@ -108,13 +112,15 @@ dispatch (1,117.29 s), whole-package BLAKE3 (799.70 s), and Stage2 (672.80 s).
 `TestE2ENativeMapPageProvenByCases` was still running after 391.53 seconds, and
 101 later roots had not run. None of those 102 roots is claimed as passing.
 
-The three compiler shards contain 63, 65 and 64 roots respectively. The static
+The three compiler shards contain 64, 65 and 64 roots respectively. The static
 plan records the measured durations, the unfinished MapPage lower bound, and a
 60-second planning reserve for each unmeasured root. Those estimates distribute
 heavy completed roots and leave tail capacity; they are neither runtime limits
 nor evidence of correctness. Future actual native execution must establish every
 root and child, including MapPage and the previously unexecuted tail. Membership
-is not dynamically changed by CI timings or completion order.
+is not dynamically changed by CI timings or completion order. The later
+dispatch target-boundary regression is assigned to compiler-a with the same
+unmeasured planning reserve; it has no measurement in the historical run.
 
 ## Local validation and maintenance
 

@@ -51,6 +51,10 @@ type nativeDriver struct {
 	verdicts  map[*asm.Function]asm.Verdict
 	verified  *int
 	fromCache *int
+
+	// Serialized recipe bytes for the current closed search only. The driver,
+	// its checked context, and this scope are not shared between goroutines.
+	materializationRecipe []byte
 }
 
 // Materialize lowers the candidate's lane configuration.

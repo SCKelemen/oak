@@ -8,6 +8,7 @@
       "TestSiliconDifferential": "asm/silicon_test.go"
     },
     "./compiler": {
+      "TestAArch64DispatchLeafCCompilers": "compiler/e2e_dispatch_inline_test.go",
       "TestE2EAddressOfAsmFunction": "compiler/e2e_layout_builtins_test.go",
       "TestE2EAsmAdd": "compiler/e2e_asm_test.go",
       "TestE2EAsmCalleeSavedAndCall": "compiler/e2e_asm_test.go",
@@ -369,6 +370,9 @@
     ],
     "compiler/e2e_cross_test.go::crossLink": [
       "t.Skipf(\"no cross compiler for %s on this host (%v)\", tgt, err)"
+    ],
+    "compiler/e2e_dispatch_inline_test.go::TestAArch64DispatchLeafCCompilers": [
+      "t.Skipf(\"AArch64 %s compiler unavailable: %v\", family, err)"
     ],
     "compiler/e2e_dispatch_test.go::TestE2EDispatchSelectsSVEUnderQEMU": [
       "t.Skip(\"qemu-system-aarch64 not present\")",
@@ -743,6 +747,10 @@
       ]
     },
     "./compiler": {
+      "TestAArch64DispatchLeafCCompilers": [
+        "gcc",
+        "clang"
+      ],
       "TestE2ENativeUnrollGeneratedNames": [
         "native",
         "c"

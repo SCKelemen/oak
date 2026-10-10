@@ -13,6 +13,16 @@ import (
 )
 
 func TestNativeAllocationReuseDoesNotReuseAdmissionOrVerdicts(t *testing.T) {
+	for _, scoped := range []bool{false, true} {
+		name := "live-recipe"
+		if scoped {
+			name = "scoped-recipe"
+		}
+		t.Run(name, func(t *testing.T) { testNativeAllocationAdmissionAndVerdicts(t, scoped) })
+	}
+}
+
+func testNativeAllocationAdmissionAndVerdicts(t *testing.T, scoped bool) {
 	t.Setenv("OAK_VERIFY_CACHE", "0")
 	t.Setenv("OAK_VERIFY_BUDGET", "")
 	p := parser.New(layout.New(scanner.New("calc: (): u32 { u32(7) }")))
@@ -24,6 +34,21 @@ func TestNativeAllocationReuseDoesNotReuseAdmissionOrVerdicts(t *testing.T) {
 	verified, cached := 0, 0
 	driver := &nativeDriver{source: fn, functions: map[string]*ast.FunctionStatement{"calc": fn},
 		symbols: map[string]bool{"calc": true}, verdicts: map[*asm.Function]asm.Verdict{}, verified: &verified, fromCache: &cached}
+	if scoped {
+		_, err := driver.withMaterializationRecipe(func() (*opt.Selection, error) {
+			checkNativeAllocationAdmissionAndVerdicts(t, driver)
+			return nil, nil
+		})
+		if err != nil || driver.materializationRecipe != nil {
+			t.Fatalf("recipe survived candidate admission and validation: %v", err)
+		}
+	} else {
+		checkNativeAllocationAdmissionAndVerdicts(t, driver)
+	}
+}
+
+func checkNativeAllocationAdmissionAndVerdicts(t *testing.T, driver *nativeDriver) {
+	t.Helper()
 	lower := func() *opt.Candidate {
 		t.Helper()
 		candidate := opt.Identity(nativegen.Lane{Arch: asm.ArchArm64, NoReductions: true, Reallocate: true})
@@ -44,7 +69,7 @@ func TestNativeAllocationReuseDoesNotReuseAdmissionOrVerdicts(t *testing.T) {
 			t.Fatalf("candidate did not freshly prove: %+v", verdict)
 		}
 	}
-	if verified != 2 || cached != 0 || driver.compileSession.ReallocationStats().Hits != 1 {
+	if *driver.verified != 2 || *driver.fromCache != 0 || driver.compileSession.ReallocationStats().Hits != 1 {
 		t.Fatal("an allocation hit bypassed independent validation")
 	}
 	// Same legal footprint, wrong returned constant: an allocation hit is

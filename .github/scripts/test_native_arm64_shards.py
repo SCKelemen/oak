@@ -112,12 +112,12 @@ class ShardEvidenceTests(unittest.TestCase):
             self.aggregate(result, directory)
 
     def test_complete_evidence_covers_every_root_and_child_exactly_once(self):
-        self.assertEqual(self.aggregate(), {'shards': list(gate.SHARDS), 'roots': 197, 'children': 59})
+        self.assertEqual(self.aggregate(), {'shards': list(gate.SHARDS), 'roots': 198, 'children': 61})
         # These files are conveniences for readers, never proof for the gate.
         for shard, packages in self.plan['shards'].items():
             for package in packages:
                 (self.artifact(shard) / (self.label(package) + '-passed.json')).write_text('not authoritative JSON')
-        self.assertEqual(self.aggregate()['roots'], 197)
+        self.assertEqual(self.aggregate()['roots'], 198)
 
     def test_artifact_and_event_permutations_preserve_exact_coverage(self):
         for artifact in self.results.iterdir():
@@ -134,7 +134,7 @@ class ShardEvidenceTests(unittest.TestCase):
                 self.write_events(path, permuted)
         iterdir = Path.iterdir
         with mock.patch.object(Path, 'iterdir', lambda path: iter(reversed(list(iterdir(path))))):
-            self.assertEqual(self.aggregate(), {'shards': list(gate.SHARDS), 'roots': 197, 'children': 59})
+            self.assertEqual(self.aggregate(), {'shards': list(gate.SHARDS), 'roots': 198, 'children': 61})
             # A permutation must not hide a missing root or malformed event.
             path = self.artifact() / 'compiler.jsonl'
             events = [json.loads(line) for line in path.read_text().splitlines()]
@@ -144,9 +144,9 @@ class ShardEvidenceTests(unittest.TestCase):
 
     def test_cli_uses_repository_paths_and_requires_all_inputs(self):
         repo = Path(gate.__file__).resolve().parents[2]
-        with mock.patch.object(gate, 'aggregate', return_value={'roots': 197}) as aggregate:
+        with mock.patch.object(gate, 'aggregate', return_value={'roots': 198}) as aggregate:
             self.assertEqual(gate.main(['--aggregate', '--results-dir', str(self.results),
-                                        '--matrix-result', 'success']), {'roots': 197})
+                                        '--matrix-result', 'success']), {'roots': 198})
             aggregate.assert_called_once_with(repo, self.results,
                                               repo / '.github/scripts/native_arm64_inventory.json',
                                               repo / '.github/scripts/native_arm64_shards.json', 'success')
@@ -159,10 +159,10 @@ class ShardEvidenceTests(unittest.TestCase):
         plan = runner.MANIFEST.with_name('native_arm64_shards.json')
         shards = gate.load_shards(self.selected, self.manifest, plan)
         roots = [(package, name) for packages in shards.values() for package, names in packages.items() for name in names]
-        self.assertEqual(len(roots), 197)
-        self.assertEqual(len(set(roots)), 197)
+        self.assertEqual(len(roots), 198)
+        self.assertEqual(len(set(roots)), 198)
         self.assertEqual(set(roots), {(p, name) for p, names in self.selected.items() for name in names})
-        self.assertEqual(sum(len(names) for roots in self.manifest['children'].values() for names in roots.values()), 59)
+        self.assertEqual(sum(len(names) for roots in self.manifest['children'].values() for names in roots.values()), 61)
 
     def test_shard_selection_is_sorted_and_children_stay_with_their_root(self):
         for packages in self.plan['shards'].values():

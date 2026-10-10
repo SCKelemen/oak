@@ -158,7 +158,9 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// last. A refused or weaker form is reported as set aside.
 		driver := &nativeDriver{source: source, functions: functions, externs: externs, records: records, adts: adts, constants: constants, tc: tc, tcFingerprint: tcFingerprint, symbols: symbols, declarations: declarations, cacheDir: cacheDir, verdicts: map[*asm.Function]asm.Verdict{}, verified: &verified, fromCache: &fromCache}
 		facts := nativegen.FunctionFacts(source, tc)
-		selection, err := search.Run(fn.Name.Value, opt.Identity(nativegen.PlainLane(lane)), facts, driver)
+		selection, err := driver.withMaterializationRecipe(func() (*opt.Selection, error) {
+			return search.Run(fn.Name.Value, opt.Identity(nativegen.PlainLane(lane)), facts, driver)
+		})
 		if stats := driver.compileSession.ReallocationStats(); os.Getenv("OAK_NATIVE_TIMING") != "" && stats.Requests > 0 {
 			fmt.Fprintf(os.Stderr, "timing: %s allocation reuse: %d/%d hits, %d entries, %d retained payload bytes\n",
 				fn.Name.Value, stats.Hits, stats.Requests, stats.Entries, stats.PayloadBytes)

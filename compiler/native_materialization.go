@@ -1,11 +1,12 @@
 package compiler
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"hash"
+	"io"
 	"sort"
 	"strconv"
 
@@ -33,6 +34,40 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 	// candidate's body.
 	writeNativeMaterializationPart(digest, "oak.native.materialization.v33")
 	writeNativeLane(digest, lane)
+	if d.materializationRecipe != nil {
+		_, _ = digest.Write(d.materializationRecipe)
+	} else {
+		d.writeMaterializationRecipe(digest)
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+// withMaterializationRecipe retains only the recipe's serialized bytes during
+// one production native search. The caller must own the checked source context
+// exclusively and keep it unchanged until run returns. Reentrant use and
+// callbacks that mutate that context are not supported. Candidate lanes remain
+// live inputs, and no admission, body, or verdict is retained here.
+//
+// The production scope begins after lane/OptIR/facts setup and ends before the
+// selected body marks its source native-backed. Rebuilding for each search
+// observes changes through source/map aliases and declarations; type facts
+// retain the existing tcFingerprint override policy. Future in-scope mutations
+// must invalidate/rebuild this snapshot before another key is requested.
+func (d *nativeDriver) withMaterializationRecipe(run func() (*opt.Selection, error)) (*opt.Selection, error) {
+	if d.materializationRecipe != nil {
+		panic("compiler: native materialization recipe scope is already active")
+	}
+	var recipe bytes.Buffer
+	d.writeMaterializationRecipe(&recipe)
+	d.materializationRecipe = recipe.Bytes()
+	defer func() { d.materializationRecipe = nil }()
+	return run()
+}
+
+// writeMaterializationRecipe is the unchanged suffix after the candidate lane
+// in the v33 key. Its length-delimited bytes are shared only within the closed
+// immutable-source search scope; direct MaterializationKey calls stay live.
+func (d *nativeDriver) writeMaterializationRecipe(digest io.Writer) {
 	if d.source == nil {
 		writeNativeMaterializationPart(digest, "source:nil")
 	} else {
@@ -48,10 +83,9 @@ func (d *nativeDriver) MaterializationKey(candidate *opt.Candidate) (string, err
 		fingerprint = d.tc.NativeLoweringFingerprint()
 	}
 	writeNativeMaterializationPart(digest, "typechecker", fingerprint)
-	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
-func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
+func writeNativeLane(digest io.Writer, lane nativegen.Lane) {
 	writeNativeMaterializationPart(digest, "lane", lane.Arch)
 	flags := []struct {
 		name    string
@@ -171,7 +205,7 @@ func writeNativeLane(digest hash.Hash, lane nativegen.Lane) {
 	}
 }
 
-func writeNativeFunctions(digest hash.Hash, functions map[string]*ast.FunctionStatement) {
+func writeNativeFunctions(digest io.Writer, functions map[string]*ast.FunctionStatement) {
 	names := nativeMaterializationNames(functions)
 	writeNativeMaterializationPart(digest, "functions", strconv.Itoa(len(names)))
 	for _, name := range names {
@@ -184,7 +218,7 @@ func writeNativeFunctions(digest hash.Hash, functions map[string]*ast.FunctionSt
 	}
 }
 
-func writeNativeRecords(digest hash.Hash, records map[string]*ast.RecordLiteral) {
+func writeNativeRecords(digest io.Writer, records map[string]*ast.RecordLiteral) {
 	names := nativeMaterializationNames(records)
 	writeNativeMaterializationPart(digest, "records", strconv.Itoa(len(names)))
 	for _, name := range names {
@@ -197,7 +231,7 @@ func writeNativeRecords(digest hash.Hash, records map[string]*ast.RecordLiteral)
 	}
 }
 
-func writeNativeADTs(digest hash.Hash, adts map[string]*ast.ADTType) {
+func writeNativeADTs(digest io.Writer, adts map[string]*ast.ADTType) {
 	names := nativeMaterializationNames(adts)
 	writeNativeMaterializationPart(digest, "adts", strconv.Itoa(len(names)))
 	for _, name := range names {
@@ -210,7 +244,7 @@ func writeNativeADTs(digest hash.Hash, adts map[string]*ast.ADTType) {
 	}
 }
 
-func writeNativeConstants(digest hash.Hash, constants map[string]asm.Constant) {
+func writeNativeConstants(digest io.Writer, constants map[string]asm.Constant) {
 	names := nativeMaterializationNames(constants)
 	writeNativeMaterializationPart(digest, "constants", strconv.Itoa(len(names)))
 	for _, name := range names {
@@ -228,7 +262,7 @@ func nativeMaterializationNames[T any](values map[string]T) []string {
 	return names
 }
 
-func writeNativeMaterializationPart(digest hash.Hash, values ...string) {
+func writeNativeMaterializationPart(digest io.Writer, values ...string) {
 	for _, value := range values {
 		var length [8]byte
 		binary.BigEndian.PutUint64(length[:], uint64(len(value)))
