@@ -44,8 +44,9 @@ func canonicalBitwise(t, left, right *term) *term {
 	if (t.op == "shl" || t.op == "shr" || t.op == "sar") && t.width > 0 && t.width <= 64 && right.kind == termConst && right.value%uint64(t.width) == 0 {
 		return left // shift counts wrap modulo the operation's width
 	}
-	if t.op == "ror" && (t.width == 32 || t.width == 64) && right.kind == termConst {
-		// These are the two widths modeled by evalBinaryExtra's rotate.
+	if t.op == "ror" && (t.width == 32 || t.width == 64) && t.left.width == t.width && t.right.width == t.width && right.kind == termConst {
+		// Normalize fixed rotates only at the ordinary register widths.
+		// Mixed-width operands retain their original width boundaries.
 		k := right.value % uint64(t.width)
 		if k == 0 {
 			return left

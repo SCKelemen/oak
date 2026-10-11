@@ -1334,6 +1334,9 @@ func (t *term) declaredWidth() int {
 func binaryTerm(op string, left, right *term) *term {
 	if left.kind == termConst && right.kind == termConst {
 		m := mask(left.width)
+		if op == "ror" {
+			return constTerm(evalBinary(op, left.value&m, right.value&mask(right.width), left.width), left.width)
+		}
 		return constTerm(evalBinary(op, left.value&m, right.value&m, left.width), left.width)
 	}
 	t := &term{kind: termBinary, width: left.width, op: op, left: left, right: right}
@@ -1367,6 +1370,23 @@ func binaryTerm(op string, left, right *term) *term {
 		}
 	}
 	return t
+}
+
+// rebuildROR replaces a rotate's children without changing its operation
+// width or losing either operand's original width boundary. In particular,
+// an arm hoisted from a conditional still passes through that conditional's
+// width before the rotate reads it. Unchanged terms stay shared; fresh nodes
+// carry no analysis metadata from the old shape.
+func rebuildROR(t, left, right *term) *term {
+	if left == t.left && right == t.right {
+		return t
+	}
+	left = adaptWidth(left, t.left.width)
+	right = adaptWidth(right, t.right.width)
+	if left.kind == termConst && right.kind == termConst {
+		return constTerm(evalBinary("ror", left.value&mask(left.width), right.value&mask(right.width), t.width), t.width)
+	}
+	return &term{kind: termBinary, width: t.width, op: "ror", left: left, right: right}
 }
 
 // sameTermBudget bounds the nodes a structural comparison of two terms
@@ -8789,9 +8809,15 @@ func hoistIte(t *term) (cond, left, right *term, ok bool) {
 		return t.cond, t.left, t.right, true
 	case termBinary:
 		if c, a, b, ok := hoistIte(t.right); ok {
+			if t.op == "ror" {
+				return c, rebuildROR(t, t.left, a), rebuildROR(t, t.left, b), true
+			}
 			return c, binaryTerm(t.op, t.left, a), binaryTerm(t.op, t.left, b), true
 		}
 		if c, a, b, ok := hoistIte(t.left); ok {
+			if t.op == "ror" {
+				return c, rebuildROR(t, a, t.right), rebuildROR(t, b, t.right), true
+			}
 			return c, binaryTerm(t.op, a, t.right), binaryTerm(t.op, b, t.right), true
 		}
 	}
@@ -12751,6 +12777,8 @@ func canonicalMemo(t *term, memo *canonicalTable, boolean map[*term]bool) *term 
 			if out == nil {
 				if left == t.left && right == t.right {
 					out = t
+				} else if t.op == "ror" {
+					out = rebuildROR(t, left, right)
 				} else {
 					out = binaryTerm(t.op, left, right)
 					out = adaptWidth(out, t.width)
@@ -12953,6 +12981,9 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 			fmt.Fprintf(os.Stderr, "verify %s: the same term on both sides (%d nodes)\n", fn.Name, termSize(asmTerm, map[*term]int{}))
 		}
 		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (the same term on both sides)%s", fn.Name, note)}
+	}
+	if structurallyEqualByCases(asmTerm, oakTerm) {
+		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (the same term under every structural branch case)%s", fn.Name, note)}
 	}
 
 	// Beyond the linear form: bit-blast both sides. Equal canonical nodes

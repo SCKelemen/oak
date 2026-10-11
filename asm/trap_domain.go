@@ -546,7 +546,11 @@ func settleBySpelling(t *term, facts []*term) *term {
 			} else {
 				left, right := walk(t.left), walk(t.right)
 				if left != t.left || right != t.right {
-					out = binaryTerm(t.op, left, right)
+					if t.op == "ror" {
+						out = rebuildROR(t, left, right)
+					} else {
+						out = binaryTerm(t.op, left, right)
+					}
 				}
 			}
 		case termApply:

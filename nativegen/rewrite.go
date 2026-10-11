@@ -38,9 +38,7 @@ type RewriteSite struct {
 }
 
 // RewriteSites reports the layer-A rewrites a lowering applied to a body.
-func RewriteSites(fn *asm.Function) []RewriteSite { return rewriteSitesOf[fn] }
-
-var rewriteSitesOf = map[*asm.Function][]RewriteSite{}
+func RewriteSites(fn *asm.Function) []RewriteSite { return readLoweringMetadata(fn).rewriteSitesOf }
 
 // Unrolled reports how many reductions layer A unrolled in a body (the
 // unroll transform's count).
@@ -87,7 +85,7 @@ func StrengthReduced(fn *asm.Function) int { return countSites(fn, "strength red
 
 func countSites(fn *asm.Function, rewrite string, decidedOnly bool) int {
 	n := 0
-	for _, s := range rewriteSitesOf[fn] {
+	for _, s := range readLoweringMetadata(fn).rewriteSitesOf {
 		if s.Rewrite == rewrite && (!decidedOnly || s.Decided) {
 			n++
 		}

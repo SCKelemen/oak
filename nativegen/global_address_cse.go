@@ -169,6 +169,6 @@ func globalAddressScratch(clobbers []asm.Register, items []asm.Item, from int) (
 
 // SharedGlobalAddresses reports how many repeated scalar-global address pairs
 // a verifier-gated candidate removed.
-func SharedGlobalAddresses(fn *asm.Function) int { return sharedGlobalAddresses[fn] }
-
-var sharedGlobalAddresses = map[*asm.Function]int{}
+func SharedGlobalAddresses(fn *asm.Function) int {
+	return readLoweringMetadata(fn).sharedGlobalAddresses
+}

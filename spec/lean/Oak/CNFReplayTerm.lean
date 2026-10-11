@@ -64,12 +64,17 @@ inductive Term where
   | constant (value : Bool)
   | input (index : Nat)
   | binary (op : Nat) (left right : Term)
+  | complement (term : Term)
+  | ite (condition thenValue elseValue : Term)
   deriving Repr
 
 def Term.eval (assignment : Assignment) : Term → Bool
   | .constant value => value
   | .input index => assignment index
   | .binary op left right => binaryValue op (left.eval assignment) (right.eval assignment)
+  | .complement term => !(term.eval assignment)
+  | .ite condition thenValue elseValue =>
+      if condition.eval assignment then thenValue.eval assignment else elseValue.eval assignment
 
 /-- Inputs must designate actual allocated input slots, never gate outputs.
 The max-int guard models the separate nonnegative edge-construction bound.
@@ -84,6 +89,13 @@ def replayTerm (snapshot : Snapshot) (maxInt : Nat) : Term → Option Nat
       match replayTerm snapshot maxInt left, replayTerm snapshot maxInt right with
       | some x, some y => replayApply snapshot.variables maxInt snapshot.memo op x y
       | _, _ => none
+
+  | .complement term => (replayTerm snapshot maxInt term).map flipEdge
+  | .ite condition thenValue elseValue =>
+      match replayTerm snapshot maxInt condition, replayTerm snapshot maxInt thenValue,
+          replayTerm snapshot maxInt elseValue with
+      | some c, some t, some e => replayIte snapshot.variables maxInt snapshot.memo c t e
+      | _, _, _ => none
 
 /-- Replay reads designated source bits from the initial assignment. Gate
 evaluation may change internal outputs but must preserve these input slots.
@@ -118,6 +130,31 @@ theorem replayTerm_sound {snapshot : Snapshot} {maxInt : Nat}
               simp only [leftRoot, rightRoot] at replayed
               rw [replayApply_sound sound replayed, leftIH leftRoot, rightIH rightRoot]
               rfl
+
+  | complement term ih =>
+      simp only [replayTerm] at replayed
+      cases root : replayTerm snapshot maxInt term with
+      | none => simp [root] at replayed
+      | some value =>
+          simp only [root, Option.map_some, Option.some.injEq] at replayed
+          subst edge
+          rw [evalEdge_flip, ih root]
+          rfl
+  | ite condition thenValue elseValue conditionIH thenIH elseIH =>
+      simp only [replayTerm] at replayed
+      cases conditionRoot : replayTerm snapshot maxInt condition with
+      | none => simp [conditionRoot] at replayed
+      | some c =>
+          cases thenRoot : replayTerm snapshot maxInt thenValue with
+          | none => simp [conditionRoot, thenRoot] at replayed
+          | some t =>
+              cases elseRoot : replayTerm snapshot maxInt elseValue with
+              | none => simp [conditionRoot, thenRoot, elseRoot] at replayed
+              | some e =>
+                  simp only [conditionRoot, thenRoot, elseRoot] at replayed
+                  rw [replayIte_sound sound replayed, conditionIH conditionRoot,
+                    thenIH thenRoot, elseIH elseRoot]
+                  rfl
 
 /-- Build the same low-to-high OR-of-XOR shape as the native word audit.
 The pairs explicitly supply corresponding result bits; no source-to-bit

@@ -212,6 +212,9 @@
     }
   },
   "skip_sites": {
+    "asm/cnf_typed_capture_test.go::TestTypedCNFSavedCapture": [
+      "t.Skip(\"retained-capture gate is explicit\")"
+    ],
     "asm/aarch64_bitwise_function_lean_test.go::TestAArch64BitwiseFunctionMatchesLean": [
       "t.Skip(\"lake unavailable; formal.yml requires this oracle\")"
     ],

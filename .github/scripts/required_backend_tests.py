@@ -148,14 +148,14 @@ def check_inventory(suite):
         raise ValueError(f"{suite.package}: expected {suite.roots}, selected {names}")
 
 
-def run_suite(suite):
-    command = ["go", "test", "-json", "-count=1", "-timeout=" + suite.timeout,
+def run_suite(suite, *, race=False, env=None):
+    command = ["go", "test", "-json", "-count=1", *(["-race"] if race else []), "-timeout=" + suite.timeout,
                suite.package, "-run", suite.pattern]
     print("Required backend checks: " + " ".join(command), flush=True)
     results = RequiredResults(suite)
     # Merge stderr so compiler/process errors cannot escape JSON validation.
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          text=True, encoding="utf-8") as process:
+                          text=True, encoding="utf-8", env=env) as process:
         try:
             for line in process.stdout:
                 try:

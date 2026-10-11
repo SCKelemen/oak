@@ -784,7 +784,8 @@ func (bl *blaster) blastUncached(t *term) []int {
 		out = bl.multiply(left, right)
 	case "ror":
 		if t.right.kind == termConst {
-			out = rotateRight(left, int(t.right.value%uint64(t.width)))
+			count := t.right.value & mask(t.right.width) & mask(t.width)
+			out = rotateRight(left, int(count%uint64(t.width)))
 		} else {
 			out = bl.rotateBarrel(left, right)
 		}
@@ -1034,15 +1035,23 @@ func rotateRight(a []int, k int) []int {
 
 // rotateBarrel rotates by a term count reduced modulo the width.
 func (bl *blaster) rotateBarrel(a, count []int) []int {
-	stages := bits.Len(uint(len(a) - 1))
+	n := len(a)
 	current := a
-	for s := 0; s < stages; s++ {
-		rotated := rotateRight(current, 1<<uint(s))
+	// Bit s contributes 2^s modulo n. For a power-of-two width the
+	// distance becomes zero after the original log2(n) stages; otherwise
+	// every adapted count bit can contribute to the rotation.
+	distance := 1 % n
+	for s := 0; s < n && distance != 0; s++ {
+		rotated := rotateRight(current, distance)
 		next := make([]int, len(a))
 		for i := range a {
 			next[i] = bl.ite(count[s], rotated[i], current[i])
 		}
 		current = next
+		if bl.exceeded() {
+			return nil
+		}
+		distance = (2 * distance) % n
 	}
 	return current
 }

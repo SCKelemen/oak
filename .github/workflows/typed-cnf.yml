@@ -1,0 +1,71 @@
+name: Typed CNF supplied-instance proof
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  typed-cnf:
+    name: Required typed CNF kernel closure
+    runs-on: ubuntu-24.04
+    # Checkout 5 + Go setup 5 + public tool/dependency setup 20 + bounded gate
+    # 155 + evidence upload 5 minutes. The proof gate enforces 9,000 charged seconds.
+    timeout-minutes: 190
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 5
+
+      - uses: actions/setup-go@v5
+        timeout-minutes: 5
+        with:
+          go-version: '1.27.1'
+          cache: false
+
+      - name: Install the pinned public Lean release and Go dependencies
+        timeout-minutes: 20
+        shell: bash
+        env:
+          GOENV: 'off'
+          GOWORK: 'off'
+          GOTOOLCHAIN: local
+          GOPATH: ${{ runner.temp }}/typed-cnf-dependencies
+          GOMODCACHE: ${{ runner.temp }}/typed-cnf-dependencies/pkg/mod
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --max-time 180 \
+            https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz \
+            --output "$RUNNER_TEMP/typed-cnf-elan.tar.gz"
+          mkdir "$RUNNER_TEMP/typed-cnf-elan"
+          tar -xzf "$RUNNER_TEMP/typed-cnf-elan.tar.gz" -C "$RUNNER_TEMP/typed-cnf-elan"
+          "$RUNNER_TEMP/typed-cnf-elan/elan-init" -y --default-toolchain none
+          "$HOME/.elan/bin/elan" toolchain install leanprover/lean4:v4.33.1
+          go mod download
+
+      - name: Regenerate and kernel-check the exact supplied instance
+        timeout-minutes: 155
+        shell: bash
+        run: |
+          set -euo pipefail
+          typed_cnf_lean="$(cd spec/lean && "$HOME/.elan/bin/elan" which lean)"
+          /usr/bin/timeout --signal=TERM --kill-after=5s 9295s \
+            python3 -B spec/lean/typed_cnf/run.py all \
+            --repo "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/typed-cnf-proof" \
+            --ledger "$RUNNER_TEMP/typed-cnf-allocation" \
+            --go "$(command -v go)" --lean "$typed_cnf_lean" \
+            --cc /usr/bin/gcc --cxx /usr/bin/g++ \
+            --modcache "$RUNNER_TEMP/typed-cnf-dependencies/pkg/mod"
+
+      - name: Preserve bounded proof evidence
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@v4
+        with:
+          name: typed-cnf-proof-evidence
+          path: |
+            ${{ runner.temp }}/typed-cnf-proof/evidence
+            ${{ runner.temp }}/typed-cnf-allocation
+          if-no-files-found: error

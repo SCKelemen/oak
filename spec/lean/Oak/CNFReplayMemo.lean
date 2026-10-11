@@ -54,6 +54,31 @@ theorem decoded_binary_value {record : EncodedGate} {gate : RawGate}
   rcases casesOp with rfl | rfl | rfl
   all_goals simp [operation, RawGate.value, binaryValue, leftValue, rightValue]
 
+private theorem ite_key_fields {record : EncodedGate}
+    {condition thenValue elseValue : Nat}
+    (keyed : memoKey? record = some (.ite condition thenValue elseValue)) :
+    record.op = 3 ∧ record.x = condition ∧ record.y = thenValue ∧
+      record.z = elseValue := by
+  unfold memoKey? at keyed
+  split at keyed <;> (try split at keyed) <;> simp_all
+
+theorem decoded_ite_value {record : EncodedGate} {gate : RawGate}
+    {condition thenValue elseValue : Nat}
+    (decoded : record.decode? = some gate)
+    (keyed : memoKey? record = some (.ite condition thenValue elseValue))
+    (assignment : Assignment) :
+    gate.value assignment = if evalEdge assignment condition then
+      evalEdge assignment thenValue else evalEdge assignment elseValue := by
+  obtain ⟨operation, conditionEq, thenEq, elseEq⟩ := ite_key_fields keyed
+  obtain ⟨conditionLiteral, thenLiteral, elseLiteral,
+    conditionDecoded, thenDecoded, elseDecoded, gateEq⟩ :=
+      decodeGate_ite operation decoded
+  subst gate
+  simp only [RawGate.value]
+  rw [evalLiteral_of_decoded_edge conditionDecoded,
+    evalLiteral_of_decoded_edge thenDecoded, evalLiteral_of_decoded_edge elseDecoded,
+    conditionEq, thenEq, elseEq]
+
 /-- Accepted allocation plus gate consistency gives the replay's entire
 memo-soundness condition, including every lookup rather than only the
 gate-to-memo direction checked by the production walk. -/
@@ -61,12 +86,20 @@ theorem check_memo_sound {snapshot : Snapshot} {gates : List RawGate}
     (accepted : Oak.CNFDenseAllocation.check snapshot = some gates)
     (assignment : Assignment) (consistent : GateConsistent assignment gates) :
     MemoSound assignment snapshot.memo := by
-  intro op x y output admitted found
-  obtain ⟨record, gate, _, decoded, member, keyed, outputEq⟩ :=
-    check_memo_has_gate accepted found
-  have holds := consistent gate member
-  unfold RawGate.Holds at holds
-  rw [decodeGate_output decoded, outputEq] at holds
-  exact holds.trans (decoded_binary_value admitted decoded keyed assignment)
+  constructor
+  · intro op x y output admitted found
+    obtain ⟨record, gate, _, decoded, member, keyed, outputEq⟩ :=
+      check_memo_has_gate accepted found
+    have holds := consistent gate member
+    unfold RawGate.Holds at holds
+    rw [decodeGate_output decoded, outputEq] at holds
+    exact holds.trans (decoded_binary_value admitted decoded keyed assignment)
+  · intro condition thenValue elseValue output found
+    obtain ⟨record, gate, _, decoded, member, keyed, outputEq⟩ :=
+      check_memo_has_gate accepted found
+    have holds := consistent gate member
+    unfold RawGate.Holds at holds
+    rw [decodeGate_output decoded, outputEq] at holds
+    exact holds.trans (decoded_ite_value decoded keyed assignment)
 
 end Oak.CNFReplayMemo

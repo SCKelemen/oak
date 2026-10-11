@@ -31,11 +31,12 @@ func (session *CompileSession) reallocate(out *asm.Function, evictLeafCalleeSave
 	if err != nil {
 		return unsupported("%v", err)
 	}
-	// Keep the fresh candidate's source, signature, maps, and pointer-keyed
+	// Keep the fresh candidate's source, signature, maps, and function-owned
 	// lowering metadata. Only this deterministic stage's payload is reused.
 	out.Items, out.Clobbers = re.Items, re.Clobbers
-	reallocated[out], promotedSlots[out] = summary.Sites, summary.Promoted
-	evictedLeafCalleeSaves[out] = summary.LeafEvicted
-	retainedCalleeSaveCarriers[out] = summary.LeafRetained
+	metadata := editLoweringMetadata(out)
+	metadata.reallocated, metadata.promotedSlots = summary.Sites, summary.Promoted
+	metadata.evictedLeafCalleeSaves = summary.LeafEvicted
+	metadata.retainedCalleeSaveCarriers = summary.LeafRetained
 	return nil
 }

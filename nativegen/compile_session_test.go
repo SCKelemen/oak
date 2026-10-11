@@ -1,7 +1,6 @@
 package nativegen
 
 import (
-	"reflect"
 	"testing"
 
 	"github.com/SCKelemen/oak/asm"
@@ -43,7 +42,7 @@ func TestCompileSessionMatchesStandaloneAcrossLatePasses(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !reflect.DeepEqual(got, want) || Reallocated(got) != Reallocated(want) || PromotedSlots(got) != PromotedSlots(want) || Scheduled(got) != Scheduled(want) || Fused(got) != Fused(want) {
+				if !equalLoweredFunctions(got, want) || Reallocated(got) != Reallocated(want) || PromotedSlots(got) != PromotedSlots(want) || Scheduled(got) != Scheduled(want) || Fused(got) != Fused(want) {
 					t.Fatalf("lane %d changed body or lowering counters\nwant %s\ngot %s", i, Describe(want), Describe(got))
 				}
 				if findings := asm.Check(got, fn, map[string]bool{"calc": true}); len(findings) != 0 {

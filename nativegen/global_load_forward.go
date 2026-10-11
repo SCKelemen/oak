@@ -237,6 +237,4 @@ func globalAddressBefore(fn *asm.Function, at, base int) (asm.Global, bool) {
 
 // ForwardedGlobalLoads reports exact scalar-global store/load pairs forwarded
 // by a verifier-gated candidate.
-func ForwardedGlobalLoads(fn *asm.Function) int { return forwardedGlobalLoads[fn] }
-
-var forwardedGlobalLoads = map[*asm.Function]int{}
+func ForwardedGlobalLoads(fn *asm.Function) int { return readLoweringMetadata(fn).forwardedGlobalLoads }

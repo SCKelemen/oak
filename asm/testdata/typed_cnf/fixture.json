@@ -1,0 +1,38 @@
+{
+  "format": "oak-typed-cnf-fixture-v1",
+  "profile": "raw-implication-independent-ew-reads-v1",
+  "roots": {
+    "premise": 104,
+    "left": 207,
+    "right": 371
+  },
+  "declarations": [
+    {
+      "name": "ew[?]",
+      "width": 32
+    },
+    {
+      "name": "le.bytes_at",
+      "width": 32
+    },
+    {
+      "name": "le.state_at",
+      "width": 32
+    },
+    {
+      "name": "signed",
+      "width": 1
+    },
+    {
+      "name": "v",
+      "width": 64
+    },
+    {
+      "name": "width",
+      "width": 32
+    }
+  ],
+  "nodes_sha256": "21abfe4ad490408de1460361d8c8d0e89c37ceb1dd4d4b0e317bb9066eff9366",
+  "cnf_sha256": "ca659ecd4ed22d4e5d461edb10999857acfb6a008572baee77d0bd35cacb962a",
+  "certificate_sha256": "3d189c4e459438315c2bef4485ae81dda1ad4c2e931a5ff6879c910fcbde66c4"
+}

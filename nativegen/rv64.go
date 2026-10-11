@@ -213,7 +213,7 @@ func compileRV64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionSt
 			if stage.judged {
 				out.Body = stage.body
 			}
-			rewriteSitesOf[out] = stage.sites
+			editLoweringMetadata(out).rewriteSitesOf = stage.sites
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
 			return nil, err
@@ -628,10 +628,10 @@ func compileRV64Body(fn *ast.FunctionStatement, functions map[string]*ast.Functi
 		}
 	}
 	if g.elided > 0 {
-		elidedGuards[out] = g.elided
+		editLoweringMetadata(out).elidedGuards = g.elided
 	}
 	if g.reduced > 0 {
-		reducedOps[out] = g.reduced
+		editLoweringMetadata(out).reducedOps = g.reduced
 	}
 	return out, nil
 }

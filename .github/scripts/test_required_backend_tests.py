@@ -109,6 +109,18 @@ class RequiredBackendTests(unittest.TestCase):
                 required.run_suite(self.suite)
         self.assertEqual(call.call_args.args[0], ["go", "test", "-json", "-count=1", "-timeout=10m", "./compiler", "-run", "^(TestRequired)$"])
 
+    def test_runner_forwards_required_race_and_environment(self):
+        process = MagicMock()
+        process.stdout = iter([])
+        process.wait.return_value = 0
+        process.__enter__.return_value = process
+        env = {"OAK_REQUIRE_ROR_TWIN": "1", "OAK_ROR_TWIN_RECEIPT": "/fresh/receipt.json"}
+        with patch.object(required.subprocess, "Popen", return_value=process) as call:
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "required tests did not pass"):
+                required.run_suite(self.suite, race=True, env=env)
+        self.assertEqual(call.call_args.args[0], ["go", "test", "-json", "-count=1", "-race", "-timeout=10m", "./compiler", "-run", "^(TestRequired)$"])
+        self.assertIs(call.call_args.kwargs["env"], env)
+
     def test_cli_reports_inventory_process_and_output_errors(self):
         for error in (OSError("cannot launch"), UnicodeError("invalid output"), required.subprocess.CalledProcessError(2, ["go"])):
             with self.subTest(error=error), patch.object(required, "run_suite", side_effect=error):
