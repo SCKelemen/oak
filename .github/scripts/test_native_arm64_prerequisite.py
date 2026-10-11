@@ -1,6 +1,7 @@
 """Runner deadline and process evidence tests; no Oak/native builds are run."""
 import io
 import copy
+import ctypes
 import hashlib
 import json
 import os
@@ -14,6 +15,128 @@ import unittest
 from unittest import mock
 
 import native_arm64_prerequisite as prerequisite
+
+
+def _fixture_process_identity(pid):
+    raw = Path(f'/proc/{pid}/stat').read_text()
+    fields = raw.rsplit(') ', 1)[1].split()
+    return dict(pid=int(raw.split(' ', 1)[0]), parent_pid=int(fields[1]),
+                group=int(fields[2]), session=int(fields[3]), starttime=int(fields[19]),
+                state=fields[0])
+
+
+_FORK_DESCENDANT_SOURCE = (
+    "import json,os,pathlib,sys,time\n"
+    "child=os.fork()\n"
+    "if child:\n"
+    " record={'pid':child,'parent_pid':os.getpid(),'owner_pid':os.getppid()}\n"
+    " if sys.platform.startswith('linux'):\n"
+    "  child_stat=pathlib.Path(f'/proc/{child}/stat').read_text().rsplit(') ',1)[1].split()\n"
+    "  parent_stat=pathlib.Path('/proc/self/stat').read_text().rsplit(') ',1)[1].split()\n"
+    "  record.update(starttime=int(child_stat[19]),original_parent_pid=int(child_stat[1]),\n"
+    "                parent_starttime=int(parent_stat[19]),group=int(child_stat[2]),session=int(child_stat[3]))\n"
+    " print(json.dumps(record),flush=True)\n"
+    " os._exit(0)\n"
+    "else:\n")
+
+
+class _FixtureDescendant:
+    """Join only this fixture's killed orphan, without concealing a survivor."""
+    def __init__(self, case):
+        self.case = case
+        self.linux = sys.platform.startswith('linux')
+        self.popen = subprocess.Popen
+        self.leader = None
+        self.record = None
+
+    def _subreaper_state(self):
+        value = ctypes.c_int()
+        if self.prctl(37, ctypes.byref(value), 0, 0, 0) != 0:  # PR_GET_CHILD_SUBREAPER
+            raise OSError(ctypes.get_errno(), 'cannot read fixture subreaper state')
+        return value.value
+
+    def _set_subreaper(self, value):
+        if self.prctl(36, value, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+            raise OSError(ctypes.get_errno(), 'cannot set fixture subreaper state')
+
+    def __enter__(self):
+        if self.linux:
+            self.owner = _fixture_process_identity(os.getpid())
+            self.prctl = ctypes.CDLL(None, use_errno=True).prctl
+            self.prctl.restype = ctypes.c_int
+            self.previous_subreaper = self._subreaper_state()
+            self._set_subreaper(1)
+        return self
+
+    def launch(self, *args, **kwargs):
+        self.case.assertIsNone(self.leader)
+        self.leader = self.popen(*args, **kwargs)
+        if self.linux:
+            # Capture the direct child's identity before handing it to the
+            # production wait path. An exited leader is still ours to reap.
+            self.leader_identity = _fixture_process_identity(self.leader.pid)
+            self.case.assertEqual(self.leader_identity['parent_pid'], os.getpid())
+        return self.leader
+
+    def observe(self, raw):
+        record = json.loads(raw)
+        fields = {'pid', 'parent_pid', 'owner_pid'}
+        if self.linux:
+            fields |= {'starttime', 'original_parent_pid', 'parent_starttime', 'group', 'session'}
+        self.case.assertEqual(set(record), fields)
+        self.case.assertTrue(all(type(value) is int and value > 0 for value in record.values()))
+        self.case.assertNotIn(record['pid'], (os.getpid(), self.leader.pid))
+        self.case.assertEqual(record['parent_pid'], self.leader.pid)
+        self.case.assertEqual(record['owner_pid'], os.getpid())
+        if self.linux:
+            self.case.assertEqual(record['original_parent_pid'], self.leader.pid)
+            self.case.assertEqual(record['parent_starttime'], self.leader_identity['starttime'])
+            self.case.assertEqual((record['group'], record['session']), (self.leader.pid, self.leader.pid))
+        self.record = record
+
+    def _owned_child(self):
+        current_owner = _fixture_process_identity(os.getpid())
+        self.case.assertEqual(current_owner['starttime'], self.owner['starttime'])
+        child = _fixture_process_identity(self.record['pid'])
+        self.case.assertEqual(child['pid'], self.record['pid'])
+        self.case.assertEqual(child['starttime'], self.record['starttime'])
+        self.case.assertEqual(child['parent_pid'], self.owner['pid'])
+        self.case.assertEqual((child['group'], child['session']),
+                              (self.record['group'], self.record['session']))
+        return child
+
+    def assert_stopped(self, message):
+        deadline = time.monotonic() + 1
+        while True:
+            if self.linux:
+                if self._owned_child()['state'] == 'Z':
+                    return
+            else:
+                # Other POSIX systems keep init as the orphan's parent. Do not
+                # wait on a PID we do not own; still require it to disappear.
+                try:
+                    os.kill(self.record['pid'], 0)
+                except ProcessLookupError:
+                    return
+            if time.monotonic() >= deadline:
+                self.case.fail(message)
+            time.sleep(0.005)
+
+    def __exit__(self, kind, error, trace):
+        if self.linux:
+            try:
+                if self.record is not None:
+                    # This runs after the original kill/timing/evidence
+                    # assertions. A survivor fails; cleanup never kills it.
+                    self.case.assertEqual(self._owned_child()['state'], 'Z')
+                    joined, status = os.waitpid(self.record['pid'], os.WNOHANG)
+                    self.case.assertEqual(joined, self.record['pid'])
+                    self.case.assertTrue(os.WIFSIGNALED(status))
+                    self.case.assertEqual(os.WTERMSIG(status), signal.SIGKILL)
+            finally:
+                self._set_subreaper(self.previous_subreaper)
+                self.case.assertEqual(self._subreaper_state(), self.previous_subreaper)
+        return False
 
 
 class PrerequisiteExecutionTests(unittest.TestCase):
@@ -121,27 +244,17 @@ class PrerequisiteExecutionTests(unittest.TestCase):
     def test_successful_producer_cannot_leave_a_child_to_publish_late_evidence(self):
         log = self.directory / 'native-prover-build.log'
         late_receipt = self.directory / 'late-success.json'
-        source = ("import os,time,pathlib,sys\n"
-                  "child=os.fork()\n"
-                  "if child:\n print(child,flush=True)\n os._exit(0)\n"
-                  "else:\n time.sleep(2)\n pathlib.Path(sys.argv[1]).write_text('late success')\n")
-        status = prerequisite._bounded_command([sys.executable, '-c', source, str(late_receipt)],
-                                                log, time.monotonic() + 5, dict(os.environ))
-        self.assertEqual(status['returncode'], 0)
-        self.assertIs(status['timed_out'], False)
-        child = int(log.read_text())
-        deadline = time.monotonic() + 1
-        while True:
-            try:
-                state = Path(f'/proc/{child}/stat').read_text().split()[2]
-            except (FileNotFoundError, ProcessLookupError):
-                break
-            if state == 'Z':
-                break
-            if time.monotonic() >= deadline:
-                self.fail('producer descendant survived group cleanup')
-            time.sleep(0.005)
-        self.assertFalse(late_receipt.exists())
+        source = (_FORK_DESCENDANT_SOURCE +
+                  " time.sleep(2)\n pathlib.Path(sys.argv[1]).write_text('late success')\n")
+        with _FixtureDescendant(self) as descendant:
+            with mock.patch.object(prerequisite.subprocess, 'Popen', side_effect=descendant.launch):
+                status = prerequisite._bounded_command([sys.executable, '-c', source, str(late_receipt)],
+                                                        log, time.monotonic() + 5, dict(os.environ))
+            descendant.observe(log.read_text())
+            self.assertEqual(status['returncode'], 0)
+            self.assertIs(status['timed_out'], False)
+            descendant.assert_stopped('producer descendant survived group cleanup')
+            self.assertFalse(late_receipt.exists())
 
     def test_producer_exception_still_kills_group_and_reaps_leader(self):
         process = mock.Mock(pid=424243)
@@ -166,36 +279,24 @@ class RuntimeProcessGroupTests(unittest.TestCase):
         self.check_orphan(hold_stdout=False)
 
     def check_orphan(self, hold_stdout):
-        source = ("import os,time\n"
-                  "child=os.fork()\n"
-                  "if child:\n print(child,flush=True)\n os._exit(0)\n"
-                  "else:\n " + ("pass" if hold_stdout else "os.close(1)") +
+        source = (_FORK_DESCENDANT_SOURCE +
+                  " " + ("pass" if hold_stdout else "os.close(1)") +
                   "\n time.sleep(60)\n")
-        process = subprocess.Popen([sys.executable, '-c', source], stdout=subprocess.PIPE,
-                                   text=True, start_new_session=True)
-        watcher = prerequisite.RuntimeDeadline(process, 0.5)
-        try:
-            with watcher:
-                child = int(process.stdout.readline())
-                # The leader has exited; only the descendant can hold this pipe.
-                self.assertEqual(process.stdout.read(), '')
-                self.assertEqual(process.wait(timeout=2), 0)
-        finally:
-            process.stdout.close()
-        self.assertEqual(watcher.timed_out.is_set(), hold_stdout)
-        self.assertLess(watcher.elapsed_seconds, 3)
-        deadline = time.monotonic() + 1
-        while True:
+        with _FixtureDescendant(self) as descendant:
+            process = descendant.launch([sys.executable, '-c', source], stdout=subprocess.PIPE,
+                                        text=True, start_new_session=True)
+            watcher = prerequisite.RuntimeDeadline(process, 0.5)
             try:
-                state = Path(f'/proc/{child}/stat').read_text().split()[2]
-            except (FileNotFoundError, ProcessLookupError):
-                break
-            if state == 'Z':
-                break
-            if time.monotonic() >= deadline:
-                self.fail('descendant survived group cleanup')
-            # SIGKILL delivery is asynchronous for the already-orphaned child.
-            time.sleep(0.005)
+                with watcher:
+                    descendant.observe(process.stdout.readline())
+                    # The leader has exited; only the descendant can hold this pipe.
+                    self.assertEqual(process.stdout.read(), '')
+                    self.assertEqual(process.wait(timeout=2), 0)
+            finally:
+                process.stdout.close()
+            self.assertEqual(watcher.timed_out.is_set(), hold_stdout)
+            self.assertLess(watcher.elapsed_seconds, 3)
+            descendant.assert_stopped('descendant survived group cleanup')
 
     def test_exception_also_kills_group_and_reaps_leader(self):
         process = mock.Mock(pid=987654)
