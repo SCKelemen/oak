@@ -22,20 +22,38 @@ import (
 const lratAllocationShim = `
 #include <stdint.h>
 #include <stdlib.h>
-static uint32_t calls, live, fail_at, bad;
+static uint32_t calls, live, fail_at, fail_mask, bad;
+static void *blocks[32];
+static uint64_t release_order;
 void lrat_test_reset(uint32_t n) {
   if (live) abort();
-  calls = bad = 0; fail_at = n;
+  for (unsigned i = 0; i < 32; ++i) blocks[i] = NULL;
+  calls = bad = fail_mask = 0; fail_at = n; release_order = 0;
+}
+void lrat_test_reset_mask(uint32_t mask) {
+  lrat_test_reset(0); fail_mask = mask;
 }
 void *lrat_test_malloc(size_t n) {
   ++calls;
   if (!n) ++bad;
-  if (calls == fail_at || n > 1048576) return NULL;
+  if (calls > 32) abort();
+  if (calls == fail_at || ((fail_mask >> (calls - 1)) & 1) || n > 1048576) return NULL;
   void *p = malloc(n);
-  if (p) ++live;
+  if (p) { ++live; blocks[calls - 1] = p; }
   return p;
 }
-void lrat_test_free(void *p) { if (p) { --live; free(p); } }
+void lrat_test_free(void *p) {
+  if (!p) return;
+  for (unsigned i = 0; i < 32; ++i) {
+    if (blocks[i] == p) {
+      blocks[i] = NULL; --live;
+      release_order = release_order * 16 + i + 1;
+      free(p); return;
+    }
+  }
+  ++bad; /* Unknown or already-freed pointer: do not invoke undefined C behavior. */
+}
+uint64_t lrat_test_release_order(void) { return release_order; }
 uint32_t lrat_test_calls(void) { return calls; }
 uint32_t lrat_test_live(void) { return live; }
 uint32_t lrat_test_bad(void) { return bad; }
@@ -45,6 +63,8 @@ const lratAllocationExterns = `package main
 malloc: (n: c.Size): c.Ptr = c.extern("lrat_test_malloc")
 free: (p: c.Ptr): () = c.extern("lrat_test_free")
 reset: (n: c.UInt32): () = c.extern("lrat_test_reset")
+reset_mask: (n: c.UInt32): () = c.extern("lrat_test_reset_mask")
+release_order: (): c.UInt64 = c.extern("lrat_test_release_order")
 calls: (): c.UInt32 = c.extern("lrat_test_calls")
 outstanding: (): c.UInt32 = c.extern("lrat_test_live")
 bad: (): c.UInt32 = c.extern("lrat_test_bad")

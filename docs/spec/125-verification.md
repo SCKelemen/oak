@@ -339,6 +339,27 @@ allocation, and check that zero declared capacities still reserve sentinels.
 Allocator success, ownership conversion, cleanup and FFI execution remain
 separate from these arithmetic and admission proofs.
 
+`Oak.LRATLifecycleSoundness` proves the normally returning allocating entry's
+resource protocol for every subset of the six allocation failures. Replay
+rejects ownership of null, checker calls without all owners, freeing an owned
+block, and duplicate frees. Successful replay leaves each successful allocation
+freed and each failed allocation absent; output-capacity and preflight refusal
+have empty schedules. The proof uses kernel reduction over all 64 outcomes.
+
+This is a narrowly source-audited protocol, not general FFI extraction. A
+required Go audit compares the entire `lrat_check_allocated` function's tokens
+and parsed form with a complete schema; that same schema emits the committed
+allocation/own/check/disown/free schedule. Mutation controls reject missing or
+misdirected frees, disowns, guards and checker calls. The protocol assumes fresh,
+distinct non-null malloc blocks, identity-preserving own/disown, a normally
+returning borrowing checker, and `free(NULL)` as a no-op. It does not prove the
+foreign implementations, general source translation, or abnormal termination.
+Compiled regressions independently run all 64 failure masks against accepted
+and refused records (128 executions), tracking pointer identities and exact
+release order in addition to leak counts. Existing single-failure and raw-stream
+cleanup cases use the strengthened shim too. CI requires the source audit,
+complete Lean contract and axiom audit, and these compiled regressions.
+
 This establishes expected-formula soundness for the extracted binding gate
 and word checker. Extraction correctness, allocation/FFI semantics, and
 compiled ARM64/RV64 executables remain separate obligations.
