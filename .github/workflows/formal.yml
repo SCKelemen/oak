@@ -72,7 +72,7 @@ jobs:
       # Track the complete LRAT proof independently of unrelated formal modules.
       - name: Build production LRAT bound-record proof
         working-directory: spec/lean
-        run: lake build Oak.LRATAdmission Oak.LRATPreflight Oak.LRATBindingModel Oak.LRATLifecycleSoundness
+        run: lake build Oak.LRATAdmission Oak.LRATPreflight Oak.LRATBindingModel Oak.LRATLifecycleSoundness Oak.LRATNativeGuards
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -85,12 +85,12 @@ jobs:
           OAK_REQUIRE_LRAT_RECORD_LEAN: '1'
         run: go test ./compiler -run '^TestLRATKernel' -count=1 -timeout=10m -v
 
-      - name: Check formula binding, allocation preflight, and cleanup
+      - name: Check formula binding, allocation preflight, cleanup, and native guards
         env:
           OAK_REQUIRE_LRAT_BINDING_LEAN: '1'
         run: |
           command -v cc
-          go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean|TestOakLRATAllocatedEntry|TestOakLRATRawStreamEntry|TestLRATLifecycle.*)$' -count=1 -timeout=10m -v
+          go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean|TestOakLRATAllocatedEntry|TestOakLRATRawStreamEntry|TestLRATLifecycle.*|TestLRATNative.*|TestOakLRATAgrees)$' -count=1 -timeout=10m -v
 
   lean:
     # Proof-branch iterations use the dedicated gates above. PR and
