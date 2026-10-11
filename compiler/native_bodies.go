@@ -31,14 +31,14 @@ import (
 // are reported), and its Oak body stays as the portable realization. A
 // function outside the backend's subset is left to the C backend, with the
 // reason reported as information.
-func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker) nativeLowering {
+func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker, suppliedFunctions []*asm.Function, suppliedVerdicts map[string]asm.Verdict) nativeLowering {
 	var diagnostics []*diagnostic.Diagnostic
 	result := nativeLowering{Verdicts: map[string]asm.Verdict{}, Fallbacks: map[string]string{}}
 	var buildReport *NativeBuildReport
 	buildRows := map[string]*NativeBuildFunction{}
 	if comp.nativeBuildReport != nil {
-		inventory := nativeBuildInventory(root)
-		buildReport = &NativeBuildReport{SchemaVersion: 1, Inventory: inventory, Functions: make([]NativeBuildFunction, len(inventory.Eligible))}
+		inventory := nativeBuildInventory(root, suppliedFunctions)
+		buildReport = &NativeBuildReport{SchemaVersion: 2, Inventory: inventory, Functions: make([]NativeBuildFunction, len(inventory.Eligible)), Supplied: nativeBuildSuppliedRows(inventory.Supplied, suppliedVerdicts)}
 		for i, input := range inventory.Eligible {
 			buildReport.Functions[i] = NativeBuildFunction{Input: input, Status: "unfinished", Callees: []string{}, Validations: []NativeBuildCandidate{}}
 			buildRows[input.Name] = &buildReport.Functions[i]

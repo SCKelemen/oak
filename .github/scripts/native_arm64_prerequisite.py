@@ -259,10 +259,17 @@ def validate(repo, directory, names, context):
     validate_manifest(repo, directory, context, harness_sha, original)
     return receipt
 
-SOURCE_NAMES = ('bdd.oak', 'lower.oak', 'syntax.oak', 'tree.oak', 'protocol.oak',
-                'shell.oak', 'lean.oak', 'explore.oak', 'witness.oak', 'driver.oak',
-                'lrat.oak', 'sat.oak', 'model.oak', 'cnf.oak', 'certify.oak',
-                'main.oak', 'oak.mod')
+SOLVER_SOURCE_NAMES = ('bdd.oak', 'lower.oak', 'syntax.oak', 'tree.oak', 'protocol.oak',
+                       'shell.oak', 'lean.oak', 'explore.oak', 'witness.oak', 'driver.oak',
+                       'lrat.oak', 'sat.oak', 'model.oak', 'cnf.oak', 'certify.oak',
+                       'lrat.arm64.oakasm', 'lrat.rv64.oakasm')
+SOURCE_NAMES = (*SOLVER_SOURCE_NAMES, 'main.oak', 'oak.mod')
+NATIVE_SCHEMA_VERSION = 2
+RECIPE_VERSION = 'hybrid-native-c-v2/fresh-verdicts/default-search/race/supplied-units'
+# The old eligible/extern pins are retained until the selected-lane frontend
+# inventory is freshly generated and reviewed. No real manifest can pass this
+# intermediate source-only integration while its supplied count is unreviewed.
+REVIEWED_INVENTORY_COUNTS = {'eligible': 1087, 'supplied': None, 'externs': 15}
 
 
 def native_files():
@@ -271,7 +278,7 @@ def native_files():
 
 
 def source_bytes(repo):
-    source = {name: _file_bytes(repo / 'prove/solver' / name) for name in SOURCE_NAMES[:15]}
+    source = {name: _file_bytes(repo / 'prove/solver' / name) for name in SOLVER_SOURCE_NAMES}
     oaksolver = _file_bytes(repo / 'oaksolver.go')
     matches = re.findall(rb'const oakSolverDriverSource = `([^`]*)`', oaksolver)
     if len(matches) != 1:
@@ -286,14 +293,29 @@ def _fields(value, fields, label):
         raise ValueError(f'{label}: incorrect manifest fields')
 
 
+def _native_schema(value, fields, label):
+    _fields(value, fields, label)
+    if (type(value['schema_version']) is not int
+            or value['schema_version'] != NATIVE_SCHEMA_VERSION):
+        raise ValueError(f'{label}: unsupported schema_version')
+
+
 def _inventory(value):
-    _fields(value, ('eligible', 'externs'), 'native frontend inventory')
+    _fields(value, ('eligible', 'supplied', 'externs'), 'native frontend inventory')
+    if any(type(count) is not int or count < 0 for count in REVIEWED_INVENTORY_COUNTS.values()):
+        raise ValueError('reviewed native inventory counts await fresh frontend generation and review')
     seen = set()
-    for kind, count in (('eligible', 1087), ('externs', 15)):
+    for kind, count in REVIEWED_INVENTORY_COUNTS.items():
         rows = value[kind]
         if not isinstance(rows, list) or len(rows) != count:
             raise ValueError(f'expected exactly {count} reviewed native {kind}')
         for row in rows:
+            if kind == 'supplied':
+                _fields(row, ('input', 'arch', 'body_sha256'), 'supplied native input')
+                if row['arch'] != 'arm64':
+                    raise ValueError('supplied native input target mismatch')
+                _hash(row['body_sha256'], 'supplied native body')
+                row = row['input']
             _fields(row, ('name', 'source_sha256', 'extern_symbol'), 'native input')
             name = row['name']
             if not isinstance(name, str) or not name or name in seen:
@@ -304,6 +326,14 @@ def _inventory(value):
                     or bool(row['extern_symbol']) != (kind == 'externs')):
                 raise ValueError('extern classification mismatch')
     return value
+
+
+def _callees(value, declarations):
+    if (not isinstance(value, list)
+            or any(not isinstance(name, str) or not name for name in value)):
+        raise ValueError('malformed native callee dependencies')
+    if len(value) != len(set(value)) or not set(value) <= declarations:
+        raise ValueError('unknown or duplicate native callee dependency')
 
 
 def _candidate(value):
@@ -318,7 +348,8 @@ def _candidate(value):
 
 
 def _report(value, inventory):
-    _schema(value, ('schema_version', 'inventory', 'functions'), 'native report')
+    _native_schema(value, ('schema_version', 'inventory', 'functions', 'supplied'), 'native report')
+    _inventory(inventory)
     if value['inventory'] != inventory:
         raise ValueError('native report changed the independently reviewed frontend inventory')
     functions = value['functions']
@@ -326,6 +357,7 @@ def _report(value, inventory):
         raise ValueError('native report omits or duplicates a function')
     native = 0
     declarations = {row['name'] for kind in ('eligible', 'externs') for row in inventory[kind]}
+    declarations.update(row['input']['name'] for row in inventory['supplied'])
     for row, expected in zip(functions, inventory['eligible']):
         _fields(row, ('input', 'status', 'reason', 'callees', 'considered', 'materialized',
                       'selected', 'validations'), 'native function')
@@ -333,16 +365,13 @@ def _report(value, inventory):
             raise ValueError('native report input identity/order mismatch')
         if row['status'] not in ('proven', 'witnessed', 'trusted', 'c-fallback'):
             raise ValueError('unfinished or erroneous native function')
-        if (not isinstance(row['reason'], str) or not row['reason'] or not isinstance(row['callees'], list)
-                or any(not isinstance(name, str) or not name for name in row['callees'])
+        if (not isinstance(row['reason'], str) or not row['reason']
                 or any(type(row[key]) is not int or row[key] < 0
                        for key in ('considered', 'materialized'))
                 or not isinstance(row['validations'], list)
                 or row['materialized'] > row['considered']):
             raise ValueError('malformed native function report')
-        if (len(row['callees']) != len(set(row['callees']))
-                or not set(row['callees']) <= declarations):
-            raise ValueError('unknown or duplicate native callee dependency')
+        _callees(row['callees'], declarations)
         seen_validations = set()
         for candidate in row['validations']:
             _candidate(candidate)
@@ -363,6 +392,19 @@ def _report(value, inventory):
             native += 1
             if row['selected'] is None or row['selected']['outcome'] != row['status']:
                 raise ValueError('native terminal status differs from the selected verdict')
+    supplied = value['supplied']
+    if not isinstance(supplied, list) or len(supplied) != len(inventory['supplied']):
+        raise ValueError('native report omits or duplicates a supplied unit')
+    for row, expected in zip(supplied, inventory['supplied']):
+        _fields(row, ('input', 'arch', 'body_sha256', 'status', 'reason', 'callees'),
+                'supplied native function')
+        if {field: row[field] for field in ('input', 'arch', 'body_sha256')} != expected:
+            raise ValueError('supplied native report identity/order mismatch')
+        if row['status'] not in ('proven', 'witnessed', 'trusted'):
+            raise ValueError('unfinished or erroneous supplied native function')
+        if not isinstance(row['reason'], str) or not row['reason']:
+            raise ValueError('supplied native function requires its actual reason')
+        _callees(row['callees'], declarations)
     if native == 0:
         raise ValueError('C-only substitution cannot satisfy the native prerequisite')
 
@@ -389,9 +431,9 @@ def validate_manifest(repo, directory, context, harness_sha, original_directory)
     native = directory / NATIVE
     _exact_files(native, native_files())
     recipe = _read_json(native / 'recipe.json')
-    _schema(recipe, ('schema_version', 'recipe_version', 'context', 'harness_sha256', 'go_build', 'sources', 'support_sources',
-                     'inventory', 'platform', 'target', 'asm_mode', 'object_format', 'cpu',
-                     'c_opt_level', 'cc', 'toolchain_files', 'link_inputs'), 'native recipe')
+    _native_schema(recipe, ('schema_version', 'recipe_version', 'context', 'harness_sha256', 'go_build', 'sources', 'support_sources',
+                            'inventory', 'platform', 'target', 'asm_mode', 'object_format', 'cpu',
+                            'c_opt_level', 'cc', 'toolchain_files', 'link_inputs'), 'native recipe')
     expected_context = {key: value for key, value in context.items() if key != 'schema_version'}
     if recipe['context'] != expected_context or recipe['harness_sha256'] != harness_sha:
         raise ValueError('native recipe belongs to another source/run/attempt/harness')
@@ -416,7 +458,7 @@ def validate_manifest(repo, directory, context, harness_sha, original_directory)
     if (len(direct_externs) != 14 or len(set(direct_externs)) != 14
             or {(row['name'], row['extern_symbol']) for row in inventory['externs']} != expected_externs):
         raise ValueError('solver extern inventory must preserve all 14 source externs and the host write shim')
-    if (recipe['recipe_version'] != 'hybrid-native-c-v1/fresh-verdicts/default-search/race'
+    if (recipe['recipe_version'] != RECIPE_VERSION
             or recipe['platform'] != 'linux/arm64' or recipe['target'] != 'linux/arm64'
             or recipe['asm_mode'] != 'native' or recipe['object_format'] != 'ELF'
             or recipe['cpu'] != '' or type(recipe['c_opt_level']) is not int

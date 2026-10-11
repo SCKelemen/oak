@@ -28,7 +28,7 @@ class ShardEvidenceTests(unittest.TestCase):
         self.repo.mkdir()
         for name in ('oaksolver.go', 'go.sum', 'stdlib/std.oak', 'stdlib/host.oak',
                      '.github/scripts/native_prover_inventory.json',
-                     *('prove/solver/' + name for name in prerequisite.SOURCE_NAMES[:15])):
+                     *('prove/solver/' + name for name in prerequisite.SOLVER_SOURCE_NAMES)):
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes((runner.REPO / name).read_bytes())
@@ -146,8 +146,8 @@ class ShardEvidenceTests(unittest.TestCase):
             name, version, checksum = line.split()
             if not version.endswith('/go.mod'):
                 dependencies.append({'Path': name, 'Version': version, 'Sum': checksum})
-        recipe = dict(schema_version=1,
-                      recipe_version='hybrid-native-c-v1/fresh-verdicts/default-search/race',
+        recipe = dict(schema_version=2,
+                      recipe_version='hybrid-native-c-v2/fresh-verdicts/default-search/race/supplied-units',
                       context={k: v for k, v in context.items() if k != 'schema_version'},
                       harness_sha256=prerequisite.digest(artifact / prerequisite.HARNESS),
                       sources={name: hashlib.sha256(raw).hexdigest() for name, raw in sources.items()},
@@ -170,7 +170,13 @@ class ShardEvidenceTests(unittest.TestCase):
                              recipe_sha256='f' * 64, outcome='proven', message='fixture proof', cached=False)
             functions.append(dict(input=row, status='proven', reason='fixture proof', callees=[],
                                   considered=1, materialized=1, selected=candidate, validations=[candidate]))
-        self.write_json(native / 'report.json', dict(schema_version=1, inventory=inventory, functions=functions))
+        # Use only the freshly generated, reviewed supplied identities. During
+        # the source-only transition the legacy manifest cannot seed a passing
+        # aggregate fixture; never manufacture its missing selected-lane rows.
+        supplied = [dict(**row, status='proven', reason='fixture supplied proof', callees=[])
+                    for row in inventory['supplied']]
+        self.write_json(native / 'report.json',
+                        dict(schema_version=2, inventory=inventory, functions=functions, supplied=supplied))
         self.write_json(native / 'success.json', dict(
             schema_version=1, recipe_sha256=prerequisite.digest(native / 'recipe.json'),
             report_sha256=prerequisite.digest(native / 'report.json'),
@@ -657,9 +663,11 @@ class ShardEvidenceTests(unittest.TestCase):
 
     def test_native_recipe_changes_fail_even_if_all_receipts_are_rehashed(self):
         mutations = [
+            ('schema_version', 1), ('schema_version', 2.0),
             ('recipe_version', 'unverified'), ('target', 'linux/amd64'), ('asm_mode', 'c'),
             ('object_format', 'MachO'), ('cpu', 'native'), ('c_opt_level', 2),
             ('harness_sha256', '0'*64), ('sources.bdd.oak', '0'*64),
+            ('sources.lrat.arm64.oakasm', '0'*64), ('sources.lrat.rv64.oakasm', '0'*64),
             ('support_sources.stdlib/std.oak', '0'*64), ('support_sources.stdlib/host.oak', '0'*64),
             ('context.source_sha', 'b'*40), ('context.source_tree', 'b'*40),
             ('context.source_contents_sha256', '0'*64), ('context.run_id', '54321'),
@@ -699,6 +707,11 @@ class ShardEvidenceTests(unittest.TestCase):
             row['validations'][0]['outcome'] = outcome
         fallback = report['functions'][2]
         fallback.update(status='c-fallback', reason='unsupported fixture lowering', selected=None, validations=[])
+        for row, outcome in zip(report['supplied'], ('trusted', 'witnessed')):
+            row.update(status=outcome, reason='fixture actual supplied verdict')
+        report['functions'][0]['callees'] = [row['input']['name'] for row in report['supplied']]
+        report['supplied'][0]['callees'] = [report['functions'][0]['input']['name'],
+                                           report['inventory']['externs'][0]['name']]
         self.write_json(path, report)
         self.reseal_prerequisite()
         self.assertEqual(self.aggregate()['roots'], 198)
@@ -756,10 +769,66 @@ class ShardEvidenceTests(unittest.TestCase):
             with self.subTest(mutation=mutation):
                 self.reject()
 
+    def test_supplied_evidence_mutations_fail_even_when_receipts_are_resealed(self):
+        for mutation in ('missing', 'extra', 'duplicate', 'reordered', 'arch', 'body',
+                         'source', 'status', 'reason', 'callee', 'duplicate-callee',
+                         'optimizer-record', 'flag', 'inventory'):
+            self.seed_artifacts()
+            path = self.artifact('support') / 'native-prover/report.json'
+            report = json.loads(path.read_text())
+            row = report['supplied'][0]
+            if mutation == 'missing':
+                report['supplied'].pop()
+            elif mutation == 'extra':
+                report['supplied'].append(copy.deepcopy(row))
+            elif mutation == 'duplicate':
+                report['supplied'][1] = copy.deepcopy(row)
+            elif mutation == 'reordered':
+                report['supplied'].reverse()
+            elif mutation == 'arch':
+                row['arch'] = 'rv64'
+            elif mutation == 'body':
+                row['body_sha256'] = '0' * 64
+            elif mutation == 'source':
+                row['input']['source_sha256'] = '0' * 64
+            elif mutation == 'status':
+                row['status'] = 'c-fallback'
+            elif mutation == 'reason':
+                row['reason'] = ''
+            elif mutation == 'callee':
+                row['callees'] = ['not-declared']
+            elif mutation == 'duplicate-callee':
+                row['callees'] = [report['functions'][0]['input']['name']] * 2
+            elif mutation == 'optimizer-record':
+                row['selected'] = report['functions'][0]['selected']
+            elif mutation == 'flag':
+                row['system'] = True
+            else:
+                report['inventory']['supplied'][0]['body_sha256'] = '0' * 64
+                row['body_sha256'] = '0' * 64
+            self.write_json(path, report)
+            self.reseal_prerequisite()
+            with self.subTest(mutation=mutation):
+                self.reject()
+
+    def test_supplied_sources_cannot_change_even_when_recipe_and_receipts_are_resealed(self):
+        for name in ('lrat.arm64.oakasm', 'lrat.rv64.oakasm'):
+            self.seed_artifacts()
+            native = self.artifact('support') / 'native-prover'
+            path = native / 'source' / name
+            path.write_bytes(path.read_bytes() + b'\n  system\n')
+            recipe = json.loads((native / 'recipe.json').read_text())
+            recipe['sources'][name] = prerequisite.digest(path)
+            self.write_json(native / 'recipe.json', recipe)
+            self.reseal_prerequisite()
+            with self.subTest(name=name):
+                self.reject()
+
     def test_native_output_source_and_harness_bytes_are_independently_checked(self):
         artifact = self.artifact('support')
         for name in ('root-harness', 'native-prover/program.c', 'native-prover/asm.o',
-                     'native-prover/solver', 'native-prover/source/bdd.oak'):
+                     'native-prover/solver', 'native-prover/source/bdd.oak',
+                     'native-prover/source/lrat.arm64.oakasm', 'native-prover/source/lrat.rv64.oakasm'):
             self.seed_artifacts()
             path = artifact / name
             path.write_bytes(path.read_bytes() + b'changed')

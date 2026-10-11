@@ -1,5 +1,7 @@
 """Runner deadline and process evidence tests; no Oak/native builds are run."""
 import io
+import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -215,6 +217,250 @@ class UntrackedSourceTests(unittest.TestCase):
         for raw in (b'', b'results/log.txt\0', b'results/identity.json\0'):
             with mock.patch.object(prerequisite.subprocess, 'check_output', return_value=raw):
                 prerequisite.check_untracked_inputs(Path('.'), Path('results'), 10)
+
+
+class SuppliedUnitEvidenceTests(unittest.TestCase):
+    """Synthetic identities exercise v2 without inventing the reviewed inventory."""
+    def setUp(self):
+        self.counts = {'eligible': 3, 'supplied': 2, 'externs': 1}
+        self.enterContext(mock.patch.object(prerequisite, 'REVIEWED_INVENTORY_COUNTS', self.counts))
+        def declaration(name, extern_symbol=''):
+            return dict(name=name, source_sha256=hashlib.sha256(name.encode()).hexdigest(),
+                        extern_symbol=extern_symbol)
+        self.inventory = dict(
+            eligible=[declaration(name) for name in ('ordinary', 'witness', 'fallback')],
+            supplied=[dict(input=declaration(name), arch='arm64',
+                           body_sha256=hashlib.sha256((name + ' body').encode()).hexdigest())
+                      for name in ('guard_one', 'guard_two')],
+            externs=[declaration('external', 'write')])
+        functions = []
+        for item in self.inventory['eligible']:
+            candidate = dict(name='fixture candidate', body_sha256='a' * 64,
+                             recipe_sha256='b' * 64, outcome='proven',
+                             message='fixture proof', cached=False)
+            functions.append(dict(input=copy.deepcopy(item), status='proven', reason='fixture proof',
+                                  callees=[], considered=1, materialized=1,
+                                  selected=copy.deepcopy(candidate), validations=[candidate]))
+        self.report = dict(schema_version=2, inventory=copy.deepcopy(self.inventory), functions=functions,
+                           supplied=[dict(**copy.deepcopy(item), status='proven',
+                                          reason='fixture actual supplied proof', callees=[])
+                                     for item in self.inventory['supplied']])
+
+    def validate(self, report=None, inventory=None):
+        prerequisite._report(self.report if report is None else report,
+                             self.inventory if inventory is None else inventory)
+
+    def test_supplied_verdicts_preserve_status_without_optimizer_records(self):
+        self.assertEqual(prerequisite._inventory(self.inventory), self.inventory)
+        for status in ('proven', 'witnessed', 'trusted'):
+            report = copy.deepcopy(self.report)
+            report['supplied'][0].update(status=status, reason='actual ' + status,
+                                         callees=['ordinary', 'guard_two', 'external'])
+            report['functions'][0]['callees'] = ['guard_one', 'guard_two']
+            report['functions'][2].update(status='c-fallback', reason='unsupported lowering',
+                                          selected=None, validations=[])
+            with self.subTest(status=status):
+                self.validate(report)
+
+    def test_report_schema_is_exact_and_rejects_legacy_versions(self):
+        for version in (None, True, False, 1, 2.0, '2', 3):
+            report = copy.deepcopy(self.report)
+            report['schema_version'] = version
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                self.validate(report)
+        for field in self.report:
+            report = copy.deepcopy(self.report)
+            del report[field]
+            with self.subTest(missing=field), self.assertRaises(ValueError):
+                self.validate(report)
+        report = dict(self.report, unexpected=[])
+        with self.assertRaises(ValueError):
+            self.validate(report)
+
+    def test_unreviewed_count_prevents_manifest_acceptance(self):
+        for kind in self.counts:
+            counts = dict(self.counts, **{kind: None})
+            with self.subTest(kind=kind), \
+                 mock.patch.object(prerequisite, 'REVIEWED_INVENTORY_COUNTS', counts), \
+                 self.assertRaisesRegex(ValueError, 'await fresh frontend generation and review'):
+                self.validate()
+
+    def test_inventory_counts_fields_and_declaration_names_fail_closed(self):
+        for kind in self.inventory:
+            for mutation in ('missing', 'extra', 'duplicate', 'not-list'):
+                inventory = copy.deepcopy(self.inventory)
+                if mutation == 'missing':
+                    inventory[kind].pop()
+                elif mutation == 'extra':
+                    inventory[kind].append(copy.deepcopy(inventory[kind][0]))
+                elif mutation == 'duplicate':
+                    if len(inventory[kind]) == 1:
+                        inventory[kind][0]['name'] = inventory['eligible'][0]['name']
+                    else:
+                        inventory[kind][1] = copy.deepcopy(inventory[kind][0])
+                else:
+                    inventory[kind] = {}
+                with self.subTest(kind=kind, mutation=mutation), self.assertRaises(ValueError):
+                    prerequisite._inventory(inventory)
+        for target in ('eligible', 'externs'):
+            inventory = copy.deepcopy(self.inventory)
+            inventory['supplied'][0]['input']['name'] = inventory[target][0]['name']
+            with self.subTest(collision=target), self.assertRaises(ValueError):
+                prerequisite._inventory(inventory)
+        for field in self.inventory:
+            inventory = copy.deepcopy(self.inventory)
+            del inventory[field]
+            with self.subTest(missing_field=field), self.assertRaises(ValueError):
+                prerequisite._inventory(inventory)
+        with self.assertRaises(ValueError):
+            prerequisite._inventory(dict(self.inventory, unexpected=[]))
+
+    def test_supplied_inventory_identity_and_target_are_strict(self):
+        for field, value in (('arch', 'rv64'), ('arch', ''), ('body_sha256', ''),
+                             ('body_sha256', 'g' * 64), ('body_sha256', True)):
+            inventory = copy.deepcopy(self.inventory)
+            inventory['supplied'][0][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                prerequisite._inventory(inventory)
+        for field, value in (('name', ''), ('name', True), ('source_sha256', 'bad'),
+                             ('extern_symbol', 'write'), ('extern_symbol', False)):
+            inventory = copy.deepcopy(self.inventory)
+            inventory['supplied'][0]['input'][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                prerequisite._inventory(inventory)
+        for field in self.inventory['supplied'][0]:
+            inventory = copy.deepcopy(self.inventory)
+            del inventory['supplied'][0][field]
+            with self.subTest(missing=field), self.assertRaises(ValueError):
+                prerequisite._inventory(inventory)
+        for field in ('input', 'body_sha256'):
+            inventory = copy.deepcopy(self.inventory)
+            inventory['supplied'][0]['input' if field == 'input' else 'body_sha256'] = None
+            with self.subTest(null=field), self.assertRaises(ValueError):
+                prerequisite._inventory(inventory)
+        inventory = copy.deepcopy(self.inventory)
+        inventory['supplied'][0]['system'] = True
+        with self.assertRaises(ValueError):
+            prerequisite._inventory(inventory)
+
+    def test_supplied_report_count_order_identity_status_and_callees_fail_closed(self):
+        mutations = ('missing', 'extra', 'duplicate', 'reordered', 'not-list',
+                     'wrong-name', 'wrong-source', 'wrong-extern', 'wrong-arch', 'wrong-body',
+                     'unfinished', 'error', 'mismatch', 'refused', 'c-fallback', 'invalid-status',
+                     'empty-reason', 'invalid-reason', 'missing-callees', 'not-list-callees',
+                     'unknown-callee', 'duplicate-callee', 'empty-callee', 'invalid-callee',
+                     'forged-selected', 'forged-validations', 'forged-considered', 'forged-cached',
+                     'forged-system-flag', 'reclassified', 'changed-inventory')
+        for mutation in mutations:
+            report = copy.deepcopy(self.report)
+            row = report['supplied'][0]
+            if mutation == 'missing':
+                report['supplied'].pop()
+            elif mutation == 'extra':
+                report['supplied'].append(copy.deepcopy(row))
+            elif mutation == 'duplicate':
+                report['supplied'][1] = copy.deepcopy(row)
+            elif mutation == 'reordered':
+                report['supplied'].reverse()
+            elif mutation == 'not-list':
+                report['supplied'] = {}
+            elif mutation == 'wrong-name':
+                row['input']['name'] = 'other'
+            elif mutation == 'wrong-source':
+                row['input']['source_sha256'] = '0' * 64
+            elif mutation == 'wrong-extern':
+                row['input']['extern_symbol'] = 'write'
+            elif mutation == 'wrong-arch':
+                row['arch'] = 'rv64'
+            elif mutation == 'wrong-body':
+                row['body_sha256'] = '0' * 64
+            elif mutation in ('unfinished', 'error', 'mismatch', 'refused', 'c-fallback'):
+                row['status'] = mutation
+            elif mutation == 'invalid-status':
+                row['status'] = True
+            elif mutation == 'empty-reason':
+                row['reason'] = ''
+            elif mutation == 'invalid-reason':
+                row['reason'] = False
+            elif mutation == 'missing-callees':
+                del row['callees']
+            elif mutation == 'not-list-callees':
+                row['callees'] = None
+            elif mutation == 'unknown-callee':
+                row['callees'] = ['absent']
+            elif mutation == 'duplicate-callee':
+                row['callees'] = ['external', 'external']
+            elif mutation == 'empty-callee':
+                row['callees'] = ['']
+            elif mutation == 'invalid-callee':
+                row['callees'] = [False]
+            elif mutation == 'forged-selected':
+                row['selected'] = copy.deepcopy(report['functions'][0]['selected'])
+            elif mutation == 'forged-validations':
+                row['validations'] = []
+            elif mutation == 'forged-considered':
+                row['considered'] = 0
+            elif mutation == 'forged-cached':
+                row['cached'] = False
+            elif mutation == 'forged-system-flag':
+                row['system'] = True
+            elif mutation == 'reclassified':
+                row['input'] = copy.deepcopy(self.inventory['eligible'][0])
+            else:
+                report['inventory']['supplied'][0]['body_sha256'] = '0' * 64
+                row['body_sha256'] = '0' * 64
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.validate(report)
+
+    def test_supplied_report_missing_identity_fields_fail_closed(self):
+        for field in self.report['supplied'][0]:
+            report = copy.deepcopy(self.report)
+            del report['supplied'][0][field]
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.validate(report)
+
+    def test_supplied_units_do_not_replace_required_optimizer_native_selection(self):
+        report = copy.deepcopy(self.report)
+        for row in report['functions']:
+            row.update(status='c-fallback', selected=None, validations=[])
+        with self.assertRaisesRegex(ValueError, 'C-only substitution'):
+            self.validate(report)
+
+
+class SuppliedSourceEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.repo = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (self.repo / 'prove/solver').mkdir(parents=True)
+        for name in prerequisite.SOLVER_SOURCE_NAMES:
+            (self.repo / 'prove/solver' / name).write_bytes(('fixture source ' + name).encode())
+        (self.repo / 'oaksolver.go').write_text('const oakSolverDriverSource = `fixture driver`\n')
+
+    def test_complete_source_map_binds_both_selected_and_foreign_lanes(self):
+        sources = prerequisite.source_bytes(self.repo)
+        self.assertEqual(len(sources), 19)
+        self.assertEqual(set(sources), set(prerequisite.SOURCE_NAMES))
+        self.assertEqual({name for name in sources if name.endswith('.oakasm')},
+                         {'lrat.arm64.oakasm', 'lrat.rv64.oakasm'})
+        self.assertEqual(prerequisite.native_files(),
+                         {'recipe.json', 'report.json', 'success.json', 'program.c', 'asm.o', 'solver'}
+                         | {'source/' + name for name in sources})
+        for name in ('lrat.arm64.oakasm', 'lrat.rv64.oakasm'):
+            original = sources[name]
+            path = self.repo / 'prove/solver' / name
+            path.write_bytes(original + b'\n  system\n')
+            changed = prerequisite.source_bytes(self.repo)
+            self.assertNotEqual(hashlib.sha256(changed[name]).digest(), hashlib.sha256(original).digest())
+            self.assertEqual({key for key in sources if changed[key] != sources[key]}, {name})
+            path.write_bytes(original)
+
+    def test_neither_architecture_source_may_be_missing(self):
+        for name in ('lrat.arm64.oakasm', 'lrat.rv64.oakasm'):
+            path = self.repo / 'prove/solver' / name
+            original = path.read_bytes()
+            path.unlink()
+            with self.subTest(name=name), self.assertRaises(OSError):
+                prerequisite.source_bytes(self.repo)
+            path.write_bytes(original)
 
 
 if __name__ == '__main__':

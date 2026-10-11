@@ -571,7 +571,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			// The native body backend has an AArch64 and an RV64 lane
 			// (nativegen): on a target without a lane every body stays with
 			// the C backend.
-			native = comp.lowerNativeBodies(tree.Root, tc)
+			native = comp.lowerNativeBodies(tree.Root, tc, asmFunctions, asmVerdicts)
 			if err := comp.gate("native", native.Diagnostics, tree.Modules); err != nil {
 				return nil, err
 			}

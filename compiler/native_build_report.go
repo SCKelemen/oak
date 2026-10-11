@@ -18,8 +18,31 @@ type NativeBuildInput struct {
 }
 
 type NativeBuildInventory struct {
-	Eligible []NativeBuildInput `json:"eligible"`
-	Externs  []NativeBuildInput `json:"externs"`
+	Eligible []NativeBuildInput         `json:"eligible"`
+	Externs  []NativeBuildInput         `json:"externs"`
+	Supplied []NativeBuildSuppliedInput `json:"supplied"`
+}
+
+// NativeBuildSuppliedInput identifies an actually selected assembly unit,
+// independently of the optimizer's generated candidates.
+type NativeBuildSuppliedInput struct {
+	Input      NativeBuildInput `json:"input"`
+	Arch       string           `json:"arch"`
+	BodySHA256 string           `json:"body_sha256"`
+}
+
+// NativeBuildSupplied observes the stitcher's real verdict. A supplied unit
+// never acquires invented optimizer selections or validation records.
+// TransientResourceExhausted is cache-persistence metadata, not a different
+// verification result: preserve its actual Trusted/Witnessed status and reason.
+// This observation neither stores verdicts nor changes hybrid admission policy.
+type NativeBuildSupplied struct {
+	Input      NativeBuildInput `json:"input"`
+	Arch       string           `json:"arch"`
+	BodySHA256 string           `json:"body_sha256"`
+	Status     string           `json:"status"`
+	Reason     string           `json:"reason"`
+	Callees    []string         `json:"callees"`
 }
 
 type NativeBuildCandidate struct {
@@ -48,6 +71,7 @@ type NativeBuildReport struct {
 	SchemaVersion int                   `json:"schema_version"`
 	Inventory     NativeBuildInventory  `json:"inventory"`
 	Functions     []NativeBuildFunction `json:"functions"`
+	Supplied      []NativeBuildSupplied `json:"supplied"`
 }
 
 // WithNativeBuildReport observes completed lowering after vector-callee
@@ -68,17 +92,19 @@ func (comp Compilation) NativeInventory() (NativeBuildInventory, error) {
 	if err != nil {
 		return NativeBuildInventory{}, err
 	}
-	return nativeBuildInventory(model.Tree.Root), nil
+	return nativeBuildInventory(model.Tree.Root, model.AsmFunctions), nil
 }
 
-func nativeBuildInventory(root *ast.Program) NativeBuildInventory {
-	result := NativeBuildInventory{Eligible: []NativeBuildInput{}, Externs: []NativeBuildInput{}}
+func nativeBuildInventory(root *ast.Program, suppliedFunctions []*asm.Function) NativeBuildInventory {
+	result := NativeBuildInventory{Eligible: []NativeBuildInput{}, Externs: []NativeBuildInput{}, Supplied: []NativeBuildSuppliedInput{}}
+	declarations := map[string]NativeBuildInput{}
 	for _, stmt := range root.Statements {
 		fn, ok := stmt.(*ast.FunctionStatement)
 		if !ok || fn.Name == nil {
 			continue
 		}
 		input := NativeBuildInput{Name: fn.Name.Value, SourceSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(fn.String()))), ExternSymbol: fn.ExternSymbol}
+		declarations[input.Name] = input
 		if fn.ExternSymbol != "" {
 			result.Externs = append(result.Externs, input)
 			continue
@@ -87,7 +113,42 @@ func nativeBuildInventory(root *ast.Program) NativeBuildInventory {
 			result.Eligible = append(result.Eligible, input)
 		}
 	}
+	// Use actual stitch outputs, not AsmBacked: an inert foreign dispatch
+	// realization can carry that marker without selecting a unit on this target.
+	for _, fn := range suppliedFunctions {
+		if fn == nil {
+			result.Supplied = append(result.Supplied, NativeBuildSuppliedInput{})
+			continue // Invalid observation identity fails closed in the consumer.
+		}
+		result.Supplied = append(result.Supplied, NativeBuildSuppliedInput{Input: declarations[fn.Name], Arch: fn.Arch, BodySHA256: nativeSuppliedBodyDigest(fn)})
+	}
 	return result
+}
+
+func nativeBuildSuppliedRows(inputs []NativeBuildSuppliedInput, verdicts map[string]asm.Verdict) []NativeBuildSupplied {
+	rows := make([]NativeBuildSupplied, len(inputs))
+	for i, input := range inputs {
+		row := NativeBuildSupplied{Input: input.Input, Arch: input.Arch, BodySHA256: input.BodySHA256, Status: "unfinished", Callees: []string{}}
+		if verdict, ok := verdicts[input.Input.Name]; ok {
+			row.Status, row.Reason = nativeBuildVerdictStatus(verdict), verdict.Message
+			row.Callees = append([]string{}, verdict.Callees...)
+		}
+		rows[i] = row
+	}
+	return rows
+}
+
+func nativeBuildVerdictStatus(verdict asm.Verdict) string {
+	switch verdict.Kind {
+	case asm.VerdictProven:
+		return "proven"
+	case asm.VerdictWitnessed:
+		return "witnessed"
+	case asm.VerdictTrusted:
+		return "trusted"
+	default:
+		return "error"
+	}
 }
 
 func nativeBuildCandidate(driver *nativeDriver, candidate *opt.Candidate, verdict opt.Verdict) NativeBuildCandidate {
@@ -104,16 +165,7 @@ func finishNativeBuildReport(report *NativeBuildReport, result nativeLowering) {
 		if reason, ok := result.Fallbacks[row.Input.Name]; ok {
 			row.Status, row.Reason = "c-fallback", reason
 		} else if verdict, ok := result.Verdicts[row.Input.Name]; ok {
-			switch verdict.Kind {
-			case asm.VerdictProven:
-				row.Status = "proven"
-			case asm.VerdictWitnessed:
-				row.Status = "witnessed"
-			case asm.VerdictTrusted:
-				row.Status = "trusted"
-			default:
-				row.Status = "error"
-			}
+			row.Status = nativeBuildVerdictStatus(verdict)
 			row.Reason = verdict.Message
 			row.Callees = append([]string{}, verdict.Callees...)
 		}

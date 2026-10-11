@@ -38,9 +38,15 @@ var nativeProverInventoryJSON []byte
 
 const nativeProverEligible = 1087
 
+// The eligible pin and embedded inventory still require a freshly derived,
+// independently reconciled update for the supplied-unit partition. Do not
+// infer a replacement count from the source delta. The old inventory fails
+// strict decoding until that reviewed update includes supplied identities.
+const nativeProverSupplied = -1 // Pending fresh frontend derivation and review.
+
 // Fourteen solver externs plus the imported host-write shim dependency.
 const nativeProverExterns = 15
-const nativeProverRecipeVersion = "hybrid-native-c-v1/fresh-verdicts/default-search/race"
+const nativeProverRecipeVersion = "hybrid-native-c-v2/fresh-verdicts/default-search/race/supplied-units"
 
 type nativeProverContext struct {
 	SourceSHA            string `json:"source_sha"`
@@ -99,7 +105,7 @@ type nativeProverSuccess struct {
 }
 
 func oakSolverSources() map[string]string {
-	return map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "protocol.oak": oakProtocolSource, "shell.oak": oakShellSource, "lean.oak": oakLeanSource, "explore.oak": oakExploreSource, "witness.oak": oakWitnessSource, "driver.oak": oakDriverHelpersSource, "lrat.oak": oakLRATSource, "sat.oak": oakSATSource, "model.oak": oakModelSource, "cnf.oak": oakCNFSource, "certify.oak": oakCertifySource, "main.oak": oakSolverDriverSource}
+	return map[string]string{"oak.mod": "module oak.prove.solver\noak 0.1.0\n", "bdd.oak": oakSolverSource, "lower.oak": oakLoweringSource, "syntax.oak": oakSyntaxSource, "tree.oak": oakTreeSource, "protocol.oak": oakProtocolSource, "shell.oak": oakShellSource, "lean.oak": oakLeanSource, "explore.oak": oakExploreSource, "witness.oak": oakWitnessSource, "driver.oak": oakDriverHelpersSource, "lrat.oak": oakLRATSource, "lrat.arm64.oakasm": oakLRATArm64Source, "lrat.rv64.oakasm": oakLRATRV64Source, "sat.oak": oakSATSource, "model.oak": oakModelSource, "cnf.oak": oakCNFSource, "certify.oak": oakCertifySource, "main.oak": oakSolverDriverSource}
 }
 
 func nativeDigest(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
@@ -258,7 +264,7 @@ func (memo *nativeInventoryMemo) get(key string, derive func() (compiler.NativeB
 	memo.mu.Lock()
 	defer memo.mu.Unlock()
 	clone := func(value compiler.NativeBuildInventory) compiler.NativeBuildInventory {
-		return compiler.NativeBuildInventory{Eligible: append([]compiler.NativeBuildInput{}, value.Eligible...), Externs: append([]compiler.NativeBuildInput{}, value.Externs...)}
+		return compiler.NativeBuildInventory{Eligible: append([]compiler.NativeBuildInput{}, value.Eligible...), Externs: append([]compiler.NativeBuildInput{}, value.Externs...), Supplied: append([]compiler.NativeBuildSuppliedInput{}, value.Supplied...)}
 	}
 	if memo.valid && memo.key == key {
 		return clone(memo.value), nil
@@ -281,7 +287,13 @@ func nativeInventoryRecipeKey(recipe nativeProverRecipe) (string, error) {
 
 func nativeExpectedInventory(directory, key string) (compiler.NativeBuildInventory, error) {
 	var expected compiler.NativeBuildInventory
+	if nativeProverSupplied < 0 {
+		return expected, errors.New("native prover supplied inventory awaits fresh derivation and review")
+	}
 	if err := nativeDecode(nativeProverInventoryJSON, &expected); err != nil {
+		return expected, err
+	}
+	if err := nativeValidateInventory(expected); err != nil {
 		return expected, err
 	}
 	actual, err := nativeFrontendMemo.get(key, func() (compiler.NativeBuildInventory, error) {
@@ -289,16 +301,16 @@ func nativeExpectedInventory(directory, key string) (compiler.NativeBuildInvento
 		if err != nil {
 			return actual, err
 		}
-		if len(actual.Eligible) != nativeProverEligible || len(actual.Externs) != nativeProverExterns || !reflect.DeepEqual(actual, expected) {
-			return actual, errors.New("native prover's reviewed eligible/extern inventory changed")
+		if len(actual.Eligible) != nativeProverEligible || len(actual.Supplied) != nativeProverSupplied || len(actual.Externs) != nativeProverExterns || !reflect.DeepEqual(actual, expected) {
+			return actual, errors.New("native prover's reviewed eligible/supplied/extern inventory changed")
 		}
 		return actual, nil
 	})
 	if err != nil {
 		return expected, err
 	}
-	if len(actual.Eligible) != nativeProverEligible || len(actual.Externs) != nativeProverExterns || !reflect.DeepEqual(actual, expected) {
-		return expected, errors.New("native prover's reviewed eligible/extern inventory changed")
+	if len(actual.Eligible) != nativeProverEligible || len(actual.Supplied) != nativeProverSupplied || len(actual.Externs) != nativeProverExterns || !reflect.DeepEqual(actual, expected) {
+		return expected, errors.New("native prover's reviewed eligible/supplied/extern inventory changed")
 	}
 	return actual, nil
 }
@@ -605,7 +617,7 @@ func nativeRecipe(sourceDir string) (nativeProverRecipe, error) {
 	if err := nativeCheckEnvironment(); err != nil {
 		return result, err
 	}
-	result.SchemaVersion, result.RecipeVersion = 1, nativeProverRecipeVersion
+	result.SchemaVersion, result.RecipeVersion = 2, nativeProverRecipeVersion
 	var err error
 	result.Context, err = nativeContext(filepath.Dir(filepath.Dir(sourceDir)))
 	if err != nil {
@@ -684,8 +696,45 @@ func nativeRecipe(sourceDir string) (nativeProverRecipe, error) {
 	return result, err
 }
 
+func nativeValidateInventory(inventory compiler.NativeBuildInventory) error {
+	if inventory.Eligible == nil || inventory.Externs == nil || inventory.Supplied == nil {
+		return errors.New("missing native inventory row family")
+	}
+	validDigest := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	seen := map[string]bool{}
+	input := func(row compiler.NativeBuildInput, extern bool) error {
+		if row.Name == "" || seen[row.Name] || !validDigest.MatchString(row.SourceSHA256) || (row.ExternSymbol != "") != extern {
+			return errors.New("duplicate, malformed or misclassified native input")
+		}
+		seen[row.Name] = true
+		return nil
+	}
+	for _, row := range inventory.Eligible {
+		if err := input(row, false); err != nil {
+			return err
+		}
+	}
+	for _, row := range inventory.Externs {
+		if err := input(row, true); err != nil {
+			return err
+		}
+	}
+	for _, row := range inventory.Supplied {
+		if err := input(row.Input, false); err != nil {
+			return err
+		}
+		if row.Arch != "arm64" || !validDigest.MatchString(row.BodySHA256) {
+			return errors.New("supplied native identity differs from the ARM64 target")
+		}
+	}
+	return nil
+}
+
 func nativeValidateReport(report compiler.NativeBuildReport, expected compiler.NativeBuildInventory) error {
-	if report.SchemaVersion != 1 || !reflect.DeepEqual(report.Inventory, expected) || len(report.Functions) != len(expected.Eligible) {
+	if err := nativeValidateInventory(expected); err != nil {
+		return err
+	}
+	if report.SchemaVersion != 2 || !reflect.DeepEqual(report.Inventory, expected) || report.Functions == nil || report.Supplied == nil || len(report.Functions) != len(expected.Eligible) || len(report.Supplied) != len(expected.Supplied) {
 		return errors.New("native report inventory mismatch")
 	}
 	seen := map[string]bool{}
@@ -698,6 +747,40 @@ func nativeValidateReport(report compiler.NativeBuildReport, expected compiler.N
 			declarations[input.Name] = true
 		}
 	}
+	for _, supplied := range expected.Supplied {
+		declarations[supplied.Input.Name] = true
+	}
+	checkCallees := func(names []string) error {
+		if names == nil {
+			return errors.New("missing native callee dependencies")
+		}
+		callees := map[string]bool{}
+		for _, callee := range names {
+			if !declarations[callee] || callees[callee] {
+				return errors.New("unknown or duplicate native callee dependency")
+			}
+			callees[callee] = true
+		}
+		return nil
+	}
+	for i, row := range report.Supplied {
+		identity := compiler.NativeBuildSuppliedInput{Input: row.Input, Arch: row.Arch, BodySHA256: row.BodySHA256}
+		if identity != expected.Supplied[i] || seen[row.Input.Name] {
+			return errors.New("missing, duplicate or reordered supplied obligation")
+		}
+		seen[row.Input.Name] = true
+		if row.Reason == "" {
+			return errors.New("supplied unit has no actual verdict reason")
+		}
+		switch row.Status {
+		case "proven", "witnessed", "trusted":
+		default:
+			return fmt.Errorf("unfinished or failed supplied obligation %s: %s", row.Input.Name, row.Status)
+		}
+		if err := checkCallees(row.Callees); err != nil {
+			return err
+		}
+	}
 	nativeCount := 0
 	validDigest := regexp.MustCompile(`^[0-9a-f]{64}$`)
 	for i, row := range report.Functions {
@@ -705,14 +788,10 @@ func nativeValidateReport(report compiler.NativeBuildReport, expected compiler.N
 			return errors.New("missing, duplicate or reordered native obligation")
 		}
 		seen[row.Input.Name] = true
-		callees := map[string]bool{}
-		for _, callee := range row.Callees {
-			if !declarations[callee] || callees[callee] {
-				return errors.New("unknown or duplicate native callee dependency")
-			}
-			callees[callee] = true
+		if err := checkCallees(row.Callees); err != nil {
+			return err
 		}
-		if row.Reason == "" || row.Considered < 0 || row.Materialized < 0 || row.Materialized > row.Considered {
+		if row.Reason == "" || row.Validations == nil || row.Considered < 0 || row.Materialized < 0 || row.Materialized > row.Considered {
 			return fmt.Errorf("invalid completion for %s", row.Input.Name)
 		}
 		seenCandidates := map[compiler.NativeBuildCandidate]bool{}
