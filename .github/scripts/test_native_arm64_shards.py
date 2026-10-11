@@ -170,9 +170,7 @@ class ShardEvidenceTests(unittest.TestCase):
                              recipe_sha256='f' * 64, outcome='proven', message='fixture proof', cached=False)
             functions.append(dict(input=row, status='proven', reason='fixture proof', callees=[],
                                   considered=1, materialized=1, selected=candidate, validations=[candidate]))
-        # Use only the freshly generated, reviewed supplied identities. During
-        # the source-only transition the legacy manifest cannot seed a passing
-        # aggregate fixture; never manufacture its missing selected-lane rows.
+        # Use only reviewed selected-lane identities; never manufacture missing rows.
         supplied = [dict(**row, status='proven', reason='fixture supplied proof', callees=[])
                     for row in inventory['supplied']]
         self.write_json(native / 'report.json',

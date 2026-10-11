@@ -266,10 +266,8 @@ SOLVER_SOURCE_NAMES = ('bdd.oak', 'lower.oak', 'syntax.oak', 'tree.oak', 'protoc
 SOURCE_NAMES = (*SOLVER_SOURCE_NAMES, 'main.oak', 'oak.mod')
 NATIVE_SCHEMA_VERSION = 2
 RECIPE_VERSION = 'hybrid-native-c-v2/fresh-verdicts/default-search/race/supplied-units'
-# The old eligible/extern pins are retained until the selected-lane frontend
-# inventory is freshly generated and reviewed. No real manifest can pass this
-# intermediate source-only integration while its supplied count is unreviewed.
-REVIEWED_INVENTORY_COUNTS = {'eligible': 1087, 'supplied': None, 'externs': 15}
+# Counts are pinned to the reviewed selected-lane frontend inventory.
+REVIEWED_INVENTORY_COUNTS = {'eligible': 1086, 'supplied': 2, 'externs': 15}
 
 
 def native_files():

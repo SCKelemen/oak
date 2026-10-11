@@ -725,6 +725,12 @@
     ],
     "compiler/wasm_conditional_source_test.go::TestWasmConditionalSourceLean": [
       "t.Skip(\"lake unavailable\")"
+    ],
+    "lrat_lifecycle_test.go::TestLRATLifecycleLean": [
+      "t.Skip(\"lake unavailable\")"
+    ],
+    "lrat_native_test.go::TestLRATNativeLean": [
+      "t.Skip(\"lake unavailable\")"
     ]
   },
   "children": {

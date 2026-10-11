@@ -36,13 +36,10 @@ import (
 //go:embed .github/scripts/native_prover_inventory.json
 var nativeProverInventoryJSON []byte
 
-const nativeProverEligible = 1087
+const nativeProverEligible = 1086
 
-// The eligible pin and embedded inventory still require a freshly derived,
-// independently reconciled update for the supplied-unit partition. Do not
-// infer a replacement count from the source delta. The old inventory fails
-// strict decoding until that reviewed update includes supplied identities.
-const nativeProverSupplied = -1 // Pending fresh frontend derivation and review.
+// The fresh ARM64 frontend selects both reviewed LRAT supplied guards.
+const nativeProverSupplied = 2
 
 // Fourteen solver externs plus the imported host-write shim dependency.
 const nativeProverExterns = 15
