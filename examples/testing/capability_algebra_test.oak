@@ -1,0 +1,29 @@
+import(testing)
+
+// Executable rights-set pilot for Oak.CapabilityAlgebra.
+// This models permission bits only; it is NOT a kernel capability handle.
+// Kernel-mediated mint/transfer/revoke are separate authority protocols.
+
+rights_meet: (a: u32, b: u32): u32 { a & b }
+rights_join: (a: u32, b: u32): u32 { a | b }
+rights_subset: (child: u32, parent: u32): Bool {
+  (child & parent) == child
+}
+delegate_checked: (parent: u32, requested: u32): u32 {
+  // The strict delegation API must reject amplification rather than
+  // silently meet it. Here the pure pilot asserts the precondition.
+  assert(rights_subset(requested, parent))
+  requested
+}
+
+TestCapabilityRightsAlgebra: (): () {
+  parent: u32 = u32(7)   // read | write | commit
+  requested: u32 = u32(5) // read | commit
+  child: u32 = delegate_checked(parent, requested)
+  test_check(rights_subset(child, parent), u32(7900))
+  test_check(rights_meet(parent, requested) == child, u32(7901))
+  test_check(rights_meet(parent, child) == child, u32(7902))
+  test_check(rights_join(child, u32(2)) == parent, u32(7903))
+  test_check(rights_subset(u32(0), child), u32(7904))
+  test_check(!rights_subset(u32(8), parent), u32(7905))
+}
