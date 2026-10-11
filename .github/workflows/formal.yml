@@ -5,7 +5,7 @@ on:
     branches:
       - specification
       - docs/spec-consolidation
-      - codex/lrat-binding-model
+      - codex/lrat-binding-complete
   pull_request:
     branches:
       - specification

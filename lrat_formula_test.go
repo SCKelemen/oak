@@ -250,6 +250,15 @@ example : Oak.LRATBinding.lrat_matches_formula
     #[1280459348, 0, 1, 1, 0, 0, 0, 0, 0] #[1280459348, 0, 1, 1, 0, 0, 0, 0, 0] 2 = some true := by decide
 example : Oak.LRATBinding.lrat_matches_formula.loop1 #[0, 1, 2] #[9, 1, 2] true 0 3 =
     some (false, 1) := by decide
+example (formula record : Array UInt32) (fuel : Nat)
+    (formulaSize : formula.size < 4294967296) (recordSize : record.size < 4294967296)
+    (enough : formula.size - 8 < fuel) :
+    Oak.LRATBinding.lrat_matches_formula formula record fuel = some true ↔
+      Oak.LRATFormulaBinding.matchesFormula (Oak.LRATFormulaBinding.project formula)
+        (Oak.LRATFormulaBinding.project record) = true :=
+  Oak.LRATFormulaBinding.production_binding_iff_model formula record fuel formulaSize recordSize enough
+#print axioms Oak.LRATFormulaBinding.production_binding_iff_model
+#print axioms Oak.LRATFormulaBinding.model_binding_accepted
 #print axioms Oak.LRATFormulaBinding.production_binding_refines_model
 #print axioms Oak.LRATFormulaBinding.production_bound_record_sound
 #print axioms Oak.LRATFormulaBinding.decodeInitial_transfer

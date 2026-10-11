@@ -484,9 +484,12 @@ list predicate: successful execution implies both framing checks, the formula-on
 input requirement, all identity fields, and exact ordered payload equality. It
 requires both array lengths to fit UInt32 view lengths; it does not assume a
 solver verdict or clause validity. The dedicated CI contract rejects proof holes
-and pins fuel exhaustion, empty payloads, and mismatch refusal. This theorem
-proves the acceptance direction; completeness with sufficient fuel remains
-separate. The stronger direct checker theorem does not depend on this list
+and pins fuel exhaustion, empty payloads, and mismatch refusal. The reverse theorem `model_binding_accepted` proves completeness when fuel
+is greater than the formula payload length (`formula.size - 8`). Its loop
+lemma accounts for each payload word and the final guard without UInt32
+wraparound. `production_binding_iff_model` combines both directions under
+the same representable-array bounds; CI pins that contract and rejects
+transitive proof holes. The stronger direct checker theorem does not depend on this list
 model. Source-to-CNF correctness and native compilation of the checker remain
 separate proof obligations.
 `-cnf dir` writes every bit-level
