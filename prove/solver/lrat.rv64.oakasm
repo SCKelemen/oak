@@ -1,0 +1,32 @@
+// Normalize u32 inputs explicitly; do not depend on upper ABI register bits.
+lrat_fits: (at: u32, count: u32, limit: u32) -> Bool = {
+  bind a0 = at
+  bind a1 = count
+  bind a2 = limit
+  clobber t0, t1
+  slli a0, a0, 32
+  srli a0, a0, 32
+  slli a1, a1, 32
+  srli a1, a1, 32
+  slli a2, a2, 32
+  srli a2, a2, 32
+  sltu t0, a2, a0
+  xori t0, t0, 1
+  sub t1, a2, a0
+  slli t1, t1, 32
+  srli t1, t1, 32
+  sltu a0, t1, a1
+  xori a0, a0, 1
+  and a0, a0, t0
+  ret
+}
+
+lrat_alloc_fits: (count: u32) -> Bool = {
+  bind a0 = count
+  clobber t0
+  slli a0, a0, 32
+  srli a0, a0, 32
+  li t0, 1073741823
+  sltu a0, a0, t0
+  ret
+}

@@ -360,6 +360,20 @@ release order in addition to leak counts. Existing single-failure and raw-stream
 cleanup cases use the strengthened shim too. CI requires the source audit,
 complete Lean contract and axiom audit, and these compiled regressions.
 
+The scalar `lrat_fits` and `lrat_alloc_fits` guards now have ARM64 and RV64
+assembler units used by the solver package. The existing verifier must prove
+each unit equal to its actual production Oak definition; wrong endpoint and
+allocation-threshold mutations must yield counterexamples. RV64 explicitly
+normalizes the low 32 bits before unsigned comparisons, including the
+subtraction result. `Oak.LRATNativeGuards` proves these scalar expressions
+agree with the extracted guards and composes them with endpoint and allocation
+bounds, for arbitrary inputs (including arbitrary upper RV64 register bits).
+Required CI checks kernel contracts and axioms, both units' verification and
+encoding, target selection, and ARM64/RV64 ELF symbols. Other targets retain
+the Oak fallback. The solver cache includes both units. This closes a scalar
+realization step, not general instruction decoding, ABI/linker correctness,
+the Go verifier's implementation, or whole-checker compiled soundness.
+
 This establishes expected-formula soundness for the extracted binding gate
 and word checker. Extraction correctness, allocation/FFI semantics, and
 compiled ARM64/RV64 executables remain separate obligations.

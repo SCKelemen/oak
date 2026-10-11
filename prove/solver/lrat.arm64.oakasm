@@ -1,0 +1,23 @@
+// Scalar guards only. The Oak definitions remain the verified specifications.
+lrat_fits: (at: u32, count: u32, limit: u32) -> Bool = {
+  bind w0 = at
+  bind w1 = count
+  bind w2 = limit
+  clobber w9, w10
+  cmp w0, w2
+  cset w9, ls
+  sub w10, w2, w0
+  cmp w1, w10
+  cset w0, ls
+  and w0, w0, w9
+  ret
+}
+
+lrat_alloc_fits: (count: u32) -> Bool = {
+  bind w0 = count
+  clobber w9
+  mov w9, #1073741823
+  cmp w0, w9
+  cset w0, lo
+  ret
+}
