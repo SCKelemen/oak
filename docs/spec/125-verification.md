@@ -325,6 +325,20 @@ a conclusion. CI pins both contracts and audits their transitive axioms.
 Regressions cover clause-count disagreement, empty clauses with unused payload,
 and initial clause bodies crossing into the proof section.
 
+`Oak.LRATPreflight` proves the production allocation admission checks. The
+allocating entry calls the shared `lrat_record_fits` helper, whose extraction
+is checked for drift. Accepted preflight establishes all header indices are
+in bounds, exact framing of the UInt32-sized record view, and positive,
+non-wrapping element and byte counts for all six scratch requests. The actual
+`lrat_header_fits` gate also establishes exact positive stream-buffer byte
+allocation. These results compose the existing arithmetic lemmas with the
+production guards; they do not assume those arithmetic preconditions from
+the caller. The required LRAT gate pins the contracts and audits their axioms.
+Compiled entry tests reject truncated or inconsistent raw framing before any
+allocation, and check that zero declared capacities still reserve sentinels.
+Allocator success, ownership conversion, cleanup and FFI execution remain
+separate from these arithmetic and admission proofs.
+
 This establishes expected-formula soundness for the extracted binding gate
 and word checker. Extraction correctness, allocation/FFI semantics, and
 compiled ARM64/RV64 executables remain separate obligations.

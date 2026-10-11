@@ -259,6 +259,7 @@ import Oak.IndexBounds
 import Oak.SolverScheduling
 import Oak.RupCheck
 import Oak.LRATBounds
+import Oak.LRATPreflight
 import Oak.LRATRUP
 import Oak.LRATRUPSoundness
 import Oak.LRATCheckerState

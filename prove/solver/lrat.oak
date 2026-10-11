@@ -75,6 +75,15 @@ lrat_header_fits: (h: []u32): Bool {
   ok
 }
 
+// Complete allocation preflight shared with the allocating entry. Header
+// capacities and the exact body framing must pass before requesting scratch.
+lrat_record_fits: (record: []u32): Bool {
+  ok: Bool = lrat_header_fits(record)
+  ok = ok && lrat_fits(LRAT_HEADER_WORDS, record[u32(3)], len(record))
+  ok = ok && record[u32(4)] == len(record) - LRAT_HEADER_WORDS - record[u32(3)]
+  ok
+}
+
 // lrat_true_value is the assignment under which the literal holds.
 lrat_true_value: (lit: u32): u8 = lit % u32(2) == u32(1) ? u8(2) | u8(1)
 lrat_false_value: (lit: u32): u8 = lit % u32(2) == u32(1) ? u8(1) | u8(2)
