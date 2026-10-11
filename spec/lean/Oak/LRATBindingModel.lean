@@ -112,4 +112,149 @@ theorem production_binding_refines_model (formula record : Array UInt32) (fuel :
     exact congrArg (fun b => FormulaKey.mk (record.getD 1 0).toNat (record.getD 2 0).toNat
       (record.getD 3 0).toNat b) body
 
+/-- A matching model supplies the exact production header guards. -/
+theorem model_binding_header (formula record : Array UInt32)
+    (formulaSize : formula.size < 4294967296) (recordSize : record.size < 4294967296)
+    (bound : matchesFormula (project formula) (project record) = true) :
+    LRATChecker.bindingHeader formula record = true := by
+  obtain ⟨ff, zero, rf⟩ := matches_framed bound
+  have keys := matches_exact bound
+  have vars := congrArg FormulaKey.variables keys
+  have counts := congrArg FormulaKey.clauses keys
+  have lens := congrArg FormulaKey.literalWords keys
+  simp only [Framed, project_length, project_word] at ff rf
+  simp only [project_word] at zero
+  simp only [formulaKey, project_word] at vars counts lens
+  have fsize : formula.size.toUInt32.toNat = formula.size := Nat.mod_eq_of_lt formulaSize
+  have rsize : record.size.toUInt32.toNat = record.size := Nat.mod_eq_of_lt recordSize
+  have fs : (8 : UInt32) ≤ formula.size.toUInt32 := by
+    apply UInt32.le_iff_toNat_le.mpr
+    simpa only [eight_nat, fsize] using ff.1
+  have rs : (8 : UInt32) ≤ record.size.toUInt32 := by
+    apply UInt32.le_iff_toNat_le.mpr
+    simpa only [eight_nat, rsize] using rf.1
+  have rl : record.getD 3 0 ≤ record.size.toUInt32 - 8 := by
+    apply UInt32.le_iff_toNat_le.mpr
+    simpa only [UInt32.toNat_sub_of_le _ _ rs, eight_nat, rsize] using rf.2.2.1
+  simp only [LRATChecker.bindingHeader, Bool.and_eq_true, decide_eq_true_eq,
+    beq_iff_eq, and_assoc]
+  change 8 ≤ formula.size.toUInt32 ∧ 8 ≤ record.size.toUInt32 ∧
+    formula.getD 0 0 = LRATBinding.LRAT_MAGIC ∧ record.getD 0 0 = LRATBinding.LRAT_MAGIC ∧
+    formula.getD 4 0 = 0 ∧ formula.getD 3 0 = formula.size.toUInt32 - 8 ∧
+    record.getD 3 0 ≤ record.size.toUInt32 - 8 ∧
+    record.getD 4 0 = record.size.toUInt32 - 8 - record.getD 3 0 ∧
+    formula.getD 1 0 = record.getD 1 0 ∧ formula.getD 2 0 = record.getD 2 0 ∧
+    formula.getD 3 0 = record.getD 3 0
+  refine ⟨fs, rs, UInt32.toNat_inj.mp ff.2.1, UInt32.toNat_inj.mp rf.2.1,
+    UInt32.toNat_inj.mp zero, ?_, rl, ?_, UInt32.toNat_inj.mp vars,
+    UInt32.toNat_inj.mp counts, UInt32.toNat_inj.mp lens⟩
+  · apply UInt32.toNat_inj.mp
+    rw [UInt32.toNat_sub_of_le _ _ fs, eight_nat, fsize]
+    omega
+  · apply UInt32.toNat_inj.mp
+    simpa only [UInt32.toNat_sub_of_le _ _ rl, UInt32.toNat_sub_of_le _ _ rs,
+      eight_nat, rsize] using rf.2.2.2
+
+/-- Exact list identity includes every production payload read. -/
+theorem model_binding_payload (formula record : Array UInt32)
+    (bound : matchesFormula (project formula) (project record) = true)
+    (k : Nat) (lower : 8 ≤ k) (upper : k < formula.size) :
+    formula.getD k 0 = record.getD k 0 := by
+  obtain ⟨ff, zero, _⟩ := matches_framed bound
+  simp only [Framed, project_length, project_word] at ff
+  simp only [project_word] at zero
+  have keys := matches_exact bound
+  have lens := congrArg FormulaKey.literalWords keys
+  simp only [formulaKey, project_word] at lens
+  have body := matches_body bound
+  simp only [formulaKey, project_word] at body
+  have iBound : k - 8 < (formula.getD 3 0).toNat := by omega
+  have rBound : k - 8 < (record.getD 3 0).toNat := by omega
+  have same := congrArg (fun words : List Nat => words[k - 8]?.getD 0) body
+  simp only [List.getElem?_take_of_lt iBound, List.getElem?_take_of_lt rBound,
+    List.getElem?_drop] at same
+  have index : 8 + (k - 8) = k := by omega
+  rw [index] at same
+  change word (project formula) k = word (project record) k at same
+  simp only [project_word] at same
+  exact UInt32.toNat_inj.mp same
+
+private theorem u32_max_right (a b : UInt32) (h : a ≤ b) : max a b = b := by
+  change (if a ≤ b then b else a) = b
+  rw [if_pos h]
+
+private theorem u32_max_left (a b : UInt32) (h : b ≤ a) : max a b = a := by
+  change (if a ≤ b then b else a) = a
+  split
+  · apply UInt32.toNat_inj.mp
+    have := UInt32.le_iff_toNat_le.mp h
+    rename_i hab
+    have := UInt32.le_iff_toNat_le.mp hab
+    omega
+  · rfl
+
+/-- One unit of fuel per payload word, plus the terminating guard, suffices. -/
+theorem binding_loop_complete (fuel : Nat) (formula record : Array UInt32) (at_ : UInt32)
+    (enough : formula.size.toUInt32.toNat - at_.toNat < fuel)
+    (payload : ∀ k, at_.toNat ≤ k → k < formula.size.toUInt32.toNat →
+      formula.getD k 0 = record.getD k 0) :
+    LRATBinding.lrat_matches_formula.loop1 formula record true at_ fuel =
+      some (true, max at_ formula.size.toUInt32) := by
+  induction fuel generalizing at_ with
+  | zero => omega
+  | succ fuel ih =>
+    by_cases advance : at_ < formula.size.toUInt32
+    · have an := UInt32.lt_iff_toNat_lt.mp advance
+      have next : (at_ + 1).toNat = at_.toNat + 1 := by
+        apply LRATChecker.add_exact
+        have := formula.size.toUInt32.toNat_lt
+        simp only [UInt32.toNat_one]
+        omega
+      have same := payload at_.toNat (by omega) an
+      simp only [LRATBinding.lrat_matches_formula.loop1, advance, decide_true,
+        Bool.and_self, ite_true, same, beq_self_eq_true]
+      rw [ih (at_ + 1) (by rw [next]; omega) (by
+        intro k lo hi
+        exact payload k (by rw [next] at lo; omega) hi)]
+      have le : at_ ≤ formula.size.toUInt32 := by
+        apply UInt32.le_iff_toNat_le.mpr; omega
+      have nextLe : at_ + 1 ≤ formula.size.toUInt32 := by
+        apply UInt32.le_iff_toNat_le.mpr; rw [next]; omega
+      rw [u32_max_right _ _ le, u32_max_right _ _ nextLe]
+    · have le : formula.size.toUInt32 ≤ at_ := by
+        apply UInt32.le_iff_toNat_le.mpr
+        have an : ¬ at_.toNat < formula.size.toUInt32.toNat := by
+          intro h; exact advance (UInt32.lt_iff_toNat_lt.mpr h)
+        omega
+      simp [LRATBinding.lrat_matches_formula.loop1, advance, u32_max_left _ _ le]
+
+/-- Completeness with the exact payload-length fuel bound. -/
+theorem model_binding_accepted (formula record : Array UInt32) (fuel : Nat)
+    (formulaSize : formula.size < 4294967296) (recordSize : record.size < 4294967296)
+    (enough : formula.size - 8 < fuel)
+    (bound : matchesFormula (project formula) (project record) = true) :
+    LRATBinding.lrat_matches_formula formula record fuel = some true := by
+  have header := model_binding_header formula record formulaSize recordSize bound
+  have fsize : formula.size.toUInt32.toNat = formula.size := Nat.mod_eq_of_lt formulaSize
+  have loop := binding_loop_complete fuel formula record 8
+    (by simpa only [fsize, eight_nat] using enough) (by
+      intro k lo hi
+      exact model_binding_payload formula record bound k
+        (by simpa only [eight_nat] using lo) (by simpa only [fsize] using hi))
+  change (do
+    let (same, _) ← LRATBinding.lrat_matches_formula.loop1 formula record
+      (LRATChecker.bindingHeader formula record) 8 fuel
+    pure same) = some true
+  rw [header, loop]
+  rfl
+
+/-- At sufficient fuel, production acceptance and model identity are equivalent. -/
+theorem production_binding_iff_model (formula record : Array UInt32) (fuel : Nat)
+    (formulaSize : formula.size < 4294967296) (recordSize : record.size < 4294967296)
+    (enough : formula.size - 8 < fuel) :
+    LRATBinding.lrat_matches_formula formula record fuel = some true ↔
+      matchesFormula (project formula) (project record) = true :=
+  ⟨production_binding_refines_model formula record fuel formulaSize recordSize,
+    model_binding_accepted formula record fuel formulaSize recordSize enough⟩
+
 end Oak.LRATFormulaBinding
