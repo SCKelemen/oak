@@ -72,7 +72,7 @@ All old files remain charged to the aggregate cap. No compiler or proof output i
 reused by this rule, and a new allocation writes every manifest chunk freshly.
 
 For an independently reviewed local run, `generate` stops after freezing all
-658 modules and their dependency order. `build` uses that same frozen source
+738 modules and their dependency order. `build` uses that same frozen source
 set and ledger, requiring the reviewed `--config-sha256` and
 `--build-plan-sha256`. Neither mode retries a failed stage. The workflow uses `all`
 so this proof cannot silently become an optional or skipped check. This job runs
@@ -91,7 +91,7 @@ repository branch-protection requirement is a separate repository setting.
   Discovery rechecks the child's live parent and the parent's live start identity
   before admitting an edge from the non-atomic process listing.
 - Go compilation: 120 seconds. Normal/race gates: 90/120 seconds. Typed source
-  emission and each of nine projection stages: 180 seconds. Each of the 658
+  emission and each of nine projection stages: 180 seconds. Each of the 738
   Lean modules: 180 seconds.
 - Every ordinary 180-second stage reserves four seconds for shutdown: sampled
   stop and independent TERM at 176 seconds, KILL by 179 seconds. The watchdog
@@ -128,4 +128,4 @@ kernel result.
 The durable inputs' provenance and field schema are documented in
 `asm/testdata/typed_cnf/README.md`. Generated proof modules remain build
 artifacts. Their deterministic expected source hashes are checked before Lean
-starts, and the final active import closure is exactly the frozen 658 modules.
+starts, and the final active import closure is exactly the frozen 738 modules.

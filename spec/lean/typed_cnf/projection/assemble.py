@@ -1,4 +1,4 @@
-"""Bind the complete reviewed 658-module DAG without duplicating source files."""
+"""Bind the complete reviewed 738-module DAG without duplicating source files."""
 from common import (METADATA_CAP, SOURCE_CAP, digest, encode, expected_rows,
                     module_path, regular_read, require)
 
@@ -9,7 +9,7 @@ def project(stage):
     for origin in ('refutation', 'data', 'checks', 'permutation', 'nodes', 'bits031', 'bits145', 'reuse'):
         for module in stage.receipt(origin):
             selected[module] = origin
-    counts = {'repository': 26, 'refutation': 162, 'typed': 470}
+    counts = {'repository': 26, 'refutation': 162, 'typed': 550}
     products, all_modules, imports = {}, set(), {}
     family_bytes = {}
     for family, count in counts.items():
@@ -37,7 +37,7 @@ def project(stage):
                                              'family': family, 'modules': rows})
         family_bytes[family] = sum(row[2] for row in rows)
         require(len(products[family + '.json']) <= METADATA_CAP, 'source inventory metadata cap')
-    require(len(all_modules) == 658 and set(selected) == all_modules - {m for m in all_modules if m.startswith('Oak.')},
+    require(len(all_modules) == 738 and set(selected) == all_modules - {m for m in all_modules if m.startswith('Oak.')},
             'complete generated/repository closure inventory')
     # These imports are supplied by the separately pinned Lean distribution.
     standard = {'Init.Data.List.Sort.Lemmas', 'Std.Tactic.BVDecide'}
@@ -59,10 +59,10 @@ def project(stage):
         order.append(module)
 
     visit('TypedCNFInstance.Final')
-    require(reached == all_modules and len(order) == 658, 'final theorem transitive closure')
+    require(reached == all_modules and len(order) == 738, 'final theorem transitive closure')
     sizes = stage.check_physical_caps()
     stage.charge(sum(len(v) for v in products.values()) + METADATA_CAP)
-    summary = {'schema': 'typed-cnf-assembled-sources-v1', 'module_count': 658,
+    summary = {'schema': 'typed-cnf-assembled-sources-v1', 'module_count': 738,
                'family_counts': counts, 'family_source_bytes': family_bytes,
                'physical_source_bytes': sizes, 'kernel_checked': False,
                'work': stage.work, 'work_cap': 16777216,

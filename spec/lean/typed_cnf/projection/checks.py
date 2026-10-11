@@ -220,16 +220,29 @@ def project(stage):
     for block in range(20):
         first=128*block; chunk=gates[first:first+128]
         previous=0 if first==0 else gates[first-1][4]
-        text=header(['TypedCNFInstance.CheckShape'])
+        fragment_names=[]
+        for part in range(4):
+            start=32*part; fragment=chunk[start:start+32]
+            require(bool(fragment), 'empty gate fragment')
+            fragment_previous=previous if start==0 else chunk[start-1][4]
+            name='CheckGate%02dPart%02d'%(block,part)
+            fragment_names.append(name)
+            text=header(['TypedCNFInstance.CheckShape'])
+            text+='def rawGates%02dPart%02d : List RawGate := [%s]\n\n'%(block,part,', '.join(raw_gate(gate) for gate in fragment))
+            records=blocks['typedGateBlock%03d'%block][start:start+32]
+            text+='theorem gateChunk%02dPart%02d : GateChunk 2890 allocation.memo %d %d [%s] rawGates%02dPart%02d := by\n'%(block,part,fragment_previous,fragment[-1][4],', '.join(records),block,part)
+            for gate in fragment:
+                key=memo_key(gate); entry_index,_,entry=memo_index[key]
+                text+='  refine GateChunk.cons (key := %s) (by rfl) (by decide) (by decide)\n'%('('+key+')')
+                text+='    ((operandsBefore_eq_true_iff _ _).mp (by decide)) (by decide) ?_ ?_\n'
+                text+='  · exact lookupMemo_of_mem allocation_shape.memoKeysUnique\n'
+                text+='      (memoBlock%02d_member (entry := %s) (by decide))\n'%(entry_index//128,entry)
+            text+='  exact GateChunk.nil _ _ _\n'
+            outputs.append(save(name,text))
+        text=header(['TypedCNFInstance.'+name for name in fragment_names])
         text+='def rawGates%02d : List RawGate := [%s]\n\n'%(block,', '.join(raw_gate(gate) for gate in chunk))
         text+='theorem gateChunk%02d : GateChunk 2890 allocation.memo %d %d typedGateBlock%03d rawGates%02d := by\n'%(block,previous,chunk[-1][4],block,block)
-        for offset,gate in enumerate(chunk):
-            key=memo_key(gate); entry_index,_,entry=memo_index[key]
-            text+='  refine GateChunk.cons (key := %s) (by rfl) (by decide) (by decide)\n'%('('+key+')')
-            text+='    ((operandsBefore_eq_true_iff _ _).mp (by decide)) (by decide) ?_ ?_\n'
-            text+='  · exact lookupMemo_of_mem allocation_shape.memoKeysUnique\n'
-            text+='      (memoBlock%02d_member (entry := %s) (by decide))\n'%(entry_index//128,entry)
-        text+='  exact GateChunk.nil _ _ _\n'
+        text+='  exact '+balanced(['gateChunk%02dPart%02d'%(block,part) for part in range(4)],lambda l,r:'(GateChunk.append '+l+' '+r+')')+'\n'
         outputs.append(save('CheckGate%02d'%block,text))
     text=header(['TypedCNFInstance.CheckGate%02d'%i for i in range(20)])
     text+='def rawGates : List RawGate := '+balanced(['rawGates%02d'%i for i in range(20)])+'\n\n'
@@ -306,5 +319,5 @@ theorem trace_accepted : CNFClauseTrace.check trace = some checked := Option.eq_
   simp only [CNFClauseTrace.emittedDatabase?, clauses_bound, Option.map_some]
 '''
     outputs.append(save('Checks',text))
-    stage.finish(47, {'segments': len(segments), 'gates': len(gates),
+    stage.finish(127, {'segments': len(segments), 'gates': len(gates),
                       'gate_clause_endpoints': gate_ends})

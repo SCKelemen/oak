@@ -202,7 +202,7 @@ def prepare(args, ledger, owner):
               'versions': versions, 'modcache': str(modcache), 'task_inputs': task_inputs,
               'source_manifests': source_manifests,
               'toolchain_manifests': chain_manifests, 'cumulative_seconds': TOTAL_SECONDS,
-              'historical_attempts_charged_here': 0, 'module_count': 658,
+              'historical_attempts_charged_here': 0, 'module_count': 738,
               'ordinary_stage_seconds': 180, 'rss_bytes': 4026531840,
               'minimum_memory_bytes': 2147483648, 'minimum_disk_bytes': 536870912,
               'aggregate_objects_bytes': 1073741824, 'aggregate_evidence_bytes': 33554432,
@@ -369,7 +369,7 @@ class Gate:
 
     def module_rows(self):
         rows = []
-        for family, expected_count in [('repository', 26), ('refutation', 162), ('typed', 470)]:
+        for family, expected_count in [('repository', 26), ('refutation', 162), ('typed', 550)]:
             raw = regular(self.work / 'generated/projection/assemble' / (family+'.json'), 65536)
             inventory = json.loads(raw)
             require(inventory['schema'] == 'typed-cnf-source-inventory-v1' and inventory['family'] == family,
@@ -377,7 +377,7 @@ class Gate:
             family_rows = inventory['modules']
             require(isinstance(family_rows, list) and len(family_rows) == expected_count, 'module family inventory')
             rows.extend(family_rows)
-        require(len(rows) == 658 and len({row[0] for row in rows}) == 658, 'exact logical module inventory')
+        require(len(rows) == 738 and len({row[0] for row in rows}) == 738, 'exact logical module inventory')
         return rows
 
     def freeze_build(self):
@@ -406,10 +406,10 @@ class Gate:
             visited.add(module)
             order.append(mapping[module])
         visit('TypedCNFInstance.Final')
-        require(len(order) == 658, 'inventory is not exactly the final import closure')
+        require(len(order) == 738, 'inventory is not exactly the final import closure')
         manifests = shard(order, self.work / 'evidence/manifests', 'build')
         publish(self.work / 'evidence/build-plan.json', {'schema': 'typed-cnf-frozen-build-v1',
-                'module_count': 658, 'modules': manifests, 'source_generation_receipts': self.receipts,
+                'module_count': 738, 'modules': manifests, 'source_generation_receipts': self.receipts,
                 'spent_seconds': self.spent, 'remaining_seconds': TOTAL_SECONDS-self.spent}, 65536)
 
     def build(self):
@@ -420,7 +420,7 @@ class Gate:
         for path, expected in plan['modules']:
             require(sha(path) == expected, 'frozen module plan identity')
             rows.extend(json.loads(regular(path, 65536)))
-        require(len(rows) == 658 and len({row['module'] for row in rows}) == 658, 'frozen module count')
+        require(len(rows) == 738 and len({row['module'] for row in rows}) == 738, 'frozen module count')
         expected_sources = {row[0]: row for row in self.module_rows()}
         seen = set()
         for row in rows:

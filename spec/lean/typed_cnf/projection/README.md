@@ -35,7 +35,7 @@ ordered clauses and hints, live deletion behavior, and final empty addition;
 the resulting propositions still require the separate Lean kernel compilation.
 
 The assemble stage authenticates every selected source against the reviewed
-closure and verifies that the final theorem has exactly 658 project modules in
+closure and verifies that the final theorem has exactly 738 project modules in
 its transitive import DAG. Only the pinned Lean distribution supplies
 `Init.Data.List.Sort.Lemmas` and `Std.Tactic.BVDecide`. Assembly produces no
 duplicate Lean files. It writes `repository.json`, `refutation.json`, and
@@ -53,12 +53,12 @@ objects, compile into its fresh private import root, and audit the final
 theorem and axioms. Source inventory authentication is not a proof verdict.
 
 The final inventory contains 26 repository modules (265,270 bytes), 162
-refutation modules (5,799,628 bytes), and 470 typed modules (2,002,124 bytes).
-The stages publish respectively 162, 33, 47, 1, 364, 17, 9, and 4 Lean modules;
+refutation modules (5,799,628 bytes), and 550 typed modules (2,255,801 bytes).
+The stages publish respectively 162, 33, 127, 1, 364, 17, 9, and 4 Lean modules;
 later proof-specific stages supersede selected earlier sources. Nodes00 and
 the corrected Final remain in the initial-source directory. All stages retain
 their own immutable outputs, including the superseded intermediate files.
-The anticipated physical total is 2,684,823 typed bytes, including the initial
+The anticipated physical total is 2,938,500 typed bytes, including the initial
 18 modules, plus 5,799,628 refutation bytes. No final source copy is needed.
 
 Each stage has an explicit 16,777,216-unit work counter and a 180-second wall
@@ -67,17 +67,32 @@ including retained intermediate source. Every metadata file is capped at
 64 KiB. The outer launcher owns RSS, available memory/disk, process cleanup,
 cumulative wall-time accounting, and final proof acceptance.
 
-The expected inventory was transcribed from the independently reviewed closure
+The original expected inventory was transcribed from the independently reviewed closure
 SHA256 `4087dd2664c3276383033d170a90fecb46672119b53347e01a15e9ad61d118ca`.
 Each of its 658 rows was checked against that closure's successful stage plan,
 receipt, source manifest, and source bytes during source authoring. The initial
 writer inventory incorporates corrected Final SHA256
 `484b1df961898bb3597c0cc045c6f77da00b7a33d06dada8f21db168fa8dddbc`.
-These are provenance pins; the pipeline reads only repository inputs and fresh
+The typed inventory now replaces the 20 gate-batch proof bodies and adds 80
+contiguous proof fragments. Its `base_closure_sha256` retains that historical
+closure identity; `gate_fragment_projection_sha256` binds the reviewed new
+source projection. Every original gate-batch proposition and raw gate list is
+unchanged. The final transitive closure contains 738 modules. These are source
+provenance pins, not a claim that the new full closure has already run; mandatory
+CI kernel-checks every module and the final theorem from fresh outputs.
+The pipeline reads only repository inputs and fresh
 artifacts produced by this run.
 
 The source construction retains the successful depth-six refutation factoring,
 typed data factoring, nested GateChunk witnesses with the decode-equality `rfl`
 repair, direct 23-step output permutation, Node025–374 splitting, 64 Node031 and
 32 Node145 scalar facts, and checker-only proof reuse at 121/242/294/340.
-It does not include the rejected balanced-gate or mergeSort construction.
+Each original gate batch is proved using four separately compiled fragments of
+at most 32 gates, composed with the existing `GateChunk.append` theorem. All
+six per-gate premises remain in their original order. The last fragment has
+nine gates. This reduces the work assigned to each module after hosted
+128-gate elaborations exceeded the unchanged per-module watchdog. The focused
+late-batch regression passed; full hosted feasibility remains a CI obligation.
+No proof or runtime budget is enlarged.
+It does not include the rejected per-gate balanced construction or mergeSort
+construction.
