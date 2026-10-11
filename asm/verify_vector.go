@@ -1068,10 +1068,8 @@ func verifyVectorResult(fn *Function, sig *ast.FunctionStatement, oakBody ast.Ex
 		verdicts = append(verdicts, verdict)
 	}
 	if verdicts[0].Kind == VerdictProven && verdicts[1].Kind == VerdictProven {
-		return verdictWithCallees(
-			Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (128-bit vector result, both halves)", fn.Name)},
-			verdicts[0].Callees, verdicts[1].Callees,
-		)
+		return composeProvenPair(verdicts[0], verdicts[1],
+			fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (128-bit vector result, both halves)", fn.Name))
 	}
 	for _, verdict := range verdicts {
 		if verdict.Kind == VerdictWitnessed {

@@ -198,6 +198,9 @@ func programDeclarations(root *ast.Program) string {
 }
 
 // cachedVerdict reads a verdict for the key, if one is on disk.
+// This is trusted cache restoration, not a fresh proof: the checks below
+// validate the stored record and its dependencies, not a mathematical derivation.
+// Keep this boundary distinct from proof-result composition in asm.
 func cachedVerdict(dir, key string, functions map[string]*ast.FunctionStatement) (asm.Verdict, bool) {
 	if dir == "" || !validVerdictCacheKey(key) {
 		return asm.Verdict{}, false
