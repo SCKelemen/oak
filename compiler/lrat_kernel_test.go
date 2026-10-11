@@ -186,6 +186,10 @@ func TestLRATKernelRUPExtract(t *testing.T) {
 	lratKernelExtract(t, "LRATRUP", []string{"lrat_rup"})
 }
 
+func TestLRATKernelPreflightExtract(t *testing.T) {
+	lratKernelExtract(t, "LRATPreflight", []string{"lrat_record_fits"})
+}
+
 func TestLRATKernelBindingExtract(t *testing.T) {
 	lratKernelExtract(t, "LRATBinding", []string{"lrat_matches_formula"})
 }
@@ -367,6 +371,7 @@ func TestLRATKernelRecordSoundness(t *testing.T) {
 		t.Skip("lake not on PATH; formal CI requires whole-record soundness")
 	}
 	source := `import Oak.LRATAdmission
+import Oak.LRATPreflight
 open Oak.LRATChecker
 example (words starts lengths : Array UInt32) (alive : Array UInt8)
     (store : Array UInt32) (assign : Array UInt8) (trail out : Array UInt32) (fuel : Nat)
@@ -400,6 +405,22 @@ example (formula words starts lengths : Array UInt32) (alive : Array UInt8)
 #print axioms Oak.LRATChecker.initial_loop_decodes
 #print axioms Oak.LRATChecker.production_record_decodes
 #print axioms Oak.LRATChecker.production_bound_cnf_sound
+example (words : Array UInt32) (fuel : Nat)
+    (run : Oak.LRATPreflight.lrat_record_fits words fuel = some true) :
+    (∀ i, i < 8 → i < words.size) ∧
+    Oak.LRATPreflight.AllocationSafe (words.getD 5 0) ∧
+    Oak.LRATPreflight.AllocationSafe (words.getD 6 0) ∧
+    Oak.LRATPreflight.AllocationSafe (words.getD 1 0) ∧
+    8 + (words.getD 3 0).toNat + (words.getD 4 0).toNat = words.size.toUInt32.toNat :=
+  Oak.LRATPreflight.production_record_allocation_safe words fuel run
+example (words : Array UInt32) (fuel : Nat)
+    (run : Oak.LRATPreflight.lrat_header_fits words fuel = some true) :
+    ((8 + (words.getD 3 0 + words.getD 4 0)) * 4).toNat =
+      (8 + (words.getD 3 0).toNat + (words.getD 4 0).toNat) * 4 ∧
+    0 < ((8 + (words.getD 3 0 + words.getD 4 0)) * 4).toNat :=
+  Oak.LRATPreflight.production_stream_allocation words fuel run
+#print axioms Oak.LRATPreflight.production_record_allocation_safe
+#print axioms Oak.LRATPreflight.production_stream_allocation
 #print axioms Oak.LRATChecker.production_binding_exact
 #print axioms Oak.LRATChecker.initial_loop_locality
 #print axioms Oak.LRATChecker.production_bound_record_sound
@@ -414,7 +435,7 @@ example (formula words starts lengths : Array UInt32) (alive : Array UInt8)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	for _, args := range [][]string{{"build", "Oak.LRATAdmission"}, {"env", "lean", path}} {
+	for _, args := range [][]string{{"build", "Oak.LRATAdmission", "Oak.LRATPreflight"}, {"env", "lean", path}} {
 		cmd := exec.CommandContext(ctx, lake, args...)
 		cmd.Dir = filepath.Join("..", "spec", "lean")
 		out, err := cmd.CombinedOutput()

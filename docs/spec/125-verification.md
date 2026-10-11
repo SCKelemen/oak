@@ -325,6 +325,55 @@ a conclusion. CI pins both contracts and audits their transitive axioms.
 Regressions cover clause-count disagreement, empty clauses with unused payload,
 and initial clause bodies crossing into the proof section.
 
+`Oak.LRATPreflight` proves the production allocation admission checks. The
+allocating entry calls the shared `lrat_record_fits` helper, whose extraction
+is checked for drift. Accepted preflight establishes all header indices are
+in bounds, exact framing of the UInt32-sized record view, and positive,
+non-wrapping element and byte counts for all six scratch requests. The actual
+`lrat_header_fits` gate also establishes exact positive stream-buffer byte
+allocation. These results compose the existing arithmetic lemmas with the
+production guards; they do not assume those arithmetic preconditions from
+the caller. The required LRAT gate pins the contracts and audits their axioms.
+Compiled entry tests reject truncated or inconsistent raw framing before any
+allocation, and check that zero declared capacities still reserve sentinels.
+Allocator success, ownership conversion, cleanup and FFI execution remain
+separate from these arithmetic and admission proofs.
+
+`Oak.LRATLifecycleSoundness` proves the normally returning allocating entry's
+resource protocol for every subset of the six allocation failures. Replay
+rejects ownership of null, checker calls without all owners, freeing an owned
+block, and duplicate frees. Successful replay leaves each successful allocation
+freed and each failed allocation absent; output-capacity and preflight refusal
+have empty schedules. The proof uses kernel reduction over all 64 outcomes.
+
+This is a narrowly source-audited protocol, not general FFI extraction. A
+required Go audit compares the entire `lrat_check_allocated` function's tokens
+and parsed form with a complete schema; that same schema emits the committed
+allocation/own/check/disown/free schedule. Mutation controls reject missing or
+misdirected frees, disowns, guards and checker calls. The protocol assumes fresh,
+distinct non-null malloc blocks, identity-preserving own/disown, a normally
+returning borrowing checker, and `free(NULL)` as a no-op. It does not prove the
+foreign implementations, general source translation, or abnormal termination.
+Compiled regressions independently run all 64 failure masks against accepted
+and refused records (128 executions), tracking pointer identities and exact
+release order in addition to leak counts. Existing single-failure and raw-stream
+cleanup cases use the strengthened shim too. CI requires the source audit,
+complete Lean contract and axiom audit, and these compiled regressions.
+
+The scalar `lrat_fits` and `lrat_alloc_fits` guards now have ARM64 and RV64
+assembler units used by the solver package. The existing verifier must prove
+each unit equal to its actual production Oak definition; wrong endpoint and
+allocation-threshold mutations must yield counterexamples. RV64 explicitly
+normalizes the low 32 bits before unsigned comparisons, including the
+subtraction result. `Oak.LRATNativeGuards` proves these scalar expressions
+agree with the extracted guards and composes them with endpoint and allocation
+bounds, for arbitrary inputs (including arbitrary upper RV64 register bits).
+Required CI checks kernel contracts and axioms, both units' verification and
+encoding, target selection, and ARM64/RV64 ELF symbols. Other targets retain
+the Oak fallback. The solver cache includes both units. This closes a scalar
+realization step, not general instruction decoding, ABI/linker correctness,
+the Go verifier's implementation, or whole-checker compiled soundness.
+
 This establishes expected-formula soundness for the extracted binding gate
 and word checker. Extraction correctness, allocation/FFI semantics, and
 compiled ARM64/RV64 executables remain separate obligations.
@@ -484,10 +533,14 @@ list predicate: successful execution implies both framing checks, the formula-on
 input requirement, all identity fields, and exact ordered payload equality. It
 requires both array lengths to fit UInt32 view lengths; it does not assume a
 solver verdict or clause validity. The dedicated CI contract rejects proof holes
-and pins fuel exhaustion, empty payloads, and mismatch refusal. This theorem
-proves the acceptance direction; completeness with sufficient fuel remains
-separate. The stronger direct checker theorem does not depend on this list
-model. Source-to-CNF correctness and native compilation of the checker remain
+and pins fuel exhaustion, empty payloads, and mismatch refusal. The reverse
+theorem `model_binding_accepted` proves completeness when fuel
+is greater than the formula payload length (`formula.size - 8`). Its loop
+lemma accounts for each payload word and the final guard without UInt32
+wraparound. `production_binding_iff_model` combines both directions under
+the same representable-array bounds; CI pins that contract and rejects
+transitive proof holes. The stronger direct checker theorem does not depend
+on this list model. Source-to-CNF correctness and native compilation of the checker remain
 separate proof obligations.
 `-cnf dir` writes every bit-level
 obligation's clauses as DIMACS (`name.cnf`) for any solver or checker to
