@@ -179,6 +179,20 @@ theorem model_binding_payload (formula record : Array UInt32)
   simp only [project_word] at same
   exact UInt32.toNat_inj.mp same
 
+private theorem u32_max_right (a b : UInt32) (h : a ≤ b) : max a b = b := by
+  change (if a ≤ b then b else a) = b
+  rw [if_pos h]
+
+private theorem u32_max_left (a b : UInt32) (h : b ≤ a) : max a b = a := by
+  change (if a ≤ b then b else a) = a
+  split
+  · apply UInt32.toNat_inj.mp
+    have := UInt32.le_iff_toNat_le.mp h
+    rename_i hab
+    have := UInt32.le_iff_toNat_le.mp hab
+    omega
+  · rfl
+
 /-- One unit of fuel per payload word, plus the terminating guard, suffices. -/
 theorem binding_loop_complete (fuel : Nat) (formula record : Array UInt32) (at_ : UInt32)
     (enough : formula.size.toUInt32.toNat - at_.toNat < fuel)
@@ -206,13 +220,13 @@ theorem binding_loop_complete (fuel : Nat) (formula record : Array UInt32) (at_ 
         apply UInt32.le_iff_toNat_le.mpr; omega
       have nextLe : at_ + 1 ≤ formula.size.toUInt32 := by
         apply UInt32.le_iff_toNat_le.mpr; rw [next]; omega
-      rw [max_eq_right le, max_eq_right nextLe]
+      rw [u32_max_right _ _ le, u32_max_right _ _ nextLe]
     · have le : formula.size.toUInt32 ≤ at_ := by
         apply UInt32.le_iff_toNat_le.mpr
         have an : ¬ at_.toNat < formula.size.toUInt32.toNat := by
           intro h; exact advance (UInt32.lt_iff_toNat_lt.mpr h)
         omega
-      simp [LRATBinding.lrat_matches_formula.loop1, advance, max_eq_left le]
+      simp [LRATBinding.lrat_matches_formula.loop1, advance, u32_max_left _ _ le]
 
 /-- Completeness with the exact payload-length fuel bound. -/
 theorem model_binding_accepted (formula record : Array UInt32) (fuel : Nat)
