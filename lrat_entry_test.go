@@ -153,6 +153,34 @@ func TestOakLRATAllocatedEntry(t *testing.T) {
 			fmt.Fprintf(&source, "assert(u32(calls()) == u32(%d))\nassert(u32(outstanding()) == 0 && u32(bad()) == 0)\n}\n", wantCalls)
 		}
 	}
+	// Call the allocating entry directly: malformed framing must be rejected
+	// by its own preflight, without relying on the formula-binding wrapper.
+	var malformed [][]uint32
+	for n := 0; n < len(base.record); n++ {
+		malformed = append(malformed, append([]uint32(nil), base.record[:n]...))
+	}
+	malformed = append(malformed, append(append([]uint32(nil), base.record...), 0))
+	for _, mutation := range [][2]uint32{
+		{0, 0}, {2, base.record[5] + 1}, {3, 0}, {3, ^uint32(0)},
+		{4, 0}, {4, base.record[4] - 1}, {4, base.record[4] + 1}, {4, ^uint32(0)},
+	} {
+		r := append([]uint32(nil), base.record...)
+		r[mutation[0]] = mutation[1]
+		malformed = append(malformed, r)
+	}
+	for _, words := range malformed {
+		source.WriteString("true ? {\n" + lratEntryWords("r", words))
+		fmt.Fprintf(&source, "all: []u32 = view(&r)\nrecord: []u32 = subslice(all, u32(0), u32(%d))\n", len(words))
+		source.WriteString("assert(!lrat_record_fits(record))\nreset(c.UInt32(0))\nout: [4]u32 = [4]u32{99, 99, 99, 99}\n")
+		source.WriteString("s: u32 = lrat_check_allocated(record, span(&out))\nassert(s == LRAT_CAPACITY && out[0] == s && out[1] == 0 && out[2] == 0 && out[3] == 99)\n")
+		source.WriteString("assert(u32(calls()) == 0 && u32(outstanding()) == 0 && u32(bad()) == 0)\n}\n")
+	}
+	// Zero declared capacities still reserve sentinels and make nonzero
+	// requests. Framing admission is deliberately not proof acceptance.
+	source.WriteString("true ? {\n" + lratEntryWords("r", []uint32{1280459348, 0, 0, 0, 0, 0, 0, 0}))
+	source.WriteString("assert(lrat_record_fits(view(&r)))\nreset(c.UInt32(0))\nout: [3]u32\n")
+	source.WriteString("s: u32 = lrat_check_allocated(view(&r), span(&out))\nassert(s == LRAT_NO_EMPTY && out[0] == s)\n")
+	source.WriteString("assert(u32(calls()) == 6 && u32(outstanding()) == 0 && u32(bad()) == 0)\n}\n")
 	source.WriteString("0\n}\n")
 	lratEntryRun(t, lratEntryBinary(t, source.String()), nil)
 }
