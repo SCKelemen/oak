@@ -89,10 +89,11 @@ const (
 	witnesses
 	coupling
 	valuation
+	implication
 )
 
 func (p phase) String() string {
-	return [...]string{"idle", "search", "validation", "witnesses", "coupling", "valuation"}[p]
+	return [...]string{"idle", "search", "validation", "witnesses", "coupling", "valuation", "implication"}[p]
 }
 
 type context struct {
@@ -127,11 +128,12 @@ type scope struct {
 }
 
 type phaseCosts struct {
-	Search     uint64 `json:"search"`
-	Validation uint64 `json:"validation"`
-	Witnesses  uint64 `json:"witnesses"`
-	Coupling   uint64 `json:"coupling"`
-	Valuation  uint64 `json:"valuation"`
+	Search      uint64 `json:"search"`
+	Validation  uint64 `json:"validation"`
+	Witnesses   uint64 `json:"witnesses"`
+	Coupling    uint64 `json:"coupling"`
+	Valuation   uint64 `json:"valuation"`
+	Implication uint64 `json:"implication"`
 }
 
 func (p *phaseCosts) add(k phase, ns uint64) {
@@ -146,6 +148,8 @@ func (p *phaseCosts) add(k phase, ns uint64) {
 		p.Coupling += ns
 	case valuation:
 		p.Valuation += ns
+	case implication:
+		p.Implication += ns
 	}
 }
 
@@ -173,6 +177,8 @@ type totals struct {
 	ValuationsCompleted  uint64     `json:"valuations_completed"`
 	ValuationNS          uint64     `json:"valuation_ns"`
 	Evaluations          uint64     `json:"evaluations"`
+	ImplicationsStarted  uint64     `json:"implications_started"`
+	ImplicationsFinished uint64     `json:"implications_finished"`
 	PhaseNS              phaseCosts `json:"exclusive_phase_ns"`
 }
 
@@ -381,7 +387,7 @@ func identifier(s string) string {
 }
 
 // charge records exclusive time for the current phase, which avoids counting
-// nested validation/loop/valuation work again as search time.
+// nested validation/loop/implication/valuation work again as search time.
 func (s *Session) charge(now time.Time) {
 	if s.current != nil {
 		s.totals.PhaseNS.add(s.current.phase, elapsed(s.current.activeSince, now))
@@ -439,10 +445,11 @@ func (s *Session) finish(f *scope) (uint64, bool) {
 }
 
 var (
-	noSearch     = func(int, int, int, bool) {}
-	noValidation = func(int, bool) {}
-	noLoops      = func() {}
-	noValuation  = func(uint32) {}
+	noSearch      = func(int, int, int, bool) {}
+	noValidation  = func(int, bool) {}
+	noLoops       = func() {}
+	noValuation   = func(uint32) {}
+	noImplication = func() {}
 )
 
 // BeginSearch starts a function search. Complete it with final structural search
@@ -565,6 +572,28 @@ func BeginValuation(nodes, names, targets, rounds, bindings int) func(evaluation
 			s.totals.ValuationsCompleted++
 			s.totals.ValuationNS += ns
 			s.totals.Evaluations += uint64(evaluations)
+		}
+	}
+}
+
+// BeginImplication observes one implication wrapper, not each recursive decision.
+// Time is exclusive process-wide wall-state: nested phases keep their own time;
+// overlapping calls do not represent CPU time or independent per-goroutine work.
+// Started counts accepted entries; finished counts first callbacks accepted while
+// the session is open, including panic unwinds. Close freezes both without
+// manufacturing finishes; their difference is neither depth nor proof failure.
+func BeginImplication() func() {
+	s, f := begin(implication)
+	if s == nil {
+		return noImplication
+	}
+	s.totals.ImplicationsStarted++
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if _, ok := s.finish(f); ok {
+			s.totals.ImplicationsFinished++
 		}
 	}
 }

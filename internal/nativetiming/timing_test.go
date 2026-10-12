@@ -131,6 +131,7 @@ func TestDisabledCleanupAndReenable(t *testing.T) {
 	BeginLoops(1, 2, 3, true)()
 	Coupling(1, 2, 3)
 	BeginValuation(1, 2, 3, 4, 5)(6)
+	BeginImplication()()
 	if _, err := Start(nil); err == nil {
 		t.Fatal("accepted nil writer")
 	}
@@ -261,6 +262,7 @@ func TestSamplingRateAndRecordCap(t *testing.T) {
 	done := BeginSearch("fast")
 	for i := 0; i < 20; i++ {
 		BeginValidation("candidate")(i, false)
+		BeginImplication()()
 	}
 	done(20, 20, 20, false)
 	if got := len(decode(t, h.out.data())); got != 1 {
@@ -287,7 +289,7 @@ func TestSamplingRateAndRecordCap(t *testing.T) {
 			t.Fatalf("sequence = %d at %d", event.Sequence, i)
 		}
 	}
-	if r[1].ElapsedNS != uint64(interval) || r[2].ElapsedNS != uint64(2*interval) || r[3].Totals.ValidationsCompleted != 20 {
+	if r[1].ElapsedNS != uint64(interval) || r[2].ElapsedNS != uint64(2*interval) || r[3].Totals.ValidationsCompleted != 20 || r[3].Totals.ImplicationsStarted != 20 || r[3].Totals.ImplicationsFinished != 20 {
 		t.Fatalf("rate or coalesced totals incorrect: %+v", r)
 	}
 }
@@ -297,6 +299,7 @@ func TestByteCapReservesClose(t *testing.T) {
 	h := newHarness(t, maxRecords, cap)
 	BeginSearch(strings.Repeat("\\\"", 1000))
 	BeginValidation(strings.Repeat("\n", 1000))
+	BeginImplication()
 	for i := 0; i < 30; i++ {
 		h.tick(t, interval)
 	}
@@ -349,6 +352,9 @@ func TestIdentifiersAndNumericJSONAreBounded(t *testing.T) {
 	if !bytes.Equal(aJSON, bJSON) || len(aJSON)+1 > maxRecordBytes {
 		t.Fatalf("unstable or oversized record: %d", len(aJSON))
 	}
+	if strconv.IntSize == 64 && len(aJSON)+1 != 5485 {
+		t.Fatalf("expanded maximum-width row = %d bytes, want 5485", len(aJSON)+1)
+	}
 	// The worst-case width must still cover 45 minutes of five-second samples,
 	// plus start/close, even after reserving the close record's maximum budget.
 	if (len(aJSON)+1)*542+maxRecordBytes > maxBytes {
@@ -362,6 +368,7 @@ func TestIdentifiersAndNumericJSONAreBounded(t *testing.T) {
 func TestPublicSamplingCoversPrerequisiteBudget(t *testing.T) {
 	h := newHarness(t, maxRecords, maxBytes)
 	BeginSearch("long running producer")
+	BeginImplication()
 	const budget = 90 * time.Minute
 	const samples = int(budget / (5 * time.Second))
 	for i := 0; i < samples; i++ {
@@ -387,6 +394,7 @@ func TestPublicSamplingCoversPrerequisiteBudget(t *testing.T) {
 func TestFullPublicRecordLimit(t *testing.T) {
 	h := newHarness(t, maxRecords, maxBytes)
 	BeginSearch("long running")
+	BeginImplication()
 	for i := 0; i < maxRecords+1; i++ {
 		h.tick(t, interval)
 	}
@@ -503,8 +511,10 @@ func TestConcurrentHooksAndClose(t *testing.T) {
 				v := BeginValidation("candidate")
 				l := BeginLoops(1, 1, 1, false)
 				Coupling(1, 1, 1)
+				implicationDone := BeginImplication()
 				x := BeginValuation(1, 1, 1, 1, 1)
 				x(1)
+				implicationDone()
 				l()
 				v(1, false)
 				s(1, 1, 1, false)
@@ -513,7 +523,7 @@ func TestConcurrentHooksAndClose(t *testing.T) {
 	}
 	wg.Wait()
 	r := h.s.snapshot("test")
-	if r.Totals.SearchesCompleted != workers*iterations || r.Totals.ValidationsCompleted != workers*iterations || r.Totals.ValuationsCompleted != workers*iterations {
+	if r.Totals.SearchesCompleted != workers*iterations || r.Totals.ValidationsCompleted != workers*iterations || r.Totals.ValuationsCompleted != workers*iterations || r.Totals.ImplicationsStarted != workers*iterations || r.Totals.ImplicationsFinished != workers*iterations {
 		t.Fatalf("concurrent totals: %+v", r.Totals)
 	}
 	for i := 0; i < workers; i++ {
@@ -522,6 +532,7 @@ func TestConcurrentHooksAndClose(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
 				BeginSearch("closing")(1, 1, 1, false)
+				BeginImplication()()
 			}
 			_ = h.s.Close()
 		}()

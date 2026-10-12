@@ -6678,6 +6678,8 @@ func (session *verificationSession) impliesFiniteConditionalEqual(premise, a, b 
 // impliesEqualWithin is impliesEqual spending from a shared budget when
 // one is given: a decision that would exceed what remains is undecided.
 func (session *verificationSession) impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *nodeBudget) (holds bool, decided bool) {
+	finishTiming := nativetiming.BeginImplication()
+	defer finishTiming()
 	return session.impliesEqualDepth(premise, a, b, widthOf, budget, 0)
 }
 
