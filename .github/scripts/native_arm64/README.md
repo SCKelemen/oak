@@ -149,13 +149,19 @@ satisfy this gate.
 `TestOakShellAgreesNative` enables an observation session before `runCLI` captures
 command output. It retains the original stderr writer, so status records remain
 in the Go test JSON stream and uploaded artifacts even if the package times out.
-The session samples every five seconds, with at most 1,024 records and 4 MiB of
-output including lifecycle records. It reports stable function/candidate IDs,
-ordinals, phase durations and structural work counts. Long IDs are shortened with
+The native prerequisite producer also starts a session, captured in
+`native-prover-build.log`. Each session samples every five seconds, with at most
+1,202 records: 1,200 status slots for the 90-minute prerequisite budget plus a
+10-minute diagnostic allowance, and separate start/close slots. The independent
+4 MiB output guard, 8 KiB per-record guard, and close reservation still apply;
+the allowance does not extend any build, proof, or test deadline. It reports
+stable function/candidate IDs, ordinals, phase durations and structural work
+counts. Long IDs are shortened with
 a deterministic hash. It emits no source text, witness values, environment or
 arguments. Fast transitions can be coalesced; cumulative completed-work totals
 and the current search/candidate/phase ages identify sustained work. The session
-is enabled only for this shell test and is closed through test cleanup.
+is enabled explicitly for the producer and this shell test, and closed by the
+caller.
 
 ## Timing basis and limits of the partition
 

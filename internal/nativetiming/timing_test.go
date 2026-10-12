@@ -359,6 +359,31 @@ func TestIdentifiersAndNumericJSONAreBounded(t *testing.T) {
 	}
 }
 
+func TestPublicSamplingCoversPrerequisiteBudget(t *testing.T) {
+	h := newHarness(t, maxRecords, maxBytes)
+	BeginSearch("long running producer")
+	const budget = 90 * time.Minute
+	const samples = int(budget / (5 * time.Second))
+	for i := 0; i < samples; i++ {
+		h.tick(t, 5*time.Second)
+	}
+	if err := h.s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r := decode(t, h.out.data())
+	if len(r) != samples+2 || r[0].Event != "start" || r[len(r)-1].Event != "close" {
+		t.Fatalf("90-minute sampling window: records=%d", len(r))
+	}
+	for i, event := range r {
+		if event.Sequence != i+1 || event.OutputLimited {
+			t.Fatalf("90-minute sample %d: %+v", i, event)
+		}
+		if i > 0 && i <= samples && (event.Event != "status" || event.ElapsedNS != uint64(time.Duration(i)*5*time.Second)) {
+			t.Fatalf("90-minute status %d: %+v", i, event)
+		}
+	}
+}
+
 func TestFullPublicRecordLimit(t *testing.T) {
 	h := newHarness(t, maxRecords, maxBytes)
 	BeginSearch("long running")
@@ -371,6 +396,11 @@ func TestFullPublicRecordLimit(t *testing.T) {
 	r := decode(t, h.out.data())
 	if len(r) != maxRecords || len(h.out.data()) > maxBytes || !r[len(r)-1].OutputLimited {
 		t.Fatalf("public limits: records=%d bytes=%d", len(r), len(h.out.data()))
+	}
+	// The count allowance includes ten minutes beyond the prerequisite budget.
+	lastStatus := r[len(r)-2]
+	if lastStatus.Event != "status" || lastStatus.ElapsedNS != uint64(100*time.Minute) {
+		t.Fatalf("last status before finite record cap: %+v", lastStatus)
 	}
 	for _, event := range r {
 		if event.Schema != "oak.native.timing.v1" {

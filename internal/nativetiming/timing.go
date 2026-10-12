@@ -18,9 +18,11 @@ import (
 	"unicode/utf8"
 )
 
+// Cover the 90-minute prerequisite budget plus 10 minutes of diagnostic
+// allowance, with separate start/close slots. This does not extend a deadline.
 const (
 	interval       = 5 * time.Second
-	maxRecords     = 1024
+	maxRecords     = 2 + int((90*time.Minute+10*time.Minute)/interval)
 	maxBytes       = 4 << 20
 	maxRecordBytes = 8192 // Includes JSON escaping and maximum-width numbers.
 	maxIdentifier  = 96
@@ -198,9 +200,9 @@ type record struct {
 
 // Start enables observation for one explicit session. At most one session can
 // be active. Records are JSON lines: start, status every five seconds, and close.
-// The complete stream is limited to 1024 records and 4 MiB, reserving room for
-// close even if the status limit is reached. Start surfaces initial write errors;
-// subsequent write errors are returned by Close.
+// The complete stream is limited to 1202 records and 4 MiB, reserving room for
+// close even if either output limit is reached. Start surfaces initial write
+// errors; subsequent write errors are returned by Close.
 func Start(w io.Writer) (*Session, error) {
 	return start(w, config{
 		now:       time.Now,
