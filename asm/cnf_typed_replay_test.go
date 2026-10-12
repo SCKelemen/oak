@@ -105,58 +105,7 @@ func typedCNFValue(t *term, env map[string]uint64, memory func(string, uint32) u
 	memo[t] = v
 	return v
 }
-func typedCNFCheckValues(a typedCNFAudit, env map[string]uint64, memory func(string, uint32) uint32) error {
-	bl := a.snapshot
-	values := map[int]bool{}
-	memo := map[*term]uint64{}
-	for source, owner := range bl.owners {
-		values[bl.cnf.inputs[source]] = env[owner.param]>>uint(owner.bit)&1 != 0
-	}
-	for _, read := range bl.selects {
-		word := memory(read.span, uint32(typedCNFValue(read.index, env, memory, memo)))
-		for bit, source := range read.vars {
-			values[bl.cnf.inputs[source]] = word>>uint(bit)&1 != 0
-		}
-	}
-	edge := func(e int) bool {
-		if e < 2 {
-			return e == 1
-		}
-		return values[e>>1] != (e&1 != 0)
-	}
-	for _, gate := range bl.cnf.gates {
-		var v bool
-		switch gate.op {
-		case opAnd:
-			v = edge(gate.x) && edge(gate.y)
-		case opOr:
-			v = edge(gate.x) || edge(gate.y)
-		case opXor:
-			v = edge(gate.x) != edge(gate.y)
-		case cnfIte:
-			if edge(gate.x) {
-				v = edge(gate.y)
-			} else {
-				v = edge(gate.z)
-			}
-		}
-		values[gate.out] = v
-	}
-	for term, bits := range bl.memo {
-		want := typedCNFValue(term, env, memory, memo)
-		for bit, root := range bits {
-			if edge(root) != (want>>uint(bit)&1 != 0) {
-				return fmt.Errorf("typed node kind=%d op=%s width=%d bit=%d", term.kind, term.op, term.width, bit)
-			}
-		}
-	}
-	p, l, r := a.roots[0], a.roots[1], a.roots[2]
-	violation := typedCNFValue(p, env, memory, memo) != 0 && typedCNFValue(l, env, memory, memo) != typedCNFValue(r, env, memory, memo)
-	if edge(a.Obligation) != violation {
-		return fmt.Errorf("implication polarity")
-	}
-	return nil
-}
+
 func typedCNFMemory(span string, index uint32) uint32 {
 	if span == "other" {
 		return index ^ 0xa5a5a5a5
@@ -186,7 +135,7 @@ func TestTypedCNFArithmeticWidths(t *testing.T) {
 						env["x"] = []uint64{0, 1, mask(w), uint64(1) << uint(w-1)}[i]
 						env["y"] = 1
 					}
-					if err := typedCNFCheckValues(audit, env, typedCNFMemory); err != nil {
+					if err := audit.checkValues(env, typedCNFMemory); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -216,7 +165,7 @@ func TestTypedCNFViewsShiftsAndGuards(t *testing.T) {
 					}
 					for _, count := range []uint64{0, 1, 31, 32, 33, 63, 64, 65, ^uint64(0)} {
 						env := map[string]uint64{"x": 0x8123456789abcdef, "count": count, "z": 17}
-						if err := typedCNFCheckValues(audit, env, typedCNFMemory); err != nil {
+						if err := audit.checkValues(env, typedCNFMemory); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -233,7 +182,7 @@ func TestTypedCNFViewsShiftsAndGuards(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := typedCNFCheckValues(audit, map[string]uint64{"x": 0, "z": 0xffffffff}, typedCNFMemory); err != nil {
+		if err := audit.checkValues(map[string]uint64{"x": 0, "z": 0xffffffff}, typedCNFMemory); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -256,7 +205,7 @@ func TestTypedCNFViewsShiftsAndGuards(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, gv := range []uint64{0, 1, ^uint64(0)} {
-				if err := typedCNFCheckValues(audit, map[string]uint64{"x": 6, "z": 8, "g": gv}, typedCNFMemory); err != nil {
+				if err := audit.checkValues(map[string]uint64{"x": 6, "z": 8, "g": gv}, typedCNFMemory); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -277,12 +226,12 @@ func TestTypedCNFReadEmbedding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if audit.ReadBlocks != 3 {
-		t.Fatalf("read blocks=%d", audit.ReadBlocks)
+	if audit.testStats(t).ReadBlocks != 3 {
+		t.Fatalf("read blocks=%d", audit.testStats(t).ReadBlocks)
 	}
 	for _, sv := range []uint64{0, 1, 0xfffffff7, 0xffffffff} {
 		for _, qv := range []uint64{sv, uint64(uint32(sv + 9)), 17} {
-			if err := typedCNFCheckValues(audit, map[string]uint64{"s": sv, "b": 0xfffffff0, "q": qv, "z": 19}, typedCNFMemory); err != nil {
+			if err := audit.checkValues(map[string]uint64{"s": sv, "b": 0xfffffff0, "q": qv, "z": 19}, typedCNFMemory); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -293,7 +242,7 @@ func TestTypedCNFReadEmbedding(t *testing.T) {
 	idx.op = "sub"
 	bl.selects[0].vars[0] = -1
 	bl.cnf.gates[0].x = -1
-	if err := typedCNFCheckValues(audit, map[string]uint64{"s": 1, "b": 2, "q": 10, "z": 3}, typedCNFMemory); err != nil {
+	if err := audit.checkValues(map[string]uint64{"s": 1, "b": 2, "q": 10, "z": 3}, typedCNFMemory); err != nil {
 		t.Fatalf("snapshot shares mutable producer data: %v", err)
 	}
 }
@@ -417,7 +366,7 @@ func typedCNFExactLimits(t *testing.T, bl *blaster, p, l, z, c *term, clauses []
 		t.Fatal(err)
 	}
 	exact := typedCNFDiagnosticLimits
-	exact.Visits = baseline.Visits
+	exact.Visits = baseline.testStats(t).Visits
 	if _, err := checkTypedCNFImplication(context.Background(), bl, p, l, z, c, clauses, exact); err != nil {
 		t.Fatalf("exact visit budget: %v", err)
 	}
@@ -538,11 +487,11 @@ func typedCNFOverflowReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if audit.ReadBlocks != 9 {
-		t.Fatalf("overflow read blocks=%d", audit.ReadBlocks)
+	if audit.testStats(t).ReadBlocks != 9 {
+		t.Fatalf("overflow read blocks=%d", audit.testStats(t).ReadBlocks)
 	}
 	for _, value := range []uint64{0, 1, 0xfffffff8, 0xffffffff} {
-		if err := typedCNFCheckValues(audit, map[string]uint64{"x": value, "z": 17}, typedCNFMemory); err != nil {
+		if err := audit.checkValues(map[string]uint64{"x": value, "z": 17}, typedCNFMemory); err != nil {
 			t.Fatal(err)
 		}
 	}

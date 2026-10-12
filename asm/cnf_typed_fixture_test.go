@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -289,10 +290,15 @@ func checkTypedCNFFixture(ctx context.Context, fixture *typedFixture) (typedCNFA
 	if err != nil {
 		return typedCNFAudit{}, err
 	}
-	if audit.Nodes != 375 || audit.Inputs != 353 || audit.Gates != 2537 || audit.ReadBlocks != 5 || audit.Claim != 5780 || audit.Obligation != 5781 || producer.cnf.variables != 2890 || len(clauses) != 10352 {
+	stats, ok := audit.stats()
+	if !ok || stats.Nodes != 375 || stats.Inputs != 353 || stats.Gates != 2537 || stats.ReadBlocks != 5 || stats.Claim != 5780 || stats.Obligation != 5781 || stats.Variables != 2890 || stats.Clauses != 10352 {
 		return typedCNFAudit{}, errors.New("fixture replay inventory")
 	}
-	formula := typedCNFDIMACS(typedFixtureLabel, producer.cnf.variables, clauses)
+	var output strings.Builder
+	if err := audit.writeDIMACS(ctx, typedFixtureLabel, &output, 8<<20); err != nil {
+		return typedCNFAudit{}, err
+	}
+	formula := output.String()
 	if formula != fixture.formula || tcSHA([]byte(formula)) != typedFixtureCNFSHA256 || tcSHA([]byte(fixture.certificate)) != typedFixtureProofSHA256 {
 		return typedCNFAudit{}, errors.New("fixture CNF or proof bytes differ")
 	}
@@ -318,5 +324,5 @@ func TestTypedCNFDurableFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("durable supplied instance: nodes=%d inputs=%d gates=%d reads=%d visits=%d CNF_SHA256=%s LRAT_SHA256=%s additions=5409 deleted_ids=6163 final_empty_id=15761", audit.Nodes, audit.Inputs, audit.Gates, audit.ReadBlocks, audit.Visits, typedFixtureCNFSHA256, typedFixtureProofSHA256)
+	t.Logf("durable supplied instance: nodes=%d inputs=%d gates=%d reads=%d visits=%d CNF_SHA256=%s LRAT_SHA256=%s additions=5409 deleted_ids=6163 final_empty_id=15761", audit.testStats(t).Nodes, audit.testStats(t).Inputs, audit.testStats(t).Gates, audit.testStats(t).ReadBlocks, audit.testStats(t).Visits, typedFixtureCNFSHA256, typedFixtureProofSHA256)
 }

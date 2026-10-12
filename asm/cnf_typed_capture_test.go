@@ -400,11 +400,15 @@ func TestTypedCNFSavedCapture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if audited.Nodes != 375 || audited.Inputs != 353 || audited.ReadBlocks != 5 || audited.Claim != 5780 || audited.Obligation != 5781 || producer.cnf.variables != 2890 || len(clauses) != 10352 {
+	if audited.testStats(t).Nodes != 375 || audited.testStats(t).Inputs != 353 || audited.testStats(t).ReadBlocks != 5 || audited.testStats(t).Claim != 5780 || audited.testStats(t).Obligation != 5781 || audited.testStats(t).Variables != 2890 || audited.testStats(t).Clauses != 10352 {
 		t.Fatalf("captured inventory: %+v", audited)
 	}
 	const label = "captured raw premise implies eq32; independent reads; diagnostic only"
-	formula := typedCNFDIMACS(label, producer.cnf.variables, clauses)
+	var output strings.Builder
+	if err := audited.writeDIMACS(t.Context(), label, &output, 8<<20); err != nil {
+		t.Fatal(err)
+	}
+	formula := output.String()
 	saved, err := tcRead("/workspace/shared/native-shell-evidence/fourth-timeout/cnf-certificate-diagnostic/data/obligation.cnf", 8<<20)
 	if err != nil {
 		t.Fatal(err)
@@ -429,5 +433,5 @@ func TestTypedCNFSavedCapture(t *testing.T) {
 	if checked.Additions != 1561 || checked.Deletions != 561 {
 		t.Fatalf("saved proof counts: %+v", checked)
 	}
-	t.Logf("typed replay: nodes=%d inputs=%d gates=%d reads=%d visits=%d CNF_SHA256=%s additions=%d deletions=%d", audited.Nodes, audited.Inputs, audited.Gates, audited.ReadBlocks, audited.Visits, tcSHA(saved), checked.Additions, checked.Deletions)
+	t.Logf("typed replay: nodes=%d inputs=%d gates=%d reads=%d visits=%d CNF_SHA256=%s additions=%d deletions=%d", audited.testStats(t).Nodes, audited.testStats(t).Inputs, audited.testStats(t).Gates, audited.testStats(t).ReadBlocks, audited.testStats(t).Visits, tcSHA(saved), checked.Additions, checked.Deletions)
 }

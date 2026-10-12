@@ -233,8 +233,8 @@ func TestTypedCNFFixtureCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	audit, err := checkTypedCNFFixture(ctx, fixture)
-	if !errors.Is(err, context.Canceled) || audit.snapshot != nil || audit.Nodes != 0 {
-		t.Fatalf("cancellation conferred a result: nodes=%d error=%v", audit.Nodes, err)
+	if !errors.Is(err, context.Canceled) || audit != (typedCNFAudit{}) {
+		t.Fatalf("cancellation conferred a result: audit=%+v error=%v", audit, err)
 	}
 }
 

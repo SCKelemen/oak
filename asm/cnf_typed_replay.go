@@ -23,14 +23,24 @@ type typedCNFLimits struct{ Nodes, Visits, Gates, Variables int }
 
 var typedCNFDiagnosticLimits = typedCNFLimits{8192, 4194304, 65536, 65536}
 
-type typedCNFAudit struct {
+// A nonzero audit is minted only by the final successful replay return.
+// Package privacy is enforced by the repository inventory, not a language seal.
+type typedCNFAudit struct{ checked *checkedTypedCNFSnapshot }
+
+type typedCNFAuditStats struct {
 	Nodes, Inputs, Gates, ReadBlocks, Visits int
 	Claim, Obligation                        int
-	// The snapshot owns all slices/maps/terms inspected by replay. Callers must
-	// have exclusive access while snapshotting the producer. Replay itself never
-	// reads producer contents again, and its result shares nothing mutable with it.
-	snapshot *blaster
-	roots    [4]*term
+	Variables, Clauses                       int
+}
+
+// Immutable after publication. Acquisition requires exclusive producer access.
+// Both independently checked clause streams remain owned for the audit lifetime.
+type checkedTypedCNFSnapshot struct {
+	owned   *blaster
+	roots   [4]*term
+	emitted [][]int
+	stats   typedCNFAuditStats
+	limits  typedCNFLimits
 }
 
 type typedCNFReplay struct {
@@ -112,7 +122,10 @@ func checkTypedCNFImplication(ctx context.Context, producer *blaster, premise, l
 	if err := r.charge(0); err != nil {
 		return typedCNFAudit{}, err
 	}
-	return typedCNFAudit{len(r.terms), len(r.inputs), len(r.gateKeys), len(r.slotReads), r.visits, bits[0], obligation, snapshot, roots}, nil
+	return typedCNFAudit{checked: &checkedTypedCNFSnapshot{
+		owned: snapshot, roots: roots, emitted: clauses, limits: limits,
+		stats: typedCNFAuditStats{len(r.terms), len(r.inputs), len(r.gateKeys), len(r.slotReads), r.visits, bits[0], obligation, snapshot.cnf.variables, len(clauses)},
+	}}, nil
 }
 
 // snapshot preserves pointer identity via a bijection, including distinct

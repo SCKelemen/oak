@@ -75,16 +75,21 @@ func TestTypedCNFEmitInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := fixture.graph
-	names := make([]string, 0, len(raw.declarations))
-	for name := range raw.declarations {
-		names = append(names, name)
+	audit.emitInstance(t, root, fixture.formula)
+}
+
+// Trusted test-only projection: no mutable graph references escape.
+func (audit typedCNFAudit) emitInstance(t *testing.T, root, formula string) {
+	t.Helper()
+	stats, ok := audit.stats()
+	if !ok {
+		t.Fatal(errInvalidTypedCNFAudit)
 	}
+	names := append([]string(nil), audit.checked.owned.params...)
 	sort.Strings(names)
-	formula := fixture.formula
 	// A new deterministic topological numbering preserves every owned pointer,
 	// including distinct nodes with identical syntax. It is not the capture ID.
-	bl := audit.snapshot
+	bl := audit.checked.owned
 	ids := map[*term]int{}
 	var nodes []*term
 	var visit func(*term)
@@ -101,7 +106,7 @@ func TestTypedCNFEmitInstance(t *testing.T) {
 		ids[term] = len(nodes)
 		nodes = append(nodes, term)
 	}
-	for _, term := range audit.roots {
+	for _, term := range audit.checked.roots {
 		visit(term)
 	}
 	if len(nodes) != 375 {
@@ -260,8 +265,8 @@ func TestTypedCNFEmitInstance(t *testing.T) {
 		reads[i] = fmt.Sprintf("⟨%s, %s⟩", strconv.Quote(read.span), words[read.index])
 	}
 	fmt.Fprintf(&base, "def context : Context := ⟨allocation, [%s], [%s], 9223372036854775807⟩\n", strings.Join(parameters, ", "), strings.Join(reads, ", "))
-	clauses := append(append([][]int(nil), bl.cnf.clauses...), []int{cnfLit(audit.Obligation)})
-	fmt.Fprintf(&base, "def trace : CNFClauseTrace.Snapshot := ⟨allocation, %s, [%d], %s⟩\n", renderCNFTraceClauses(bl.cnf.clauses), audit.Obligation, renderCNFTraceClauses(clauses))
+	clauses := audit.checked.emitted
+	fmt.Fprintf(&base, "def trace : CNFClauseTrace.Snapshot := ⟨allocation, %s, [%d], %s⟩\n", renderCNFTraceClauses(bl.cnf.clauses), stats.Obligation, renderCNFTraceClauses(clauses))
 	base.WriteString("\nend TypedCNFInstance\n")
 	if err := t.Context().Err(); err != nil {
 		t.Fatal(err)
@@ -291,8 +296,8 @@ func TestTypedCNFEmitInstance(t *testing.T) {
 		previous = name
 	}
 	final := fmt.Sprintf("import TypedCNFInstance.%s\nimport TypedCNFRefutation.Final\n\n", previous) + header
-	final += fmt.Sprintf("theorem complete_claim : Derivation context (implication %s %s %s) [%d] := by\n  simpa only [%s, %s, %s, %s, implication, BitVec.ofBool_true, BitVec.ofNat_eq_ofNat] using %s\n\n", words[audit.roots[0]], words[audit.roots[1]], words[audit.roots[2]], audit.Claim, words[audit.roots[3]], words[audit.roots[3].left], words[audit.roots[3].right], vectors[audit.roots[3]], derivations[audit.roots[3]])
-	final += fmt.Sprintf("theorem supplied_raw_implication : ∀ scalars memory, (concreteEval scalars memory %s).toNat ≠ 0 → concreteEval scalars memory %s = concreteEval scalars memory %s :=\n  refutation_implies_concrete rfl trace_accepted database_bound complete_claim rfl TypedCNFRefutation.exact_cnf_unsatisfiable\n\n#print axioms supplied_raw_implication\nend TypedCNFInstance\n", words[audit.roots[0]], words[audit.roots[1]], words[audit.roots[2]])
+	final += fmt.Sprintf("theorem complete_claim : Derivation context (implication %s %s %s) [%d] := by\n  simpa only [%s, %s, %s, %s, implication, BitVec.ofBool_true, BitVec.ofNat_eq_ofNat] using %s\n\n", words[audit.checked.roots[0]], words[audit.checked.roots[1]], words[audit.checked.roots[2]], stats.Claim, words[audit.checked.roots[3]], words[audit.checked.roots[3].left], words[audit.checked.roots[3].right], vectors[audit.checked.roots[3]], derivations[audit.checked.roots[3]])
+	final += fmt.Sprintf("theorem supplied_raw_implication : ∀ scalars memory, (concreteEval scalars memory %s).toNat ≠ 0 → concreteEval scalars memory %s = concreteEval scalars memory %s :=\n  refutation_implies_concrete rfl trace_accepted database_bound complete_claim rfl TypedCNFRefutation.exact_cnf_unsatisfiable\n\n#print axioms supplied_raw_implication\nend TypedCNFInstance\n", words[audit.checked.roots[0]], words[audit.checked.roots[1]], words[audit.checked.roots[2]])
 	if err := writer.save("Final.lean", final); err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +307,7 @@ func TestTypedCNFEmitInstance(t *testing.T) {
 	if err := t.Context().Err(); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("supplied typed instance source: nodes=%d modules=%d bytes=%d rawRoots=104/207/371 copiedRoots=%d/%d/%d/%d CNF_SHA256=%s", len(nodes), len(writer.files), writer.bytes, ids[audit.roots[0]], ids[audit.roots[1]], ids[audit.roots[2]], ids[audit.roots[3]], tcSHA([]byte(formula)))
+	t.Logf("supplied typed instance source: nodes=%d modules=%d bytes=%d rawRoots=104/207/371 copiedRoots=%d/%d/%d/%d CNF_SHA256=%s", len(nodes), len(writer.files), writer.bytes, ids[audit.checked.roots[0]], ids[audit.checked.roots[1]], ids[audit.checked.roots[2]], ids[audit.checked.roots[3]], tcSHA([]byte(formula)))
 }
 
 // The driver relies on this exact initial inventory before portable transforms.
