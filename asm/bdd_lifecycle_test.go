@@ -153,6 +153,7 @@ func TestBDDExhaustionDoesNotMemoizePartialResults(t *testing.T) {
 func TestBDDRehashCancellationPreservesTables(t *testing.T) {
 	never := func() bool { return false }
 	u, m := newUniqueTable(4096), newOpTable(4096)
+	u.maxSlots = 1 << 16 // exercise the accelerated unique-table rehash too
 	for i := int32(0); i < 2048; i++ {
 		u.insert(i, 0, 1, i, never)
 		m.insert(opXor, i, i+1, i, never)

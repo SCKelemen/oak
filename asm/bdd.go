@@ -36,6 +36,7 @@ const bddTerminalVar = int(^uint(0) >> 1)
 // over the node ids (docs/notes/formal-methods-performance-2026-09.md,
 // item 2): flat slices of fixed-width entries, linear probing, a load
 // factor of at most one half, growth by rehashing into twice the capacity.
+// Growth may skip one doubling within the admitted final capacity.
 // Node ids fit in 32 bits (the budget is two million). Go maps keyed by
 // the same triples were the engine's measured cost — the diagrams are
 // built and read through these two tables and almost nothing else.
@@ -47,8 +48,9 @@ type uniqueEntry struct{ variable, low, high, node1 int32 }
 type opEntry struct{ op, a, b, result1 int32 }
 
 type uniqueTable struct {
-	entries []uniqueEntry // node1 == 0 marks an empty slot
-	count   int
+	entries  []uniqueEntry // node1 == 0 marks an empty slot
+	count    int
+	maxSlots int // admission-sized ceiling for accelerated growth; zero keeps doubling
 }
 
 // opMemoMaxSlots bounds this disposable cache independently of the node
@@ -69,6 +71,29 @@ func hashMix(a, b, c uint32) uint32 {
 	h *= 0x2C1B3C6D
 	h ^= h >> 12
 	return h
+}
+
+// bddTableGrowth skips an intermediate rehash when the admission estimate
+// already covers the larger table. Never exceed the old final capacity: the
+// unique table is bounded by the node allowance and the memo by its fixed cap.
+// The old and new arrays overlap by at most the existing 1.5x estimate.
+func bddTableGrowth(current, ceiling int) int {
+	next := 2 * current
+	if ceiling >= next {
+		next = min(4*current, ceiling)
+	}
+	return next
+}
+
+func bddUniqueTableSlots(budget int) int {
+	ceiling := 1 << 16
+	if budget <= 0 || budget > 1<<30 {
+		return ceiling
+	}
+	for ceiling < 2*budget {
+		ceiling *= 2
+	}
+	return ceiling
 }
 
 func newUniqueTable(capacity int) *uniqueTable {
@@ -121,7 +146,7 @@ func (t *uniqueTable) grow(interrupted func() bool) bool {
 	if interrupted() {
 		return false
 	}
-	grown := newUniqueTable(2 * len(t.entries))
+	grown := newUniqueTable(bddTableGrowth(len(t.entries), t.maxSlots))
 	for i, e := range t.entries {
 		// A rehash can visit millions of slots without creating a node.
 		if i&1023 == 0 && interrupted() {
@@ -200,7 +225,7 @@ func (t *opTable) grow(interrupted func() bool) bool {
 	if interrupted() {
 		return false
 	}
-	grown := newOpTable(2 * len(t.entries))
+	grown := newOpTable(bddTableGrowth(len(t.entries), t.maxSlots))
 	for i, e := range t.entries {
 		if i&1023 == 0 && interrupted() {
 			return false
@@ -284,6 +309,11 @@ func (b *bdd) mk(variable, low, high int) int {
 		return bddFalse
 	}
 	n := len(b.nodes)
+	if 2*(b.unique.count+1) > len(b.unique.entries) {
+		// Implication owners can lower the budget after constructing a blaster.
+		// Use the live allowance, which is also what resource admission reserves.
+		b.unique.maxSlots = bddUniqueTableSlots(b.budget)
+	}
 	if !b.unique.insert(int32(variable), int32(low), int32(high), int32(n), b.interrupted) {
 		return bddFalse
 	}
