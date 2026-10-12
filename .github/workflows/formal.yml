@@ -115,6 +115,12 @@ jobs:
         working-directory: spec/lean
         run: lake build Oak.RiscVBranchEncoding Oak.RiscVCompressedBranchEncoding Oak.RiscVRelaxation Oak.RiscVMaterialization Oak.RiscVCallExecution Oak.RiscVDirectControl Oak.RiscVControlFlow Oak.RiscVComparison
 
+      - name: Check unsigned successor lemma and proof authority
+        working-directory: spec/lean
+        run: |
+          lake build Oak.UnsignedSuccessor
+          lake env lean CheckUnsignedSuccessor.lean
+
       - name: Build formal specification
         working-directory: spec/lean
         run: lake build

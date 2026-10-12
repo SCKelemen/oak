@@ -256,6 +256,7 @@ import Oak.BinaryCodec
 import Oak.BddComplement
 import Oak.IndexCongruence
 import Oak.IndexBounds
+import Oak.UnsignedSuccessor
 import Oak.SolverScheduling
 import Oak.RupCheck
 import Oak.LRATBounds

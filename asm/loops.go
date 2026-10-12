@@ -6736,7 +6736,11 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 	if budget.remaining <= 0 {
 		return false, false
 	}
-	holds, decided = impliesEqualDepthUncached(premise, a, b, widthOf, budget, depth)
+	if impliesUnsignedSuccessor(premise, a, b) {
+		holds, decided = true, true
+	} else {
+		holds, decided = impliesEqualDepthUncached(premise, a, b, widthOf, budget, depth)
+	}
 	if budget.decided == nil {
 		budget.decided = map[decisionKey]decisionResult{}
 	}
