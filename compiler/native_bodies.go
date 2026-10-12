@@ -31,7 +31,7 @@ import (
 // are reported), and its Oak body stays as the portable realization. A
 // function outside the backend's subset is left to the C backend, with the
 // reason reported as information.
-func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker, suppliedFunctions []*asm.Function, suppliedVerdicts map[string]asm.Verdict) nativeLowering {
+func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker, suppliedFunctions []*asm.Function, suppliedVerdicts map[string]asm.Verdict, verification verificationRun) nativeLowering {
 	var diagnostics []*diagnostic.Diagnostic
 	result := nativeLowering{Verdicts: map[string]asm.Verdict{}, Fallbacks: map[string]string{}}
 	var buildReport *NativeBuildReport
@@ -93,10 +93,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	// The verdict cache (compiler/verdict_cache.go), the optimization
 	// report (opt.Report; printed under -opt-report or OAK_OPT_REPORT), and
 	// the lane's candidate search, shared by every body.
-	cacheDir := verdictCacheDir()
-	if comp.options.VerifyFresh {
-		cacheDir = ""
-	}
+	cacheDir := verification.cacheDir
 	report := &opt.Report{}
 	search := nativeSearch(comp.options.Target.AsmArch(), report)
 	var lowered []*asm.Function
@@ -167,7 +164,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// the seam checker and the verifier judge each, and the cheapest
 		// proven body is kept, else the strongest verdict, the plain lowering
 		// last. A refused or weaker form is reported as set aside.
-		driver := &nativeDriver{source: source, functions: functions, externs: externs, records: records, adts: adts, constants: constants, tc: tc, tcFingerprint: tcFingerprint, symbols: symbols, declarations: declarations, cacheDir: cacheDir, verdicts: map[*asm.Function]asm.Verdict{}, verified: &verified, fromCache: &fromCache}
+		driver := &nativeDriver{source: source, functions: functions, externs: externs, records: records, adts: adts, constants: constants, tc: tc, tcFingerprint: tcFingerprint, symbols: symbols, declarations: declarations, cacheDir: cacheDir, verificationOptions: verification.options, verdicts: map[*asm.Function]asm.Verdict{}, verified: &verified, fromCache: &fromCache}
 		facts := nativegen.FunctionFacts(source, tc)
 		selection, err := func() (selection *opt.Selection, err error) {
 			finish := nativetiming.BeginSearch(fn.Name.Value)

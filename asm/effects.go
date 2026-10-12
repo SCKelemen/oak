@@ -614,7 +614,7 @@ func spanIndexName(span string) string { return span + "[?]" }
 // is. A side that never stores through a span leaves its entry memory.
 // result is the proven verdict so far (the result, the cells) when there
 // is one; the proof's message names the spans.
-func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result *Verdict) Verdict {
+func (session *verificationSession) decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result *Verdict) Verdict {
 	names := map[string]bool{}
 	for name := range exec.writes {
 		names[name] = true
@@ -671,7 +671,7 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 				// pair's is proven when it is decided: the machine's reads
 				// over those prefixes are the Oak side's (alignReads).
 				pair.asm = alignReads(pair.asm, exec.reads, oakReads, lowering.reads, pair.write, aligned)
-				if verdict := decideEqual(fn, lowering, pair.asm, pair.oak, pair.width, ""); verdict.Kind != VerdictProven {
+				if verdict := session.decideEqual(fn, lowering, pair.asm, pair.oak, pair.width, ""); verdict.Kind != VerdictProven {
 					if os.Getenv("OAK_VERIFY_TRACE") != "" {
 						fmt.Fprintf(os.Stderr, "verify %s: the aligned writes of %s: pair %d of %d not proven (%s)\n  asm: %s\n  oak: %s\n", fn.Name, name, k, len(pairs), verdict.Message, pair.asm, pair.oak)
 					}
@@ -694,7 +694,7 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 			// it is left to deferredSpans, for after that run.
 			exec.deferredSpans = func() Verdict {
 				exec.deferMemory = false
-				return decideSpans(fn, lowering, exec, result)
+				return session.decideSpans(fn, lowering, exec, result)
 			}
 			return Verdict{Kind: VerdictWitnessed, Message: fmt.Sprintf("asm unit %s (the span %s): agrees with its Oak body on every witness input (evidence, not proof: the write logs differ in length, %d and %d, with every path run to its end)", fn.Name, name, len(exec.writes[name]), len(lowering.writes[name]))}
 		}
@@ -704,9 +704,9 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 		// fresh-index memory expression. Failure proves nothing and retains the
 		// whole-memory decision below as the fallback.
 		pointwise := func(premise *term) bool {
-			budget := &nodeBudget{remaining: loopProofNodeBudget}
+			budget := &nodeBudget{remaining: loopProofNodeBudget, session: session}
 			implies := func(premise, a, b *term) (bool, bool) {
-				return impliesEqualWithin(premise, a, b, lowering.declaredWidth, budget)
+				return session.impliesEqualWithin(premise, a, b, lowering.declaredWidth, budget)
 			}
 			return writeLogsEqualUnder(lowering.writes[name], exec.writes[name], premise, implies)
 		}
@@ -722,7 +722,7 @@ func decideSpans(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 		}
 		asmMemory := memoryAt(exec.writes[name], at, entry)
 		oakMemory := memoryAt(lowering.writes[name], at, entry)
-		verdict := decideEqual(fn, lowering, asmMemory, oakMemory, width, "")
+		verdict := session.decideEqual(fn, lowering, asmMemory, oakMemory, width, "")
 		if verdict.Kind != VerdictProven {
 			verdict.Message = strings.Replace(verdict.Message, "asm unit "+fn.Name, fmt.Sprintf("asm unit %s (the span %s)", fn.Name, name), 1)
 			return verdict
@@ -906,7 +906,7 @@ func alignedWrites(asm, oak []*spanWrite, width int) ([]writePair, string) {
 
 // decideEffects decides the package cells and then the span memories
 // either side writes, after the result's proven verdict when there is one.
-func decideEffects(fn *Function, lowering *oakLowering, exec *pathExecutor, result *Verdict) Verdict {
+func (session *verificationSession) decideEffects(fn *Function, lowering *oakLowering, exec *pathExecutor, result *Verdict) Verdict {
 	writesCells := len(exec.cells) > 0 || len(lowering.writtenCells()) > 0
 	writesSpans := len(exec.writes) > 0 || len(lowering.writes) > 0
 	if !writesCells && !writesSpans && result == nil {
@@ -918,11 +918,11 @@ func decideEffects(fn *Function, lowering *oakLowering, exec *pathExecutor, resu
 		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body (a unit body that writes no package state and no span memory on either side)", fn.Name)}
 	}
 	if writesCells {
-		verdict := decideCells(fn, lowering, exec, result)
+		verdict := session.decideCells(fn, lowering, exec, result)
 		if verdict.Kind != VerdictProven || !writesSpans {
 			return verdict
 		}
 		result = &verdict
 	}
-	return decideSpans(fn, lowering, exec, result)
+	return session.decideSpans(fn, lowering, exec, result)
 }

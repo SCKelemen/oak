@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	verdictCacheNamespace     = "verdict-cache-5-truncated-parameter-extension"
+	verdictCacheNamespace     = "verdict-cache-6-fixed-verification-options"
 	verdictCacheFormatVersion = 2
 )
 
@@ -51,16 +51,8 @@ type decodedVerdict struct {
 // lives beside the solver caches under the temporary directory;
 // OAK_VERIFY_CACHE=0 turns it off.
 
-// verdictCacheDir is the directory of cached verdicts, "" when disabled.
-func verdictCacheDir() string {
-	if os.Getenv("OAK_VERIFY_CACHE") == "0" || os.Getenv("OAK_VERIFY_ONLY") != "" {
-		return ""
-	}
-	return filepath.Join(os.TempDir(), "oak-verify-cache")
-}
-
 // verdictCacheKey hashes everything a verdict depends on.
-func verdictCacheKey(asmFn *asm.Function, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, declarations string) string {
+func verdictCacheKey(asmFn *asm.Function, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, declarations string, options asm.VerificationOptions) string {
 	h := sha256.New()
 	write := func(parts ...string) {
 		for _, part := range parts {
@@ -76,9 +68,8 @@ func verdictCacheKey(asmFn *asm.Function, fn *ast.FunctionStatement, functions m
 		}
 	}
 	write(verdictCacheNamespace, asmFn.Arch, strconv.FormatBool(asmFn.PackedStackArgs), nativegen.Describe(asmFn), fn.String(), declarations)
-	// The decider's budget setting: a verdict under the escalated budget
-	// (OAK_VERIFY_BUDGET) is not a verdict under the base one.
-	write("verify-budget", os.Getenv("OAK_VERIFY_BUDGET"))
+	// Bind the key to the same immutable settings consumed by verification.
+	write("verification-options", options.CacheIdentity())
 	if asmFn.Body != nil {
 		write("lowered-body", asmFn.Body.String()) // a verified rewrite: the body the verdict judged
 	}

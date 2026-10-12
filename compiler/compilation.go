@@ -103,11 +103,14 @@ type Options struct {
 // modified copies so callers can cheaply derive configurations without hidden
 // mutation between compiler phases.
 type Compilation struct {
-	source             SourceText
-	options            Options
-	resourceProtocols  []typechecker.ResourceProtocolDeclaration
-	simulation         bool
-	simulationBindings []SimulationBinding
+	// Only caller-supplied options persist here; captured run state stays local to check.
+	verificationOptions         asm.VerificationOptions
+	verificationOptionsSupplied bool
+	source                      SourceText
+	options                     Options
+	resourceProtocols           []typechecker.ResourceProtocolDeclaration
+	simulation                  bool
+	simulationBindings          []SimulationBinding
 	// Package build (compiler/modules.go): when packageDir is set, the
 	// compilation loads the package directory and everything it imports
 	// instead of the single source.
@@ -294,6 +297,15 @@ func (comp Compilation) WithNativeBodies() Compilation {
 	return comp
 }
 
+// WithVerificationOptions returns a compilation using these fixed verifier options.
+// An explicitly supplied zero value selects defaults, ignoring ambient verifier
+// settings. Without an override, each Check captures settings anew at entry.
+func (comp Compilation) WithVerificationOptions(options asm.VerificationOptions) Compilation {
+	comp.verificationOptions = options
+	comp.verificationOptionsSupplied = true
+	return comp
+}
+
 // WithVerifyFresh returns a compilation that verifies every native body
 // anew, ignoring the verdict cache.
 func (comp Compilation) WithVerifyFresh() Compilation {
@@ -414,6 +426,7 @@ func (comp Compilation) Check() Stage[*SemanticModel] {
 }
 
 func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDeclaration) Stage[*SemanticModel] {
+	verification := comp.captureVerificationRun()
 	return comp.Parse().Then(func(tree *SyntaxTree) (*SemanticModel, error) {
 		for _, rewrite := range comp.syntaxRewrites {
 			if err := rewrite(tree); err != nil {
@@ -490,7 +503,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			// Imported library packages contribute their embedded units.
 			stitcher.options.AsmUnits = append(append([]SourceText(nil), comp.options.AsmUnits...), tree.Modules.AsmUnits...)
 		}
-		asmFunctions, asmVerdicts, asmDiagnostics := stitcher.stitchAsmUnits(tree.Root)
+		asmFunctions, asmVerdicts, asmDiagnostics := stitcher.stitchAsmUnits(tree.Root, verification)
 		var native nativeLowering
 		if err := comp.gate("asm", asmDiagnostics, tree.Modules); err != nil {
 			return nil, err
@@ -571,7 +584,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 			// The native body backend has an AArch64 and an RV64 lane
 			// (nativegen): on a target without a lane every body stays with
 			// the C backend.
-			native = comp.lowerNativeBodies(tree.Root, tc, asmFunctions, asmVerdicts)
+			native = comp.lowerNativeBodies(tree.Root, tc, asmFunctions, asmVerdicts, verification)
 			if err := comp.gate("native", native.Diagnostics, tree.Modules); err != nil {
 				return nil, err
 			}

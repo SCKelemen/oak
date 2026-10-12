@@ -235,7 +235,7 @@ const smallTrapNodes = 4096
 // behavior, exception handlers, or effects before a trap. Summarized loops
 // check their root and per-iteration scopes in decideLoopTrapDomains after
 // selecting the coupling, before admitting any value/effect proof.
-func verifyTrapDomain(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, result Verdict) Verdict {
+func (session *verificationSession) verifyTrapDomain(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, result Verdict) Verdict {
 	if result.Kind != VerdictProven || exec == nil || exec.trap == nil || len(exec.loops) != 0 {
 		return result
 	}
@@ -310,14 +310,14 @@ func verifyTrapDomain(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expr
 				}
 				continue
 			}
-			if holds, decided := impliesEqual(end.left, notTerm(end.right), constTerm(1, 1), source.declaredWidth); decided && holds {
+			if holds, decided := session.impliesEqual(end.left, notTerm(end.right), constTerm(1, 1), source.declaredWidth); decided && holds {
 				if trace {
 					fmt.Fprintf(os.Stderr, "verify %s: trap-domain end %d proven by implication\n", fn.Name, k)
 				}
 				continue
 			}
 		}
-		proof := decideEqual(fn, source, end, constTerm(0, 1), 1, " (machine trap-domain obligation)")
+		proof := session.decideEqual(fn, source, end, constTerm(0, 1), 1, " (machine trap-domain obligation)")
 		if trace {
 			fmt.Fprintf(os.Stderr, "verify %s: trap-domain end %d: %s\n", fn.Name, k, proof.Message)
 		}

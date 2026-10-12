@@ -186,9 +186,9 @@ func TestVerdictCacheKeyIncludesMachineOnlyCalleeBodies(t *testing.T) {
 			asm.Instruction{Mnemonic: "bl", Operands: []asm.Operand{asm.Symbol{Name: "helper"}}},
 		},
 	}
-	beforeKey := verdictCacheKey(machine, rootBefore, before, "")
+	beforeKey := verdictCacheKey(machine, rootBefore, before, "", asm.VerificationOptions{})
 	machine.Signature = rootAfter
-	afterKey := verdictCacheKey(machine, rootAfter, after, "")
+	afterKey := verdictCacheKey(machine, rootAfter, after, "", asm.VerificationOptions{})
 	if beforeKey == afterKey {
 		t.Fatal("machine-only scalar callee did not contribute its source identity to the cache key")
 	}
@@ -219,9 +219,9 @@ func TestVerdictCacheKeyIncludesMachineOnlyCalleeBodies(t *testing.T) {
 			asm.Instruction{Mnemonic: "bl", Operands: []asm.Operand{asm.Symbol{Name: vectorSymbol}}},
 		},
 	}
-	vectorBeforeKey := verdictCacheKey(vectorMachine, vectorRootBefore, vectorBefore, "")
+	vectorBeforeKey := verdictCacheKey(vectorMachine, vectorRootBefore, vectorBefore, "", asm.VerificationOptions{})
 	vectorMachine.Signature = vectorRootAfter
-	vectorAfterKey := verdictCacheKey(vectorMachine, vectorRootAfter, vectorAfter, "")
+	vectorAfterKey := verdictCacheKey(vectorMachine, vectorRootAfter, vectorAfter, "", asm.VerificationOptions{})
 	if vectorBeforeKey == vectorAfterKey {
 		t.Fatal("machine-only vector callee did not contribute its source identity to the cache key")
 	}
@@ -230,9 +230,9 @@ func TestVerdictCacheKeyIncludesMachineOnlyCalleeBodies(t *testing.T) {
 	after, rootAfter = functionMap("x", "x + u32(2)")
 	_, rewritten := functionMap("helper(x)", "x")
 	machine = &asm.Function{Name: "root", Arch: asm.ArchArm64, Signature: rootBefore, Body: rewritten.Body}
-	beforeKey = verdictCacheKey(machine, rootBefore, before, "")
+	beforeKey = verdictCacheKey(machine, rootBefore, before, "", asm.VerificationOptions{})
 	machine.Signature = rootAfter
-	afterKey = verdictCacheKey(machine, rootAfter, after, "")
+	afterKey = verdictCacheKey(machine, rootAfter, after, "", asm.VerificationOptions{})
 	if beforeKey == afterKey {
 		t.Fatal("a callee reachable only from the verified rewritten body did not contribute to the cache key")
 	}
@@ -306,9 +306,9 @@ func TestVerdictCacheMachineCalleesAgreeWithStrictResolver(t *testing.T) {
 							asm.Instruction{Mnemonic: mnemonic, Operands: []asm.Operand{asm.Symbol{Name: test.symbol}}},
 						},
 					}
-					beforeKey := verdictCacheKey(machine, before["root"], before, "")
+					beforeKey := verdictCacheKey(machine, before["root"], before, "", asm.VerificationOptions{})
 					machine.Signature = after["root"]
-					afterKey := verdictCacheKey(machine, after["root"], after, "")
+					afterKey := verdictCacheKey(machine, after["root"], after, "", asm.VerificationOptions{})
 					if changed := beforeKey != afterKey; changed != resolved {
 						t.Fatalf("cache dependency changed = %v, strict resolver = %v", changed, resolved)
 					}

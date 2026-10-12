@@ -45,8 +45,11 @@ type nativeDriver struct {
 	// fingerprint hashes every position-keyed one in the program — taken
 	// per candidate it was a twentieth of a native build.
 	tcFingerprint string
-	// cacheDir is the verdict cache, "" to verify afresh.
-	cacheDir string
+	// cacheDir and verificationOptions are copied from one check-local snapshot.
+	// An empty cacheDir disables both lookup and store; zero options are defaults
+	// for private helper callers, never a request to recapture the environment.
+	cacheDir            string
+	verificationOptions asm.VerificationOptions
 	// verdicts keeps the verifier's verdict by body for the compiler's
 	// report; verified and fromCache tally the cache's use.
 	verdicts  map[*asm.Function]asm.Verdict
@@ -128,14 +131,16 @@ func (d *nativeDriver) Validate(c *opt.Candidate) opt.Verdict {
 	defer func() { finish(timingOutcome, timingCached) }()
 	fn := c.Body.(*asm.Function)
 	start := time.Now()
+	// Pin both operations to this validation's captured policy and key.
+	cacheDir, options := d.cacheDir, d.verificationOptions
 	key := ""
-	if d.cacheDir != "" {
-		key = verdictCacheKey(fn, d.source, d.functions, d.declarations)
+	if cacheDir != "" {
+		key = verdictCacheKey(fn, d.source, d.functions, d.declarations, options)
 	}
-	verdict, cached := cachedVerdict(d.cacheDir, key, d.functions)
+	verdict, cached := cachedVerdict(cacheDir, key, d.functions)
 	if !cached {
-		verdict = asm.Verify(fn, d.source, verifiedBody(fn, d.source))
-		storeVerdict(d.cacheDir, key, verdict)
+		verdict = asm.VerifyWithOptions(fn, d.source, verifiedBody(fn, d.source), options)
+		storeVerdict(cacheDir, key, verdict)
 	} else {
 		*d.fromCache++
 	}

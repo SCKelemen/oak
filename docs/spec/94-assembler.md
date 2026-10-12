@@ -8163,6 +8163,39 @@ verifier paths preserve the union of summarized callees before the record is
 written. Cold and warm tests require identical dependency closure and rerun
 the verified-profile fixpoint over the cached result. The cache remains local
 proof-engine state rather than an independently checked proof certificate.
+**Fixed verification configuration.** Each `Compilation.check` captures the
+existing `OAK_VERIFY_OFF`, `OAK_VERIFY_BUDGET`, and `OAK_VERIFY_ONLY` settings once,
+before stitching supplied units or lowering native bodies. All candidates and
+independent value, effect, and trap obligations in that invocation use the same
+immutable `asm.VerificationOptions` value. `WithVerificationOptions` supplies an
+explicit override, including explicit zero/default options; an ordinary reusable
+compilation captures fresh settings at its next check, without retaining a prior
+ambient snapshot. Concurrent callers needing different settings use explicit
+values; reading several process environment variables is not an atomic capture
+with concurrent environment mutation.
+
+`asm.VerifyWithOptions` consumes explicit options; the existing `asm.Verify`
+entry captures the three settings per call. Thus a later standalone call observes
+a changed off-list, instead of the former process-first-use list. Off-list tokens
+remain untrimmed, unknown tokens ineffective, budget parsing unchanged, and the
+selection list retains its existing exact-name/whitespace semantics. Rule switches
+select algorithms, not monotone subsets of proof rules: disabling `bounded` still
+uses the parent's remaining allowance, and disabled `onesided` and `components`
+still perform their existing attempt/construction before rejecting its use. No
+proof predicate, allowance, debit, result classification, or callee obligation is
+relaxed by configuration.
+
+The cache namespace is `verdict-cache-6-fixed-verification-options`; keys include a
+versioned length-delimited identity of all three raw settings alongside the
+existing source/assembly/declaration/callee context. The same captured options and
+cache policy govern lookup and store. Selection, cache-off, and fresh-check modes
+bypass both directions; transient resource refusals remain nonpersistent. Earlier
+namespace entries are cold misses, with no deletion or migration. Options and key
+digests are not proof evidence. Diagnostic environment controls remain outside this
+snapshot (some may initiate extra work or output), and physical-memory admission
+remains process-shared. This boundary does not claim complete environment isolation,
+independent proof replay of cache entries, or stronger executable content identity.
+
 Second, a mask of every bit at a term's
 width is now the identity in the constructors (`x & 0xFFFFFFFF` at 32
 bits is `x`; a truncation of a zero-extension is the extended term), and

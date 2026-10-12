@@ -10592,9 +10592,17 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 // chunk against the same chunk packed from the Oak body's value; the
 // verdict is proof only when both are proven, otherwise the first that
 // is not.
-func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) (verdict Verdict) {
+func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
+	return VerifyWithOptions(fn, sig, oakBody, NewVerificationOptions(
+		os.Getenv("OAK_VERIFY_OFF"), os.Getenv("OAK_VERIFY_BUDGET"), os.Getenv("OAK_VERIFY_ONLY")))
+}
+
+// VerifyWithOptions verifies with one fixed configuration. Options select existing
+// algorithms; they are never proof evidence. Transient proof state is per call.
+func VerifyWithOptions(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, options VerificationOptions) (verdict Verdict) {
 	defer trackBDDResourceExhaustion(&verdict)()
-	if only := os.Getenv("OAK_VERIFY_ONLY"); only != "" && !verifyOnlyNames(only, fn.Name) {
+	session := &verificationSession{options: options}
+	if only := options.only; only != "" && !verifyOnlyNames(only, fn.Name) {
 		// A diagnostic switch: one function verified, every other unit
 		// trusted without a look (its verdict is never cached).
 		return Verdict{Kind: VerdictTrusted, Message: "skipped under OAK_VERIFY_ONLY"}
@@ -10606,10 +10614,10 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) (v
 		}()
 	}
 	if shape, isVector := vectorShape(sig.ReturnType); isVector {
-		return verifyVectorResult(fn, sig, oakBody, shape)
+		return session.verifyVectorResult(fn, sig, oakBody, shape)
 	}
 	if _, chunks, isComposite := resultComposite(fn, sig); isComposite && chunks >= 2 {
-		first := verifyChunk(fn, sig, oakBody, 0)
+		first := session.verifyChunk(fn, sig, oakBody, 0)
 		if first.Kind == VerdictMismatch || first.Kind == VerdictTrusted {
 			return first
 		}
@@ -10624,7 +10632,7 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) (v
 		// Two register chunks (x0 then x1): each verified in its own run.
 		var second Verdict
 		for k := 1; k < chunks; k++ {
-			second = verifyChunk(fn, sig, oakBody, k)
+			second = session.verifyChunk(fn, sig, oakBody, k)
 			if second.Kind != VerdictProven {
 				return second
 			}
@@ -10634,7 +10642,7 @@ func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) (v
 		}
 		return composeProvenPair(first, second, first.Message+" (both result chunks)")
 	}
-	return verifyChunk(fn, sig, oakBody, 0)
+	return session.verifyChunk(fn, sig, oakBody, 0)
 }
 
 // machineTrapsWhereOakYields runs the machine on witness inputs and, on
@@ -10716,12 +10724,12 @@ func describeEnvSorted(env map[string]uint64) string {
 
 // verifyChunk is Verify for one result chunk (0 for a scalar or a
 // one-chunk record).
-func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int) (result Verdict) {
-	verdict, exec := verifyChunkJoining(fn, sig, oakBody, chunk, false)
+func (session *verificationSession) verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int) (result Verdict) {
+	verdict, exec := session.verifyChunkJoining(fn, sig, oakBody, chunk, false)
 	// Also covers a deferred span-memory decision: no later Proven return
 	// may bypass the independent trap-domain obligation.
 	defer func() {
-		result = verifyTrapDomain(fn, sig, oakBody, exec, result)
+		result = session.verifyTrapDomain(fn, sig, oakBody, exec, result)
 	}()
 	if verdict.Kind == VerdictWitnessed && strings.Contains(verdict.Message, "(the span ") {
 		// The span memories were not proven equal with every path run to
@@ -10740,7 +10748,7 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "verify %s: the span memories were not proven; running again merging at the joins\n", fn.Name)
 		}
-		if joined, joinedExec := verifyChunkJoining(fn, sig, oakBody, chunk, true); joined.Kind == VerdictProven || joined.Kind == VerdictMismatch {
+		if joined, joinedExec := session.verifyChunkJoining(fn, sig, oakBody, chunk, true); joined.Kind == VerdictProven || joined.Kind == VerdictMismatch {
 			exec = joinedExec
 			return joined
 		}
@@ -10756,7 +10764,7 @@ func verifyChunk(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 // verifyChunkJoining is verifyChunk with the paths run to their ends
 // (joins false: the fold along the fork tree, executeBodyChunk) or merged
 // at their joins (executeBodyChunkJoining).
-func verifyChunkJoining(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int, joins bool) (Verdict, *pathExecutor) {
+func (session *verificationSession) verifyChunkJoining(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int, joins bool) (Verdict, *pathExecutor) {
 	var asmTerm *term
 	var exec *pathExecutor
 	var reason string
@@ -10769,16 +10777,16 @@ func verifyChunkJoining(fn *Function, sig *ast.FunctionStatement, oakBody ast.Ex
 	if ok && exec != nil && exec.joins == nil {
 		exec.deferMemory = true
 	}
-	verdict := verifyExecution(fn, sig, oakBody, chunk, asmTerm, exec, reason, ok)
+	verdict := session.verifyExecution(fn, sig, oakBody, chunk, asmTerm, exec, reason, ok)
 	return verdict, exec
 }
 
 // verifyExecution decides one execution of the body against the Oak body.
-func verifyExecution(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int, asmTerm *term, exec *pathExecutor, reason string, ok bool) Verdict {
-	return verifyExecutionWithApplications(fn, sig, oakBody, chunk, asmTerm, exec, reason, ok, false)
+func (session *verificationSession) verifyExecution(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int, asmTerm *term, exec *pathExecutor, reason string, ok bool) Verdict {
+	return session.verifyExecutionWithApplications(fn, sig, oakBody, chunk, asmTerm, exec, reason, ok, false)
 }
 
-func verifyExecutionWithApplications(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int, asmTerm *term, exec *pathExecutor, reason string, ok, expandCalls bool) Verdict {
+func (session *verificationSession) verifyExecutionWithApplications(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, chunk int, asmTerm *term, exec *pathExecutor, reason string, ok, expandCalls bool) Verdict {
 	if !ok {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
@@ -10837,14 +10845,14 @@ func verifyExecutionWithApplications(fn *Function, sig *ast.FunctionStatement, o
 			// The span memories and the package cells are the comparison,
 			// under the loop coupling.
 			return verdictWithCallees(
-				verifyLoops(fn, sig, oakBody, exec, lowering, nil, nil, 0),
+				session.verifyLoops(fn, sig, oakBody, exec, lowering, nil, nil, 0),
 				exec.summarized,
 			)
 		}
 		if verdict, refuted := trapClaim(); refuted {
 			return verdict
 		}
-		return verdictWithCallees(decideEffects(fn, lowering, exec, nil), exec.summarized)
+		return verdictWithCallees(session.decideEffects(fn, lowering, exec, nil), exec.summarized)
 	}
 	// A record result through memory: the run delivered every word
 	// (exec.moreResults), the lowering packs every word from one value,
@@ -10871,7 +10879,7 @@ func verifyExecutionWithApplications(fn *Function, sig *ast.FunctionStatement, o
 		// The backend may inline a call which the source lowering abstracts.
 		// Rebuild the source from its body to recover that equality; retain
 		// compact applications when both sides still use call summaries.
-		return verifyExecutionWithApplications(fn, sig, oakBody, chunk, asmTerm, exec, reason, ok, true)
+		return session.verifyExecutionWithApplications(fn, sig, oakBody, chunk, asmTerm, exec, reason, ok, true)
 	}
 	if name := typeText(sig.ReturnType); name == "f32" || name == "f64" {
 		// A float result is decided up to its NaN payload (floatCanonicalNaN).
@@ -10879,7 +10887,7 @@ func verifyExecutionWithApplications(fn *Function, sig *ast.FunctionStatement, o
 		oakTerms[0] = floatCanonicalNaN(truncate(oakTerms[0], width), width)
 	}
 	if len(exec.loops) > 0 || len(lowering.loops) > 0 {
-		verdict := verifyLoops(fn, sig, oakBody, exec, lowering, asmTerms, oakTerms, width)
+		verdict := session.verifyLoops(fn, sig, oakBody, exec, lowering, asmTerms, oakTerms, width)
 		verdict.Callees = exec.summarized
 		return verdict
 	}
@@ -10890,18 +10898,18 @@ func verifyExecutionWithApplications(fn *Function, sig *ast.FunctionStatement, o
 	if len(exec.summarized) > 0 {
 		note = " (callees taken at their Oak bodies: " + strings.Join(exec.summarized, ", ") + ")"
 	}
-	verdict := decideEqual(fn, lowering, asmTerms[0], oakTerms[0], width, note)
+	verdict := session.decideEqual(fn, lowering, asmTerms[0], oakTerms[0], width, note)
 	verdict.Callees = exec.summarized
 	if verdict.Kind != VerdictProven {
 		return verdict
 	}
 	for k := 1; k < words; k++ {
-		if other := decideEqual(fn, lowering, asmTerms[k], oakTerms[k], width, note); other.Kind != VerdictProven {
+		if other := session.decideEqual(fn, lowering, asmTerms[k], oakTerms[k], width, note); other.Kind != VerdictProven {
 			other.Callees = exec.summarized
 			return other
 		}
 	}
-	effects := decideEffects(fn, lowering, exec, &verdict)
+	effects := session.decideEffects(fn, lowering, exec, &verdict)
 	effects.Callees = exec.summarized
 	return effects
 }
@@ -10910,7 +10918,7 @@ func verifyExecutionWithApplications(fn *Function, sig *ast.FunctionStatement, o
 // that the two sides leave the same value in it (a side that never writes
 // a cell leaves its entry value); result is the result's proven verdict
 // when the function has one. The proof's message names the cells.
-func decideCells(fn *Function, lowering *oakLowering, exec *pathExecutor, result *Verdict) Verdict {
+func (session *verificationSession) decideCells(fn *Function, lowering *oakLowering, exec *pathExecutor, result *Verdict) Verdict {
 	oakCells := lowering.writtenCells()
 	names := map[string]bool{}
 	for name := range exec.cells {
@@ -10939,7 +10947,7 @@ func decideCells(fn *Function, lowering *oakLowering, exec *pathExecutor, result
 		if oakCell == nil {
 			oakCell = cellEntry(name, global)
 		}
-		verdict := decideEqual(fn, lowering, asmCell, oakCell, cellWidth(global), "")
+		verdict := session.decideEqual(fn, lowering, asmCell, oakCell, cellWidth(global), "")
 		if verdict.Kind != VerdictProven {
 			verdict.Message = strings.Replace(verdict.Message, "asm unit "+fn.Name, fmt.Sprintf("asm unit %s (the package global %s)", fn.Name, name), 1)
 			return verdict
@@ -12847,7 +12855,7 @@ func canonicalMemo(t *term, memo *canonicalTable, boolean map[*term]bool) *term 
 	return out
 }
 
-func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, width int, note string) Verdict {
+func (session *verificationSession) decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, width int, note string) Verdict {
 	asmTerm = canonical(truncate(asmTerm, width))
 	oakTerm = canonical(adaptWidth(oakTerm, width))
 	// The input domain — every union tag one of its variants, the machine
@@ -12954,7 +12962,7 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	// (splitDecide). A proof there is a proof; a refutation or an
 	// undecided case keeps the evidence verdict, the witnesses having
 	// agreed.
-	if holds, decided := splitDecide(constTerm(1, 1), asmTerm, adaptWidth(oakTerm, width), lowering.declaredWidth, nil, 0); decided && holds {
+	if holds, decided := session.splitDecide(constTerm(1, 1), asmTerm, adaptWidth(oakTerm, width), lowering.declaredWidth, nil, 0); decided && holds {
 		return Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (%d-bit result, under a case split on its branch conditions)%s", fn.Name, width, note)}
 	}
 	// A small equality past the budget under every order and the split
@@ -12964,7 +12972,7 @@ func decideEqual(fn *Function, lowering *oakLowering, asmTerm, oakTerm *term, wi
 	// budget a build opts into (OAK_VERIFY_BUDGET), the orders racing as
 	// before. Only small terms claim the time: a large term past the
 	// budget stays evidence.
-	if budget := escalatedNodeBudget(); budget > 0 && termSize(asmTerm, map[*term]int{})+termSize(oakTerm, map[*term]int{}) <= escalationTermNodes {
+	if budget := session.optionsValue().escalationBudget(); budget > 0 && termSize(asmTerm, map[*term]int{})+termSize(oakTerm, map[*term]int{}) <= escalationTermNodes {
 		escalated := equalityBlasters(names, params, asmTerm, oakTerm)
 		for _, bl := range escalated {
 			bl.withBudget(budget)
