@@ -8569,6 +8569,18 @@ small-helper expansion (#486) now inlines thirty-two of the bodies the
 earlier count proved separately (`append_byte`, `bitset_set`,
 `buffer_reset`), so the counts are not comparable body for body.
 
+An exhausted shared allowance still admits the existing structural-equality
+and recorded-decision fast paths, which consume no ordinary node debit or
+new implication call. A fresh unequal, uncached implication keeps the call
+check but stops before walking and charging its DAG when the effective
+owner's remaining allowance is nonpositive. If recursive proof rules exhaust
+that owner, the parent skips construction of its main decision diagrams and
+retains the existing bounded final split: rewritten equal or recorded children
+can still decide. Positive-entry admissions may consume their final allowance
+or overdraw under the existing policy; those charges are neither clamped nor
+refunded. An optimistic child's actual debit and calls still transfer once to
+its parent. This is a resource-admission rule, not an additional proof rule.
+
 **Constant register indices into record arguments (2026-09-17).** A
 record-array load whose register index is a known constant reads that
 element directly, after checking the constant against the selected array

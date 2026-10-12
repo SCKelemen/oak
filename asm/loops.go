@@ -6722,6 +6722,11 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 	if budget.calls > implicationCallLimit {
 		return false, false
 	}
+	// Equality and memo hits above remain available after exhaustion. A
+	// fresh unequal implication cannot spend a new DAG admission then.
+	if budget.remaining <= 0 {
+		return false, false
+	}
 	nodes, exceeded := dagNodes(implicationNodeLimit, premise, a, b)
 	if exceeded {
 		budget.remaining -= blastNodeBudget
@@ -6881,53 +6886,58 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 	if holds, decided := impliesEqualCongruent(premise, a, b, widthOf, budget, depth); decided {
 		return holds, true
 	}
-	blasters := equalityBlasters(names, widths, a, b)
-	if cb := componentBlaster(names, widths, premise, a, b); cb != nil && !verifyOff("components") {
-		blasters = append(blasters, cb)
-	}
-	for _, bl := range blasters {
-		if budget != nil {
-			// One implication spends no more than the proof has left: the
-			// shared budget bounds the diagrams as they grow, not only the
-			// number of implications tried — and no more than a loop
-			// proof's per-implication cap (loopDecisionNodeBudget).
-			if budget.loop && bl.bdd.budget > loopDecisionNodeBudget {
-				bl.bdd.budget = loopDecisionNodeBudget
-			}
-			if budget.remaining < bl.bdd.budget {
-				bl.bdd.budget = budget.remaining
-			}
-		}
-	}
-	holds, decided = raceBDDOrders(blasters, func(bl *blaster) (bool, bool) {
-		holds, decided := impliesEqualUnder(bl, premise, a, b, width)
-		return holds, !decided
-	})
-	if budget != nil {
-		// The decision cost the proof its largest diagram: undecided ones
-		// near the per-decision budget exhaust the proof's in a few tries.
-		spent := 0
-		for _, bl := range blasters {
-			if n := bl.bdd.completedNodes; n > spent {
-				spent = n
-			}
-		}
-		budget.remaining -= spent
-	}
-	if decided {
-		return holds, true
-	}
-	if os.Getenv("OAK_VERIFY_TRACE") != "" {
-		remaining := -1
-		if budget != nil {
-			remaining = budget.remaining
-		}
-		fmt.Fprintf(os.Stderr, "verify: undecided implication at depth %d: a %d nodes (width %d), b %d nodes (width %d), premise %d nodes, %d names %v, branching=%v, budget remaining %d\n  premise: %s\n", depth, termSize(a, map[*term]int{}), a.width, termSize(b, map[*term]int{}), b.width, termSize(premise, map[*term]int{}), len(names), names, branching, remaining, premise)
-		if termSize(a, map[*term]int{}) <= 256 && termSize(b, map[*term]int{}) <= 256 {
-			fmt.Fprintf(os.Stderr, "  a: %s\n  b: %s\n", a, b)
+	// Recursive rules above may have exhausted the effective owner. Keep
+	// the final split below available for equality and memo fast paths,
+	// but do not initialize another diagram without remaining allowance.
+	if budget == nil || budget.remaining > 0 {
+		blasters := equalityBlasters(names, widths, a, b)
+		if cb := componentBlaster(names, widths, premise, a, b); cb != nil && !verifyOff("components") {
+			blasters = append(blasters, cb)
 		}
 		for _, bl := range blasters {
-			fmt.Fprintf(os.Stderr, "  order %s: %d bdd nodes, memory exhausted=%v, budget %d\n", bl.label, bl.bdd.completedNodes, bl.bdd.memoryExhausted, bl.bdd.budget)
+			if budget != nil {
+				// One implication spends no more than the proof has left: the
+				// shared budget bounds the diagrams as they grow, not only the
+				// number of implications tried — and no more than a loop
+				// proof's per-implication cap (loopDecisionNodeBudget).
+				if budget.loop && bl.bdd.budget > loopDecisionNodeBudget {
+					bl.bdd.budget = loopDecisionNodeBudget
+				}
+				if budget.remaining < bl.bdd.budget {
+					bl.bdd.budget = budget.remaining
+				}
+			}
+		}
+		holds, decided = raceBDDOrders(blasters, func(bl *blaster) (bool, bool) {
+			holds, decided := impliesEqualUnder(bl, premise, a, b, width)
+			return holds, !decided
+		})
+		if budget != nil {
+			// The decision cost the proof its largest diagram: undecided ones
+			// near the per-decision budget exhaust the proof's in a few tries.
+			spent := 0
+			for _, bl := range blasters {
+				if n := bl.bdd.completedNodes; n > spent {
+					spent = n
+				}
+			}
+			budget.remaining -= spent
+		}
+		if decided {
+			return holds, true
+		}
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			remaining := -1
+			if budget != nil {
+				remaining = budget.remaining
+			}
+			fmt.Fprintf(os.Stderr, "verify: undecided implication at depth %d: a %d nodes (width %d), b %d nodes (width %d), premise %d nodes, %d names %v, branching=%v, budget remaining %d\n  premise: %s\n", depth, termSize(a, map[*term]int{}), a.width, termSize(b, map[*term]int{}), b.width, termSize(premise, map[*term]int{}), len(names), names, branching, remaining, premise)
+			if termSize(a, map[*term]int{}) <= 256 && termSize(b, map[*term]int{}) <= 256 {
+				fmt.Fprintf(os.Stderr, "  a: %s\n  b: %s\n", a, b)
+			}
+			for _, bl := range blasters {
+				fmt.Fprintf(os.Stderr, "  order %s: %d bdd nodes, memory exhausted=%v, budget %d\n", bl.label, bl.bdd.completedNodes, bl.bdd.memoryExhausted, bl.bdd.budget)
+			}
 		}
 	}
 	if !branching {
