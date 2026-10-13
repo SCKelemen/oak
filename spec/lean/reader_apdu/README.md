@@ -35,3 +35,102 @@ Each child has a new owned session/group. The parent uses waitid(WNOWAIT), signa
 `python3 -B spec/lean/reader_apdu/test_check.py -v` runs synthetic consumer and filesystem/metadata controls. Subprocess entry points are patched to refuse; no Lean/toolchain import/build runs. The controls retain cyclic/shared/repeated graph references as valid and reject malformed/missing/duplicate records, wrong identities, unapproved authority, stale/replaced objects, source/contract drift and budget/completion violations. Resource/process completion tests are mocked predicates, not real signal/reap or Lean runtime validation.
 
 The first repository adapter/control revision is source-reviewed only until a separately recorded cheap-control run and hosted exact-source run pass. Historical local model acceptance does not imply this adaptation has executed. Source comments retained inside accepted model/driver bytes record their original candidate status; the evaluation note records the later local acceptance.
+
+## Qualified reader extraction and generated-definition refinement
+
+The independent `reader-refinement` formal job adds a fixed sibling profile;
+`check_refinement.py` reuses the exact locked process, file, storage and official
+Lean distribution helpers in `check.py` and `support.py`. The original reader/APDU
+abstract-model gate, its contract, its 48 theorem/15 example obligations, and its
+limits remain mandatory. There is no mutable profile switch or update mode.
+
+The new job requires all four portable reader/APDU roots through the existing
+`required_backend_tests.py reader-apdu` equipped runner. Every selected skip or
+failure, absent required root and duplicate run is refused. Normal compiler shards
+continue selecting the same four roots. The tests require `cc`, interpreter result
+42 and host executable result 42; they do not establish compiler correctness.
+
+Next, the current checkout builds the three explicit Go files under
+`.github/scripts/reader_refinement` using Go 1.27.1. This hidden directory is outside
+ordinary `./...` and native inventory discovery, so the explicit CI invocation is
+necessary. The direct test binary must pass exactly 62 controls, with no children
+or skips, before the one `TestBoundedReaderExtractionEmit` root runs. Its actual
+qualified loader, public checks and `EmitLeanRoots` must produce all three exact
+accepted outputs. The outer profile verifies raw and profiled byte equality,
+complete receipt equality, four current original-source pins, twelve source spans,
+and sixteen generated declaration spans. Only the two original header budget
+reductions are accepted; no generated body is replaced.
+
+The receipt's `tree_requires_outer_authentication` remains the historical
+`a86fe4f8a36fd5687282907c1e6b8f95154ff0f0` extraction-profile authority. It is not
+relabelled as the new integration tree. Checkout `HEAD == GITHUB_SHA`, unchanged
+tracked source during the build, the fixed source contract and fresh build are
+separate hosted authorities for the current source. Relevant original source,
+fixture, extraction and helper bytes are locked. The complete compiler/build,
+qualified loader, checker and extractor remain in the trusted computing base.
+
+The profile compiles `BoundedReaderModel`, `BoundedReaderExtracted` and
+`BoundedReaderRefinement` freshly into a private three-object import root, then
+runs the exact accepted `RefinementAuditDriver.lean`. Full private-name records
+and independent dependency traversal must reconcile 117 named propositions
+(including 18 named controls), 753 owned declarations and 1,050 imported modules.
+The latter comprises three candidate modules plus the exact 1,047-module official
+Lean 4.33.1 closure. Only `propext`, `Quot.sound` and `Classical.choice` are allowed;
+no admission, reduction oracle, missing declaration, diagnostic or incomplete
+capture is accepted. These counts belong only to the locked source/toolchain.
+Future source changes require a reviewed lock update, not automatic regeneration.
+
+The imported proof/driver comments retain their original source-candidate wording to
+preserve the exact accepted bytes. The later local terminal evidence is recorded
+in `docs/verification/reader-apdu-model-evaluation.md`; it supersedes those historical
+uncompiled-status comments without transferring a hosted pass.
+
+The accepted theorem scope is the generated Lean definitions: total window,
+remaining, take and big-endian-word equations, explicit error priority, lossless
+UInt-to-Nat projections, safe array indices, nonwrapping arithmetic, byte values
+and returned cursor state. Extractor correctness, the Oak operational load trace,
+physical alias/frame behavior and emitted C/machine behavior remain open.
+
+### Time, storage and hosted trust
+
+The standalone Go build has a 300-second external timeout, one build worker,
+80 MiB regular-file limit and an 80 MiB accepted test-binary ceiling. Go's 1,536 MiB
+`GOMEMLIMIT` is advisory. Setup-Go, its normal module/build caches and Ubuntu build
+processes are trusted hosted facilities; this is not a local donor-cache or
+whole-process-tree memory-isolation claim. The portable four-root step has the
+existing runner's 10-minute Go timeout and a 12-minute CI step ceiling.
+
+The refinement wrapper has one 600-second deadline: at most 30 seconds initial
+binding, 60 shared seconds for the two Go invocations and output verification,
+four serial 120-second Lean phases, and 30 seconds final binding/publication.
+Every phase is clipped to the original deadline with final reserve. Lean flags
+stay `-j1 -s65536 -M1536 -T200000 -DmaxHeartbeats=200000
+-DmaxRecDepth=2048 -DElab.async=false -DwarningAsError=true --json`.
+The inherited hard limits are 8 GiB address space, 8 MiB child regular files and
+zero core dumps, with sampled 2 GiB direct RSS/host-memory guards and a 560 MiB
+free-disk floor. Private fresh logical and allocated output is capped at 64 MiB.
+The separate prebuilt Go binary is outside that 64 MiB allowance. Direct owned
+process groups are signalled, direct children reaped and capture completed;
+arbitrary escaped-descendant emptiness is not established. The 35-minute job
+ceiling includes tool setup, controls, portable checks, build, proof and upload.
+These are conservative refusal limits, not measured hosted completion forecasts.
+
+### Retained evidence and replay
+
+Only successful adapter and pre-upload verification steps may upload the seven
+literal files: `audit-stdout.log`, empty `audit-stderr.log`, `result.json`,
+`object-hashes.json`, and `extracted/{raw.lean,BoundedReaderExtracted.lean,extraction.json}`.
+The artifact is named by commit/run/attempt and retained for 14 days. Its maximum
+accepted content is 12,845,056 bytes: 12 MiB audit, two 32 KiB metadata files and
+three 64 KiB extraction files. Objects, caches, environment and unused failure
+logs are excluded. A late finalization failure can leave accepted-looking result
+bytes; the failed adapter step still blocks upload.
+
+For independent replay, authenticate the retained manifest and source contract,
+then call `refinement_audit_consumer.diagnostics` with the complete retained audit
+streams, phase `audit`, the exact `audit_driver_path` recorded in the manifest,
+the locked contract and a fresh finite consumer deadline. This rechecks every
+record and dependency edge. `verify_retention` is a byte/coherence preflight, not
+full graph replay or object rechecking. Object hashes are receipts; they do not
+replace recompilation. The Ubuntu runner, Python, loader/libraries and build
+facilities are trusted separately from the exactly hashed official Lean files.

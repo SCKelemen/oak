@@ -33,6 +33,12 @@ class Suite:
 
 
 SUITES = {
+    "reader-apdu": Suite("./compiler", "10m", (
+        "TestE2EStdlibBoundedReader",
+        "TestE2EStdlibCommandAPDUMatrix",
+        "TestE2EStdlibCommandAPDUMaximumAndPayloads",
+        "TestE2EStdlibCommandAPDUBufferNonMutation",
+    )),
     "cross-compiler": Suite("./compiler", "15m", (
         "TestE2EInferredValueNativeRV64UnderQEMU",
         "TestE2EDispatchSelectsSVEUnderQEMU",

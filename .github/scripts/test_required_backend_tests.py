@@ -129,6 +129,7 @@ class RequiredBackendTests(unittest.TestCase):
 
     def test_audited_suite_manifest(self):
         expected_roots = {
+            "reader-apdu": {"TestE2EStdlibBoundedReader", "TestE2EStdlibCommandAPDUMatrix", "TestE2EStdlibCommandAPDUMaximumAndPayloads", "TestE2EStdlibCommandAPDUBufferNonMutation"},
             "cross-compiler": {"TestE2EInferredValueNativeRV64UnderQEMU", "TestE2EDispatchSelectsSVEUnderQEMU", "TestE2EFreestandingPartialLink", "TestE2ENativeConstantTablesExecutable", "TestRingsCrossTargets"},
             "cross-testrunner": {"TestForeignTargetRunsUnderEmulator", "TestTargetFlagBuildsWithoutRunning"},
             "lean-compiler": {"TestLeanFloatBitsAgreeWithHost", "TestE2ELeanFunctionArguments", "TestE2ELeanReduceLanesFunctionArgument", "TestE2ELeanNestedAssignment"},
@@ -158,13 +159,66 @@ class RequiredBackendTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         lanes = {
             "ci.yml": ("cross-compiler", "cross-testrunner"),
-            "formal.yml": ("lean-compiler", "lean-cli"),
+            "formal.yml": ("lean-compiler", "lean-cli", "reader-apdu"),
             "formal-sail.yml": ("sail-source", "llvm"),
         }
         for file, suites in lanes.items():
             source = (root / "workflows" / file).read_text()
             for suite in suites:
                 self.assertEqual(source.count("run: python3 .github/scripts/required_backend_tests.py " + suite + "\n"), 1)
+
+
+
+class RequiredReaderAPDUTests(unittest.TestCase):
+    def results(self, omit=None):
+        suite = required.SUITES["reader-apdu"]
+        result = required.RequiredResults(suite)
+        for root in suite.roots:
+            if root != omit:
+                result.accept({"Action": "run", "Package": suite.import_path, "Test": root})
+                result.accept({"Action": "pass", "Package": suite.import_path, "Test": root})
+        result.accept({"Action": "pass", "Package": suite.import_path})
+        return suite, result
+
+    def test_reader_apdu_all_four_are_required(self):
+        suite, result = self.results()
+        self.assertEqual(len(suite.roots), 4)
+        self.assertEqual(suite.package, "./compiler")
+        self.assertEqual(suite.timeout, "10m")
+        result.finish(0)
+
+    def test_reader_apdu_absent_root_refused(self):
+        for root in required.SUITES["reader-apdu"].roots:
+            with self.subTest(root=root):
+                _, result = self.results(omit=root)
+                with self.assertRaisesRegex(ValueError, "required tests did not pass"):
+                    result.finish(0)
+
+    def test_reader_apdu_duplicate_root_refused(self):
+        for root in required.SUITES["reader-apdu"].roots:
+            with self.subTest(root=root):
+                suite, result = self.results()
+                with self.assertRaisesRegex(ValueError, "duplicate"):
+                    result.accept({"Action": "run", "Package": suite.import_path, "Test": root})
+
+    def test_reader_apdu_skipped_root_refused(self):
+        for root in required.SUITES["reader-apdu"].roots:
+            with self.subTest(root=root):
+                suite, result = self.results(omit=root)
+                result.accept({"Action": "run", "Package": suite.import_path, "Test": root})
+                result.accept({"Action": "skip", "Package": suite.import_path, "Test": root})
+                with self.assertRaisesRegex(ValueError, "skip"):
+                    result.finish(0)
+
+    def test_reader_apdu_selected_subtest_skip_refused(self):
+        for root in required.SUITES["reader-apdu"].roots:
+            with self.subTest(root=root):
+                suite, result = self.results()
+                child = root + "/FutureChild"
+                result.accept({"Action": "run", "Package": suite.import_path, "Test": child})
+                result.accept({"Action": "skip", "Package": suite.import_path, "Test": child})
+                with self.assertRaisesRegex(ValueError, "skip"):
+                    result.finish(0)
 
 
 if __name__ == "__main__":

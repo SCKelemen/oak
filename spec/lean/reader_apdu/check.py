@@ -25,6 +25,7 @@ FLAGS = ['-j1', '-s65536', '-M1536', '-T200000', '-DmaxHeartbeats=200000',
 WHOLE_SECONDS = 480
 FRESH_BYTES = 64 * 1024**2
 FLOOR_BYTES = 560 * 1024**2
+RETAINED_METADATA_BYTES = 32768
 
 
 def load_contract(directory=HERE):
@@ -130,6 +131,111 @@ def write_new(path, data):
     fd = os.open(safe_path(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'wb') as stream:
         stream.write(data)
+
+
+def retained_json(value):
+    data = (json.dumps(value, sort_keys=True) + '\n').encode()
+    require(len(data) <= RETAINED_METADATA_BYTES, 'bounded retained metadata')
+    return data
+
+
+def retained_path(value):
+    require(type(value) is str and '\x00' not in value and
+            len(value.encode('utf-8')) <= 4096, 'bounded retained path')
+    path = Path(value)
+    require(path.is_absolute() and str(path) == value and '..' not in path.parts,
+            'absolute clean retained path')
+    return path
+
+
+def validate_retained_result(result):
+    # Internal receipt coherence only. Full audit graph replay remains separate.
+    require(type(result) is dict and result.get('accepted') is True and
+            result.get('implementation_refinement') is False,
+            'only accepted abstract-model evidence')
+    require(result.get('source_contract_sha256') == CONTRACT_SHA256,
+            'retained source contract binding')
+    objects = result.get('objects')
+    require(type(objects) is dict and set(objects) ==
+            {'BoundedReaderModel.olean', 'APDULengthModel.olean'},
+            'exact retained object inventory')
+    for value in objects.values():
+        require(type(value) is dict and set(value) == {'bytes', 'sha256', 'snapshot'} and
+                type(value['bytes']) is int and 0 < value['bytes'] <= 8 * 1024**2 and
+                type(value['sha256']) is str and len(value['sha256']) == 64 and
+                all(c in '0123456789abcdef' for c in value['sha256']),
+                'typed bounded retained object receipt')
+        snapshot = value['snapshot']
+        require(type(snapshot) is list and len(snapshot) == 8 and
+                all(type(v) is int and v >= 0 for v in snapshot) and snapshot[1] > 0 and
+                stat.S_ISREG(snapshot[2]) and snapshot[2] & 0o077 == 0 and
+                snapshot[4] == 1 and snapshot[5] == value['bytes'],
+                'retained object snapshot coherence')
+    records = result.get('direct_processes')
+    require(type(records) is list and len(records) == 3,
+            'exact retained direct sequence')
+    for phase, record in zip(('reader', 'apdu', 'audit'), records):
+        require(type(record) is dict and record.get('phase') == phase and
+                type(record.get('returncode')) is int and record['returncode'] == 0 and
+                record.get('pipe_eof') == ['stderr', 'stdout'] and
+                record.get('overflow') is False and record.get('direct_child_joined') is True and
+                record.get('arbitrary_descendant_emptiness_established') is False,
+                'complete retained direct sequence')
+        argv = record.get('argv')
+        require(type(argv) is list and 1 <= len(argv) <= 32 and
+                all(type(v) is str and '\x00' not in v and len(v.encode('utf-8')) <= 4096
+                    for v in argv), 'bounded retained argv')
+    argv = records[-1]['argv']
+    require(len(argv) == len(FLAGS) + 3 and argv[1:-2] == FLAGS,
+            'exact retained audit argv')
+    lean = retained_path(argv[0])
+    driver = retained_path(argv[-1])
+    require(lean.name == 'lean' and lean.parent.name == 'bin' and
+            driver.parts[-4:] == ('spec', 'lean', 'reader_apdu', 'AuditDriver.lean') and
+            argv[-2] == '--root=' + str(driver.parent), 'exact retained audit paths')
+    require(all(record['argv'][0] == argv[0] for record in records),
+            'same retained Lean executable')
+    return str(driver)
+
+
+def retention_manifest(result, stdout, stderr, contract):
+    # Preserve the exact accepted private-name stream; never regenerate it.
+    driver_path = validate_retained_result(result)
+    require(0 < len(stdout) <= 12 * 1024**2 and stderr == b'', 'accepted audit stream bounds')
+    leaves = {'audit-stdout.log': stdout, 'audit-stderr.log': stderr,
+              'result.json': retained_json(result)}
+    files = {name: {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+             for name, data in leaves.items()}
+    manifest = {
+        'schema': 'oak-reader-apdu-hosted-retention-v1',
+        'source_contract_sha256': CONTRACT_SHA256,
+        'source_inputs': contract['inputs'],
+        'toolchain': contract['toolchain'],
+        'lean_executable_sha256': contract['lean_executable_sha256'],
+        'official_linux_archive_sha256': contract['official_linux_archive_sha256'],
+        'audit_driver_path': driver_path,
+        'files': files,
+        'objects': {name: {key: value[key] for key in ('bytes', 'sha256')}
+                    for name, value in result['objects'].items()},
+        'scope': 'audit consumer replay; object hashes are receipts, not object rechecking',
+    }
+    return retained_json(manifest)
+
+
+def verify_retention(work, deadline):
+    # Byte/inventory preflight only: no Lean launch or relaxation of the gate.
+    caps = {'audit-stdout.log': 12 * 1024**2, 'audit-stderr.log': 0,
+            'result.json': RETAINED_METADATA_BYTES, 'object-hashes.json': RETAINED_METADATA_BYTES}
+    leaves = {}
+    for name, cap in caps.items():
+        require(time.monotonic() < deadline, 'retention preflight deadline')
+        leaves[name] = read_regular(work / name, cap)
+    result = decode(leaves['result.json'])
+    require(retained_json(result) == leaves['result.json'], 'exact retained result bytes')
+    expected = retention_manifest(result, leaves['audit-stdout.log'], leaves['audit-stderr.log'],
+                                  load_contract())
+    require(leaves['object-hashes.json'] == expected, 'exact retained evidence manifest')
+    require(time.monotonic() < deadline, 'retention preflight deadline')
 
 
 def verify_distribution(root, files, deadline):
@@ -314,11 +420,22 @@ def main():
                       official_distribution_members=6289, selected_bytes_per_pass=1100616161,
                       imported_distribution_normal_trust=True, whole_seconds=time.monotonic()-started,
                       limits_scope='hard direct-process AS/FSIZE/core; sampled host floor/direct RSS; no escaped-descendant claim')
+        manifest = retention_manifest(result, stdout, stderr, contract)
+        for name, data in (('audit-stdout.log', stdout), ('audit-stderr.log', stderr)):
+            verify_file(work / name, {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()},
+                        final_deadline)
+        write_new(work / 'object-hashes.json', manifest)
     except BaseException as exc:
+        result['accepted'] = False
         result['error'] = (type(exc).__name__ + ': ' + str(exc))[:2048]
         raise
     finally:
-        write_new(work / 'result.json', (json.dumps(result, sort_keys=True) + '\n').encode())
+        write_new(work / 'result.json', retained_json(result))
+        if result['accepted']:
+            require(members(work, 16) == expected_names | {'result.json', 'object-hashes.json'},
+                    'exact retained output membership')
+            physical_guards(work)
+            require(time.monotonic() < final_deadline, 'retention within original final deadline')
         print(json.dumps({'accepted': result['accepted'], 'result': str(work / 'result.json')}), flush=True)
 
 
