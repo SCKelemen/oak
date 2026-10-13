@@ -81,16 +81,15 @@ func TestSequenceMatchShapes(t *testing.T) {
 			Body:    &ast.IntegerLiteral{Value: 42},
 		}},
 	}
-	if !cg.scalarMatch(match) || cg.unhoistable(match) {
+	if !cg.scalarMatch(match) || cg.unhoistable(match, nil) {
 		t.Fatal("the parser's underscore binding must use scalar statement lowering")
 	}
 	for _, pattern := range []ast.Pattern{
 		&ast.BindingPattern{Name: &ast.Identifier{Value: "bound"}},
 		&ast.BindingPattern{},
-		&ast.VariantPattern{Variant: &ast.Identifier{Value: "Some"}},
 	} {
 		match.Arms[0].Pattern = pattern
-		if cg.scalarMatch(match) || !cg.unhoistable(match) {
+		if cg.scalarMatch(match) || !cg.unhoistable(match, nil) {
 			t.Fatalf("pattern %T must retain its separate lowering", pattern)
 		}
 		cg.output.Reset()

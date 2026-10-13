@@ -155,7 +155,7 @@ func isArithmeticHelperName(name string) bool {
 // unhoistable marks the argument shapes the call site expands itself
 // (boundary spans, C strings, argv, out parameters) and the expressions
 // with no value to hold: they are never moved into a temporary.
-func (cg *CodeGenerator) unhoistable(expr ast.Expression) bool {
+func (cg *CodeGenerator) unhoistable(expr ast.Expression, tc *typechecker.TypeChecker) bool {
 	switch e := expr.(type) {
 	case *ast.BlockExpression, *ast.FunctionLiteral, *ast.StringLiteral, *ast.IntegerLiteral, *ast.FloatLiteral, *ast.Boolean, *ast.FieldAccessorExpression:
 		return true
@@ -179,9 +179,8 @@ func (cg *CodeGenerator) unhoistable(expr ast.Expression) bool {
 			return true
 		}
 	case *ast.MatchExpression:
-		// Only shapes assignTo can lower may enter statement sequencing.
-		// ADT matches use the separate match lowering and payload bindings.
-		return !cg.scalarMatch(e)
+		// ADT values use the same conditional sequencing as scalar matches.
+		return !cg.scalarMatch(e) && !adtMatch(e, tc)
 	}
 	return false
 }
@@ -392,7 +391,7 @@ func (cg *CodeGenerator) groupNeedsSequencing(members []ast.Expression, tc *type
 	count := 0
 	sensitive, _ := cg.sensitiveMembers(members, tc)
 	for i, s := range sensitive {
-		if s && !cg.unhoistable(members[i]) {
+		if s && !cg.unhoistable(members[i], tc) {
 			count++
 		}
 	}
@@ -414,10 +413,13 @@ func (cg *CodeGenerator) needsSequencing(expr ast.Expression, tc *typechecker.Ty
 			return cg.needsSequencing(e.Left, tc) || cg.needsSequencing(e.Right, tc)
 		}
 	case *ast.MatchExpression:
+		if adtMatch(e, tc) {
+			return true
+		}
 		if cg.needsSequencing(e.Scrutinee, tc) {
 			return true
 		}
-		if cg.unhoistable(e) {
+		if cg.unhoistable(e, tc) {
 			return false
 		}
 		for _, arm := range e.Arms {
@@ -709,10 +711,13 @@ func (cg *CodeGenerator) sequence(expr ast.Expression, tc *typechecker.TypeCheck
 		rebuilt.Payload = payload
 		return &rebuilt
 	case *ast.MatchExpression:
+		if adtMatch(e, tc) {
+			return cg.hoistADTMatch(e, tc)
+		}
 		scrutinee := cg.sequence(e.Scrutinee, tc)
 		rebuilt := *e
 		rebuilt.Scrutinee = scrutinee
-		if !cg.unhoistable(e) {
+		if !cg.unhoistable(e, tc) {
 			for _, arm := range e.Arms {
 				if cg.needsSequencing(arm.Body, tc) {
 					return cg.hoistStatementForm(&rebuilt, e, tc)
@@ -732,34 +737,47 @@ func (cg *CodeGenerator) sequence(expr ast.Expression, tc *typechecker.TypeCheck
 // inner groups first, so nested temporaries precede it); otherwise the
 // members are sequenced individually and stay in place.
 func (cg *CodeGenerator) sequenceGroup(members []ast.Expression, tc *typechecker.TypeChecker) []ast.Expression {
+	return cg.sequenceGroupAfter(members, tc, nil)
+}
+
+// after may commit an assignment-address component (including its bounds
+// check) before the next operand evaluates. Ordinary expression groups have
+// no callback and retain their existing emission.
+func (cg *CodeGenerator) sequenceGroupAfter(members []ast.Expression, tc *typechecker.TypeChecker, after func(int, ast.Expression) ast.Expression) []ast.Expression {
 	out := make([]ast.Expression, len(members))
+	put := func(i int, value ast.Expression) {
+		if after != nil {
+			value = after(i, value)
+		}
+		out[i] = value
+	}
 	if !cg.groupNeedsSequencing(members, tc) {
 		for i, m := range members {
-			out[i] = cg.sequence(m, tc)
+			put(i, cg.sequence(m, tc))
 		}
 		return out
 	}
 	sensitive, summaries := cg.sensitiveMembers(members, tc)
 	for i, m := range members {
 		inner := cg.sequence(m, tc)
-		if !sensitive[i] || cg.unhoistable(m) {
-			out[i] = inner
+		if !sensitive[i] || cg.unhoistable(m, tc) {
+			put(i, inner)
 			continue
 		}
 		if _, alreadyHoisted := inner.(*ast.Identifier); alreadyHoisted && inner != m {
 			// A conditional hoisted in statement form is already a
 			// temporary; hoisting it again would only copy it.
-			out[i] = inner
+			put(i, inner)
 			continue
 		}
 		// What inner sequencing left behind may be pure (its calls are
 		// temporaries now): then it stays inline, and only a residual that
 		// still has an effect, or still reads what a sibling writes, moves.
 		if residual := cg.summarize(inner, tc); !residual.effectful && !cg.conflicts(residual, i, summaries) {
-			out[i] = inner
+			put(i, inner)
 			continue
 		}
-		out[i] = cg.hoist(inner, m, tc)
+		put(i, cg.hoist(inner, m, tc))
 	}
 	return out
 }
@@ -767,8 +785,8 @@ func (cg *CodeGenerator) sequenceGroup(members []ast.Expression, tc *typechecker
 // hoist evaluates a member into a fresh temporary at the current statement
 // position and returns the temporary's name as the expression to read.
 func (cg *CodeGenerator) hoist(value, original ast.Expression, tc *typechecker.TypeChecker) ast.Expression {
-	name, cType := cg.sequenceTemporary(value, original, tc)
-	cg.write(fmt.Sprintf("  %s %s = ", cType, name))
+	name, declaration := cg.sequenceTemporary(value, original, tc)
+	cg.write(fmt.Sprintf("  %s = ", declaration))
 	cg.emitExpressionFragment(value, tc)
 	cg.output.WriteString(";\n")
 	return &ast.Identifier{Token: tokenOf(original), Value: name}
@@ -778,8 +796,8 @@ func (cg *CodeGenerator) hoist(value, original ast.Expression, tc *typechecker.T
 // needs sequencing: the temporary is declared, then assigned inside the
 // branch structure, so hoisted operands run only when their arm does.
 func (cg *CodeGenerator) hoistStatementForm(value, original ast.Expression, tc *typechecker.TypeChecker) ast.Expression {
-	name, cType := cg.sequenceTemporary(value, original, tc)
-	cg.write(fmt.Sprintf("  %s %s;\n", cType, name))
+	name, declaration := cg.sequenceTemporary(value, original, tc)
+	cg.write(fmt.Sprintf("  %s;\n", declaration))
 	cg.assignTo(name, value, tc)
 	return &ast.Identifier{Token: tokenOf(original), Value: name}
 }
@@ -789,6 +807,10 @@ func (cg *CodeGenerator) hoistStatementForm(value, original ast.Expression, tc *
 func (cg *CodeGenerator) assignTo(name string, expr ast.Expression, tc *typechecker.TypeChecker) {
 	switch e := expr.(type) {
 	case *ast.MatchExpression:
+		if adtMatch(e, tc) {
+			cg.assignADTMatch(name, e, tc)
+			return
+		}
 		if trueBody, falseBody, isBool := boolMatchBranches(e); isBool {
 			condition := cg.sequence(e.Scrutinee, tc)
 			cg.write("  if ( ")
@@ -916,28 +938,19 @@ func (cg *CodeGenerator) scalarMatch(match *ast.MatchExpression) bool {
 // sequenceTemporary names a fresh temporary for a member and spells its C
 // type from the checker's recorded type, falling back to __typeof__ of the
 // member when the type has no C spelling.
-func (cg *CodeGenerator) sequenceTemporary(value, original ast.Expression, tc *typechecker.TypeChecker) (name, cType string) {
+func (cg *CodeGenerator) sequenceTemporary(value, original ast.Expression, tc *typechecker.TypeChecker) (name, declaration string) {
 	name = fmt.Sprintf("oak__seq_%d", cg.seqCounter)
 	cg.seqCounter++
 	if cg.localTypes == nil {
 		cg.localTypes = map[string]localContainer{}
 	}
-	var checked typechecker.Type
-	if tc != nil {
-		if tok, positioned := ast.ExpressionToken(original); positioned {
-			checked, _ = tc.ExpressionTypeAt(tok)
-		}
-		if checked == nil && tc.Env() != nil {
-			checked = tc.Env().CheckedExpressionType(original)
-		}
-	}
-	if typeExpr, ok := checkedTypeExpression(checked); ok {
+	if typeExpr, ok := sequenceTypeExpression(checkedExpressionType(original, tc)); ok {
 		cg.localTypes[name] = cg.classifyContainer(typeExpr)
-		return name, cg.parseTypeExpression(typeExpr)
+		return name, cg.cParameter(typeExpr, name)
 	}
 	cg.seqTypeofFallbacks++
 	cg.localTypes[name] = localContainer{kind: containerUnknown}
-	return name, fmt.Sprintf("__typeof__( %s )", cg.fragmentText(value, tc))
+	return name, fmt.Sprintf("__typeof__( %s ) %s", cg.fragmentText(value, tc), name)
 }
 
 // checkedTypeExpression spells a checked type as the type AST the C type

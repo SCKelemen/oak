@@ -1378,17 +1378,22 @@ func (cg *CodeGenerator) emitMatchArmReturn(body ast.Expression, tc *typechecker
 // emitMatchReturn with bodies in statement position. Produced by the
 // lowering hoist for value matches and by statement-position ADT matches.
 func (cg *CodeGenerator) emitMatchStatement(match *ast.MatchExpression, tc *typechecker.TypeChecker) {
-	if scrutinee := cg.sequence(match.Scrutinee, tc); scrutinee != match.Scrutinee {
-		sequenced := *match
-		sequenced.Scrutinee = scrutinee
-		match = &sequenced
-	}
-	emitBody := func(body ast.Expression) {
+	cg.emitMatchStatementBody(match, tc, func(body ast.Expression) {
 		if block, ok := body.(*ast.BlockExpression); ok && block.Block != nil {
 			cg.emitBlockStatement(block.Block, tc, false)
 		} else {
 			cg.emitStatementExpression(body, tc)
 		}
+	})
+}
+
+// emitMatchStatementBody shares guards and payload scopes with value sequencing.
+// The callback selects whether an arm discards or assigns its result.
+func (cg *CodeGenerator) emitMatchStatementBody(match *ast.MatchExpression, tc *typechecker.TypeChecker, emitBody func(ast.Expression)) {
+	if scrutinee := cg.sequence(match.Scrutinee, tc); scrutinee != match.Scrutinee {
+		sequenced := *match
+		sequenced.Scrutinee = scrutinee
+		match = &sequenced
 	}
 	// Nested statement matches can reach codegen without IfStatement lowering.
 	// Evaluate a Boolean condition once, before either arm can mutate its inputs.
@@ -3683,22 +3688,14 @@ func (cg *CodeGenerator) emitScalarMatch(expr *ast.MatchExpression, tc *typechec
 // emitMatchExpressionInline emits pattern matching as an inline expression
 // This is used when a match expression is part of a larger expression
 func (cg *CodeGenerator) emitMatchExpressionInline(expr *ast.MatchExpression, tc *typechecker.TypeChecker) {
-	// For inline matches, we need to create a temporary variable
-	// This is a simplified version - full implementation would be more sophisticated
-	cg.output.WriteString("( ")
-
-	// Determine if ADT or scalar match
-	isADT := false
-	if len(expr.Arms) > 0 {
-		if _, ok := expr.Arms[0].Pattern.(*ast.VariantPattern); ok {
-			isADT = true
-		}
+	// Every ADT value must pass through statement sequencing. A fragment
+	// cannot introduce portable C declarations or branch-local bindings.
+	if adtMatch(expr, tc) {
+		cg.globalErrors = append(cg.globalErrors, fmt.Errorf("codegen: unsequenced ADT match expression"))
+		return
 	}
-
-	if isADT {
-		// ADT match - emit switch inline (simplified)
-		cg.output.WriteString("/* match expression */")
-	} else if trueBody, falseBody, isBool := boolMatchBranches(expr); isBool {
+	cg.output.WriteString("( ")
+	if trueBody, falseBody, isBool := boolMatchBranches(expr); isBool {
 		// Bool condition match: a plain C ternary, condition evaluated once.
 		cg.output.WriteString("( ")
 		cg.emitExpressionFragment(expr.Scrutinee, tc)
@@ -4325,23 +4322,36 @@ func (cg *CodeGenerator) emitLvaluePath(expr ast.Expression, tc *typechecker.Typ
 // the trapping helper, owned arrays through the static-length store guard;
 // unknown targets fail closed.
 func (cg *CodeGenerator) emitIndexAssignment(stmt *ast.IndexAssignmentStatement, tc *typechecker.TypeChecker) {
-	// The element index and the stored value are one unsequenced group in C.
-	if stmt.Target != nil && !stmt.Target.Dot {
-		members := cg.sequenceGroup([]ast.Expression{stmt.Target.Index, stmt.Value}, tc)
-		if members[0] != stmt.Target.Index || members[1] != stmt.Value {
-			sequenced := *stmt
-			target := *stmt.Target
-			target.Index = members[0]
-			sequenced.Target = &target
-			sequenced.Value = members[1]
-			stmt = &sequenced
+	// Evaluate the address operands before the RHS, without copying any
+	// owning array/record that the store must update in place.
+	if stmt.Target != nil {
+		sequenced := *stmt
+		var target ast.Expression = stmt.Target
+		var slots []*ast.Expression
+		checks, descriptors := cg.assignmentValueOperands(&target, &slots, tc)
+		sequenced.Value = stmt.Value
+		slots = append(slots, &sequenced.Value)
+		members := make([]ast.Expression, len(slots))
+		for i, slot := range slots {
+			members[i] = *slot
 		}
-	} else if stmt.Value != nil {
-		if value := cg.sequence(stmt.Value, tc); value != stmt.Value {
-			sequenced := *stmt
-			sequenced.Value = value
-			stmt = &sequenced
-		}
+		cg.sequenceGroupAfter(members, tc, func(i int, value ast.Expression) ast.Expression {
+			if descriptors[slots[i]] {
+				// The length check and final lvalue both use the descriptor.
+				// Capture it even when it is the group's only effect.
+				if _, captured := value.(*ast.Identifier); !captured || value == members[i] {
+					value = cg.hoist(value, members[i], tc)
+				}
+			}
+			*slots[i] = value
+			if index := checks[slots[i]]; index != nil {
+				value = cg.checkedAssignmentIndex(index(), tc)
+				*slots[i] = value
+			}
+			return value
+		})
+		sequenced.Target = target.(*ast.IndexExpression)
+		stmt = &sequenced
 	}
 	// Record field assignment: p.x = value, pool[i].next = value —
 	// the target's path emits in lvalue position with checked indices
