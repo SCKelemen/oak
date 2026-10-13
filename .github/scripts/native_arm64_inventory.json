@@ -374,6 +374,9 @@
     "compiler/e2e_cross_test.go::crossLink": [
       "t.Skipf(\"no cross compiler for %s on this host (%v)\", tgt, err)"
     ],
+    "compiler/e2e_direct_match_value_test.go::TestE2EDirectADTMatchAssignmentTraps": [
+      "t.Skip(\"trap-signal contract is scoped to Linux/amd64; positive value cases remain portable\")"
+    ],
     "compiler/e2e_dispatch_inline_test.go::TestAArch64DispatchLeafCCompilers": [
       "t.Skipf(\"AArch64 %s compiler unavailable: %v\", family, err)"
     ],
