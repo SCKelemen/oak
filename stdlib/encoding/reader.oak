@@ -1,0 +1,60 @@
+// Experimental bounded byte reader. A Window is value state, not authority
+// over storage: every operation checks it against the explicit source view.
+package reader
+
+import("bytes")
+import("endian")
+
+pub Window: type = struct { next: u32, end: u32 }
+pub Error: type = InvalidWindow | InsufficientData
+pub ByteRead: type = struct { value: u8, rest: Window }
+pub WordRead: type = struct { value: u16, rest: Window }
+pub RangeRead: type = struct { offset: u32, length: u32, rest: Window }
+
+// An out-of-source interval is InvalidWindow, including an empty interval
+// whose offset is past the source. Addition follows the wrap-free guard.
+pub window: (src: []u8, offset: u32, count: u32): Result[Window, Error] {
+  bytes.range_fits(len(src), offset, count) ? {
+    .Ok(Window { next: offset, end: offset + count })
+  } | { .Err(.InvalidWindow) }
+}
+
+pub remaining: (state: Window, src: []u8): Result[u32, Error] {
+  state.next > state.end || state.end > len(src) ? {
+    .Err(.InvalidWindow)
+  } | { .Ok(state.end - state.next) }
+}
+
+// No borrow is stored and no byte is read or copied. Failure returns no
+// partially advanced state; callers commit rest only after their own success.
+pub take: (state: Window, src: []u8, count: u32): Result[RangeRead, Error] {
+  remaining(state, src) ?
+    | .Err(reason) => .Err(reason)
+    | .Ok(available) => {
+      count > available ? { .Err(.InsufficientData) } | {
+        .Ok(RangeRead {
+          offset: state.next,
+          length: count,
+          rest: Window { next: state.next + count, end: state.end }
+        })
+      }
+    }
+}
+
+pub read_u8: (state: Window, src: []u8): Result[ByteRead, Error] {
+  take(state, src, u32(1)) ?
+    | .Err(reason) => .Err(reason)
+    | .Ok(part) => .Ok(ByteRead { value: src[part.offset], rest: part.rest })
+}
+
+pub read_u16_be: (state: Window, src: []u8): Result[WordRead, Error] {
+  take(state, src, u32(2)) ?
+    | .Err(reason) => .Err(reason)
+    | .Ok(part) => {
+      // take checks the narrower window before the existing endian helper
+      // checks the whole source. A successful take makes its error unreachable.
+      endian.read_u16_be(src, part.offset) ?
+        | .Err(reason) => .Err(.InsufficientData)
+        | .Ok(value) => .Ok(WordRead { value: value, rest: part.rest })
+    }
+}

@@ -121,6 +121,20 @@ jobs:
           lake build Oak.UnsignedSuccessor
           lake env lean CheckUnsignedSuccessor.lean
 
+      - name: Check reader/APDU hosted gate rejection controls
+        timeout-minutes: 2
+        run: timeout --signal=TERM --kill-after=5s 60s python3 -B spec/lean/reader_apdu/test_check.py
+
+      - name: Check bounded reader and APDU abstract models
+        timeout-minutes: 9
+        shell: bash
+        run: |
+          set -euo pipefail
+          reader_apdu_lean="$(cd spec/lean && elan which lean)"
+          test -n "$reader_apdu_lean"
+          test -x "$reader_apdu_lean"
+          python3 -B spec/lean/reader_apdu/check.py --lean "$reader_apdu_lean" --work "$RUNNER_TEMP/reader-apdu-model"
+
       - name: Build formal specification
         working-directory: spec/lean
         run: lake build
