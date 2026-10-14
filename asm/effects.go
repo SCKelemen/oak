@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/internal/nativetiming"
 )
 
 // Memory effects through span parameters (docs/spec/94-assembler.md §9,
@@ -706,7 +707,7 @@ func (session *verificationSession) decideSpans(fn *Function, lowering *oakLower
 		pointwise := func(premise *term) bool {
 			budget := &nodeBudget{remaining: loopProofNodeBudget, session: session}
 			implies := func(premise, a, b *term) (bool, bool) {
-				return session.impliesEqualWithin(premise, a, b, lowering.declaredWidth, budget)
+				return session.impliesEqualWithinClass(nativetiming.ObligationStraightWrite, premise, a, b, lowering.declaredWidth, budget)
 			}
 			return writeLogsEqualUnder(lowering.writes[name], exec.writes[name], premise, implies)
 		}

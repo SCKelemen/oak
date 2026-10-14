@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/internal/nativetiming"
 )
 
 func trapOrFalse(trap *term) *term {
@@ -310,7 +311,7 @@ func (session *verificationSession) verifyTrapDomain(fn *Function, sig *ast.Func
 				}
 				continue
 			}
-			if holds, decided := session.impliesEqual(end.left, notTerm(end.right), constTerm(1, 1), source.declaredWidth); decided && holds {
+			if holds, decided := session.impliesEqualWithinClass(nativetiming.ObligationTrapDomain, end.left, notTerm(end.right), constTerm(1, 1), source.declaredWidth, nil); decided && holds {
 				if trace {
 					fmt.Fprintf(os.Stderr, "verify %s: trap-domain end %d proven by implication\n", fn.Name, k)
 				}

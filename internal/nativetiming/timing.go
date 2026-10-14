@@ -52,6 +52,7 @@ type config struct {
 	newTicker func(time.Duration) ticker
 	recordCap int
 	byteCap   int
+	detailEventCap uint64 // Private finite-control override; zero selects the production cap.
 }
 
 // Session owns the sole logger. Close must be called, including after an error
@@ -71,6 +72,7 @@ type Session struct {
 	stop       chan struct{}
 	done       chan struct{}
 	closeOnce  sync.Once
+	detail     implicationDetailState
 
 	// Only the logger accesses these fields, and Close reads err after joining.
 	writer  io.Writer
@@ -125,6 +127,9 @@ type scope struct {
 	activeSince time.Time
 	ended       bool
 	context     context
+	observation ImplicationObservation
+	wrapperID   uint64
+	wrapperClass ObligationClass
 }
 
 type phaseCosts struct {
@@ -202,6 +207,7 @@ type record struct {
 	Totals         totals          `json:"totals"`
 	LastSearch     completedSearch `json:"last_search"`
 	OutputLimited  bool            `json:"output_limited"`
+	ImplicationDetail *implicationDetailRecord `json:"implication_detail,omitempty"`
 }
 
 // Start enables observation for one explicit session. At most one session can
@@ -226,6 +232,8 @@ func start(w io.Writer, cfg config) (*Session, error) {
 		return nil, errors.New("nativetiming: output limits cannot reserve start and close")
 	}
 	s := &Session{cfg: cfg, started: cfg.now(), writer: w, stop: make(chan struct{}), done: make(chan struct{})}
+	s.detail.complete = true
+	s.detail.enabled.Store(true)
 	if !active.CompareAndSwap(nil, s) {
 		return nil, errors.New("nativetiming: a session is already active")
 	}
@@ -250,6 +258,7 @@ func (s *Session) Close() error {
 		s.mu.Lock()
 		s.closedAt = s.cfg.now()
 		s.charge(s.closedAt)
+		s.freezeImplicationDetail()
 		s.closed = true
 		s.mu.Unlock()
 		close(s.stop)
@@ -357,6 +366,7 @@ func (s *Session) snapshot(event string) record {
 			}
 		}
 	}
+	r.ImplicationDetail = s.snapshotImplicationDetail(r.Current, now)
 	return r
 }
 
@@ -390,8 +400,30 @@ func identifier(s string) string {
 // nested validation/loop/implication/valuation work again as search time.
 func (s *Session) charge(now time.Time) {
 	if s.current != nil {
-		s.totals.PhaseNS.add(s.current.phase, elapsed(s.current.activeSince, now))
+		ns := elapsed(s.current.activeSince, now)
+		if s.current.phase == implication && ^uint64(0)-s.totals.PhaseNS.Implication < ns {
+			// Preserve the old counter's arithmetic, but never certify exact
+			// attribution after that old counter has overflowed.
+			s.saturateImplicationDetail()
+		}
+		s.totals.PhaseNS.add(s.current.phase, ns)
+		if s.current.phase == implication {
+			if s.detail.pendingOwner == s.current {
+				before := elapsed(s.current.activeSince, s.detail.pendingSince)
+				if before > ns {
+					before = ns
+				}
+				s.chargeImplicationStage(s.current, s.detail.pendingStage, before, s.detail.pendingUnattributed)
+				s.chargeImplicationStage(s.current, StageOther, ns-before, true)
+				s.detail.pendingOwner = nil
+			} else {
+				s.chargeImplicationDetail(s.current, ns)
+			}
+		}
 		s.current.activeSince = now
+	}
+	if s.detail.saturated && s.detail.enabled.Load() {
+		s.retireImplicationDetail(now, true)
 	}
 }
 
@@ -411,6 +443,10 @@ func begin(k phase) (*Session, *scope) {
 	s.charge(now)
 	f := &scope{kind: k, phase: k, started: now, phaseSince: now, activeSince: now, parent: s.current}
 	if k == search {
+		if s.generation == ^uint64(0) {
+			s.saturateImplicationDetail()
+		}
+		s.supersedeImplicationDetail(now)
 		s.generation++
 		s.candidate = 0
 		f.parent = nil
@@ -440,6 +476,15 @@ func (s *Session) finish(f *scope) (uint64, bool) {
 		if parent != nil {
 			parent.activeSince = now
 		}
+	}
+	if f.kind == implication {
+		s.finishImplicationDetail(f, now)
+	}
+	if f.kind == validation && s.detail.candidate.key == implicationKey(f.context) &&
+		(s.current == nil || s.current.context.CandidateOrdinal == 0) {
+		// A normally completed validation has no displayed candidate. Keep
+		// its storage bounded and omit it until the next validation reset.
+		s.detail.candidate.valid = false
 	}
 	return elapsed(f.started, now), true
 }
@@ -491,6 +536,7 @@ func BeginValidation(candidate string) func(outcome int, cached bool) {
 	s.candidate++
 	f.context.Candidate = identifier(candidate)
 	f.context.CandidateOrdinal = s.candidate
+	s.resetImplicationCandidate(f.context)
 	s.mu.Unlock()
 	return func(outcome int, cached bool) {
 		s.mu.Lock()
@@ -583,17 +629,675 @@ func BeginValuation(nodes, names, targets, rounds, bindings int) func(evaluation
 // the session is open, including panic unwinds. Close freezes both without
 // manufacturing finishes; their difference is neither depth nor proof failure.
 func BeginImplication() func() {
+	_, finish := BeginClassifiedImplication(ObligationUnspecified)
+	return finish
+}
+
+// BeginClassifiedImplication has the same wrapper boundary and completion
+// semantics as BeginImplication. The optional handle observes only coordinator
+// stages; it must not be placed in proof state or passed to BDD workers.
+func BeginClassifiedImplication(class ObligationClass) (*ImplicationObservation, func()) {
 	s, f := begin(implication)
 	if s == nil {
-		return noImplication
+		return nil, noImplication
 	}
 	s.totals.ImplicationsStarted++
+	observation := s.beginImplicationDetail(f, class)
 	s.mu.Unlock()
-	return func() {
+	return observation, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if _, ok := s.finish(f); ok {
 			s.totals.ImplicationsFinished++
 		}
 	}
+}
+
+// ObligationClass describes the semantic caller, never terms or source text.
+// Values are part of implication_detail v1 and must not be reordered.
+type ObligationClass uint8
+
+const (
+	ObligationUnspecified ObligationClass = iota
+	ObligationLoopInvariant
+	ObligationCouplingHeader
+	ObligationCouplingPreservation
+	ObligationLoopContinue
+	ObligationLoopReach
+	ObligationTrapDomain
+	ObligationLoopEntryMemory
+	ObligationLoopIterationEffect
+	ObligationLoopResult
+	ObligationLoopExitEffect
+	ObligationStraightWrite
+	obligationClassCount
+)
+
+// ImplicationStage partitions the existing wrapper's exclusive wall time.
+// Values describe explicit coordinator boundaries, not every operation of that
+// kind. In particular, StageBDDJoined ends only after the joined call returns.
+type ImplicationStage uint8
+
+const (
+	StageOther ImplicationStage = iota
+	StageDAGAdmission
+	StageCanonicalPass
+	StageRecursiveScheduling
+	StageBDDJoined
+	StageStandalonePruning
+	implicationStageCount
+)
+
+const (
+	implicationSlots = 8
+	implicationStack = 64
+	implicationEventCap uint64 = 4_194_304
+	implicationExtensionBytes = 2048
+)
+
+type stageVector [implicationStageCount]uint64
+
+// ImplicationObservation is immutable after publication. The session pointer,
+// fixed slot, and never-repeated nonzero epoch identify exactly one wrapper.
+// Retirement visibility is atomic; all other detail state uses Session.mu.
+type ImplicationObservation struct {
+	session *Session
+	epoch uint64
+	slot uint8
+}
+
+// ImplicationToken is a value token for one accepted LIFO stage push. Its zero
+// value and repeated End calls are harmless. It allocates no per-stage object.
+type ImplicationToken struct {
+	owner *ImplicationObservation
+	serial uint64
+	depth uint8
+}
+
+type implicationStageFrame struct {
+	stage ImplicationStage
+	since time.Time
+	serial uint64
+}
+
+type implicationSlot struct {
+	published atomic.Uint64
+	epoch uint64
+	owner *scope
+	frames [implicationStack]implicationStageFrame
+	depth uint8
+	ns stageVector
+	otherSince time.Time
+	complete bool
+	retired bool
+}
+
+type implicationClassRow struct {
+	Started uint64 `json:"started"`
+	Finished uint64 `json:"finished"`
+	NS stageVector `json:"ns"`
+}
+
+type implicationCandidate struct {
+	key [2]uint64
+	valid bool
+	complete bool
+	started uint64
+	finished uint64
+	ns stageVector
+	classes [obligationClassCount]implicationClassRow
+}
+
+type implicationDetailState struct {
+	enabled atomic.Bool
+	slots [implicationSlots]implicationSlot
+	candidate implicationCandidate
+	processNS stageVector
+	entries stageVector
+	nextID uint64
+	nextEpoch uint64
+	events uint64
+	dropped uint64
+	anomalies uint64
+	unattributed uint64
+	seen bool
+	complete bool
+	limited bool
+	saturated bool
+	contextLost bool
+	retired bool
+	// A snapshot can discover overflow in its uncharged interval. These fixed
+	// fields preserve that interval's stage while atomically retiring hooks,
+	// without making the snapshot mutate any accumulated time counter.
+	pendingOwner *scope
+	pendingStage ImplicationStage
+	pendingUnattributed bool
+	pendingSince time.Time
+}
+
+type implicationDominantRecord struct {
+	Class ObligationClass `json:"class"`
+	implicationClassRow
+}
+
+type implicationCandidateRecord struct {
+	Key [2]uint64 `json:"key"`
+	DetailComplete bool `json:"detail_complete"`
+	Started uint64 `json:"started"`
+	Finished uint64 `json:"finished"`
+	NS stageVector `json:"ns"`
+	Dominant implicationDominantRecord `json:"dominant"`
+}
+
+type implicationActiveRecord struct {
+	ID uint64 `json:"id"`
+	Class ObligationClass `json:"class"`
+	Stage ImplicationStage `json:"stage"`
+	StageScopeAgeNS uint64 `json:"stage_scope_age_ns"`
+	NS stageVector `json:"ns"`
+	DetailComplete bool `json:"detail_complete"`
+}
+
+type implicationDetailRecord struct {
+	Version int `json:"v"`
+	Coverage int `json:"coverage"`
+	ProcessNS stageVector `json:"process_ns"`
+	ProcessStageEntries stageVector `json:"process_stage_entries"`
+	ProcessDetailComplete bool `json:"process_detail_complete"`
+	Candidate *implicationCandidateRecord `json:"candidate,omitempty"`
+	Active *implicationActiveRecord `json:"active,omitempty"`
+	DetailEvents uint64 `json:"detail_events"`
+	DroppedEvents uint64 `json:"dropped_events"`
+	OwnershipAnomalies uint64 `json:"ownership_anomalies"`
+	UnattributedNS uint64 `json:"unattributed_ns"`
+	Limited bool `json:"limited"`
+	CounterSaturated bool `json:"counter_saturated"`
+	ContextLost bool `json:"context_lost"`
+}
+
+func implicationKey(c context) [2]uint64 {
+	return [2]uint64{c.FunctionOrdinal, c.CandidateOrdinal}
+}
+
+// detailSlot is used only with the session mutex held. A retired slot can keep
+// its owner's partial vector until the original wrapper callback frees it.
+func (s *Session) detailSlot(f *scope) *implicationSlot {
+	o := &f.observation
+	if o.session != s || o.epoch == 0 || int(o.slot) >= len(s.detail.slots) {
+		return nil
+	}
+	slot := &s.detail.slots[o.slot]
+	if slot.owner != f || slot.epoch != o.epoch {
+		return nil
+	}
+	return slot
+}
+
+func (slot *implicationSlot) stage() (ImplicationStage, time.Time) {
+	if slot.depth == 0 || slot.retired {
+		return StageOther, slot.otherSince
+	}
+	f := slot.frames[slot.depth-1]
+	return f.stage, f.since
+}
+
+func saturatedAdd(dst *uint64, n uint64) bool {
+	if ^uint64(0)-*dst < n {
+		*dst = ^uint64(0)
+		return true
+	}
+	*dst += n
+	return false
+}
+
+func (s *Session) incompleteImplicationDetail() {
+	s.detail.complete = false
+	if s.detail.candidate.valid {
+		s.detail.candidate.complete = false
+	}
+}
+
+func (s *Session) saturateImplicationDetail() {
+	s.detail.saturated = true
+	s.detail.limited = true
+	s.incompleteImplicationDetail()
+}
+
+func (s *Session) addDetail(dst *uint64, n uint64) {
+	if saturatedAdd(dst, n) {
+		s.saturateImplicationDetail()
+	}
+}
+
+// Refusal counters deliberately count only the locked path. After an atomic
+// retirement, ignored Push/End calls neither lock nor clock nor increment them.
+func (s *Session) refuseImplicationDetail(limited, anomaly bool) {
+	s.incompleteImplicationDetail()
+	s.detail.limited = s.detail.limited || limited
+	s.addDetail(&s.detail.dropped, 1)
+	if anomaly {
+		s.addDetail(&s.detail.anomalies, 1)
+	}
+}
+
+func (s *Session) retireImplicationSlot(slot *implicationSlot, now time.Time) {
+	slot.complete = false
+	slot.retired = true
+	slot.depth = 0
+	slot.otherSince = now
+	slot.published.Store(0)
+}
+
+// The caller charges the process-current interval before retirement. This
+// function never advances a proof scope, manufactures a finish, or writes.
+func (s *Session) retireImplicationDetail(now time.Time, limited bool) {
+	s.detail.limited = s.detail.limited || limited
+	if s.detail.retired {
+		return
+	}
+	s.detail.retired = true
+	for i := range s.detail.slots {
+		slot := &s.detail.slots[i]
+		if slot.owner != nil {
+			s.incompleteImplicationDetail()
+			s.retireImplicationSlot(slot, now)
+		}
+	}
+	if limited {
+		s.incompleteImplicationDetail()
+	}
+	s.detail.enabled.Store(false)
+}
+
+// Close freezes the original cutoff stage as well as its vector and age. Token
+// publication is retired, but the frozen stack is retained for the close row.
+func (s *Session) freezeImplicationDetail() {
+	s.detail.retired = true
+	for i := range s.detail.slots {
+		slot := &s.detail.slots[i]
+		if slot.owner != nil {
+			s.incompleteImplicationDetail()
+			slot.complete = false
+			slot.published.Store(0)
+		}
+	}
+	s.detail.enabled.Store(false)
+}
+
+func (s *Session) supersedeImplicationDetail(now time.Time) {
+	for i := range s.detail.slots {
+		slot := &s.detail.slots[i]
+		if slot.owner != nil {
+			s.refuseImplicationDetail(false, true)
+			s.retireImplicationSlot(slot, now)
+			// Superseded scopes cannot be restored by the existing root rules.
+			slot.owner = nil
+		}
+	}
+	s.detail.candidate = implicationCandidate{}
+	if s.detail.saturated {
+		s.retireImplicationDetail(now, true)
+	}
+}
+
+func (s *Session) resetImplicationCandidate(c context) {
+	key := implicationKey(c)
+	if key[1] == 0 {
+		// The old ordinal is left to its original semantics, but detailed keys
+		// may never present a wrapped ordinal as a plausible fresh identity.
+		s.saturateImplicationDetail()
+		s.retireImplicationDetail(s.current.started, true)
+	}
+	s.detail.candidate = implicationCandidate{
+		key: key, valid: key[1] != 0,
+		complete: !s.detail.retired && !s.detail.saturated,
+	}
+}
+
+func (s *Session) candidateFor(f *scope) *implicationCandidate {
+	c := &s.detail.candidate
+	if !c.valid {
+		return nil
+	}
+	if c.key != implicationKey(f.context) {
+		s.detail.contextLost = true
+		s.incompleteImplicationDetail()
+		return nil
+	}
+	return c
+}
+
+func (s *Session) beginImplicationDetail(f *scope, class ObligationClass) *ImplicationObservation {
+	s.detail.seen = true
+	if class >= obligationClassCount {
+		class = ObligationUnspecified
+	}
+	f.wrapperClass = class
+	if s.detail.nextID == ^uint64(0) {
+		s.saturateImplicationDetail()
+	} else {
+		s.detail.nextID++
+		f.wrapperID = s.detail.nextID
+	}
+	if c := s.candidateFor(f); c != nil {
+		s.addDetail(&c.started, 1)
+		s.addDetail(&c.classes[class].Started, 1)
+	}
+	if class == ObligationUnspecified {
+		// Compatibility is supported, but it cannot certify class coverage.
+		s.refuseImplicationDetail(false, false)
+	}
+	if s.detail.saturated {
+		s.retireImplicationDetail(f.started, true)
+	}
+	if !s.detail.enabled.Load() {
+		s.refuseImplicationDetail(true, false)
+		return nil
+	}
+	for i := range s.detail.slots {
+		slot := &s.detail.slots[i]
+		if slot.owner != nil {
+			continue
+		}
+		if s.detail.nextEpoch == ^uint64(0) {
+			s.saturateImplicationDetail()
+			s.retireImplicationDetail(f.started, true)
+			return nil
+		}
+		s.detail.nextEpoch++
+		slot.epoch = s.detail.nextEpoch
+		slot.owner, slot.depth, slot.ns = f, 0, stageVector{}
+		slot.otherSince = f.started
+		slot.complete, slot.retired = class != ObligationUnspecified, false
+		f.observation = ImplicationObservation{session: s, epoch: slot.epoch, slot: uint8(i)}
+		slot.published.Store(slot.epoch)
+		return &f.observation
+	}
+	s.refuseImplicationDetail(true, false)
+	if s.detail.saturated {
+		s.retireImplicationDetail(f.started, true)
+	}
+	return nil
+}
+
+func (s *Session) finishImplicationDetail(f *scope, now time.Time) {
+	if c := s.candidateFor(f); c != nil {
+		s.addDetail(&c.finished, 1)
+		s.addDetail(&c.classes[f.wrapperClass].Finished, 1)
+	}
+	if slot := s.detailSlot(f); slot != nil {
+		if slot.depth != 0 {
+			s.refuseImplicationDetail(false, true)
+		}
+		slot.published.Store(0)
+		slot.owner = nil
+		slot.depth = 0
+	}
+	if s.detail.saturated {
+		// A suspended wrapper can finish while another stage is current.
+		// Charge that actual current owner at the same cutoff before global
+		// retirement discards its stack. charge performs no new clock read.
+		s.charge(now)
+		s.retireImplicationDetail(now, true)
+	}
+}
+
+func (s *Session) chargeImplicationDetail(f *scope, ns uint64) {
+	stage := StageOther
+	slot := s.detailSlot(f)
+	if slot != nil {
+		stage, _ = slot.stage()
+	}
+	s.chargeImplicationStage(f, stage, ns, slot == nil || slot.retired)
+}
+
+func (s *Session) chargeImplicationStage(f *scope, stage ImplicationStage, ns uint64, unattributed bool) {
+	if slot := s.detailSlot(f); slot != nil {
+		s.addDetail(&slot.ns[stage], ns)
+	}
+	s.addDetail(&s.detail.processNS[stage], ns)
+	if unattributed {
+		s.addDetail(&s.detail.unattributed, ns)
+	}
+	if c := s.candidateFor(f); c != nil {
+		s.addDetail(&c.ns[stage], ns)
+		s.addDetail(&c.classes[f.wrapperClass].NS[stage], ns)
+	}
+}
+
+// liveFast reads only immutable identity and dedicated atomics. In particular,
+// a retired handle does not consult mutable owner, stack, or accounting state.
+func (o *ImplicationObservation) liveFast() bool {
+	return o != nil && o.session != nil && o.epoch != 0 &&
+		int(o.slot) < len(o.session.detail.slots) &&
+		o.session.detail.enabled.Load() &&
+		o.session.detail.slots[o.slot].published.Load() == o.epoch
+}
+
+// Push opens a nested coordinator stage. Child recursive decisions explicitly
+// push StageOther so their work does not remain in the parent's scheduling time.
+func (o *ImplicationObservation) Push(stage ImplicationStage) ImplicationToken {
+	if !o.liveFast() {
+		return ImplicationToken{}
+	}
+	s := o.session
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return o.pushLocked(stage)
+}
+
+// pushLocked repeats the fast check after taking the state lock. Keeping the
+// locked half separate also permits a finite barrier control of an epoch change
+// between the two checks, without a production callback or test hook.
+func (o *ImplicationObservation) pushLocked(stage ImplicationStage) ImplicationToken {
+	s := o.session
+	if !o.liveFast() || s.closed {
+		return ImplicationToken{}
+	}
+	slot := &s.detail.slots[o.slot]
+	f := slot.owner
+	if f == nil || f.ended || f.generation != s.generation || s.current != f {
+		now := s.cfg.now()
+		s.charge(now)
+		s.refuseImplicationDetail(false, true)
+		s.retireImplicationSlot(slot, now)
+		if s.detail.saturated {
+			s.retireImplicationDetail(now, true)
+		}
+		return ImplicationToken{}
+	}
+	now := s.cfg.now()
+	s.charge(now)
+	if !o.liveFast() {
+		return ImplicationToken{}
+	}
+	cap := s.cfg.detailEventCap
+	if cap == 0 {
+		cap = implicationEventCap
+	}
+	if s.detail.events >= cap {
+		s.refuseImplicationDetail(true, false)
+		s.retireImplicationDetail(now, true)
+		return ImplicationToken{}
+	}
+	if stage >= implicationStageCount || int(slot.depth) == len(slot.frames) {
+		s.refuseImplicationDetail(stage < implicationStageCount, stage >= implicationStageCount)
+		s.retireImplicationSlot(slot, now)
+		if s.detail.saturated {
+			s.retireImplicationDetail(now, true)
+		}
+		return ImplicationToken{}
+	}
+	s.addDetail(&s.detail.events, 1)
+	s.addDetail(&s.detail.entries[stage], 1)
+	if s.detail.saturated {
+		s.retireImplicationDetail(now, true)
+		return ImplicationToken{}
+	}
+	slot.frames[slot.depth] = implicationStageFrame{stage: stage, since: now, serial: s.detail.events}
+	slot.depth++
+	return ImplicationToken{owner: o, serial: s.detail.events, depth: slot.depth}
+}
+
+// End restores only this token's unfinished parent stage. A duplicate token can
+// never pop a later stage that happens to reuse the same stack depth.
+func (t ImplicationToken) End() {
+	if !t.owner.liveFast() {
+		return
+	}
+	s := t.owner.session
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t.endLocked()
+}
+
+func (t ImplicationToken) endLocked() {
+	o := t.owner
+	s := o.session
+	if !o.liveFast() || s.closed {
+		return
+	}
+	slot := &s.detail.slots[o.slot]
+	if t.depth == 0 || t.depth > slot.depth || slot.frames[t.depth-1].serial != t.serial {
+		return // Already popped, including after reuse of a stack depth.
+	}
+	now := s.cfg.now()
+	s.charge(now)
+	if !o.liveFast() {
+		return
+	}
+	f := slot.owner
+	if f == nil || f.ended || f.generation != s.generation || s.current != f || t.depth != slot.depth {
+		s.refuseImplicationDetail(false, true)
+		s.retireImplicationSlot(slot, now)
+		if s.detail.saturated {
+			s.retireImplicationDetail(now, true)
+		}
+		return
+	}
+	slot.depth--
+}
+
+// snapshotImplicationDetail adds the open interval to copies only. Numerical
+// overflow in a projection retires detail immediately. A single fixed pending
+// interval preserves the cutoff stage until the next ordinary phase charge;
+// snapshots never consume events or advance accumulated time/activeSince.
+func (s *Session) snapshotImplicationDetail(display context, now time.Time) *implicationDetailRecord {
+	if !s.detail.seen {
+		return nil
+	}
+	d := &s.detail
+	r := &implicationDetailRecord{
+		Version: 1, Coverage: 1, ProcessNS: d.processNS, ProcessStageEntries: d.entries,
+		ProcessDetailComplete: d.complete, DetailEvents: d.events, DroppedEvents: d.dropped,
+		OwnershipAnomalies: d.anomalies, UnattributedNS: d.unattributed,
+		Limited: d.limited, CounterSaturated: d.saturated, ContextLost: d.contextLost,
+	}
+	c := d.candidate // Fixed twelve-row copy; no unbounded history.
+	showCandidate := c.valid && c.key == implicationKey(display)
+	if c.valid && !showCandidate {
+		d.contextLost = true
+		s.incompleteImplicationDetail()
+		r.ContextLost = true
+		r.ProcessDetailComplete = false
+	}
+	var wrapper *scope
+	for f := s.current; f != nil; f = f.parent {
+		if f.kind == implication && !f.ended {
+			wrapper = f
+			break
+		}
+	}
+	if wrapper != nil {
+		r.Active = &implicationActiveRecord{ID: wrapper.wrapperID, Class: wrapper.wrapperClass}
+		if slot := s.detailSlot(wrapper); slot != nil {
+			stage, since := slot.stage()
+			r.Active.Stage, r.Active.StageScopeAgeNS = stage, elapsed(since, now)
+			r.Active.NS, r.Active.DetailComplete = slot.ns, slot.complete
+		}
+	}
+	projectionSaturated := false
+	add := func(dst *uint64, n uint64) {
+		if saturatedAdd(dst, n) {
+			projectionSaturated = true
+		}
+	}
+	if f := s.current; !s.closed && f != nil && f.phase == implication {
+		ns := elapsed(f.activeSince, now)
+		if ^uint64(0)-s.totals.PhaseNS.Implication < ns {
+			projectionSaturated = true
+		}
+		stage := StageOther
+		slot := s.detailSlot(f)
+		if slot != nil {
+			stage, _ = slot.stage()
+		}
+		project := func(stage ImplicationStage, ns uint64, unattributed bool) {
+			add(&r.ProcessNS[stage], ns)
+			if unattributed {
+				add(&r.UnattributedNS, ns)
+			}
+			if r.Active != nil {
+				add(&r.Active.NS[stage], ns)
+			}
+			if showCandidate && c.key == implicationKey(f.context) {
+				add(&c.ns[stage], ns)
+				add(&c.classes[f.wrapperClass].NS[stage], ns)
+			}
+		}
+		if d.pendingOwner == f {
+			before := elapsed(f.activeSince, d.pendingSince)
+			if before > ns {
+				before = ns
+			}
+			project(d.pendingStage, before, d.pendingUnattributed)
+			project(StageOther, ns-before, true)
+		} else {
+			project(stage, ns, slot == nil || slot.retired)
+		}
+	}
+	if showCandidate {
+		dominant := ObligationUnspecified
+		var dominantNS uint64
+		for class := ObligationUnspecified; class < obligationClassCount; class++ {
+			var total uint64
+			for _, ns := range c.classes[class].NS {
+				add(&total, ns)
+			}
+			if total > dominantNS {
+				dominant, dominantNS = class, total
+			}
+		}
+		r.Candidate = &implicationCandidateRecord{
+			Key: c.key, DetailComplete: c.complete, Started: c.started, Finished: c.finished,
+			NS: c.ns, Dominant: implicationDominantRecord{Class: dominant, implicationClassRow: c.classes[dominant]},
+		}
+	}
+	if projectionSaturated {
+		s.saturateImplicationDetail()
+		if d.enabled.Load() {
+			if f := s.current; !s.closed && f != nil && f.phase == implication {
+				d.pendingOwner, d.pendingStage, d.pendingSince = f, StageOther, now
+				slot := s.detailSlot(f)
+				d.pendingUnattributed = slot == nil || slot.retired
+				if slot != nil {
+					d.pendingStage, _ = slot.stage()
+				}
+			}
+			s.retireImplicationDetail(now, true)
+		}
+		r.ProcessDetailComplete, r.CounterSaturated, r.Limited = false, true, true
+		if r.Candidate != nil {
+			r.Candidate.DetailComplete = false
+		}
+		if r.Active != nil {
+			r.Active.DetailComplete = false
+			if wrapper != nil {
+				if slot := s.detailSlot(wrapper); slot != nil {
+					r.Active.Stage, r.Active.StageScopeAgeNS = StageOther, elapsed(slot.otherSince, now)
+				}
+			}
+		}
+	}
+	return r
 }
