@@ -238,7 +238,7 @@ func TestVerificationOptionsRuleEvaluationOrder(t *testing.T) {
 	// These initializers run before the disabled-rule condition. Moving the
 	// condition before them changes work and budget debit even if a rule is off.
 	for _, required := range []string{
-		`if holds, decided := session.impliesEqualOneSidedArms(premise, a, b, widthOf, budget, depth); decided && !session.optionsValue().verifyOff("onesided") {`,
+		`if holds, decided := session.impliesEqualOneSidedArmsObserved(premise, a, b, widthOf, budget, depth, timing); decided && !session.optionsValue().verifyOff("onesided") {`,
 		`if cb := componentBlaster(names, widths, premise, a, b); cb != nil && !session.optionsValue().verifyOff("components") {`,
 		`if limit > budget.remaining || budget.session.optionsValue().verifyOff("bounded") {`,
 		`if session.optionsValue().verifyOff("selfprune") || premise.kind == termConst || termSize(premise, map[*term]int{}) < premiseSelfPruneSize {`,

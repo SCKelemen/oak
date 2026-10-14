@@ -675,6 +675,9 @@ func TestProveVerificationExample(t *testing.T) {
 // witness (`oak build -o binary driver.oak`, prove/solver/witness.oak),
 // which under `go test` is this binary.
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "native-scalar-text-profile" {
+		os.Exit(scalarTextProfileMain(os.Args[2:]))
+	}
 	if len(os.Args) == 3 && os.Args[1] == "native-prover-build" {
 		if err := buildNativeProverArtifact(os.Args[2]); err != nil {
 			fmt.Fprintln(os.Stderr, err)

@@ -93,3 +93,49 @@ jobs:
             status=1
           fi
           exit "$status"
+
+  scalar-text-profile:
+    name: Scalar text verifier profile
+    # Independent diagnostic: up to one additional ARM runner alongside the
+    # unchanged max-parallel 2 required native matrix. No native acceptance.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: '1'
+      GOFLAGS: ''
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Record the original diagnostic deadline
+        run: |
+          python3 - <<'PY'
+          import os, time
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'SCALAR_TEXT_JOB_STARTED={time.monotonic():.9f}\n')
+          PY
+      - uses: actions/checkout@v4
+        timeout-minutes: 1
+      - uses: actions/setup-go@v5
+        timeout-minutes: 2
+        with:
+          go-version: '1.27.1'
+          # The diagnostic owns and measures fresh module/build caches below.
+          cache: false
+      - name: Install native compiler and linker within original setup budget
+        timeout-minutes: 3
+        # Privileged setup cleanup relies on the hosted workflow/VM boundary.
+        # The Python owner only supervises unprivileged process groups.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential clang
+      - name: Build one race harness and capture one bounded scalar text profile
+        run: python3 .github/scripts/native_scalar_text_profile.py --run
+      - name: Preserve bounded scalar text diagnostic evidence
+        if: always()
+        timeout-minutes: 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-scalar-text-profile-${{ github.run_id }}-${{ github.run_attempt }}
+          path: native-scalar-text-profile-artifact/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
