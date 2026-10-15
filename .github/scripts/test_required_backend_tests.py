@@ -129,7 +129,9 @@ class RequiredBackendTests(unittest.TestCase):
 
     def test_audited_suite_manifest(self):
         expected_roots = {
-            "reader-apdu": {"TestE2EStdlibBoundedReader", "TestE2EStdlibCommandAPDUMatrix", "TestE2EStdlibCommandAPDUMaximumAndPayloads", "TestE2EStdlibCommandAPDUBufferNonMutation"},
+            "c-symbol-compiler": {'TestCDispatchTemporariesAvoidCallableShadowing', 'TestCReservedExplicitABISymbolsRejected', 'TestCRuntimeHostHooksRemainExternOnly', 'TestE2CLaunchTemporariesAvoidCallableShadowing', 'TestE2ECCallablesAvoidRuntimeSymbols', 'TestE2EEscapedCallableHeaderAndABI'},
+            "c-symbol-typechecker": {'TestCFunctionRuntimeEscapesAreInjective', 'TestCFunctionRuntimeFamilies', 'TestCFunctionSymbolsPreserveCompatibleABI'},
+            "reader-apdu": {"TestE2EStdlibBoundedReader", "TestE2EStdlibCommandAPDUMatrix", "TestE2EStdlibCommandAPDUMaximumAndPayloads", "TestE2EStdlibCommandAPDUBufferNonMutation", "TestE2EStdlibCommandAPDUGuardPages"},
             "cross-compiler": {"TestE2EInferredValueNativeRV64UnderQEMU", "TestE2EDispatchSelectsSVEUnderQEMU", "TestE2EFreestandingPartialLink", "TestE2ENativeConstantTablesExecutable", "TestRingsCrossTargets"},
             "cross-testrunner": {"TestForeignTargetRunsUnderEmulator", "TestTargetFlagBuildsWithoutRunning"},
             "lean-compiler": {"TestLeanFloatBitsAgreeWithHost", "TestE2ELeanFunctionArguments", "TestE2ELeanReduceLanesFunctionArgument", "TestE2ELeanNestedAssignment"},
@@ -146,6 +148,7 @@ class RequiredBackendTests(unittest.TestCase):
                 self.assertIsNone(re.search(suite.pattern, root + "Other"))
                 self.assertIsNone(re.search(suite.pattern, "Other" + root))
         expected_children = {
+            "c-symbol-compiler": {'TestCDispatchTemporariesAvoidCallableShadowing/-O0', 'TestCDispatchTemporariesAvoidCallableShadowing/-O2', 'TestCReservedExplicitABISymbolsRejected/export/OAK_INLINE', 'TestCReservedExplicitABISymbolsRejected/export/__oak_cas_u32_seq_cst', 'TestCReservedExplicitABISymbolsRejected/export/core_slice', 'TestCReservedExplicitABISymbolsRejected/export/oak_0f_p0__nstore', 'TestCReservedExplicitABISymbolsRejected/export/oak_add_u32', 'TestCReservedExplicitABISymbolsRejected/export/oak_store', 'TestCReservedExplicitABISymbolsRejected/export/oak_view_u8', 'TestCReservedExplicitABISymbolsRejected/extern/OAK_INLINE', 'TestCReservedExplicitABISymbolsRejected/extern/__oak_cas_u32_seq_cst', 'TestCReservedExplicitABISymbolsRejected/extern/core_slice', 'TestCReservedExplicitABISymbolsRejected/extern/oak_0f_p0__nstore', 'TestCReservedExplicitABISymbolsRejected/extern/oak_add_u32', 'TestCReservedExplicitABISymbolsRejected/extern/oak_store', 'TestCReservedExplicitABISymbolsRejected/extern/oak_view_u8', 'TestCRuntimeHostHooksRemainExternOnly/oak_host_write', 'TestCRuntimeHostHooksRemainExternOnly/oak_host_write_call', 'TestCRuntimeHostHooksRemainExternOnly/oak_measured_value', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_launch_begin', 'TestE2CLaunchTemporariesAvoidCallableShadowing/-O0', 'TestE2CLaunchTemporariesAvoidCallableShadowing/-O2', 'TestE2ECCallablesAvoidRuntimeSymbols/-O0', 'TestE2ECCallablesAvoidRuntimeSymbols/-O2', 'TestE2EEscapedCallableHeaderAndABI/option', 'TestE2EEscapedCallableHeaderAndABI/root', 'TestE2EEscapedCallableHeaderAndABI/source'},
             "cross-compiler": {"TestE2ENativeConstantTablesExecutable/freestanding/riscv64", "TestE2ENativeConstantTablesExecutable/freestanding/arm64", "TestRingsCrossTargets/linux/riscv64", "TestRingsCrossTargets/linux/arm64"},
             "lean-compiler": {"TestE2ELeanFunctionArguments/Lean", "TestE2ELeanReduceLanesFunctionArgument/Lean", "TestE2ELeanNestedAssignment/Lean"},
             "lean-cli": {"TestBuildLeanNamespace/LeanImports"},
@@ -158,7 +161,7 @@ class RequiredBackendTests(unittest.TestCase):
     def test_workflows_select_every_suite_in_equipped_lane(self):
         root = Path(__file__).resolve().parents[1]
         lanes = {
-            "ci.yml": ("cross-compiler", "cross-testrunner"),
+            "ci.yml": ("cross-compiler", "cross-testrunner", "c-symbol-compiler", "c-symbol-typechecker"),
             "formal.yml": ("lean-compiler", "lean-cli", "reader-apdu"),
             "formal-sail.yml": ("sail-source", "llvm"),
         }
@@ -180,9 +183,9 @@ class RequiredReaderAPDUTests(unittest.TestCase):
         result.accept({"Action": "pass", "Package": suite.import_path})
         return suite, result
 
-    def test_reader_apdu_all_four_are_required(self):
+    def test_reader_apdu_all_five_are_required(self):
         suite, result = self.results()
-        self.assertEqual(len(suite.roots), 4)
+        self.assertEqual(len(suite.roots), 5)
         self.assertEqual(suite.package, "./compiler")
         self.assertEqual(suite.timeout, "10m")
         result.finish(0)

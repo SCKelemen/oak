@@ -946,11 +946,19 @@ them: a root type as `oak_Name`, a dependency type under its internal name.
 Exporting a type under a chosen C name is a separate request (a
 `export("...")` marker on a type declaration) and is not provided here.
 
+The implicit spelling follows the C callable mapping in `90-backend.md`:
+a name that would occupy a runtime/helper family uses the reserved
+`oak_0f_` escape instead. This applies equally to header prototypes,
+definitions and export-collision validation, including configured package
+prefixes. Explicit symbols remain exact; runtime/generated families cannot
+be chosen as exports. Extern references to documented host hooks are the
+narrow exception, not permission to define an export at those names.
+
 #### 2.9.3 Rules and diagnostics
 
 | Code | Meaning |
 | --- | --- |
-| `OAK-F0108` | two exports would share one C symbol: two markers, or a marker and a root `pub` function's implicit `oak_<name>`; the diagnostic names both functions and their packages |
+| `OAK-F0108` | an explicit symbol occupies a reserved C backend family, or two exports would share one C symbol: two markers, or a marker and a root `pub` function's implicit `oak_<name>`; the diagnostic names both functions and their packages |
 | `OAK-F0109` | the marker's symbol is not a C identifier, or the function has no single C ABI shape: not `pub`, a method, an extern binding (its foreign symbol is already its C name), or a generic template (export a concrete wrapper instead) |
 
 The parser rejects a marker that is not followed by a `pub` function

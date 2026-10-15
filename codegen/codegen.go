@@ -3740,10 +3740,7 @@ func (cg *CodeGenerator) cTypeName(oakName string) string {
 }
 
 func (cg *CodeGenerator) cFunctionName(oakName string) string {
-	if cg.packageName != "" && cg.packageName != "main" {
-		return fmt.Sprintf("oak_%s_%s", cg.packageName, oakName)
-	}
-	return fmt.Sprintf("oak_%s", oakName)
+	return typechecker.CFunctionSymbol(cg.packageName, oakName)
 }
 
 // cMethodName mangles a method Type::method into a C symbol that no

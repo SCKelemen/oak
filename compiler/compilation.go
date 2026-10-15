@@ -517,6 +517,7 @@ func (comp Compilation) check(resourceProtocols []typechecker.ResourceProtocolDe
 		}
 		newTypeChecker := func() *typechecker.TypeChecker {
 			tc := typechecker.NewWithPlatformSizes(object.NewEnvironment(), comp.options.IntSize, comp.options.PtrSize)
+			tc.SetCPackageName(comp.options.PackageName)
 			if tree.Modules != nil {
 				tc.SetModuleContext(tree.Modules.OpaqueTypes, tree.Modules.Packages)
 				tc.SetPackageExports(tree.Modules.Exports)

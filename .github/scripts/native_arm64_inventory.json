@@ -734,6 +734,9 @@
     ],
     "lrat_native_test.go::TestLRATNativeLean": [
       "t.Skip(\"lake unavailable\")"
+    ],
+    "compiler/e2e_c_temporary_hygiene_test.go::checkTemporarySymbolC": [
+      "t.Skip(\"no C compiler on PATH\")"
     ]
   },
   "children": {

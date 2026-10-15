@@ -244,7 +244,7 @@ func (cg *CodeGenerator) emitDispatchWrapper(fn *ast.FunctionStatement, slots []
 		if returnType == "void" {
 			transfer = fmt.Sprintf("%s; return;", call)
 		} else if checkable {
-			transfer = fmt.Sprintf("\n#ifdef OAK_CHECK_DISPATCH\n    { %s oak_claimed = %s; %s oak_meant = %s; if (!( oak_claimed == oak_meant )) { oak_dispatch_divergence( %q, %q ); } return oak_claimed; }\n#else\n    return %s;\n#endif\n  ",
+			transfer = fmt.Sprintf("\n#ifdef OAK_CHECK_DISPATCH\n    { %s oak_dispatch_claimed = %s; %s oak_dispatch_meant = %s; if (!( oak_dispatch_claimed == oak_dispatch_meant )) { oak_dispatch_divergence( %q, %q ); } return oak_dispatch_claimed; }\n#else\n    return %s;\n#endif\n  ",
 				returnType, call, returnType, meaning, fn.Name.Value, feature.Name, call)
 		} else {
 			transfer = fmt.Sprintf("return %s;", call)

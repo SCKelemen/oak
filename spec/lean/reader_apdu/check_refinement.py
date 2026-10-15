@@ -17,7 +17,7 @@ from support import decode, members, read_regular, require, safe_path, verify_fi
 
 HERE = Path(__file__).absolute().parent
 REPO = HERE.parents[2]
-CONTRACT_SHA256 = 'b48d9931a4dc634c322587c6e9a945aa0b57907f561d2432d2911cec2817ccbf'
+CONTRACT_SHA256 = '2452db779f5c39c630a48f72e3f11c9e25c36d4874bbf1fc6fae275ac3218138'
 WHOLE_SECONDS = 600
 EXTRACTION_BYTES = 65536
 MODULES = ('BoundedReaderModel', 'BoundedReaderExtracted', 'BoundedReaderRefinement')

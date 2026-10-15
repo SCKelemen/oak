@@ -751,6 +751,11 @@ func (tc *TypeChecker) checkAsmBoundary(stmt *ast.FunctionStatement) {
 }
 
 func (tc *TypeChecker) checkExternFunction(stmt *ast.FunctionStatement) {
+	if ReservedCExternSymbol(stmt.ExternSymbol) {
+		tc.addTypeDiagnostic(stmt, CodeExternSymbolInvalid,
+			fmt.Sprintf("extern symbol %q is reserved by the C backend; the foreign ABI symbol is never renamed", stmt.ExternSymbol))
+		return
+	}
 	if !ValidCSymbol(stmt.ExternSymbol) {
 		d := tc.addTypeDiagnostic(stmt, CodeExternSymbolInvalid,
 			fmt.Sprintf("extern symbol %q is not a C identifier", stmt.ExternSymbol))
@@ -1397,9 +1402,9 @@ func exportOwner(fn *ast.FunctionStatement) string {
 
 // implicitExportSymbol is the C symbol the backend gives a root package pub
 // function without an explicit marker (codegen cFunctionName for a root
-// program): every such function is exported as `oak_<name>`.
-func implicitExportSymbol(fn *ast.FunctionStatement) string {
-	return "oak_" + fn.Name.Value
+// program), including collision escapes for runtime-owned spellings.
+func implicitExportSymbol(packageName string, fn *ast.FunctionStatement) string {
+	return CFunctionSymbol(packageName, fn.Name.Value)
 }
 
 // checkExportSymbols validates the program's C ABI exports
@@ -1411,6 +1416,13 @@ func implicitExportSymbol(fn *ast.FunctionStatement) string {
 // their mangled internal names and the marker is the only way they reach
 // the header.
 func (tc *TypeChecker) checkExportSymbols(program *ast.Program) {
+	packageName := tc.cPackageName
+	for _, stmt := range program.Statements {
+		if pkg, ok := stmt.(*ast.PackageStatement); ok {
+			packageName = pkg.Name.Value
+			break
+		}
+	}
 	type owner struct {
 		fn     *ast.FunctionStatement
 		symbol string
@@ -1440,7 +1452,7 @@ func (tc *TypeChecker) checkExportSymbols(program *ast.Program) {
 		// functions (mangled names) are not part of the C surface.
 		if fn.Exported && fn.Receiver == nil && fn.ExternSymbol == "" && len(fn.TypeParams) == 0 {
 			if _, _, mangled := modules.Demangle(fn.Name.Value); !mangled {
-				claimed[implicitExportSymbol(fn)] = owner{fn: fn, symbol: implicitExportSymbol(fn)}
+				claimed[implicitExportSymbol(packageName, fn)] = owner{fn: fn, symbol: implicitExportSymbol(packageName, fn)}
 			}
 		}
 	}
@@ -1458,6 +1470,10 @@ func (tc *TypeChecker) checkExportSymbols(program *ast.Program) {
 			d := tc.addTypeDiagnostic(fn.Name, CodeExportInvalid,
 				fmt.Sprintf("export symbol %q is not a C identifier", symbol))
 			d.AddHelp("a C identifier starts with a letter or underscore and continues with letters, digits, and underscores")
+			continue
+		case ReservedCABI(symbol):
+			tc.addTypeDiagnostic(fn.Name, CodeExportSymbolConflict,
+				fmt.Sprintf("export symbol %q is reserved by the C backend; choose an explicit ABI symbol outside its runtime and escaped-callable namespaces", symbol))
 			continue
 		case !fn.Exported:
 			d := tc.addTypeDiagnostic(fn.Name, CodeExportInvalid,

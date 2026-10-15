@@ -33,11 +33,52 @@ class Suite:
 
 
 SUITES = {
+    "c-symbol-compiler": Suite("./compiler", "10m", (
+        "TestE2ECCallablesAvoidRuntimeSymbols",
+        "TestE2ECCallablesAvoidRuntimeSymbols/-O0",
+        "TestE2ECCallablesAvoidRuntimeSymbols/-O2",
+        "TestE2EEscapedCallableHeaderAndABI",
+        "TestE2EEscapedCallableHeaderAndABI/root",
+        "TestE2EEscapedCallableHeaderAndABI/option",
+        "TestE2EEscapedCallableHeaderAndABI/source",
+        "TestCReservedExplicitABISymbolsRejected",
+        "TestCReservedExplicitABISymbolsRejected/extern/oak_store",
+        "TestCReservedExplicitABISymbolsRejected/export/oak_store",
+        "TestCReservedExplicitABISymbolsRejected/extern/oak_add_u32",
+        "TestCReservedExplicitABISymbolsRejected/export/oak_add_u32",
+        "TestCReservedExplicitABISymbolsRejected/extern/oak_view_u8",
+        "TestCReservedExplicitABISymbolsRejected/export/oak_view_u8",
+        "TestCReservedExplicitABISymbolsRejected/extern/oak_0f_p0__nstore",
+        "TestCReservedExplicitABISymbolsRejected/export/oak_0f_p0__nstore",
+        "TestCReservedExplicitABISymbolsRejected/extern/__oak_cas_u32_seq_cst",
+        "TestCReservedExplicitABISymbolsRejected/export/__oak_cas_u32_seq_cst",
+        "TestCReservedExplicitABISymbolsRejected/extern/OAK_INLINE",
+        "TestCReservedExplicitABISymbolsRejected/export/OAK_INLINE",
+        "TestCReservedExplicitABISymbolsRejected/extern/core_slice",
+        "TestCReservedExplicitABISymbolsRejected/export/core_slice",
+        "TestCRuntimeHostHooksRemainExternOnly",
+        "TestCRuntimeHostHooksRemainExternOnly/oak_host_write_call",
+        "TestCRuntimeHostHooksRemainExternOnly/oak_host_write",
+        "TestCRuntimeHostHooksRemainExternOnly/oak_measured_value",
+        "TestCRuntimeHostHooksRemainExternOnly/oak_test_host_launch_begin",
+        "TestCDispatchTemporariesAvoidCallableShadowing",
+        "TestCDispatchTemporariesAvoidCallableShadowing/-O0",
+        "TestCDispatchTemporariesAvoidCallableShadowing/-O2",
+        "TestE2CLaunchTemporariesAvoidCallableShadowing",
+        "TestE2CLaunchTemporariesAvoidCallableShadowing/-O0",
+        "TestE2CLaunchTemporariesAvoidCallableShadowing/-O2",
+    )),
+    "c-symbol-typechecker": Suite("./typechecker", "10m", (
+        "TestCFunctionSymbolsPreserveCompatibleABI",
+        "TestCFunctionRuntimeEscapesAreInjective",
+        "TestCFunctionRuntimeFamilies",
+    )),
     "reader-apdu": Suite("./compiler", "10m", (
         "TestE2EStdlibBoundedReader",
         "TestE2EStdlibCommandAPDUMatrix",
         "TestE2EStdlibCommandAPDUMaximumAndPayloads",
         "TestE2EStdlibCommandAPDUBufferNonMutation",
+        "TestE2EStdlibCommandAPDUGuardPages",
     )),
     "cross-compiler": Suite("./compiler", "15m", (
         "TestE2EInferredValueNativeRV64UnderQEMU",
@@ -193,7 +234,8 @@ def main(argv=None):
                 check_inventory(suite)
                 print(f"{name}: {len(suite.roots)} roots selected exactly", flush=True)
         else:
-            run_suite(SUITES[args.suite])
+            run_suite(SUITES[args.suite],
+                      race=args.suite in {"c-symbol-compiler", "c-symbol-typechecker"})
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"Required backend checks FAILED: {error}", file=sys.stderr, flush=True)
         return 1

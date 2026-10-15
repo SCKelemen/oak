@@ -513,6 +513,9 @@ func (t *FunctionType) Equals(other Type) bool {
 
 // TypeChecker performs type checking on AST nodes
 type TypeChecker struct {
+	// cPackageName is the fallback C package prefix, shared with codegen.
+	// A source package declaration takes precedence.
+	cPackageName string
 	// indexDecisionHook, when set (tests), observes every extent decision
 	// indexUnder makes: the live facts, the index, the container, its
 	// type, and the verdict — what typechecker/extents_refinement_test.go

@@ -3469,8 +3469,8 @@
       "sha256": "5c15130e62efa65f732f27d628caa59e26297c271c9e4cd25c98ad5cda31e4fe"
     },
     "compiler/compilation.go": {
-      "bytes": 48647,
-      "sha256": "5b9c21a6b6ebae7a83a4463748be2b5f446f5cc04def98fb07229c33be6a4d90"
+      "bytes": 48695,
+      "sha256": "2f3165b27d8a3977735e6f2b92b8fd45562f97422d5486ffeb5e8a90416199de"
     },
     "compiler/e2e_stdlib_reader_apdu_test.go": {
       "bytes": 19459,

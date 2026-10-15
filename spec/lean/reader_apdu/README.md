@@ -44,11 +44,14 @@ Lean distribution helpers in `check.py` and `support.py`. The original reader/AP
 abstract-model gate, its contract, its 48 theorem/15 example obligations, and its
 limits remain mandatory. There is no mutable profile switch or update mode.
 
-The new job requires all four portable reader/APDU roots through the existing
+The new job requires all five portable reader/APDU roots through the existing
 `required_backend_tests.py reader-apdu` equipped runner. Every selected skip or
 failure, absent required root and duplicate run is refused. Normal compiler shards
-continue selecting the same four roots. The tests require `cc`, interpreter result
-42 and host executable result 42; they do not establish compiler correctness.
+continue selecting the same five roots. The original four tests require `cc`,
+interpreter result 42 and host executable result 42. The Linux guard-page root
+requires 108 placements at both O0 and O2 plus left/right/write fault-sensitivity
+probes; it is bounded portable-C runtime evidence, not a physical-access proof.
+These tests do not establish compiler correctness.
 
 Next, the current checkout builds the three explicit Go files under
 `.github/scripts/reader_refinement` using Go 1.27.1. This hidden directory is outside
