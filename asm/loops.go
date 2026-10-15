@@ -7625,7 +7625,9 @@ func maskedZeroTestRelation(a, b *term) int {
 }
 
 // zeroTestOf reports a fact `(Y eq 0)` (1) or `(Y ne 0)` (-1) whose Y,
-// read at one bit, is the value asked about; 0 otherwise.
+// read at one bit, is the value asked about; 0 otherwise. Zero implies a
+// clear low bit at any width. Nonzero implies a set low bit only when Y
+// is structurally known to range over 0 and 1; a wider integer may be even.
 func zeroTestOf(fact, value *term, cmemo *canonicalTable, cbool map[*term]bool) int {
 	if fact.kind != termCmp || (fact.op != "eq" && fact.op != "ne") || fact.right.kind != termConst || fact.right.value != 0 {
 		return 0
@@ -7635,6 +7637,9 @@ func zeroTestOf(fact, value *term, cmemo *canonicalTable, cbool map[*term]bool) 
 	}
 	if fact.op == "eq" {
 		return 1
+	}
+	if !booleanValued(fact.left, cbool) {
+		return 0
 	}
 	return -1
 }
