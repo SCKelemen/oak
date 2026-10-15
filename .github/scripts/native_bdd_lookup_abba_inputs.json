@@ -1,9 +1,28 @@
 {
-  "baseline_commit": "272fe5ec13ee9305b7412cd7a950b7082b84fce4",
-  "baseline_tree": "74c9b65f0c265a9539346a55c1a0f3079ac7d489",
+  "baseline_tree": "224062d47571b3656646e9cdac69a4bcc4aea043",
   "baseline_tree_members": {
     ".gitattributes": {
       "blob": "9d9918ca4608fae8f2a3974c3b575a95514b6a21",
+      "mode": "100644"
+    },
+    ".github/scripts/apdu_refinement/adapter.go": {
+      "blob": "8daf443de23108525ee8cf7189a95876512e8682",
+      "mode": "100644"
+    },
+    ".github/scripts/apdu_refinement/adapter_test.go": {
+      "blob": "fd50a775f49bbed9fd126fd1b777a68e7523edb8",
+      "mode": "100644"
+    },
+    ".github/scripts/apdu_refinement/emit_test.go": {
+      "blob": "92f99962d94cae56a9e77f39267617f0d6a15cc4",
+      "mode": "100644"
+    },
+    ".github/scripts/apdu_refinement/fixture/main.oak": {
+      "blob": "f51734a3f426196e9b113192eea48edbeb8239d8",
+      "mode": "100644"
+    },
+    ".github/scripts/apdu_refinement/fixture/oak.mod": {
+      "blob": "89a7372710a455d14748a2c619098d6b447f5e09",
       "mode": "100644"
     },
     ".github/scripts/compiler_shards.py": {
@@ -31,7 +50,7 @@
       "mode": "100644"
     },
     ".github/scripts/native_arm64_inventory.json": {
-      "blob": "56b7f10251ad0744217692e3ca9318f280dc898f",
+      "blob": "b5a98eafdc125121126130228dd074ae83a4ceec",
       "mode": "100644"
     },
     ".github/scripts/native_arm64_prerequisite.py": {
@@ -51,11 +70,11 @@
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba.py": {
-      "blob": "e094771d4e6681b85b05e492abfd306363105c38",
+      "blob": "f1eb5184e17359c3e4cb5a88afbb89b86b5f76e9",
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba_inputs.json": {
-      "blob": "2eb4b64a7aac2d821ae6c890d6bceab478d1942d",
+      "blob": "a90c4fd737fc8962843b765fff7eb2848a2a78bc",
       "mode": "100644"
     },
     ".github/scripts/native_prover_inventory.json": {
@@ -67,7 +86,7 @@
       "mode": "100644"
     },
     ".github/scripts/native_scalar_text_profile.py": {
-      "blob": "5957a14065070e84d3ba6ad17e1fc3c9f82537cc",
+      "blob": "c71308d66e0fbdd32db285c0bb5c2b6d02618aae",
       "mode": "100644"
     },
     ".github/scripts/native_scalar_text_profile_inputs.json": {
@@ -95,7 +114,7 @@
       "mode": "100644"
     },
     ".github/scripts/required_backend_tests.py": {
-      "blob": "6c20310b76015c7b94274f60c055df3116d94cec",
+      "blob": "eed81ad734dd0df3125fa5a34ecbc748a9040b63",
       "mode": "100644"
     },
     ".github/scripts/required_c_regressions.py": {
@@ -119,11 +138,11 @@
       "mode": "100644"
     },
     ".github/scripts/test_native_scalar_text_profile.py": {
-      "blob": "86e88b01ba0c4ad178a769c2dc53ca2c04a004ec",
+      "blob": "d13a2bd5ff1f43d0aff7122ee02052cb263301e2",
       "mode": "100644"
     },
     ".github/scripts/test_required_backend_tests.py": {
-      "blob": "83a283e82e30e39319b2d38e9420df8c4c8eb0b6",
+      "blob": "5523e1affe2f6790917fbd51b139f4095b62d49d",
       "mode": "100644"
     },
     ".github/scripts/test_required_c_regressions.py": {
@@ -139,7 +158,7 @@
       "mode": "100644"
     },
     ".github/workflows/ci.yml": {
-      "blob": "8969b2d9e70b9280562080e47719e72c3276f12e",
+      "blob": "408ec0f6e2aedd93120261d76cf6320ab9b5e035",
       "mode": "100644"
     },
     ".github/workflows/crypto.yml": {
@@ -151,7 +170,7 @@
       "mode": "100644"
     },
     ".github/workflows/formal.yml": {
-      "blob": "367dc5a5c7f86a35959d249074c266f7f0812912",
+      "blob": "7af271d6731d960a969e878d2c007a15ea6f50f7",
       "mode": "100644"
     },
     ".github/workflows/generalization.yml": {
@@ -3151,7 +3170,7 @@
       "mode": "100644"
     },
     "codegen/codegen.go": {
-      "blob": "e602b08efe98e66a10f4a3b9ff81b6396d06a0ac",
+      "blob": "7a6e6ba36c70f65b91a6b8b7b789922b497ce842",
       "mode": "100644"
     },
     "codegen/codegen_test.go": {
@@ -3179,7 +3198,7 @@
       "mode": "100644"
     },
     "codegen/dispatch.go": {
-      "blob": "a0d36380a3c1d40065d5a4da1a74da46138e682a",
+      "blob": "5d34deeb38db7928a9b2695a17d1b7f798ef081d",
       "mode": "100644"
     },
     "codegen/dispatch_inline_test.go": {
@@ -3207,7 +3226,7 @@
       "mode": "100644"
     },
     "codegen/header.go": {
-      "blob": "6f02ffd49aa468855b571813c6f73fe24a4f105f",
+      "blob": "8766d877d537289760b17be3ef763ff8ef6bb117",
       "mode": "100644"
     },
     "codegen/identifiers.go": {
@@ -3215,7 +3234,7 @@
       "mode": "100644"
     },
     "codegen/launch.go": {
-      "blob": "55a2984bc81012cfa02744ce33775bcbe64e43d8",
+      "blob": "b9ea2d526361c8f5f654b298a393ea6911fb637b",
       "mode": "100644"
     },
     "codegen/lean/adt.go": {
@@ -3443,7 +3462,7 @@
       "mode": "100644"
     },
     "compiler/compilation.go": {
-      "blob": "f75a923aed84423b89be9ad9207f10951c3b9e2d",
+      "blob": "c6379220b9ca8552a6a6a223a52b6da61ecf0b54",
       "mode": "100644"
     },
     "compiler/compiler_test.go": {
@@ -3596,6 +3615,14 @@
     },
     "compiler/e2e_c_identifiers_test.go": {
       "blob": "0e23fb17544e89e6e73d6c18eb9d094a3724718a",
+      "mode": "100644"
+    },
+    "compiler/e2e_c_symbol_hygiene_test.go": {
+      "blob": "4f9b36a80a33e8ae79070023a9c70a32f1c18c15",
+      "mode": "100644"
+    },
+    "compiler/e2e_c_temporary_hygiene_test.go": {
+      "blob": "7abcedf1dfd171eeae1e2810f842cf44370e4b14",
       "mode": "100644"
     },
     "compiler/e2e_callable_coherence_test.go": {
@@ -5024,6 +5051,10 @@
     },
     "compiler/e2e_statement_ergonomics_test.go": {
       "blob": "19321ca30091368f39062aaf222c9ccf48e7cb1c",
+      "mode": "100644"
+    },
+    "compiler/e2e_stdlib_apdu_guard_pages_linux_test.go": {
+      "blob": "ef8d80c8b72e6837f160c35350ceffc47819eaf3",
       "mode": "100644"
     },
     "compiler/e2e_stdlib_array_list_package_test.go": {
@@ -6823,7 +6854,7 @@
       "mode": "100644"
     },
     "docs/spec/90-backend.md": {
-      "blob": "c5f19a27c443a7c31dc8eeaf25e3773a87c53156",
+      "blob": "70d5a19625990716880c0b643d80a6dab1f33167",
       "mode": "100644"
     },
     "docs/spec/91-wasm-assembler-proofs.md": {
@@ -6847,7 +6878,7 @@
       "mode": "100644"
     },
     "docs/spec/92-ffi.md": {
-      "blob": "15cc0b9a64403b6476e8f7f9630894626e93be7c",
+      "blob": "8d73f093b1b40e3ee4f24e8988978907c4c01dbc",
       "mode": "100644"
     },
     "docs/spec/93-simd.md": {
@@ -6959,7 +6990,7 @@
       "mode": "100644"
     },
     "docs/verification/reader-apdu-model-evaluation.md": {
-      "blob": "e55931bc90ed78b4992ac33045311e1ae3f3e924",
+      "blob": "b71ff273a6d629996dc76d54dfe60ba63d02e6d0",
       "mode": "100644"
     },
     "docs_tables_test.go": {
@@ -14242,8 +14273,36 @@
       "blob": "b1be42451f4f2c07ae008fb1f48d65c7f4681f11",
       "mode": "100644"
     },
+    "spec/lean/Oak/Stdlib/APDUExtracted.lean": {
+      "blob": "ac5a6aa37ca51e52f85ffc6528e5039b2319bf76",
+      "mode": "100644"
+    },
     "spec/lean/Oak/Stdlib/APDULengthModel.lean": {
       "blob": "25c874b81d2c0cc37c0a662b567810bec704d4e2",
+      "mode": "100644"
+    },
+    "spec/lean/Oak/Stdlib/APDUModelErrorContracts.lean": {
+      "blob": "fa9ae9aeccc01cbe646e221fcf3edc1f0eb54ce4",
+      "mode": "100644"
+    },
+    "spec/lean/Oak/Stdlib/APDUParserControls.lean": {
+      "blob": "4cbef05cb8f56d24f3f8d407682f634fbabe7294",
+      "mode": "100644"
+    },
+    "spec/lean/Oak/Stdlib/APDUParserCorrectness.lean": {
+      "blob": "62dcdfe2ab658a1921f232ec3bcfcebb3fa1ec0c",
+      "mode": "100644"
+    },
+    "spec/lean/Oak/Stdlib/APDUParserHelperProofs.lean": {
+      "blob": "097a1536d0010469559843ebb3c941215b2bd253",
+      "mode": "100644"
+    },
+    "spec/lean/Oak/Stdlib/APDUParserRefinement.lean": {
+      "blob": "2402743becc24b9ec6f15fbfd76fa68de753c6f9",
+      "mode": "100644"
+    },
+    "spec/lean/Oak/Stdlib/APDUReaderBridge.lean": {
+      "blob": "73b71a787647d7cddc467bf02cec0ba18e45adba",
       "mode": "100644"
     },
     "spec/lean/Oak/Stdlib/ArrayListExtracted.lean": {
@@ -14834,16 +14893,40 @@
       "blob": "a8afa7d1b02d96f0671eba854a8dc4b416beb473",
       "mode": "100644"
     },
+    "spec/lean/reader_apdu/APDURefinementAuditDriver.lean": {
+      "blob": "dad5163c5ec127294e21b4974526dca868a1eb2b",
+      "mode": "100644"
+    },
     "spec/lean/reader_apdu/AuditDriver.lean": {
       "blob": "58741d9965780faf4dfabec51b2493ab01689845",
       "mode": "100644"
     },
     "spec/lean/reader_apdu/README.md": {
-      "blob": "b969109856ad700d5e623c1a1c596032edc0dad8",
+      "blob": "af053c4a6757f2d0ebca4aa7714270d0f28a6ed2",
       "mode": "100644"
     },
     "spec/lean/reader_apdu/RefinementAuditDriver.lean": {
       "blob": "375053e535e082055729e6ec855682b25cd16ea5",
+      "mode": "100644"
+    },
+    "spec/lean/reader_apdu/apdu-extraction.json": {
+      "blob": "2a1e56c80fd8ca7f35eccbe40dab0bebb1b5c11c",
+      "mode": "100644"
+    },
+    "spec/lean/reader_apdu/apdu-extraction.raw.lean.txt": {
+      "blob": "228eae3d104397355277157ce7d5b0a41bd731bf",
+      "mode": "100644"
+    },
+    "spec/lean/reader_apdu/apdu_refinement_audit_consumer.py": {
+      "blob": "a893dc7a9029979ed7740b7a8f768d54fce116fa",
+      "mode": "100644"
+    },
+    "spec/lean/reader_apdu/apdu_refinement_contract.json": {
+      "blob": "0a0b675bc491d4850b2175a8d35c6c5d253292d6",
+      "mode": "100644"
+    },
+    "spec/lean/reader_apdu/apdu_refinement_inventory.json": {
+      "blob": "1b9fc767bc4e8c057ea3f9286f45d3c46408b105",
       "mode": "100644"
     },
     "spec/lean/reader_apdu/audit_consumer.py": {
@@ -14854,8 +14937,12 @@
       "blob": "75df68843786e6653e19d6d914656a68c73536f9",
       "mode": "100644"
     },
+    "spec/lean/reader_apdu/check_apdu_refinement.py": {
+      "blob": "0ae3a03f6b0beac5c3cbebacd2a64761e5383d24",
+      "mode": "100644"
+    },
     "spec/lean/reader_apdu/check_refinement.py": {
-      "blob": "9ab695bff55ae5d4cf1752b7fd236ce6ebd6ae27",
+      "blob": "e2dba485f898090d5520e123dfc615f4b4202622",
       "mode": "100644"
     },
     "spec/lean/reader_apdu/contract.json": {
@@ -14875,11 +14962,19 @@
       "mode": "100644"
     },
     "spec/lean/reader_apdu/refinement_contract.json": {
-      "blob": "4221b0cb91fef48e1401ed287a0cbfe0010c83ad",
+      "blob": "d49a66720273eb77c0e0706e931d051ba1f1faaa",
       "mode": "100644"
     },
     "spec/lean/reader_apdu/support.py": {
       "blob": "133add47e97bce44bf664b21856c51cf153ee379",
+      "mode": "100644"
+    },
+    "spec/lean/reader_apdu/test_apdu_refinement.py": {
+      "blob": "000807c1679ce20af759d495fedabd5469ba176d",
+      "mode": "100644"
+    },
+    "spec/lean/reader_apdu/test_apdu_refinement_audit.py": {
+      "blob": "4416a8e81ce885f8e4292bfa012308f189648aa2",
       "mode": "100644"
     },
     "spec/lean/reader_apdu/test_check.py": {
@@ -16346,6 +16441,14 @@
       "blob": "c3fb67c0d25b2b8be27da3877ed8b54a0d8eaaaf",
       "mode": "100644"
     },
+    "typechecker/c_symbols.go": {
+      "blob": "63d82c8bbf2175f92fd972b3969f32904aaf0cb3",
+      "mode": "100644"
+    },
+    "typechecker/c_symbols_test.go": {
+      "blob": "345bc104a1eedda8870953f6b7377bc390b25385",
+      "mode": "100644"
+    },
     "typechecker/callable_initialization.go": {
       "blob": "1342682ea7aff9591d43b83c3b682e54745ef986",
       "mode": "100644"
@@ -16423,7 +16526,7 @@
       "mode": "100644"
     },
     "typechecker/ffi.go": {
-      "blob": "f23f0a4ffc483d07f47e3c500cb8c714fe5d421a",
+      "blob": "5751e61d5f56526e3ee7fe1b34840d2176f0cb3e",
       "mode": "100644"
     },
     "typechecker/ffi_const.go": {
@@ -16795,7 +16898,7 @@
       "mode": "100644"
     },
     "typechecker/typechecker.go": {
-      "blob": "2c51f4a2623c0f2ff4d5910601788ff68cbfcf98",
+      "blob": "83c019d258e7bc523b8134e3dd06bfb469f2585b",
       "mode": "100644"
     },
     "typechecker/typechecker_test.go": {
@@ -16986,22 +17089,15 @@
     ".github/scripts/native_scalar_text_profile.py": "3160b4e8cdbb123c05c1793051d8ec80d5a5addbc506b49de2f11954bb4bcc09",
     ".github/scripts/test_native_scalar_text_profile.py": "f8b133b67d3539fedffde08b03641ae4b39b472ea39050196a33b42ab87b14ae"
   },
+  "historical_baseline_commit": "272fe5ec13ee9305b7412cd7a950b7082b84fce4",
+  "historical_local_commit": "820e955b6aa8d706f568c26437c107d381c3ce1f",
   "integration_members": {
     ".github/scripts/native_bdd_lookup_abba.py": {
-      "blob": "f1eb5184e17359c3e4cb5a88afbb89b86b5f76e9",
+      "blob": "fe24d245747d1a566f22cd2a7a12d73c9408edb9",
       "mode": "100644"
     },
-    ".github/scripts/native_bdd_lookup_abba_inputs.json": null,
-    ".github/scripts/native_scalar_text_profile.py": {
-      "blob": "c71308d66e0fbdd32db285c0bb5c2b6d02618aae",
-      "mode": "100644"
-    },
-    ".github/scripts/test_native_scalar_text_profile.py": {
-      "blob": "d13a2bd5ff1f43d0aff7122ee02052cb263301e2",
-      "mode": "100644"
-    }
+    ".github/scripts/native_bdd_lookup_abba_inputs.json": null
   },
-  "local_commit": "820e955b6aa8d706f568c26437c107d381c3ce1f",
   "lookup": {
     "baseline_sha256": "cad08ae43e5551133432071366ce08c0220989a2b41d819a34b3db53070ab15c",
     "candidate_sha256": "bab3949644ebc413d1a111b035b0d5b8da8013c6a205e21dc5c23e9467e7ebe0"

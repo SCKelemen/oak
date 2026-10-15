@@ -24,9 +24,10 @@ from native_arm64 import pattern, validate_events
 
 MiB, GiB = 1024**2, 1024**3
 INPUT = '.github/scripts/native_bdd_lookup_abba_inputs.json'
-BASE_TREE = '74c9b65f0c265a9539346a55c1a0f3079ac7d489'
-INTEGRATION_PATHS = {INPUT, '.github/scripts/native_bdd_lookup_abba.py',
-    '.github/scripts/native_scalar_text_profile.py', '.github/scripts/test_native_scalar_text_profile.py'}
+BASE_TREE = '224062d47571b3656646e9cdac69a4bcc4aea043'
+# The immediate production parent is a complete reviewed tree. Only this
+# diagnostic script and its self-excluded input contract differ from it.
+INTEGRATION_PATHS = {INPUT, '.github/scripts/native_bdd_lookup_abba.py'}
 JOB_SECONDS, SETUP_SECONDS, BUILD_SECONDS = 1800, 420, 900
 CONTROL_SECONDS, BENCH_SECONDS, FINAL_SECONDS, UPLOAD_SECONDS = 120, 120, 240, 60
 BINARY_LIMIT, EVIDENCE_LIMIT, ARTIFACT_LIMIT = 128*MiB, 32*MiB, 288*MiB
