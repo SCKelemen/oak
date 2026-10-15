@@ -6067,8 +6067,9 @@ func booleanGuardsEqualUnder(premise, oakGuard, asmGuard *term, implies func(pre
 
 // writeLogsEqualUnder proves that two already-pruned logs apply the same
 // ordered operations to one memory. A loop marker names memory whose
-// equality the induction established. Ordinary stores need equivalent guards;
-// where that guard holds, they need equal indices and values. Failure only
+// equality the induction established, but its guard must still agree: a guarded
+// marker selects that memory only on its active paths. Ordinary stores also
+// need equal indices and values where their common guard holds. Failure only
 // selects the whole-memory fallback.
 func writeLogsEqualUnder(oakLog, asmLog []*spanWrite, premise *term, implies func(premise, a, b *term) (bool, bool)) bool {
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
@@ -6087,9 +6088,6 @@ func writeLogsEqualUnder(oakLog, asmLog []*spanWrite, premise *term, implies fun
 			}
 			return false
 		}
-		if oakWrite.memory != "" {
-			continue
-		}
 		oakGuard, asmGuard := oakWrite.guard, asmWrite.guard
 		if oakGuard == nil {
 			oakGuard = always
@@ -6102,6 +6100,9 @@ func writeLogsEqualUnder(oakLog, asmLog []*spanWrite, premise *term, implies fun
 				fmt.Fprintf(os.Stderr, "verify: pointwise write %d guard not proven equal\n  oak: %s\n  asm: %s\n", i+1, spineOf(oakGuard, 7), spineOf(asmGuard, 7))
 			}
 			return false
+		}
+		if oakWrite.memory != "" {
+			continue // the same memory is selected under equivalent guards
 		}
 		active := binaryTerm("and", premise, truncate(oakGuard, 1))
 		if equal, decided := implies(active, truncate(oakWrite.index, 32), truncate(asmWrite.index, 32)); !decided || !equal {

@@ -51,7 +51,9 @@ type spanWrite struct {
 
 // zeroMemory is the marker a zero-filled owned array's log starts with
 // on both sides (declareLocal, the executor's setup): the memory is zero
-// from there, whatever entry element memoryAt is handed, so every
+// from there where the marker's guard holds (unconditionally at creation).
+// Path joins may guard the marker, preserving the previous memory elsewhere.
+// Whatever entry element memoryAt is handed, every
 // comparison, restore and witness evaluation sees the fill without
 // knowing the span (docs/spec/94-assembler.md §9, large arrays).
 const zeroMemory = "zero"
@@ -170,7 +172,7 @@ func memoryAt(log []*spanWrite, index, base *term) *term {
 	start := 0
 	for i := len(log) - 1; i >= 0; i-- {
 		w := log[i]
-		if w.memory == zeroMemory || (w.memory != "" && w.guard == nil) {
+		if w.memory != "" && w.guard == nil {
 			start = i
 			break
 		}
@@ -182,15 +184,15 @@ func memoryAt(log []*spanWrite, index, base *term) *term {
 		}
 	}
 	for _, w := range log[start:] {
-		if w.memory == zeroMemory {
-			value = constTerm(0, base.width) // a zero-filled array: zero from here
-			continue
-		}
 		if w.memory != "" {
-			// A loop memory marker: the element is the unknown memory's,
-			// under the marker's guard when it has one (an inner loop
-			// reached on some of the enclosing body's paths).
-			at := selectTerm(w.memory, index, base.width)
+			// A marker selects zero-filled or unknown loop memory under
+			// its guard, retaining earlier writes on inactive paths.
+			var at *term
+			if w.memory == zeroMemory {
+				at = constTerm(0, base.width)
+			} else {
+				at = selectTerm(w.memory, index, base.width)
+			}
 			if w.guard != nil {
 				at = iteTerm(truncate(w.guard, 1), at, value)
 			}

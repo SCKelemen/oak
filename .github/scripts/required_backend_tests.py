@@ -33,6 +33,31 @@ class Suite:
 
 
 SUITES = {
+    "asm-memory-markers": Suite("./asm", "10m", (
+        "TestWriteLogsEqualUnderChecksMemoryMarkerGuards",
+        "TestWriteLogsEqualUnderChecksMemoryMarkerGuards/opposite_guards",
+        "TestWriteLogsEqualUnderChecksMemoryMarkerGuards/conditional_and_unconditional",
+        "TestWriteLogsEqualUnderChecksMemoryMarkerGuards/independent_guards",
+        "TestWriteLogsEqualUnderChecksMemoryMarkerGuards/same_guard",
+        "TestWriteLogsEqualUnderChecksMemoryMarkerGuards/same_unconditional_marker",
+        "TestWriteLogsEqualUnderChecksMemoryMarkerGuards/equivalent_conjunctions",
+        "TestWriteLogsEqualUnderChecksMemoryMarkerGuards/guard_implied_by_premise",
+        "TestWriteLogsEqualUnderChecksMemoryMarkerGuards/different_markers",
+        "TestWriteLogsEqualUnderChecksMemoryMarkerGuards/opposite_zero-fill_guards",
+        "TestWriteLogsEqualUnderChecksMemoryMarkerGuards/same_conditional_zero_fill",
+        "TestWriteLogsEqualUnderChecksMemoryMarkerGuards/same_unconditional_zero_fill",
+        "TestWriteLogsEqualUnderMarkerGuardUnknownFailsClosed",
+        "TestDecideSpansRejectsDifferentMemoryMarkerGuards",
+        "TestDecideSpansRejectsDifferentMemoryMarkerGuards/different",
+        "TestDecideSpansRejectsDifferentMemoryMarkerGuards/equal",
+        "TestMergeWritesPreservesGuardedZeroMemory",
+        "TestMergeWritesPreservesGuardedZeroMemory/zero_fallthrough",
+        "TestMergeWritesPreservesGuardedZeroMemory/zero_taken",
+        "TestMemoryAtGuardedZeroPreservesHistoryAndPruning",
+        "TestFrameSpanAccessRetainsFillAfterGuardedZero",
+        "TestFrameSpanAccessRetainsFillAfterGuardedZero/unconditional",
+        "TestFrameSpanAccessRetainsFillAfterGuardedZero/conditional",
+    )),
     "c-symbol-compiler": Suite("./compiler", "10m", (
         "TestE2ECCallablesAvoidRuntimeSymbols",
         "TestE2ECCallablesAvoidRuntimeSymbols/-O0",
@@ -235,7 +260,7 @@ def main(argv=None):
                 print(f"{name}: {len(suite.roots)} roots selected exactly", flush=True)
         else:
             run_suite(SUITES[args.suite],
-                      race=args.suite in {"c-symbol-compiler", "c-symbol-typechecker"})
+                      race=args.suite in {"c-symbol-compiler", "c-symbol-typechecker", "asm-memory-markers"})
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"Required backend checks FAILED: {error}", file=sys.stderr, flush=True)
         return 1

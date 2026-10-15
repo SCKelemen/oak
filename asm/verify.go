@@ -9578,7 +9578,7 @@ func (x *pathExecutor) frameSpanAccess(instr Instruction, state *symbolicState, 
 				// past twenty gigabytes). Logged only once the log holds a
 				// real write.
 				log := state.writes[fs.name]
-				if len(log) == 1 && log[0].memory == zeroMemory {
+				if len(log) == 1 && log[0].memory == zeroMemory && log[0].guard == nil {
 					break
 				}
 				for e := int64(0); e < size/fs.elem; e++ {

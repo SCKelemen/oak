@@ -7639,6 +7639,14 @@ consumes stays a temporary. The rotated, fused, scheduled, reallocated
 form of `crc32c_update` proves (`i↔r25`, `state↔r0`) and is selected.
 Pinned: `compiler/e2e_native_call_result_carried_test.go`.
 
+**Guarded memory-marker equality.** The pointwise write-log shortcut requires
+both the marker name and equivalent one-bit guards under the original premise,
+including zero-fill markers. An absent guard means true. An unequal or
+undecided guard declines this shortcut and leaves the whole-memory comparison
+available. The regression tests cover synthetic internal verifier states and
+real memory-log producer/consumer helpers; they do not establish a complete
+source/assembly misproof or a performance benefit.
+
 **Span memories through loops (2026-09-14).** A store through a span
 inside a data-dependent loop body was the last shape the loop summary
 refused, and with the loops themselves recognized it was the largest
@@ -8924,9 +8932,12 @@ argument's length (`summarizeCall`); the lowering declares the local as a
 span with no aggregate local (`declareLocal`, `tableLens` its length,
 `localSpanWidths` outliving an inlined callee's scope) and binds
 `view(&chunk)` to it. A zero-filled array's log starts with the marker
-`zero` on both sides, which `memoryAt` reads as "zero from here", so every
-comparison, restore and witness evaluation sees the fill without knowing
-the span. A local span's final memory is left undecided in `decideSpans`
+`zero` on both sides, initially unguarded, which `memoryAt` reads as
+"zero from here". A path join can guard this marker: it then selects zero
+only where its guard holds and preserves the previous memory elsewhere.
+Only an unguarded memory marker can discard the earlier write history.
+Every comparison, restore and witness evaluation sees the fill through this
+same model without knowing the span. A local span's final memory is left undecided in `decideSpans`
 and after the loops (no caller observes it; its reads went through the
 one model). `TestE2ENativeLargeArrayLoopsProven` proves a 256-byte
 array filled in one loop and summed in another;
@@ -8936,8 +8947,9 @@ subsliced and handed through `host_write_all` to the extern — with both
 loops coupled through the chunk, while the flush itself, a 4192-byte
 frame, stays with the C backend by the native backend's own limit.
 Two corrections followed the first prover tally of the model: the fill's
-split zero stores are not logged while the array's log is still its
-marker (zero over zero changes nothing, and a 4096-byte chunk's fill had
+split zero stores are not logged while the array's log is still its lone
+unguarded zero marker; a guarded zero marker must retain the real stores
+(zero over unconditional zero changes nothing, and a 4096-byte chunk's fill had
 handed every later symbolic read a chain of thousands of constant-index
 writes — the tally passed twenty gigabytes), and the blaster gives two
 reads of one span whose indices are one linear form spelled two ways one

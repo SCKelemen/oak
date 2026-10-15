@@ -91,6 +91,15 @@ jobs:
         GOWORK: 'off'
       run: python3 .github/scripts/required_backend_tests.py c-symbol-typechecker
 
+    - name: Require guarded memory-marker regressions without skips
+      if: matrix.shard == 'packages'
+      timeout-minutes: 12
+      env:
+        GOENV: 'off'
+        GOFLAGS: ''
+        GOWORK: 'off'
+      run: python3 .github/scripts/required_backend_tests.py asm-memory-markers
+
     # Portable C checks belong in this equipped lane, not native host inventories.
     # Require a fresh, source-bound Go receipt and every Go/Oak fixture under race.
     - name: Require ROR twins and C value-branch execution

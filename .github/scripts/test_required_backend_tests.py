@@ -129,6 +129,7 @@ class RequiredBackendTests(unittest.TestCase):
 
     def test_audited_suite_manifest(self):
         expected_roots = {
+            "asm-memory-markers": {'TestDecideSpansRejectsDifferentMemoryMarkerGuards', 'TestFrameSpanAccessRetainsFillAfterGuardedZero', 'TestMemoryAtGuardedZeroPreservesHistoryAndPruning', 'TestMergeWritesPreservesGuardedZeroMemory', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards', 'TestWriteLogsEqualUnderMarkerGuardUnknownFailsClosed'},
             "c-symbol-compiler": {'TestCDispatchTemporariesAvoidCallableShadowing', 'TestCReservedExplicitABISymbolsRejected', 'TestCRuntimeHostHooksRemainExternOnly', 'TestE2CLaunchTemporariesAvoidCallableShadowing', 'TestE2ECCallablesAvoidRuntimeSymbols', 'TestE2EEscapedCallableHeaderAndABI'},
             "c-symbol-typechecker": {'TestCFunctionRuntimeEscapesAreInjective', 'TestCFunctionRuntimeFamilies', 'TestCFunctionSymbolsPreserveCompatibleABI'},
             "reader-apdu": {"TestE2EStdlibBoundedReader", "TestE2EStdlibCommandAPDUMatrix", "TestE2EStdlibCommandAPDUMaximumAndPayloads", "TestE2EStdlibCommandAPDUBufferNonMutation", "TestE2EStdlibCommandAPDUGuardPages"},
@@ -148,6 +149,7 @@ class RequiredBackendTests(unittest.TestCase):
                 self.assertIsNone(re.search(suite.pattern, root + "Other"))
                 self.assertIsNone(re.search(suite.pattern, "Other" + root))
         expected_children = {
+            "asm-memory-markers": {'TestDecideSpansRejectsDifferentMemoryMarkerGuards/different', 'TestDecideSpansRejectsDifferentMemoryMarkerGuards/equal', 'TestFrameSpanAccessRetainsFillAfterGuardedZero/conditional', 'TestFrameSpanAccessRetainsFillAfterGuardedZero/unconditional', 'TestMergeWritesPreservesGuardedZeroMemory/zero_fallthrough', 'TestMergeWritesPreservesGuardedZeroMemory/zero_taken', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/conditional_and_unconditional', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/different_markers', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/equivalent_conjunctions', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/guard_implied_by_premise', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/independent_guards', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/opposite_guards', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/opposite_zero-fill_guards', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/same_conditional_zero_fill', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/same_guard', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/same_unconditional_marker', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/same_unconditional_zero_fill'},
             "c-symbol-compiler": {'TestCDispatchTemporariesAvoidCallableShadowing/-O0', 'TestCDispatchTemporariesAvoidCallableShadowing/-O2', 'TestCReservedExplicitABISymbolsRejected/export/OAK_INLINE', 'TestCReservedExplicitABISymbolsRejected/export/__oak_cas_u32_seq_cst', 'TestCReservedExplicitABISymbolsRejected/export/core_slice', 'TestCReservedExplicitABISymbolsRejected/export/oak_0f_p0__nstore', 'TestCReservedExplicitABISymbolsRejected/export/oak_add_u32', 'TestCReservedExplicitABISymbolsRejected/export/oak_store', 'TestCReservedExplicitABISymbolsRejected/export/oak_view_u8', 'TestCReservedExplicitABISymbolsRejected/extern/OAK_INLINE', 'TestCReservedExplicitABISymbolsRejected/extern/__oak_cas_u32_seq_cst', 'TestCReservedExplicitABISymbolsRejected/extern/core_slice', 'TestCReservedExplicitABISymbolsRejected/extern/oak_0f_p0__nstore', 'TestCReservedExplicitABISymbolsRejected/extern/oak_add_u32', 'TestCReservedExplicitABISymbolsRejected/extern/oak_store', 'TestCReservedExplicitABISymbolsRejected/extern/oak_view_u8', 'TestCRuntimeHostHooksRemainExternOnly/oak_host_write', 'TestCRuntimeHostHooksRemainExternOnly/oak_host_write_call', 'TestCRuntimeHostHooksRemainExternOnly/oak_measured_value', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_launch_begin', 'TestE2CLaunchTemporariesAvoidCallableShadowing/-O0', 'TestE2CLaunchTemporariesAvoidCallableShadowing/-O2', 'TestE2ECCallablesAvoidRuntimeSymbols/-O0', 'TestE2ECCallablesAvoidRuntimeSymbols/-O2', 'TestE2EEscapedCallableHeaderAndABI/option', 'TestE2EEscapedCallableHeaderAndABI/root', 'TestE2EEscapedCallableHeaderAndABI/source'},
             "cross-compiler": {"TestE2ENativeConstantTablesExecutable/freestanding/riscv64", "TestE2ENativeConstantTablesExecutable/freestanding/arm64", "TestRingsCrossTargets/linux/riscv64", "TestRingsCrossTargets/linux/arm64"},
             "lean-compiler": {"TestE2ELeanFunctionArguments/Lean", "TestE2ELeanReduceLanesFunctionArgument/Lean", "TestE2ELeanNestedAssignment/Lean"},
@@ -161,7 +163,7 @@ class RequiredBackendTests(unittest.TestCase):
     def test_workflows_select_every_suite_in_equipped_lane(self):
         root = Path(__file__).resolve().parents[1]
         lanes = {
-            "ci.yml": ("cross-compiler", "cross-testrunner", "c-symbol-compiler", "c-symbol-typechecker"),
+            "ci.yml": ("cross-compiler", "cross-testrunner", "c-symbol-compiler", "c-symbol-typechecker", "asm-memory-markers"),
             "formal.yml": ("lean-compiler", "lean-cli", "reader-apdu"),
             "formal-sail.yml": ("sail-source", "llvm"),
         }
@@ -222,6 +224,74 @@ class RequiredReaderAPDUTests(unittest.TestCase):
                 result.accept({"Action": "skip", "Package": suite.import_path, "Test": child})
                 with self.assertRaisesRegex(ValueError, "skip"):
                     result.finish(0)
+
+
+class RequiredMemoryMarkerTests(unittest.TestCase):
+    def results(self, omit=None, terminal="pass"):
+        suite = required.SUITES["asm-memory-markers"]
+        result = required.RequiredResults(suite)
+        for name in suite.tests:
+            if name == omit:
+                continue
+            result.accept({"Action": "run", "Package": suite.import_path, "Test": name})
+            result.accept({"Action": "pass", "Package": suite.import_path, "Test": name})
+        result.accept({"Action": terminal, "Package": suite.import_path})
+        return suite, result
+
+    def test_all_six_roots_and_seventeen_children_required(self):
+        suite, result = self.results()
+        self.assertEqual(suite.package, "./asm")
+        self.assertEqual(suite.timeout, "10m")
+        self.assertEqual(len(suite.roots), 6)
+        self.assertEqual(len(suite.tests), 23)
+        self.assertEqual(len([name for name in suite.tests if "/" in name]), 17)
+        result.finish(0)
+
+    def test_every_missing_identity_refused(self):
+        for name in required.SUITES["asm-memory-markers"].tests:
+            with self.subTest(name=name):
+                _, result = self.results(omit=name)
+                with self.assertRaisesRegex(ValueError, "required tests did not pass"):
+                    result.finish(0)
+
+    def test_every_skipped_or_failed_identity_refused(self):
+        for name in required.SUITES["asm-memory-markers"].tests:
+            for action in ("skip", "fail"):
+                with self.subTest(name=name, action=action):
+                    suite, result = self.results(omit=name)
+                    result.accept({"Action": "run", "Package": suite.import_path, "Test": name})
+                    result.accept({"Action": action, "Package": suite.import_path, "Test": name})
+                    with self.assertRaisesRegex(ValueError, action):
+                        result.finish(0)
+
+    def test_every_duplicate_identity_refused(self):
+        for name in required.SUITES["asm-memory-markers"].tests:
+            with self.subTest(name=name):
+                suite, result = self.results()
+                with self.assertRaisesRegex(ValueError, "duplicate"):
+                    result.accept({"Action": "run", "Package": suite.import_path, "Test": name})
+
+    def test_unlisted_nested_skip_under_each_root_refused(self):
+        for root in required.SUITES["asm-memory-markers"].roots:
+            with self.subTest(root=root):
+                suite, result = self.results()
+                child = root + "/FutureChild"
+                result.accept({"Action": "run", "Package": suite.import_path, "Test": child})
+                result.accept({"Action": "skip", "Package": suite.import_path, "Test": child})
+                with self.assertRaisesRegex(ValueError, "skip"):
+                    result.finish(0)
+
+    def test_package_and_process_failure_refused(self):
+        for action, exit_code in (("fail", 0), ("pass", 1)):
+            with self.subTest(action=action, exit_code=exit_code):
+                _, result = self.results(terminal=action)
+                with self.assertRaises(ValueError):
+                    result.finish(exit_code)
+
+    def test_cli_selects_race_for_memory_markers(self):
+        with patch.object(required, "run_suite") as call:
+            self.assertEqual(required.main(["asm-memory-markers"]), 0)
+        call.assert_called_once_with(required.SUITES["asm-memory-markers"], race=True)
 
 
 if __name__ == "__main__":
