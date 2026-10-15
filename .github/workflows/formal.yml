@@ -407,3 +407,102 @@ jobs:
             ${{ runner.temp }}/reader-refinement/extracted/extraction.json
           if-no-files-found: error
           retention-days: 14
+
+  apdu-refinement:
+    # Required workflow job, independent of aggregate lake build. Repository
+    # branch protection configuration is managed separately.
+    name: Qualified APDU extraction and refinement
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bind current checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+
+      - name: Install elan
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      # Existing reader-refinement still requires the four portable reader/APDU roots.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Check APDU refinement and audit rejection controls
+        timeout-minutes: 3
+        run: |
+          timeout --signal=TERM --kill-after=5s 60s python3 -B spec/lean/reader_apdu/test_apdu_refinement.py -v
+          timeout --signal=TERM --kill-after=5s 60s python3 -B spec/lean/reader_apdu/test_apdu_refinement_audit.py --contract spec/lean/reader_apdu/apdu_refinement_contract.json -v
+
+      - name: Build current-source qualified extraction adapter
+        timeout-minutes: 6
+        shell: bash
+        env:
+          GOWORK: 'off'
+          GOFLAGS: ''
+          GOTOOLCHAIN: local
+          CGO_ENABLED: '0'
+          GOMAXPROCS: '2'
+          GOMEMLIMIT: 1536MiB
+        run: |
+          set -euo pipefail
+          ulimit -c 0
+          ulimit -f 81920
+          test ! -e "$RUNNER_TEMP/apdu-extraction.test"
+          timeout --signal=TERM --kill-after=5s 300s go test -c -mod=readonly -trimpath -buildvcs=false -p=1 -o "$RUNNER_TEMP/apdu-extraction.test" .github/scripts/apdu_refinement/adapter.go .github/scripts/apdu_refinement/adapter_test.go .github/scripts/apdu_refinement/emit_test.go
+          test -x "$RUNNER_TEMP/apdu-extraction.test"
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+
+      - name: Require exact extraction and fresh generated-APDU refinement
+        timeout-minutes: 27
+        shell: bash
+        run: |
+          set -euo pipefail
+          apdu_refinement_lean="$(cd spec/lean && elan which lean)"
+          test -x "$apdu_refinement_lean"
+          python3 -B spec/lean/reader_apdu/check_apdu_refinement.py --lean "$apdu_refinement_lean" --extractor "$RUNNER_TEMP/apdu-extraction.test" --checkout-commit "$GITHUB_SHA" --work "$RUNNER_TEMP/apdu-refinement"
+
+      - name: Check exact APDU refinement evidence inventory
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          timeout --signal=TERM --kill-after=2s 10s python3 -B - "$RUNNER_TEMP/apdu-refinement" <<'PY'
+          import sys
+          import time
+          from pathlib import Path
+          sys.path.insert(0, 'spec/lean/reader_apdu')
+          from check_apdu_refinement import verify_retention
+          verify_retention(Path(sys.argv[1]), time.monotonic() + 5)
+          PY
+
+      - name: Preserve accepted generated-APDU refinement evidence
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: apdu-refinement-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/apdu-refinement/audit-stdout.log
+            ${{ runner.temp }}/apdu-refinement/audit-stderr.log
+            ${{ runner.temp }}/apdu-refinement/result.json
+            ${{ runner.temp }}/apdu-refinement/object-hashes.json
+            ${{ runner.temp }}/apdu-refinement/extracted/raw.lean
+            ${{ runner.temp }}/apdu-refinement/extracted/APDUExtracted.lean
+            ${{ runner.temp }}/apdu-refinement/extracted/extraction.json
+          if-no-files-found: error
+          retention-days: 14

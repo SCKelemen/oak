@@ -1,0 +1,3789 @@
+{
+  "accepted_provenance": {
+    "audit_stdout": {
+      "bytes": 8136678,
+      "sha256": "a4e94b1a4054628bc3f236f26b06a845a0d3872c837ed47c777e2da31af26b03"
+    },
+    "handoff_release": {
+      "bytes": 4151,
+      "sha256": "eeb7773b0ae74956a9f00d90ca819c9ad203e675fff2d9f9fe1a9b53c0f657a5"
+    },
+    "historical_graph": {
+      "edge_cap": 100000,
+      "edge_occurrences": 99722,
+      "nodes": 4817
+    },
+    "scope": "Historical acceptance only. Fresh hosted all-source build and extraction require new execution evidence.",
+    "source_catalog": {
+      "bytes": 13657,
+      "sha256": "272f2d848c3d4b491293623fdece355e4de002146ad4fad33e409e8e0cb9af87"
+    },
+    "source_manifest": {
+      "bytes": 2917,
+      "sha256": "647640aa49aa93c98595d5c4a39d5d236aaa39c5fd41a69eb642988dc04278cd"
+    },
+    "terminal_review": {
+      "bytes": 8125,
+      "sha256": "ac85a0cad14e4f90f10e3705f4bb757e88cb7ce95e1d73ef762bd7666a8e6543"
+    }
+  },
+  "allowed_axioms": [
+    "propext",
+    "Quot.sound",
+    "Classical.choice"
+  ],
+  "bounds": {
+    "RLIMIT_AS_bytes": 8589934592,
+    "audit_records": 14282,
+    "audit_seconds": 120,
+    "audit_stdout_bytes": 12582912,
+    "candidate_declarations": 4000,
+    "compile_stdout_bytes": 524288,
+    "consumer_edge_occurrences": 28100000,
+    "consumer_processed_nodes": 2810000,
+    "core_bytes": 0,
+    "dependency_edges_or_pending": 100000,
+    "dependency_nodes": 10000,
+    "extraction_file_bytes": 65536,
+    "extractor_bytes": 83886080,
+    "final_seconds": 30,
+    "fresh_bytes": 67108864,
+    "fresh_entries": 64,
+    "go_build_seconds": 300,
+    "go_log_bytes": 262144,
+    "initial_seconds": 30,
+    "job_seconds": 2700,
+    "module_compile_seconds": 120,
+    "regular_file_bytes": 8388608,
+    "retained_bytes": 12845056,
+    "shared_extraction_seconds": 60,
+    "stderr_bytes": 524288,
+    "whole_seconds": 1560
+  },
+  "control_roots": [
+    "TestAPDUParserControlSourcePinExact",
+    "TestAPDUParserControlSourcePinByteMutation",
+    "TestAPDUParserControlSourcePinLengthMutation",
+    "TestAPDUParserControlProfileOnlyBudgetLines",
+    "TestAPDUParserControlProfileChangedPrefix",
+    "TestAPDUParserControlProfileChangedRecursionBudget",
+    "TestAPDUParserControlProfileChangedHeartbeatBudget",
+    "TestAPDUParserControlProfileExtraOption",
+    "TestAPDUParserControlProfileExtraNamespace",
+    "TestAPDUParserControlProfileMissingEnd",
+    "TestAPDUParserControlProfileInvalidUTF8",
+    "TestAPDUParserControlProfileNUL",
+    "TestAPDUParserControlProfileCarriageReturn",
+    "TestAPDUParserControlProfileByteCap",
+    "TestAPDUParserControlRefusedAxiomHeader",
+    "TestAPDUParserControlRefusedTheoremHeader",
+    "TestAPDUParserControlRefusedImportHeader",
+    "TestAPDUParserControlRefusedOpaqueHeader",
+    "TestAPDUParserControlRefusedPartialHeader",
+    "TestAPDUParserControlRefusedUnsafeHeader",
+    "TestAPDUParserControlDuplicateDeclaration",
+    "TestAPDUParserControlUnownedInstance",
+    "TestAPDUParserControlCheckedClosureFixture",
+    "TestAPDUParserControlMissingRequestedRoot",
+    "TestAPDUParserControlDuplicateRequestedRoot",
+    "TestAPDUParserControlUnknownRequestedRoot",
+    "TestAPDUParserControlMissingCheckedRoot",
+    "TestAPDUParserControlDuplicateCheckedRoot",
+    "TestAPDUParserControlUnknownCheckedRoot",
+    "TestAPDUParserControlMissingCheckedDependency",
+    "TestAPDUParserControlUnexpectedCall",
+    "TestAPDUParserControlExtraKnownCallee",
+    "TestAPDUParserControlMissingCallee",
+    "TestAPDUParserControlUnsupportedAST",
+    "TestAPDUParserControlUnsupportedOperator",
+    "TestAPDUParserControlIndirectInvocation",
+    "TestAPDUParserControlResolvedMethod",
+    "TestAPDUParserControlForeignFunctionMetadata",
+    "TestAPDUParserControlASTNodeBudget",
+    "TestAPDUParserControlASTDepthBound",
+    "TestAPDUParserControlResultCarrierFixture",
+    "TestAPDUParserControlMissingResultCarrier",
+    "TestAPDUParserControlDuplicateResultCarrier",
+    "TestAPDUParserControlCollidingResultCarrier",
+    "TestAPDUParserControlWrongResultErrorType",
+    "TestAPDUParserControlExtraGeneratedDefinition",
+    "TestAPDUParserControlMissingGeneratedDefinition",
+    "TestAPDUParserControlGeneratedRootReplacement",
+    "TestAPDUParserControlGeneratedRecordTypeConfusion",
+    "TestAPDUParserControlGeneratedResultTypeConfusion",
+    "TestAPDUParserControlGeneratedErrorTypeConfusion",
+    "TestAPDUParserControlGeneratedThreadedSignature",
+    "TestAPDUParserControlGeneratedArgumentTypeConfusion",
+    "TestAPDUParserControlDriftExactSyntheticBytes",
+    "TestAPDUParserControlDriftSyntheticBodyMutation",
+    "TestAPDUParserControlDriftSyntheticWhitespace",
+    "TestAPDUParserControlDriftCommittedMutation",
+    "TestAPDUParserControlDriftRefusesUnprofiledReference",
+    "TestAPDUParserControlDriftRefusesChangedRawHeader",
+    "TestAPDUParserControlExactRawProfiledSpans",
+    "TestAPDUParserControlMissingRawSpan",
+    "TestAPDUParserControlDuplicateRawSpan",
+    "TestAPDUParserControlMissingOptionCarrier",
+    "TestAPDUParserControlDuplicateOptionCarrier",
+    "TestAPDUParserControlAliasedOptionCarrier",
+    "TestAPDUParserControlWrongOptionPayload",
+    "TestAPDUParserControlOptionSourceOrigin",
+    "TestAPDUParserControlResultSourceOrigin",
+    "TestAPDUParserControlAPDULocalsExact",
+    "TestAPDUParserControlAPDULocalsRefusal"
+  ],
+  "distribution_modules": [
+    "Init",
+    "Init.BinderNameHint",
+    "Init.BinderPredicates",
+    "Init.ByCases",
+    "Init.CbvSimproc",
+    "Init.Classical",
+    "Init.Coe",
+    "Init.Control",
+    "Init.Control.Basic",
+    "Init.Control.Do",
+    "Init.Control.EState",
+    "Init.Control.Except",
+    "Init.Control.ExceptCps",
+    "Init.Control.Id",
+    "Init.Control.Lawful",
+    "Init.Control.Lawful.Basic",
+    "Init.Control.Lawful.Instances",
+    "Init.Control.Lawful.Lemmas",
+    "Init.Control.Lawful.MonadAttach",
+    "Init.Control.Lawful.MonadAttach.Instances",
+    "Init.Control.Lawful.MonadAttach.Lemmas",
+    "Init.Control.Lawful.MonadLift",
+    "Init.Control.Lawful.MonadLift.Basic",
+    "Init.Control.Lawful.MonadLift.Instances",
+    "Init.Control.Lawful.MonadLift.Lemmas",
+    "Init.Control.MonadAttach",
+    "Init.Control.Option",
+    "Init.Control.Reader",
+    "Init.Control.State",
+    "Init.Control.StateCps",
+    "Init.Control.StateRef",
+    "Init.Conv",
+    "Init.Core",
+    "Init.Data",
+    "Init.Data.AC",
+    "Init.Data.Array",
+    "Init.Data.Array.Attach",
+    "Init.Data.Array.Basic",
+    "Init.Data.Array.BasicAux",
+    "Init.Data.Array.BinSearch",
+    "Init.Data.Array.Bootstrap",
+    "Init.Data.Array.Count",
+    "Init.Data.Array.DecidableEq",
+    "Init.Data.Array.Erase",
+    "Init.Data.Array.Extract",
+    "Init.Data.Array.FinRange",
+    "Init.Data.Array.Find",
+    "Init.Data.Array.GetLit",
+    "Init.Data.Array.InsertIdx",
+    "Init.Data.Array.InsertionSort",
+    "Init.Data.Array.Int",
+    "Init.Data.Array.Lemmas",
+    "Init.Data.Array.Lex",
+    "Init.Data.Array.Lex.Basic",
+    "Init.Data.Array.Lex.Lemmas",
+    "Init.Data.Array.MapIdx",
+    "Init.Data.Array.Mem",
+    "Init.Data.Array.MinMax",
+    "Init.Data.Array.Monadic",
+    "Init.Data.Array.Nat",
+    "Init.Data.Array.OfFn",
+    "Init.Data.Array.Perm",
+    "Init.Data.Array.QSort",
+    "Init.Data.Array.QSort.Basic",
+    "Init.Data.Array.Range",
+    "Init.Data.Array.Set",
+    "Init.Data.Array.Sort",
+    "Init.Data.Array.Sort.Basic",
+    "Init.Data.Array.Sort.Lemmas",
+    "Init.Data.Array.Subarray",
+    "Init.Data.Array.Subarray.Split",
+    "Init.Data.Array.TakeDrop",
+    "Init.Data.Array.Zip",
+    "Init.Data.BEq",
+    "Init.Data.BitVec",
+    "Init.Data.BitVec.Basic",
+    "Init.Data.BitVec.BasicAux",
+    "Init.Data.BitVec.Bitblast",
+    "Init.Data.BitVec.Bootstrap",
+    "Init.Data.BitVec.Decidable",
+    "Init.Data.BitVec.Folds",
+    "Init.Data.BitVec.Lemmas",
+    "Init.Data.Bool",
+    "Init.Data.ByteArray",
+    "Init.Data.ByteArray.Basic",
+    "Init.Data.ByteArray.Bootstrap",
+    "Init.Data.ByteArray.Extra",
+    "Init.Data.ByteArray.Lemmas",
+    "Init.Data.Cast",
+    "Init.Data.Char",
+    "Init.Data.Char.Basic",
+    "Init.Data.Char.Lemmas",
+    "Init.Data.Char.Order",
+    "Init.Data.Char.Ordinal",
+    "Init.Data.Dyadic",
+    "Init.Data.Dyadic.Basic",
+    "Init.Data.Dyadic.Instances",
+    "Init.Data.Dyadic.Inv",
+    "Init.Data.Dyadic.Round",
+    "Init.Data.Fin",
+    "Init.Data.Fin.Basic",
+    "Init.Data.Fin.Bitwise",
+    "Init.Data.Fin.Fold",
+    "Init.Data.Fin.Iterate",
+    "Init.Data.Fin.Lemmas",
+    "Init.Data.Fin.Log2",
+    "Init.Data.Fin.OverflowAware",
+    "Init.Data.Float",
+    "Init.Data.Float.Float",
+    "Init.Data.Float.Float32",
+    "Init.Data.Float.Model",
+    "Init.Data.Float.Model.Float",
+    "Init.Data.Float.Model.Float32",
+    "Init.Data.Float.Model.Format",
+    "Init.Data.Float.Model.Format.Basic",
+    "Init.Data.Float.Model.Format.Valid",
+    "Init.Data.Float.Model.Unpacked",
+    "Init.Data.Float.Model.Unpacked.Basic",
+    "Init.Data.Float.Model.Unpacked.Operations",
+    "Init.Data.Float.Model.Unpacked.Operations.Add",
+    "Init.Data.Float.Model.Unpacked.Operations.Compare",
+    "Init.Data.Float.Model.Unpacked.Operations.Div",
+    "Init.Data.Float.Model.Unpacked.Operations.Mul",
+    "Init.Data.Float.Model.Unpacked.Operations.OfNat",
+    "Init.Data.Float.Model.Unpacked.Operations.OfScientific",
+    "Init.Data.Float.Model.Unpacked.Operations.Sign",
+    "Init.Data.Float.Model.Unpacked.Operations.Sqrt",
+    "Init.Data.Float.Model.Unpacked.Operations.Status",
+    "Init.Data.Float.Model.Unpacked.Operations.Sub",
+    "Init.Data.Float.Model.Unpacked.Operations.ToNat",
+    "Init.Data.Float.Model.Unpacked.Pack",
+    "Init.Data.Float.Model.Unpacked.Pack.Basic",
+    "Init.Data.Float.Model.Unpacked.Pack.Lemmas",
+    "Init.Data.Float.Model.Unpacked.Round",
+    "Init.Data.Float.Model.Unpacked.Sign",
+    "Init.Data.FloatArray",
+    "Init.Data.FloatArray.Basic",
+    "Init.Data.Format",
+    "Init.Data.Format.Basic",
+    "Init.Data.Format.Instances",
+    "Init.Data.Format.Macro",
+    "Init.Data.Format.Syntax",
+    "Init.Data.Function",
+    "Init.Data.Hashable",
+    "Init.Data.Int",
+    "Init.Data.Int.Basic",
+    "Init.Data.Int.Bitwise",
+    "Init.Data.Int.Bitwise.Basic",
+    "Init.Data.Int.Bitwise.Lemmas",
+    "Init.Data.Int.Compare",
+    "Init.Data.Int.Cooper",
+    "Init.Data.Int.DivMod",
+    "Init.Data.Int.DivMod.Basic",
+    "Init.Data.Int.DivMod.Bootstrap",
+    "Init.Data.Int.DivMod.Lemmas",
+    "Init.Data.Int.DivMod.Pow",
+    "Init.Data.Int.Gcd",
+    "Init.Data.Int.Lemmas",
+    "Init.Data.Int.LemmasAux",
+    "Init.Data.Int.Linear",
+    "Init.Data.Int.OfNat",
+    "Init.Data.Int.Order",
+    "Init.Data.Int.Pow",
+    "Init.Data.Int.Repr",
+    "Init.Data.Int.ToString",
+    "Init.Data.Iterators",
+    "Init.Data.Iterators.Basic",
+    "Init.Data.Iterators.Combinators",
+    "Init.Data.Iterators.Combinators.Append",
+    "Init.Data.Iterators.Combinators.Attach",
+    "Init.Data.Iterators.Combinators.FilterMap",
+    "Init.Data.Iterators.Combinators.FlatMap",
+    "Init.Data.Iterators.Combinators.Monadic",
+    "Init.Data.Iterators.Combinators.Monadic.Append",
+    "Init.Data.Iterators.Combinators.Monadic.Attach",
+    "Init.Data.Iterators.Combinators.Monadic.FilterMap",
+    "Init.Data.Iterators.Combinators.Monadic.FlatMap",
+    "Init.Data.Iterators.Combinators.Monadic.Take",
+    "Init.Data.Iterators.Combinators.Monadic.ULift",
+    "Init.Data.Iterators.Combinators.Take",
+    "Init.Data.Iterators.Combinators.ULift",
+    "Init.Data.Iterators.Consumers",
+    "Init.Data.Iterators.Consumers.Access",
+    "Init.Data.Iterators.Consumers.Collect",
+    "Init.Data.Iterators.Consumers.Loop",
+    "Init.Data.Iterators.Consumers.Monadic",
+    "Init.Data.Iterators.Consumers.Monadic.Access",
+    "Init.Data.Iterators.Consumers.Monadic.Collect",
+    "Init.Data.Iterators.Consumers.Monadic.Loop",
+    "Init.Data.Iterators.Consumers.Monadic.Partial",
+    "Init.Data.Iterators.Consumers.Monadic.Total",
+    "Init.Data.Iterators.Consumers.Partial",
+    "Init.Data.Iterators.Consumers.Stream",
+    "Init.Data.Iterators.Consumers.Total",
+    "Init.Data.Iterators.Internal",
+    "Init.Data.Iterators.Internal.LawfulMonadLiftFunction",
+    "Init.Data.Iterators.Lemmas",
+    "Init.Data.Iterators.Lemmas.Basic",
+    "Init.Data.Iterators.Lemmas.Combinators",
+    "Init.Data.Iterators.Lemmas.Combinators.Append",
+    "Init.Data.Iterators.Lemmas.Combinators.Attach",
+    "Init.Data.Iterators.Lemmas.Combinators.FilterMap",
+    "Init.Data.Iterators.Lemmas.Combinators.FlatMap",
+    "Init.Data.Iterators.Lemmas.Combinators.Monadic",
+    "Init.Data.Iterators.Lemmas.Combinators.Monadic.Append",
+    "Init.Data.Iterators.Lemmas.Combinators.Monadic.Attach",
+    "Init.Data.Iterators.Lemmas.Combinators.Monadic.FilterMap",
+    "Init.Data.Iterators.Lemmas.Combinators.Monadic.FlatMap",
+    "Init.Data.Iterators.Lemmas.Combinators.Monadic.Take",
+    "Init.Data.Iterators.Lemmas.Combinators.Monadic.ULift",
+    "Init.Data.Iterators.Lemmas.Combinators.Take",
+    "Init.Data.Iterators.Lemmas.Combinators.ULift",
+    "Init.Data.Iterators.Lemmas.Consumers",
+    "Init.Data.Iterators.Lemmas.Consumers.Access",
+    "Init.Data.Iterators.Lemmas.Consumers.Collect",
+    "Init.Data.Iterators.Lemmas.Consumers.Loop",
+    "Init.Data.Iterators.Lemmas.Consumers.Monadic",
+    "Init.Data.Iterators.Lemmas.Consumers.Monadic.Collect",
+    "Init.Data.Iterators.Lemmas.Consumers.Monadic.Loop",
+    "Init.Data.Iterators.Lemmas.Monadic.Basic",
+    "Init.Data.Iterators.Lemmas.Producers",
+    "Init.Data.Iterators.Lemmas.Producers.List",
+    "Init.Data.Iterators.Lemmas.Producers.Monadic",
+    "Init.Data.Iterators.Lemmas.Producers.Monadic.List",
+    "Init.Data.Iterators.PostconditionMonad",
+    "Init.Data.Iterators.Producers",
+    "Init.Data.Iterators.Producers.List",
+    "Init.Data.Iterators.Producers.Monadic",
+    "Init.Data.Iterators.Producers.Monadic.List",
+    "Init.Data.Iterators.ToIterator",
+    "Init.Data.LawfulHashable",
+    "Init.Data.List",
+    "Init.Data.List.Attach",
+    "Init.Data.List.Basic",
+    "Init.Data.List.BasicAux",
+    "Init.Data.List.Control",
+    "Init.Data.List.ControlImpl",
+    "Init.Data.List.Count",
+    "Init.Data.List.Erase",
+    "Init.Data.List.FinRange",
+    "Init.Data.List.Find",
+    "Init.Data.List.Impl",
+    "Init.Data.List.Int",
+    "Init.Data.List.Int.Prod",
+    "Init.Data.List.Int.Sum",
+    "Init.Data.List.Lemmas",
+    "Init.Data.List.Lex",
+    "Init.Data.List.MapIdx",
+    "Init.Data.List.MinMax",
+    "Init.Data.List.MinMaxIdx",
+    "Init.Data.List.MinMaxOn",
+    "Init.Data.List.Monadic",
+    "Init.Data.List.Nat",
+    "Init.Data.List.Nat.BEq",
+    "Init.Data.List.Nat.Basic",
+    "Init.Data.List.Nat.Count",
+    "Init.Data.List.Nat.Erase",
+    "Init.Data.List.Nat.Find",
+    "Init.Data.List.Nat.InsertIdx",
+    "Init.Data.List.Nat.Modify",
+    "Init.Data.List.Nat.Pairwise",
+    "Init.Data.List.Nat.Perm",
+    "Init.Data.List.Nat.Prod",
+    "Init.Data.List.Nat.Range",
+    "Init.Data.List.Nat.Sublist",
+    "Init.Data.List.Nat.Sum",
+    "Init.Data.List.Nat.TakeDrop",
+    "Init.Data.List.Notation",
+    "Init.Data.List.OfFn",
+    "Init.Data.List.Pairwise",
+    "Init.Data.List.Perm",
+    "Init.Data.List.Range",
+    "Init.Data.List.Scan",
+    "Init.Data.List.Scan.Basic",
+    "Init.Data.List.Scan.Lemmas",
+    "Init.Data.List.Sort",
+    "Init.Data.List.Sort.Basic",
+    "Init.Data.List.Sort.Impl",
+    "Init.Data.List.Sort.Lemmas",
+    "Init.Data.List.SplitOn",
+    "Init.Data.List.SplitOn.Basic",
+    "Init.Data.List.SplitOn.Lemmas",
+    "Init.Data.List.Sublist",
+    "Init.Data.List.TakeDrop",
+    "Init.Data.List.ToArray",
+    "Init.Data.List.ToArrayImpl",
+    "Init.Data.List.Zip",
+    "Init.Data.Nat",
+    "Init.Data.Nat.Basic",
+    "Init.Data.Nat.Bitwise",
+    "Init.Data.Nat.Bitwise.Basic",
+    "Init.Data.Nat.Bitwise.Lemmas",
+    "Init.Data.Nat.Compare",
+    "Init.Data.Nat.Control",
+    "Init.Data.Nat.Coprime",
+    "Init.Data.Nat.Div",
+    "Init.Data.Nat.Div.Basic",
+    "Init.Data.Nat.Div.Lemmas",
+    "Init.Data.Nat.Dvd",
+    "Init.Data.Nat.Fold",
+    "Init.Data.Nat.Gcd",
+    "Init.Data.Nat.Internal",
+    "Init.Data.Nat.Internal.Linear",
+    "Init.Data.Nat.Internal.SOM",
+    "Init.Data.Nat.Lcm",
+    "Init.Data.Nat.Lemmas",
+    "Init.Data.Nat.Log2",
+    "Init.Data.Nat.MinMax",
+    "Init.Data.Nat.Mod",
+    "Init.Data.Nat.Order",
+    "Init.Data.Nat.Power2",
+    "Init.Data.Nat.Power2.Basic",
+    "Init.Data.Nat.Power2.Lemmas",
+    "Init.Data.Nat.Simproc",
+    "Init.Data.Nat.Sqrt",
+    "Init.Data.Nat.Sqrt.Basic",
+    "Init.Data.Nat.Sqrt.Lemmas",
+    "Init.Data.Nat.ToString",
+    "Init.Data.NeZero",
+    "Init.Data.OfScientific",
+    "Init.Data.OfScientific.Basic",
+    "Init.Data.Option",
+    "Init.Data.Option.Array",
+    "Init.Data.Option.Attach",
+    "Init.Data.Option.Basic",
+    "Init.Data.Option.BasicAux",
+    "Init.Data.Option.Coe",
+    "Init.Data.Option.Function",
+    "Init.Data.Option.Instances",
+    "Init.Data.Option.Lemmas",
+    "Init.Data.Option.List",
+    "Init.Data.Option.Monadic",
+    "Init.Data.Ord",
+    "Init.Data.Ord.Array",
+    "Init.Data.Ord.Basic",
+    "Init.Data.Ord.BitVec",
+    "Init.Data.Ord.SInt",
+    "Init.Data.Ord.String",
+    "Init.Data.Ord.UInt",
+    "Init.Data.Ord.Vector",
+    "Init.Data.Order",
+    "Init.Data.Order.Classes",
+    "Init.Data.Order.ClassesExtra",
+    "Init.Data.Order.Factories",
+    "Init.Data.Order.FactoriesExtra",
+    "Init.Data.Order.Lemmas",
+    "Init.Data.Order.LemmasExtra",
+    "Init.Data.Order.MinMaxOn",
+    "Init.Data.Order.Opposite",
+    "Init.Data.Order.Ord",
+    "Init.Data.Order.PackageFactories",
+    "Init.Data.PLift",
+    "Init.Data.Prod",
+    "Init.Data.Queue",
+    "Init.Data.RArray",
+    "Init.Data.Random",
+    "Init.Data.Range",
+    "Init.Data.Range.Basic",
+    "Init.Data.Range.Lemmas",
+    "Init.Data.Range.Polymorphic",
+    "Init.Data.Range.Polymorphic.Basic",
+    "Init.Data.Range.Polymorphic.BitVec",
+    "Init.Data.Range.Polymorphic.Char",
+    "Init.Data.Range.Polymorphic.Fin",
+    "Init.Data.Range.Polymorphic.GetElemTactic",
+    "Init.Data.Range.Polymorphic.Instances",
+    "Init.Data.Range.Polymorphic.Int",
+    "Init.Data.Range.Polymorphic.IntLemmas",
+    "Init.Data.Range.Polymorphic.Internal.SignedBitVec",
+    "Init.Data.Range.Polymorphic.Iterators",
+    "Init.Data.Range.Polymorphic.Lemmas",
+    "Init.Data.Range.Polymorphic.Map",
+    "Init.Data.Range.Polymorphic.Nat",
+    "Init.Data.Range.Polymorphic.NatLemmas",
+    "Init.Data.Range.Polymorphic.PRange",
+    "Init.Data.Range.Polymorphic.RangeIterator",
+    "Init.Data.Range.Polymorphic.SInt",
+    "Init.Data.Range.Polymorphic.Stream",
+    "Init.Data.Range.Polymorphic.UInt",
+    "Init.Data.Range.Polymorphic.UpwardEnumerable",
+    "Init.Data.Rat",
+    "Init.Data.Rat.Basic",
+    "Init.Data.Rat.Lemmas",
+    "Init.Data.Repr",
+    "Init.Data.SInt",
+    "Init.Data.SInt.Basic",
+    "Init.Data.SInt.Bitwise",
+    "Init.Data.SInt.Float",
+    "Init.Data.SInt.Float32",
+    "Init.Data.SInt.IntToBitVec",
+    "Init.Data.SInt.Lemmas",
+    "Init.Data.Slice",
+    "Init.Data.Slice.Array",
+    "Init.Data.Slice.Array.Basic",
+    "Init.Data.Slice.Array.Iterator",
+    "Init.Data.Slice.Array.Lemmas",
+    "Init.Data.Slice.Basic",
+    "Init.Data.Slice.InternalLemmas",
+    "Init.Data.Slice.Lemmas",
+    "Init.Data.Slice.List",
+    "Init.Data.Slice.List.Basic",
+    "Init.Data.Slice.List.Iterator",
+    "Init.Data.Slice.List.Lemmas",
+    "Init.Data.Slice.Notation",
+    "Init.Data.Slice.Operations",
+    "Init.Data.Stream",
+    "Init.Data.String",
+    "Init.Data.String.Basic",
+    "Init.Data.String.Bootstrap",
+    "Init.Data.String.Decode",
+    "Init.Data.String.Defs",
+    "Init.Data.String.Extra",
+    "Init.Data.String.FindPos",
+    "Init.Data.String.Hashable",
+    "Init.Data.String.Iter",
+    "Init.Data.String.Iter.Basic",
+    "Init.Data.String.Iter.Intercalate",
+    "Init.Data.String.Iterate",
+    "Init.Data.String.Iterator",
+    "Init.Data.String.Legacy",
+    "Init.Data.String.Lemmas",
+    "Init.Data.String.Lemmas.Basic",
+    "Init.Data.String.Lemmas.FindPos",
+    "Init.Data.String.Lemmas.Hashable",
+    "Init.Data.String.Lemmas.Intercalate",
+    "Init.Data.String.Lemmas.IsEmpty",
+    "Init.Data.String.Lemmas.Iter",
+    "Init.Data.String.Lemmas.Iterate",
+    "Init.Data.String.Lemmas.Length",
+    "Init.Data.String.Lemmas.Modify",
+    "Init.Data.String.Lemmas.Order",
+    "Init.Data.String.Lemmas.Pattern",
+    "Init.Data.String.Lemmas.Pattern.Basic",
+    "Init.Data.String.Lemmas.Pattern.Char",
+    "Init.Data.String.Lemmas.Pattern.Find",
+    "Init.Data.String.Lemmas.Pattern.Find.Basic",
+    "Init.Data.String.Lemmas.Pattern.Find.Char",
+    "Init.Data.String.Lemmas.Pattern.Find.Pred",
+    "Init.Data.String.Lemmas.Pattern.Find.String",
+    "Init.Data.String.Lemmas.Pattern.Memcmp",
+    "Init.Data.String.Lemmas.Pattern.Pred",
+    "Init.Data.String.Lemmas.Pattern.Split",
+    "Init.Data.String.Lemmas.Pattern.Split.Basic",
+    "Init.Data.String.Lemmas.Pattern.Split.Char",
+    "Init.Data.String.Lemmas.Pattern.Split.Pred",
+    "Init.Data.String.Lemmas.Pattern.String",
+    "Init.Data.String.Lemmas.Pattern.String.Basic",
+    "Init.Data.String.Lemmas.Pattern.String.ForwardPattern",
+    "Init.Data.String.Lemmas.Pattern.String.ForwardSearcher",
+    "Init.Data.String.Lemmas.Pattern.TakeDrop",
+    "Init.Data.String.Lemmas.Pattern.TakeDrop.Basic",
+    "Init.Data.String.Lemmas.Pattern.TakeDrop.Char",
+    "Init.Data.String.Lemmas.Pattern.TakeDrop.Pred",
+    "Init.Data.String.Lemmas.Pattern.TakeDrop.String",
+    "Init.Data.String.Lemmas.Search",
+    "Init.Data.String.Lemmas.Slice",
+    "Init.Data.String.Lemmas.Splits",
+    "Init.Data.String.Lemmas.StringOrder",
+    "Init.Data.String.Lemmas.TakeDrop",
+    "Init.Data.String.Length",
+    "Init.Data.String.Modify",
+    "Init.Data.String.OrderInstances",
+    "Init.Data.String.Pattern",
+    "Init.Data.String.Pattern.Basic",
+    "Init.Data.String.Pattern.Char",
+    "Init.Data.String.Pattern.Pred",
+    "Init.Data.String.Pattern.String",
+    "Init.Data.String.PosRaw",
+    "Init.Data.String.Search",
+    "Init.Data.String.Slice",
+    "Init.Data.String.Stream",
+    "Init.Data.String.Subslice",
+    "Init.Data.String.Substring",
+    "Init.Data.String.TakeDrop",
+    "Init.Data.String.Termination",
+    "Init.Data.String.ToSlice",
+    "Init.Data.Subtype",
+    "Init.Data.Subtype.Basic",
+    "Init.Data.Subtype.Order",
+    "Init.Data.Subtype.OrderExtra",
+    "Init.Data.Sum",
+    "Init.Data.Sum.Basic",
+    "Init.Data.Sum.Lemmas",
+    "Init.Data.ToString",
+    "Init.Data.ToString.Basic",
+    "Init.Data.ToString.Extra",
+    "Init.Data.ToString.Macro",
+    "Init.Data.ToString.Name",
+    "Init.Data.UInt",
+    "Init.Data.UInt.Basic",
+    "Init.Data.UInt.BasicAux",
+    "Init.Data.UInt.Bitwise",
+    "Init.Data.UInt.IntToBitVec",
+    "Init.Data.UInt.Lemmas",
+    "Init.Data.UInt.Log2",
+    "Init.Data.ULift",
+    "Init.Data.Vector",
+    "Init.Data.Vector.Algebra",
+    "Init.Data.Vector.Attach",
+    "Init.Data.Vector.Basic",
+    "Init.Data.Vector.Count",
+    "Init.Data.Vector.DecidableEq",
+    "Init.Data.Vector.Erase",
+    "Init.Data.Vector.Extract",
+    "Init.Data.Vector.FinRange",
+    "Init.Data.Vector.Find",
+    "Init.Data.Vector.InsertIdx",
+    "Init.Data.Vector.Int",
+    "Init.Data.Vector.Lemmas",
+    "Init.Data.Vector.Lex",
+    "Init.Data.Vector.MapIdx",
+    "Init.Data.Vector.Monadic",
+    "Init.Data.Vector.Nat",
+    "Init.Data.Vector.OfFn",
+    "Init.Data.Vector.Perm",
+    "Init.Data.Vector.Range",
+    "Init.Data.Vector.Stream",
+    "Init.Data.Vector.Zip",
+    "Init.Data.Zero",
+    "Init.Dynamic",
+    "Init.Ext",
+    "Init.GetElem",
+    "Init.Grind",
+    "Init.Grind.AC",
+    "Init.Grind.Annotated",
+    "Init.Grind.Attr",
+    "Init.Grind.Cases",
+    "Init.Grind.Config",
+    "Init.Grind.Ext",
+    "Init.Grind.FieldNormNum",
+    "Init.Grind.Injective",
+    "Init.Grind.Interactive",
+    "Init.Grind.Lemmas",
+    "Init.Grind.Lint",
+    "Init.Grind.Module",
+    "Init.Grind.Module.Basic",
+    "Init.Grind.Module.Envelope",
+    "Init.Grind.Module.NatModuleNorm",
+    "Init.Grind.Module.OfNatModule",
+    "Init.Grind.Norm",
+    "Init.Grind.Offset",
+    "Init.Grind.Order",
+    "Init.Grind.Ordered",
+    "Init.Grind.Ordered.Field",
+    "Init.Grind.Ordered.Int",
+    "Init.Grind.Ordered.Linarith",
+    "Init.Grind.Ordered.Module",
+    "Init.Grind.Ordered.Order",
+    "Init.Grind.Ordered.Rat",
+    "Init.Grind.Ordered.Ring",
+    "Init.Grind.PP",
+    "Init.Grind.Propagator",
+    "Init.Grind.Ring",
+    "Init.Grind.Ring.Basic",
+    "Init.Grind.Ring.CommSemiringAdapter",
+    "Init.Grind.Ring.CommSolver",
+    "Init.Grind.Ring.Envelope",
+    "Init.Grind.Ring.Field",
+    "Init.Grind.Ring.OfScientific",
+    "Init.Grind.Ring.ToInt",
+    "Init.Grind.Tactics",
+    "Init.Grind.ToInt",
+    "Init.Grind.ToIntLemmas",
+    "Init.Grind.Util",
+    "Init.GrindInstances",
+    "Init.GrindInstances.Nat",
+    "Init.GrindInstances.Ring",
+    "Init.GrindInstances.Ring.BitVec",
+    "Init.GrindInstances.Ring.Fin",
+    "Init.GrindInstances.Ring.Int",
+    "Init.GrindInstances.Ring.Nat",
+    "Init.GrindInstances.Ring.Rat",
+    "Init.GrindInstances.Ring.SInt",
+    "Init.GrindInstances.Ring.UInt",
+    "Init.GrindInstances.ToInt",
+    "Init.Guard",
+    "Init.Hints",
+    "Init.Internal",
+    "Init.Internal.Order",
+    "Init.Internal.Order.Basic",
+    "Init.Internal.Order.Lemmas",
+    "Init.Internal.Order.MonadTail",
+    "Init.Internal.Order.Tactic",
+    "Init.Internal.Order.While",
+    "Init.LawfulBEqTactics",
+    "Init.MacroTrace",
+    "Init.Meta",
+    "Init.Meta.Defs",
+    "Init.MetaTypes",
+    "Init.MethodSpecsSimp",
+    "Init.Notation",
+    "Init.NotationExtra",
+    "Init.Omega",
+    "Init.Omega.Coeffs",
+    "Init.Omega.Constraint",
+    "Init.Omega.Int",
+    "Init.Omega.IntList",
+    "Init.Omega.LinearCombo",
+    "Init.Omega.Logic",
+    "Init.Prelude",
+    "Init.PropLemmas",
+    "Init.RCases",
+    "Init.ShareCommon",
+    "Init.SimpLemmas",
+    "Init.Simproc",
+    "Init.SizeOf",
+    "Init.SizeOfLemmas",
+    "Init.Sym",
+    "Init.Sym.DSimp.DSimprocDSL",
+    "Init.Sym.Lemmas",
+    "Init.Sym.Simp.SimprocDSL",
+    "Init.Syntax",
+    "Init.System",
+    "Init.System.CancelToken",
+    "Init.System.FilePath",
+    "Init.System.IO",
+    "Init.System.IOError",
+    "Init.System.Platform",
+    "Init.System.Promise",
+    "Init.System.ST",
+    "Init.System.Uri",
+    "Init.Tactics",
+    "Init.TacticsExtra",
+    "Init.Task",
+    "Init.Try",
+    "Init.Util",
+    "Init.WF",
+    "Init.WFComputable",
+    "Init.WFExtrinsicFix",
+    "Init.WFTactics",
+    "Init.While",
+    "Lean.AddDecl",
+    "Lean.Attributes",
+    "Lean.AutoDecl",
+    "Lean.AuxRecursor",
+    "Lean.BuiltinDocAttr",
+    "Lean.Class",
+    "Lean.CompactedRegion",
+    "Lean.Compiler.BorrowedAnnotation",
+    "Lean.Compiler.ExportAttr",
+    "Lean.Compiler.ExternAttr",
+    "Lean.Compiler.IR.Basic",
+    "Lean.Compiler.IR.CompilerM",
+    "Lean.Compiler.IR.Format",
+    "Lean.Compiler.InitAttr",
+    "Lean.Compiler.InlineAttrs",
+    "Lean.Compiler.LCNF.Basic",
+    "Lean.Compiler.LCNF.PublicDeclsExt",
+    "Lean.Compiler.LCNF.Types",
+    "Lean.Compiler.MetaAttr",
+    "Lean.Compiler.ModPkgExt",
+    "Lean.Compiler.NameMangling",
+    "Lean.Compiler.NoncomputableAttr",
+    "Lean.Compiler.Old",
+    "Lean.Compiler.Options",
+    "Lean.Compiler.Specialize",
+    "Lean.CoreM",
+    "Lean.Data.AssocList",
+    "Lean.Data.DeclarationRange",
+    "Lean.Data.Format",
+    "Lean.Data.Iterators.Producers.PersistentHashMap",
+    "Lean.Data.Json",
+    "Lean.Data.Json.Basic",
+    "Lean.Data.Json.Elab",
+    "Lean.Data.Json.FromToJson",
+    "Lean.Data.Json.FromToJson.Basic",
+    "Lean.Data.Json.FromToJson.Extra",
+    "Lean.Data.Json.Parser",
+    "Lean.Data.Json.Printer",
+    "Lean.Data.Json.Stream",
+    "Lean.Data.KVMap",
+    "Lean.Data.LBool",
+    "Lean.Data.LOption",
+    "Lean.Data.Lsp.Basic",
+    "Lean.Data.Lsp.BasicAux",
+    "Lean.Data.Lsp.Utf16",
+    "Lean.Data.Name",
+    "Lean.Data.NameMap.Basic",
+    "Lean.Data.NameTrie",
+    "Lean.Data.OpenDecl",
+    "Lean.Data.Options",
+    "Lean.Data.PPContext",
+    "Lean.Data.PersistentArray",
+    "Lean.Data.PersistentHashMap",
+    "Lean.Data.PersistentHashSet",
+    "Lean.Data.Position",
+    "Lean.Data.PrefixTree",
+    "Lean.Data.RArray",
+    "Lean.Data.SMap",
+    "Lean.Data.SSet",
+    "Lean.Data.Trie",
+    "Lean.Declaration",
+    "Lean.DeclarationRange",
+    "Lean.DefEqAttrib",
+    "Lean.DocString",
+    "Lean.DocString.Add",
+    "Lean.DocString.DeferredCheck",
+    "Lean.DocString.Extension",
+    "Lean.DocString.Formatter",
+    "Lean.DocString.Links",
+    "Lean.DocString.Markdown",
+    "Lean.DocString.Parser",
+    "Lean.DocString.Syntax",
+    "Lean.DocString.Types",
+    "Lean.Elab.Arg",
+    "Lean.Elab.Attributes",
+    "Lean.Elab.AutoBound",
+    "Lean.Elab.Binders",
+    "Lean.Elab.BindersUtil",
+    "Lean.Elab.Command",
+    "Lean.Elab.Command.Scope",
+    "Lean.Elab.Config",
+    "Lean.Elab.ConfigEval",
+    "Lean.Elab.ConfigEval.Basic",
+    "Lean.Elab.ConfigEval.Commands",
+    "Lean.Elab.ConfigEval.DeriveEvalConfigItem",
+    "Lean.Elab.ConfigEval.DeriveEvalExpr",
+    "Lean.Elab.ConfigEval.DeriveEvalTerm",
+    "Lean.Elab.ConfigEval.Extra",
+    "Lean.Elab.ConfigEval.Instances",
+    "Lean.Elab.ConfigEval.MetaInstances",
+    "Lean.Elab.ConfigEval.Types",
+    "Lean.Elab.ConfigEval.Util",
+    "Lean.Elab.DeclModifiers",
+    "Lean.Elab.DeclNameGen",
+    "Lean.Elab.DeclarationRange",
+    "Lean.Elab.DeprecatedSyntax",
+    "Lean.Elab.Do",
+    "Lean.Elab.Do.Basic",
+    "Lean.Elab.Do.Control",
+    "Lean.Elab.Do.ForwardSyntax",
+    "Lean.Elab.Do.InferControlInfo",
+    "Lean.Elab.Do.Legacy",
+    "Lean.Elab.Do.PatternVar",
+    "Lean.Elab.Do.Switch",
+    "Lean.Elab.DocString",
+    "Lean.Elab.ErrorUtils",
+    "Lean.Elab.Eval",
+    "Lean.Elab.Exception",
+    "Lean.Elab.InfoTree",
+    "Lean.Elab.InfoTree.Basic",
+    "Lean.Elab.InfoTree.InlayHints",
+    "Lean.Elab.InfoTree.Main",
+    "Lean.Elab.InfoTree.Types",
+    "Lean.Elab.Level",
+    "Lean.Elab.Match",
+    "Lean.Elab.MatchAltView",
+    "Lean.Elab.Open",
+    "Lean.Elab.PatternVar",
+    "Lean.Elab.PreDefinition.TerminationHint",
+    "Lean.Elab.Quotation",
+    "Lean.Elab.Quotation.Precheck",
+    "Lean.Elab.Quotation.Util",
+    "Lean.Elab.SetOption",
+    "Lean.Elab.Syntax",
+    "Lean.Elab.SyntheticMVars",
+    "Lean.Elab.Tactic.Basic",
+    "Lean.Elab.Tactic.BuiltinTactic",
+    "Lean.Elab.Tactic.ElabTerm",
+    "Lean.Elab.Tactic.FalseOrByContra",
+    "Lean.Elab.Tactic.Omega",
+    "Lean.Elab.Tactic.Omega.Core",
+    "Lean.Elab.Tactic.Omega.Frontend",
+    "Lean.Elab.Tactic.Omega.MinNatAbs",
+    "Lean.Elab.Tactic.Omega.OmegaM",
+    "Lean.Elab.Tactic.RenameInaccessibles",
+    "Lean.Elab.Term",
+    "Lean.Elab.Term.TermElabM",
+    "Lean.Elab.Util",
+    "Lean.Elab.WhereFinally",
+    "Lean.EnvExtension",
+    "Lean.Environment",
+    "Lean.ErrorExplanation",
+    "Lean.Exception",
+    "Lean.Expr",
+    "Lean.ExtraModUses",
+    "Lean.HeadIndex",
+    "Lean.Hygiene",
+    "Lean.ImportingFlag",
+    "Lean.InternalExceptionId",
+    "Lean.KeyedDeclsAttribute",
+    "Lean.Language.Basic",
+    "Lean.Level",
+    "Lean.Linter.AmbiguousOpen",
+    "Lean.Linter.Deprecated",
+    "Lean.Linter.Init",
+    "Lean.LoadDynlib",
+    "Lean.LocalContext",
+    "Lean.Log",
+    "Lean.Message",
+    "Lean.Meta.ACLt",
+    "Lean.Meta.AbstractMVars",
+    "Lean.Meta.AbstractNestedProofs",
+    "Lean.Meta.AppBuilder",
+    "Lean.Meta.Basic",
+    "Lean.Meta.BinderNameHint",
+    "Lean.Meta.Canonicalizer",
+    "Lean.Meta.Check",
+    "Lean.Meta.Closure",
+    "Lean.Meta.Coe",
+    "Lean.Meta.CoeAttr",
+    "Lean.Meta.CollectFVars",
+    "Lean.Meta.CollectMVars",
+    "Lean.Meta.CompletionName",
+    "Lean.Meta.CongrTheorems",
+    "Lean.Meta.Constructions.CtorIdx",
+    "Lean.Meta.Constructions.SparseCasesOn",
+    "Lean.Meta.CtorRecognizer",
+    "Lean.Meta.DecLevel",
+    "Lean.Meta.Diagnostics",
+    "Lean.Meta.DiscrTree.Basic",
+    "Lean.Meta.DiscrTree.Main",
+    "Lean.Meta.DiscrTree.Types",
+    "Lean.Meta.Eqns",
+    "Lean.Meta.Eval",
+    "Lean.Meta.ForEachExpr",
+    "Lean.Meta.FunInfo",
+    "Lean.Meta.GeneralizeTelescope",
+    "Lean.Meta.GeneralizeVars",
+    "Lean.Meta.GetUnfoldableConst",
+    "Lean.Meta.HasAssignableMVar",
+    "Lean.Meta.HasNotBit",
+    "Lean.Meta.HaveTelescope",
+    "Lean.Meta.Hint",
+    "Lean.Meta.InferType",
+    "Lean.Meta.Instances",
+    "Lean.Meta.IntInstTesters",
+    "Lean.Meta.KAbstract",
+    "Lean.Meta.KExprMap",
+    "Lean.Meta.LetToHave",
+    "Lean.Meta.LitValues",
+    "Lean.Meta.Match.Basic",
+    "Lean.Meta.Match.CaseArraySizes",
+    "Lean.Meta.Match.CaseValues",
+    "Lean.Meta.Match.MVarRenaming",
+    "Lean.Meta.Match.Match",
+    "Lean.Meta.Match.MatchEqsExt",
+    "Lean.Meta.Match.MatchPatternAttr",
+    "Lean.Meta.Match.MatcherApp.Basic",
+    "Lean.Meta.Match.MatcherInfo",
+    "Lean.Meta.Match.NamedPatterns",
+    "Lean.Meta.Match.SimpH",
+    "Lean.Meta.Match.SolveOverlap",
+    "Lean.Meta.Match.Value",
+    "Lean.Meta.MatchUtil",
+    "Lean.Meta.MonadSimp",
+    "Lean.Meta.NatInstTesters",
+    "Lean.Meta.Offset",
+    "Lean.Meta.PPBinder",
+    "Lean.Meta.PPGoal",
+    "Lean.Meta.ProdN",
+    "Lean.Meta.RecExt",
+    "Lean.Meta.RecursorInfo",
+    "Lean.Meta.Reduce",
+    "Lean.Meta.ReduceEval",
+    "Lean.Meta.Sorry",
+    "Lean.Meta.Structure",
+    "Lean.Meta.SynthInstance",
+    "Lean.Meta.Tactic.Acyclic",
+    "Lean.Meta.Tactic.Apply",
+    "Lean.Meta.Tactic.Assert",
+    "Lean.Meta.Tactic.Assumption",
+    "Lean.Meta.Tactic.AuxLemma",
+    "Lean.Meta.Tactic.Cases",
+    "Lean.Meta.Tactic.Clear",
+    "Lean.Meta.Tactic.Constructor",
+    "Lean.Meta.Tactic.Contradiction",
+    "Lean.Meta.Tactic.FVarSubst",
+    "Lean.Meta.Tactic.Induction",
+    "Lean.Meta.Tactic.Injection",
+    "Lean.Meta.Tactic.Intro",
+    "Lean.Meta.Tactic.Refl",
+    "Lean.Meta.Tactic.Rename",
+    "Lean.Meta.Tactic.Replace",
+    "Lean.Meta.Tactic.Revert",
+    "Lean.Meta.Tactic.Simp.Arith",
+    "Lean.Meta.Tactic.Simp.Arith.Int",
+    "Lean.Meta.Tactic.Simp.Arith.Int.Basic",
+    "Lean.Meta.Tactic.Simp.Arith.Int.Simp",
+    "Lean.Meta.Tactic.Simp.Arith.Nat",
+    "Lean.Meta.Tactic.Simp.Arith.Nat.Basic",
+    "Lean.Meta.Tactic.Simp.Arith.Nat.Simp",
+    "Lean.Meta.Tactic.Simp.Arith.Util",
+    "Lean.Meta.Tactic.Simp.Attr",
+    "Lean.Meta.Tactic.Simp.Diagnostics",
+    "Lean.Meta.Tactic.Simp.Main",
+    "Lean.Meta.Tactic.Simp.Rewrite",
+    "Lean.Meta.Tactic.Simp.SimpCongrTheorems",
+    "Lean.Meta.Tactic.Simp.SimpTheorems",
+    "Lean.Meta.Tactic.Simp.Simproc",
+    "Lean.Meta.Tactic.Simp.Types",
+    "Lean.Meta.Tactic.Subst",
+    "Lean.Meta.Tactic.UnifyEq",
+    "Lean.Meta.Tactic.Util",
+    "Lean.Meta.Transform",
+    "Lean.Meta.TransparencyMode",
+    "Lean.Meta.TryThis",
+    "Lean.Meta.WHNF",
+    "Lean.MetavarContext",
+    "Lean.Modifiers",
+    "Lean.MonadEnv",
+    "Lean.Namespace",
+    "Lean.OriginalConstKind",
+    "Lean.Parser",
+    "Lean.Parser.Attr",
+    "Lean.Parser.Basic",
+    "Lean.Parser.Command",
+    "Lean.Parser.Do",
+    "Lean.Parser.Extension",
+    "Lean.Parser.Extra",
+    "Lean.Parser.Level",
+    "Lean.Parser.Module",
+    "Lean.Parser.Module.Syntax",
+    "Lean.Parser.StrInterpolation",
+    "Lean.Parser.Syntax",
+    "Lean.Parser.Tactic",
+    "Lean.Parser.Tactic.Doc",
+    "Lean.Parser.Term",
+    "Lean.Parser.Term.Basic",
+    "Lean.Parser.Term.Doc",
+    "Lean.Parser.Types",
+    "Lean.ParserCompiler",
+    "Lean.ParserCompiler.Attribute",
+    "Lean.PrettyPrinter",
+    "Lean.PrettyPrinter.Basic",
+    "Lean.PrettyPrinter.Delaborator",
+    "Lean.PrettyPrinter.Delaborator.Attributes",
+    "Lean.PrettyPrinter.Delaborator.Basic",
+    "Lean.PrettyPrinter.Delaborator.Builtins",
+    "Lean.PrettyPrinter.Delaborator.DeclWithSig",
+    "Lean.PrettyPrinter.Delaborator.FieldNotation",
+    "Lean.PrettyPrinter.Delaborator.Metavariable",
+    "Lean.PrettyPrinter.Delaborator.Options",
+    "Lean.PrettyPrinter.Delaborator.SubExpr",
+    "Lean.PrettyPrinter.Delaborator.TopDownAnalyze",
+    "Lean.PrettyPrinter.Formatter",
+    "Lean.PrettyPrinter.Parenthesizer",
+    "Lean.PrivateName",
+    "Lean.ProjFns",
+    "Lean.ReducibilityAttrs",
+    "Lean.ReservedNameAction",
+    "Lean.ResolveName",
+    "Lean.ScopedEnvExtension",
+    "Lean.Server.Rpc.Basic",
+    "Lean.Setup",
+    "Lean.Structure",
+    "Lean.SubExpr",
+    "Lean.Syntax",
+    "Lean.ToExpr",
+    "Lean.ToLevel",
+    "Lean.Util.CollectAxioms",
+    "Lean.Util.CollectFVars",
+    "Lean.Util.CollectLevelMVars",
+    "Lean.Util.CollectLevelParams",
+    "Lean.Util.CollectLooseBVars",
+    "Lean.Util.CollectMVars",
+    "Lean.Util.Diff",
+    "Lean.Util.FindExpr",
+    "Lean.Util.FindLevelMVar",
+    "Lean.Util.FindMVar",
+    "Lean.Util.FoldConsts",
+    "Lean.Util.ForEachExpr",
+    "Lean.Util.ForEachExprWhere",
+    "Lean.Util.InstantiateLevelParams",
+    "Lean.Util.LeanOptions",
+    "Lean.Util.MonadBacktrack",
+    "Lean.Util.MonadCache",
+    "Lean.Util.NumObjs",
+    "Lean.Util.OccursCheck",
+    "Lean.Util.PPExt",
+    "Lean.Util.Path",
+    "Lean.Util.Profile",
+    "Lean.Util.PtrSet",
+    "Lean.Util.RecDepth",
+    "Lean.Util.Recognizers",
+    "Lean.Util.ReplaceExpr",
+    "Lean.Util.ReplaceLevel",
+    "Lean.Util.SafeExponentiation",
+    "Lean.Util.ShareCommon",
+    "Lean.Util.Sorry",
+    "Lean.Util.SortExprs",
+    "Lean.Util.Trace",
+    "Lean.Util.UnusedBinders",
+    "Lean.Widget.Types",
+    "Std.Data.ByteSlice",
+    "Std.Data.DHashMap.Basic",
+    "Std.Data.DHashMap.Internal.AssocList.Basic",
+    "Std.Data.DHashMap.Internal.AssocList.Iterator",
+    "Std.Data.DHashMap.Internal.Defs",
+    "Std.Data.DHashMap.Internal.Index",
+    "Std.Data.DHashMap.Iterator",
+    "Std.Data.DHashMap.Raw",
+    "Std.Data.DHashMap.RawDef",
+    "Std.Data.DTreeMap.AdditionalOperations",
+    "Std.Data.DTreeMap.Basic",
+    "Std.Data.DTreeMap.Internal.Balanced",
+    "Std.Data.DTreeMap.Internal.Balancing",
+    "Std.Data.DTreeMap.Internal.Cell",
+    "Std.Data.DTreeMap.Internal.Def",
+    "Std.Data.DTreeMap.Internal.Model",
+    "Std.Data.DTreeMap.Internal.Operations",
+    "Std.Data.DTreeMap.Internal.Ordered",
+    "Std.Data.DTreeMap.Internal.Queries",
+    "Std.Data.DTreeMap.Internal.WF.Defs",
+    "Std.Data.DTreeMap.Internal.WF.Lemmas",
+    "Std.Data.DTreeMap.Raw.Basic",
+    "Std.Data.HashMap.Basic",
+    "Std.Data.HashMap.Iterator",
+    "Std.Data.HashMap.Raw",
+    "Std.Data.HashSet.Basic",
+    "Std.Data.Internal.Cut",
+    "Std.Data.Internal.List.Associative",
+    "Std.Data.Internal.List.Defs",
+    "Std.Data.Iterators.Producers.Array",
+    "Std.Data.Iterators.Producers.Monadic.Array",
+    "Std.Data.TreeMap.AdditionalOperations",
+    "Std.Data.TreeMap.Basic",
+    "Std.Data.TreeMap.Raw.Basic",
+    "Std.Data.TreeSet.Basic",
+    "Std.Do",
+    "Std.Do.Internal",
+    "Std.Do.Internal.Ensures",
+    "Std.Do.Internal.Ensures.Def",
+    "Std.Do.Internal.Ensures.Lemmas",
+    "Std.Do.PostCond",
+    "Std.Do.PredTrans",
+    "Std.Do.SPred",
+    "Std.Do.SPred.DerivedLaws",
+    "Std.Do.SPred.Laws",
+    "Std.Do.SPred.Notation",
+    "Std.Do.SPred.Notation.Basic",
+    "Std.Do.SPred.SPred",
+    "Std.Do.SPred.SVal",
+    "Std.Do.Triple",
+    "Std.Do.Triple.Basic",
+    "Std.Do.Triple.SpecLemmas",
+    "Std.Do.WP",
+    "Std.Do.WP.Basic",
+    "Std.Do.WP.Monad",
+    "Std.Do.WP.SimpLemmas",
+    "Std.Do.WP.Sound",
+    "Std.Internal.Parsec",
+    "Std.Internal.Parsec.Basic",
+    "Std.Internal.Parsec.ByteArray",
+    "Std.Internal.Parsec.String",
+    "Std.Tactic.Do.ProofMode",
+    "Std.Tactic.Do.Syntax"
+  ],
+  "expected": {
+    "anonymous_controls": [
+      {
+        "line": 495,
+        "module": "Oak.Stdlib.APDULengthModel"
+      },
+      {
+        "line": 496,
+        "module": "Oak.Stdlib.APDULengthModel"
+      },
+      {
+        "line": 497,
+        "module": "Oak.Stdlib.APDULengthModel"
+      },
+      {
+        "line": 498,
+        "module": "Oak.Stdlib.APDULengthModel"
+      },
+      {
+        "line": 499,
+        "module": "Oak.Stdlib.APDULengthModel"
+      },
+      {
+        "line": 500,
+        "module": "Oak.Stdlib.APDULengthModel"
+      },
+      {
+        "line": 501,
+        "module": "Oak.Stdlib.APDULengthModel"
+      },
+      {
+        "line": 502,
+        "module": "Oak.Stdlib.APDULengthModel"
+      },
+      {
+        "line": 504,
+        "module": "Oak.Stdlib.APDULengthModel"
+      },
+      {
+        "line": 505,
+        "module": "Oak.Stdlib.APDULengthModel"
+      },
+      {
+        "line": 506,
+        "module": "Oak.Stdlib.APDULengthModel"
+      },
+      {
+        "line": 507,
+        "module": "Oak.Stdlib.APDULengthModel"
+      },
+      {
+        "line": 508,
+        "module": "Oak.Stdlib.APDULengthModel"
+      },
+      {
+        "line": 509,
+        "module": "Oak.Stdlib.APDULengthModel"
+      },
+      {
+        "line": 510,
+        "module": "Oak.Stdlib.APDULengthModel"
+      }
+    ],
+    "named_controls": [
+      "Oak.Stdlib.APDUParserControls.case1",
+      "Oak.Stdlib.APDUParserControls.case2_short_zero",
+      "Oak.Stdlib.APDUParserControls.case3_short",
+      "Oak.Stdlib.APDUParserControls.case4_short_zero",
+      "Oak.Stdlib.APDUParserControls.case2_extended_zero",
+      "Oak.Stdlib.APDUParserControls.case3_extended",
+      "Oak.Stdlib.APDUParserControls.case4_extended_zero",
+      "Oak.Stdlib.APDUParserControls.too_long",
+      "Oak.Stdlib.APDUParserControls.truncated_header",
+      "Oak.Stdlib.APDUParserControls.truncated_extended_length",
+      "Oak.Stdlib.APDUParserControls.zero_data_length",
+      "Oak.Stdlib.APDUParserControls.truncated_short_data",
+      "Oak.Stdlib.APDUParserControls.trailing_short",
+      "Oak.Stdlib.APDUParserControls.one_trailing_extended",
+      "Oak.Stdlib.APDUParserControls.truncated_extended_data",
+      "Oak.Stdlib.APDUParserControls.trailing_extended",
+      "Oak.Stdlib.APDUParserControls.case2_short_max",
+      "Oak.Stdlib.APDUParserControls.case2_extended_max",
+      "Oak.Stdlib.APDUParserControls.case2_extended_asymmetric",
+      "Oak.Stdlib.APDUParserControls.case4_extended_asymmetric",
+      "Oak.Stdlib.APDUReaderBridge.read_u8_zero_fuel",
+      "Oak.Stdlib.APDUReaderBridge.read_u8_invalid_precedes_short",
+      "Oak.Stdlib.APDUReaderBridge.read_u8_empty_window",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.window_empty",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.window_empty_at_end",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.window_offset_past_end",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.window_wrapping_endpoint_refused",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.take_invalid_precedes_short",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.take_end_past_source",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.take_short",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.take_zero_at_end",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.read_0000",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.read_0001",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.read_00ff",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.read_0100",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.read_ffff",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.read_invalid_precedes_short",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.read_source_bound_refused",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.read_short_window",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.read_empty_at_end",
+      "Oak.Stdlib.BoundedReaderRefinement.Controls.read_narrow_subwindow"
+    ],
+    "theorems": [
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.data_window_take_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.short_response_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.extended_response_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.short_zero_sentinel"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.extended_zero_sentinel"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.shape_unique"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.shape_frame_bound"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.shape_payload_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.shape_payload_sum_no_u32_wrap"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.layout_consumed"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.layout_response_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": true,
+        "qualified_name": "Oak.Stdlib.APDUModel.short_data_sound"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": true,
+        "qualified_name": "Oak.Stdlib.APDUModel.extended_data_sound"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.decode_sound"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.decode_of_shape"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.decode_success_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.decode_payload_safe"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.positions_in_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.positions_count"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.reject_too_long"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.reject_header"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.reject_six_byte_marker"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.reject_extended_zero_lc"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.reject_short_data"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.reject_short_trailing"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.reject_extended_data"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.reject_one_byte_extended_le"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.reject_extended_trailing"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.frame_unchanged"
+      },
+      {
+        "module": "Oak.Stdlib.APDULengthModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModel.rejection_returns_no_command"
+      },
+      {
+        "module": "Oak.Stdlib.APDUModelErrorContracts",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModelErrorContracts.decode_error_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUModelErrorContracts",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModelErrorContracts.too_long_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUModelErrorContracts",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModelErrorContracts.truncated_header_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUModelErrorContracts",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModelErrorContracts.truncated_length_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUModelErrorContracts",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModelErrorContracts.zero_data_length_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUModelErrorContracts",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModelErrorContracts.truncated_data_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUModelErrorContracts",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUModelErrorContracts.trailing_bytes_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.case1"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.case2_short_zero"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.case3_short"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.case4_short_zero"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.case2_extended_zero"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.case3_extended"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.case4_extended_zero"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.too_long"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.truncated_header"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.truncated_extended_length"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.zero_data_length"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.truncated_short_data"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.trailing_short"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.one_trailing_extended"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.truncated_extended_data"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.trailing_extended"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.case2_short_max"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.case2_extended_max"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.case2_extended_asymmetric"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserControls",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserControls.case4_extended_asymmetric"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserCorrectness",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserCorrectness.sourceHeader_observation"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserCorrectness",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserCorrectness.sourceHeader_checked"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserCorrectness",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserCorrectness.decode_eq"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserCorrectness",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserCorrectness.decode_total"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserCorrectness",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserCorrectness.decode_result_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserCorrectness",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserCorrectness.decode_fuel_independent"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserCorrectness",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserCorrectness.fullSpec_error_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserCorrectness",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserCorrectness.decode_error_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserCorrectness",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserCorrectness.decode_form_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserCorrectness",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserCorrectness.decode_success_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserCorrectness",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserCorrectness.decode_header_observation"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserCorrectness",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserCorrectness.decode_header_preserved"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserCorrectness",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserCorrectness.decode_header_indices_valid"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserCorrectness",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserCorrectness.decode_success_response_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.sourceBytes_length"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.source_byteAt"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.sourceInput_n"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.sourceInput_first"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.sourceInput_shortLe"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.wordAt_toNat"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.sourceInput_word"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.sourceInput_extendedLe"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.nat32_toNat"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.u8_zero_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.u16_zero_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.u32_eq_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.u32_beq_nat"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.u16_beq_zero"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.short_response_raw"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.extended_response_raw"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.short_response_toNat"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.extended_response_toNat"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.short_response_eq"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.extended_response_eq"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.short_response_sentinel"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.extended_response_sentinel"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.short_response_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.extended_response_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.sourceWindow_lift"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.sourceWindow_valid"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.sourceWindow_remaining_nat"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.sourceWindow_advance"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.take_source_short"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.take_source_good"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.read_u8_source_good"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.read_be16_source_short"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.read_be16_source_good"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.sourceInput_first_value"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.read_first_byte"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.short_data_eq"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.extended_data_eq"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserHelperProofs",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserHelperProofs.extended_eq"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.liftByte_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.liftWord_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.liftCase_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.liftError_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.liftResponse_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.command_observation"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.command_header_preserved"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.fullSpec_success_header"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.liftCommand_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.liftResult_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.fullSpec_success_lengths"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.fullSpec_shape_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.fullSpec_success_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.decode_too_long_raw"
+      },
+      {
+        "module": "Oak.Stdlib.APDUParserRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUParserRefinement.decode_short_header_raw"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.range_fits_bridge"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.remaining_bridge"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.take_bridge"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.endian_be16_bridge"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_be16_bridge"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.remaining_model"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.take_model"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_be16_model"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_from_take"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_error_from_take"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_index_valid"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_zero_fuel"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_invalid_precedes_short"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_empty_window"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.toReaderError_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.toReaderWindow_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.toReaderRange_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.toReaderRangeResult_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.take_invalid_raw"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.take_short_raw"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.take_good_raw"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_model"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.toReaderWord_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.toReaderWordResult_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_be16_short_raw"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_be16_good_raw"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.byte_model_index_valid"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.byteSpec_eq_checked"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_checked_model"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_checked_success"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.liftByte_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.liftByteResult_injective"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_result_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_total"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_invalid_raw"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_short_raw"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_good_raw"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_invalid_iff"
+      },
+      {
+        "module": "Oak.Stdlib.APDUReaderBridge",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.APDUReaderBridge.read_u8_insufficient_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.range_fits_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.range_fits_empty_at_end"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.range_fits_offset_past_end"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.range_fits_sum_fits_u32"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.window_ok_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.window_invalid_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.window_ok_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.remaining_valid"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.remaining_invalid"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.remaining_ok_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.take_ok_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.take_invalid_precedence"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.take_insufficient_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.take_ok_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.take_ok_fits_u32"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.take_failure_no_rest"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.take_frame_unchanged"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderModel",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.ReaderModel.take_failure_keeps_committed_cursor"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.u8_toNat_injective"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.u16_toNat_injective"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.u32_toNat_injective"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.liftError_injective"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.liftWindow_injective"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.liftRange_injective"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.liftWord_injective"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.liftWindowResult_injective"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.liftRemainingResult_injective"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.liftRangeResult_injective"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.liftWordResult_injective"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.optionMap_injective"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.optionMap_reflect"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.optionMap_some_witness"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.optionMap_total"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.size_toNat"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.u32_sub_toNat"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.u32_add_toNat"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.range_fits_eq"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.window_eq"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.remaining_valid_raw"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.remaining_invalid_raw"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.remaining_eq"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.take_invalid_raw"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.take_short_raw"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.take_good_raw"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.take_eq"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.window_success_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.window_invalid_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.remaining_success_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.remaining_invalid_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.take_success_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.take_invalid_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.take_insufficient_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.core_total"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.error_no_rest"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.take_error_keeps_committed_cursor"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.window_error_distinction"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.remaining_error_distinction"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.window_success_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.take_success_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.take_success_representable"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.projection_constructors"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.projection_error_distinct"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.projection_options"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.projection_fields"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.projection_ok_err_disjoint"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.result_option_maps_injective"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.u32_comparison_nat"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.range_fits_total"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.take_failure_no_rest"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.be16ValueExpr_toNat"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.be16ValueExpr_le_65535"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.be16ValueExpr_lt_65536"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.good_window_bounds"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.good_index0"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.good_index1"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.good_no_wrap"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.u32_two_indices"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.getD_checked"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.checked_bytes_proof_irrelevant"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.endian_range_after_good"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.generated_reads_checked"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.endian_good_raw"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.endian_total"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_invalid_raw"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_short_raw"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_good_raw"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_eq"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_invalid_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_insufficient_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_success_iff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_total"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_success_unique"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_success_implies_good"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_cases_disjoint_complete"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.endian_error_unreachable_after_take"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_same_take_rest"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_success_value_and_access"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_failure_no_rest"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.read_fuel_irrelevant"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.window_empty"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.window_empty_at_end"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.window_offset_past_end"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.window_wrapping_endpoint_refused"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.take_invalid_precedes_short"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.take_end_past_source"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.take_short"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.take_zero_at_end"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.read_0000"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.read_0001"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.read_00ff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.read_0100"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.read_ffff"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.read_invalid_precedes_short"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.read_source_bound_refused"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.read_short_window"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.read_empty_at_end"
+      },
+      {
+        "module": "Oak.Stdlib.BoundedReaderRefinement",
+        "private": false,
+        "qualified_name": "Oak.Stdlib.BoundedReaderRefinement.Controls.read_narrow_subwindow"
+      }
+    ]
+  },
+  "expected_candidate_declarations": 2226,
+  "expected_imports": 1058,
+  "extraction": {
+    "files": {
+      "APDUExtracted.lean": {
+        "bytes": 15917,
+        "sha256": "55d97ce34d1a3436156ab6d7df32538f5f3a0be530ab27238494a19dfaedecc6"
+      },
+      "extraction.json": {
+        "bytes": 27838,
+        "sha256": "52823ee2c7a80ce1310487f13125ab5baa7cdf62e1579726b018bbf2bdf1ef99"
+      },
+      "raw.lean": {
+        "bytes": 15919,
+        "sha256": "0ea49a1772106b74d94a73d5a411ca8db6e799a8d145e5522306860889f7ba4b"
+      }
+    },
+    "profiled_reference": "spec/lean/Oak/Stdlib/APDUExtracted.lean",
+    "raw_reference": "spec/lean/reader_apdu/apdu-extraction.raw.lean.txt",
+    "receipt": {
+      "c_invocations": 0,
+      "checks": 2,
+      "declarations": [
+        {
+          "generic_source_span": {
+            "Bytes": 37,
+            "FirstLine": 2,
+            "LastLine": 2,
+            "Path": "stdlib/std.oak",
+            "SHA256": "086932b8e8c139b02eb46b7c7d2991ae4a8450a2139876f53d2425d298c54f2a"
+          },
+          "inventory_block_bytes": 109,
+          "inventory_block_sha256": "04749779381592042ffcea23eb0db3939caf49dbf96d821d9393822f37c5d9fe",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "Option_u32",
+          "profiled_end_byte_exclusive": 2102,
+          "profiled_start_byte": 1992,
+          "raw_end_byte_exclusive": 2104,
+          "raw_span_sha256": "6a008716f9420a84ece942854dc95498a037e89952fe433a2b9142b6a0bbdcb2",
+          "raw_start_byte": 1994,
+          "specialization_binding": "Option_u32"
+        },
+        {
+          "generic_source_span": {
+            "Bytes": 40,
+            "FirstLine": 3,
+            "LastLine": 3,
+            "Path": "stdlib/std.oak",
+            "SHA256": "013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f"
+          },
+          "inventory_block_bytes": 209,
+          "inventory_block_sha256": "12641fac4f76da2bc6738add809fbf6d81102164de13be57b26309c1056eeeef",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "Result_encoding_sreader__ByteRead_encoding_sreader__Error",
+          "profiled_end_byte_exclusive": 3146,
+          "profiled_start_byte": 2936,
+          "raw_end_byte_exclusive": 3148,
+          "raw_span_sha256": "082db9a262e2402cbc9979f4b79a9c31ca0f80baf6463c5f1ac3de64840cc76d",
+          "raw_start_byte": 2938,
+          "specialization_binding": "Result_encoding_sreader__ByteRead_encoding_sreader__Error"
+        },
+        {
+          "generic_source_span": {
+            "Bytes": 40,
+            "FirstLine": 3,
+            "LastLine": 3,
+            "Path": "stdlib/std.oak",
+            "SHA256": "013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f"
+          },
+          "inventory_block_bytes": 211,
+          "inventory_block_sha256": "c18b482bc8bfb5e559e656db6a9a86fb6268310ec3a765a0f9af807877f737a2",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "Result_encoding_sreader__RangeRead_encoding_sreader__Error",
+          "profiled_end_byte_exclusive": 3358,
+          "profiled_start_byte": 3146,
+          "raw_end_byte_exclusive": 3360,
+          "raw_span_sha256": "50bcdbace699528af237617231e9a3f661aec6a52b68258ae660cc2ea6d8c773",
+          "raw_start_byte": 3148,
+          "specialization_binding": "Result_encoding_sreader__RangeRead_encoding_sreader__Error"
+        },
+        {
+          "generic_source_span": {
+            "Bytes": 40,
+            "FirstLine": 3,
+            "LastLine": 3,
+            "Path": "stdlib/std.oak",
+            "SHA256": "013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f"
+          },
+          "inventory_block_bytes": 209,
+          "inventory_block_sha256": "8f564c5043b4bf2b02e6a66eacf85e631343434c50a4aaa405c2a0ad3338fd1f",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "Result_encoding_sreader__WordRead_encoding_sreader__Error",
+          "profiled_end_byte_exclusive": 3568,
+          "profiled_start_byte": 3358,
+          "raw_end_byte_exclusive": 3570,
+          "raw_span_sha256": "fa3cbc7803fab98a88f7c1d89a2bde7cb960429e9831a49682e3e40b092145f3",
+          "raw_start_byte": 3360,
+          "specialization_binding": "Result_encoding_sreader__WordRead_encoding_sreader__Error"
+        },
+        {
+          "generic_source_span": {
+            "Bytes": 40,
+            "FirstLine": 3,
+            "LastLine": 3,
+            "Path": "stdlib/std.oak",
+            "SHA256": "013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f"
+          },
+          "inventory_block_bytes": 203,
+          "inventory_block_sha256": "c4fe1116d1807a3bc57eef82eb8ceba6a0bb0c84e2220806ba29099ac721436e",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "Result_smartcard_sapdu__Command_smartcard_sapdu__Error",
+          "profiled_end_byte_exclusive": 3772,
+          "profiled_start_byte": 3568,
+          "raw_end_byte_exclusive": 3774,
+          "raw_span_sha256": "271fb65aa89dfa518589ccdf3c971f851e5f378157e214b10bd48951518170e8",
+          "raw_start_byte": 3570,
+          "specialization_binding": "Result_smartcard_sapdu__Command_smartcard_sapdu__Error"
+        },
+        {
+          "generic_source_span": {
+            "Bytes": 40,
+            "FirstLine": 3,
+            "LastLine": 3,
+            "Path": "stdlib/std.oak",
+            "SHA256": "013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f"
+          },
+          "inventory_block_bytes": 146,
+          "inventory_block_sha256": "23c1a910a8a1af044845ecaea39dd56575cd14e486d57648ef403ecb488b132f",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "Result_u16_endian__Error",
+          "profiled_end_byte_exclusive": 3919,
+          "profiled_start_byte": 3772,
+          "raw_end_byte_exclusive": 3921,
+          "raw_span_sha256": "2162d912930832d65c4c245585e7943d3b0a4839c5d72bfaac9de94cb5fbe433",
+          "raw_start_byte": 3774,
+          "specialization_binding": "Result_u16_endian__Error"
+        },
+        {
+          "generic_source_span": {
+            "Bytes": 40,
+            "FirstLine": 3,
+            "LastLine": 3,
+            "Path": "stdlib/std.oak",
+            "SHA256": "013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f"
+          },
+          "inventory_block_bytes": 166,
+          "inventory_block_sha256": "7b7fa2d6005de6fe0b82ce0b98a8136ebb09d1665b7742cdb49cf01f1e06aaf9",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "Result_u32_encoding_sreader__Error",
+          "profiled_end_byte_exclusive": 4086,
+          "profiled_start_byte": 3919,
+          "raw_end_byte_exclusive": 4088,
+          "raw_span_sha256": "23a19bc15f9f8b721e3136091fe1409e3e9138a3841f9613c3a7acdb6ac995ef",
+          "raw_start_byte": 3921,
+          "specialization_binding": "Result_u32_encoding_sreader__Error"
+        },
+        {
+          "callees": [],
+          "checked_ast_display_is_not_original_source": true,
+          "checked_ast_display_sha256": "e7e13577198a3300bd49b1af04cec69f4f92b94ec4bf157717cf0fdd91bd2de2",
+          "inventory_block_bytes": 204,
+          "inventory_block_sha256": "352679839274c8f7c21d8127875ca44722ee7f81649396c986b169a3516ba1f1",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "bytes__range_ufits",
+          "profiled_end_byte_exclusive": 6437,
+          "profiled_start_byte": 6232,
+          "raw_end_byte_exclusive": 6439,
+          "raw_span_sha256": "75a561d889c3a3fa5502d36bfdf09fb2bd15c76cbc8f06fffc8181493baee537",
+          "raw_start_byte": 6234,
+          "source_span": {
+            "Bytes": 118,
+            "FirstLine": 9,
+            "LastLine": 11,
+            "Path": "stdlib/bytes.oak",
+            "SHA256": "4d085b3aa5bcf47e223bb12a269275ca6b572c7c942d55086750322adac0bae4"
+          }
+        },
+        {
+          "inventory_block_bytes": 255,
+          "inventory_block_sha256": "05d83eccf392571b1eaef91bd3d967e788b8553611e66f338791990d104cc11a",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "encoding_sreader__ByteRead",
+          "profiled_end_byte_exclusive": 1038,
+          "profiled_start_byte": 782,
+          "raw_end_byte_exclusive": 1040,
+          "raw_span_sha256": "309deb3417db31c745844f525f8633177421d21dcad9bfb303401b9dc9fefdb2",
+          "raw_start_byte": 784,
+          "source_span": {
+            "Bytes": 56,
+            "FirstLine": 10,
+            "LastLine": 10,
+            "Path": "stdlib/encoding/reader.oak",
+            "SHA256": "b580a41aec4ba44db0d85b4d7db2320d2c3c48ef3b9031f4608b8ebd66bd605b"
+          }
+        },
+        {
+          "inventory_block_bytes": 124,
+          "inventory_block_sha256": "f935c890595191e3d304fdefb43c8961a2008b2679cef234cc6ad27ba487122f",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "encoding_sreader__Error",
+          "profiled_end_byte_exclusive": 782,
+          "profiled_start_byte": 657,
+          "raw_end_byte_exclusive": 784,
+          "raw_span_sha256": "45cc73b90bc2dd591f165f81a5ad4800fc8d39c958f58dccb3d63fa9c7b8342d",
+          "raw_start_byte": 659,
+          "source_span": {
+            "Bytes": 51,
+            "FirstLine": 9,
+            "LastLine": 9,
+            "Path": "stdlib/encoding/reader.oak",
+            "SHA256": "d16357a998cccf3c82fdacbbff07e3eb64f69fa6495325d36f1423d4c7921d67"
+          }
+        },
+        {
+          "inventory_block_bytes": 303,
+          "inventory_block_sha256": "b793ce32120f9dd6d4adf300c6ecfa56027b4ef57b58771407199b5be07d3e0c",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "encoding_sreader__RangeRead",
+          "profiled_end_byte_exclusive": 1600,
+          "profiled_start_byte": 1296,
+          "raw_end_byte_exclusive": 1602,
+          "raw_span_sha256": "499fbfc001fb98c3b6c781e410a7420339f2a82fd4fd53999d9dfa75da0d8c0a",
+          "raw_start_byte": 1298,
+          "source_span": {
+            "Bytes": 72,
+            "FirstLine": 12,
+            "LastLine": 12,
+            "Path": "stdlib/encoding/reader.oak",
+            "SHA256": "d97e40e917b94a9821dabfcded5880874302de5d39d7b69b519b73f039de4cb2"
+          }
+        },
+        {
+          "inventory_block_bytes": 209,
+          "inventory_block_sha256": "db90ad2b9f5e7bc2dde946d4f6bd245353d2699c030cfc4de3ae28c79e5c1910",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "encoding_sreader__Window",
+          "profiled_end_byte_exclusive": 657,
+          "profiled_start_byte": 447,
+          "raw_end_byte_exclusive": 659,
+          "raw_span_sha256": "94bc2e2b7295cb8a3d9cf579e12ca08003dd00e2ab5e6f8e8d964097ba9e0af4",
+          "raw_start_byte": 449,
+          "source_span": {
+            "Bytes": 50,
+            "FirstLine": 8,
+            "LastLine": 8,
+            "Path": "stdlib/encoding/reader.oak",
+            "SHA256": "15bc58785c9e6bbce9c9de54ebff824191d83b0064303bce572e35afa8f059a4"
+          }
+        },
+        {
+          "inventory_block_bytes": 257,
+          "inventory_block_sha256": "ecf2d4ea5e6250220c45b7e5b0c0566465418b735385f7da9579f41f714586d1",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "encoding_sreader__WordRead",
+          "profiled_end_byte_exclusive": 1296,
+          "profiled_start_byte": 1038,
+          "raw_end_byte_exclusive": 1298,
+          "raw_span_sha256": "14c74bdf25165a9f335b3c19527314b12e2dafbe6944a7f9f041dcbd51f956a5",
+          "raw_start_byte": 1040,
+          "source_span": {
+            "Bytes": 57,
+            "FirstLine": 11,
+            "LastLine": 11,
+            "Path": "stdlib/encoding/reader.oak",
+            "SHA256": "aa3e7e895a3c56bbc73699d8c7ead8d38a49156c0e9dfbf6b6da72537378d0db"
+          }
+        },
+        {
+          "callees": [
+            "encoding_sreader__take",
+            "endian__read_uu16_ube"
+          ],
+          "checked_ast_display_is_not_original_source": true,
+          "checked_ast_display_sha256": "123f840d1eab7c10da2cd1f93548320e33229178d648575db46ccbe32e1645aa",
+          "inventory_block_bytes": 777,
+          "inventory_block_sha256": "47d09debf96298ca4c3746efcee15286cb5e62458ab0c17de19cc5dc30903467",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "encoding_sreader__read_uu16_ube",
+          "profiled_end_byte_exclusive": 7859,
+          "profiled_start_byte": 7081,
+          "raw_end_byte_exclusive": 7861,
+          "raw_span_sha256": "a798da458de6568598ff3d9b76fac42be77c6bfd7b9e72b5dbf50a0cd0e96803",
+          "raw_start_byte": 7083,
+          "source_span": {
+            "Bytes": 487,
+            "FirstLine": 50,
+            "LastLine": 60,
+            "Path": "stdlib/encoding/reader.oak",
+            "SHA256": "f28a8df342c07ace7fe1aec533bd055523ca504f3c5d498603def44362740795"
+          }
+        },
+        {
+          "callees": [
+            "encoding_sreader__take"
+          ],
+          "checked_ast_display_is_not_original_source": true,
+          "checked_ast_display_sha256": "92e5aeb17c75eeb3eb9e2e70ae467267ef64a997bec7b47e7eaf069cec366ce1",
+          "inventory_block_bytes": 534,
+          "inventory_block_sha256": "3a2d0149f98ff6c07ff77c4fdc283959d68033d71a7cda6dda5f7f1250f2e43e",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "encoding_sreader__read_uu8",
+          "profiled_end_byte_exclusive": 5784,
+          "profiled_start_byte": 5249,
+          "raw_end_byte_exclusive": 5786,
+          "raw_span_sha256": "ad1cafbb77f2636cb54eeb36b93081d8efba6aae1542697ca93e11460c2abd46",
+          "raw_start_byte": 5251,
+          "source_span": {
+            "Bytes": 211,
+            "FirstLine": 44,
+            "LastLine": 48,
+            "Path": "stdlib/encoding/reader.oak",
+            "SHA256": "81ca31f6ea21678a6bb9145b4036dbba9a6b7d0d3e2fc50e2c2ec96367cee445"
+          }
+        },
+        {
+          "callees": [],
+          "checked_ast_display_is_not_original_source": true,
+          "checked_ast_display_sha256": "e71a61d34b271035c0a6798bb28742e74e9c9d6ad06c1e5e4390672df90b92fb",
+          "inventory_block_bytes": 403,
+          "inventory_block_sha256": "2b7dd3e76d1d92a646ec49993f895a85f41ab16b517a2e8d79d0e5f581d3f40c",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "encoding_sreader__remaining",
+          "profiled_end_byte_exclusive": 4490,
+          "profiled_start_byte": 4086,
+          "raw_end_byte_exclusive": 4492,
+          "raw_span_sha256": "9ee11b8db0d855d99de87780f85279694b140651f3da192158264db7a4f70a87",
+          "raw_start_byte": 4088,
+          "source_span": {
+            "Bytes": 182,
+            "FirstLine": 22,
+            "LastLine": 26,
+            "Path": "stdlib/encoding/reader.oak",
+            "SHA256": "7fc54b1b74a83ec0cc2992ef8c39cffa7bf68e9a5720fc23cab02b79e067dbfa"
+          }
+        },
+        {
+          "callees": [
+            "encoding_sreader__remaining"
+          ],
+          "checked_ast_display_is_not_original_source": true,
+          "checked_ast_display_sha256": "2c8575087ea382f262205236608c8f3ae6cbaffd5a2163f35c4a8b662142a181",
+          "inventory_block_bytes": 758,
+          "inventory_block_sha256": "bf02c33e6db18098bd61c4d6d12193ffcc7e1c776d9385a28f99f01258dcb99d",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "encoding_sreader__take",
+          "profiled_end_byte_exclusive": 5249,
+          "profiled_start_byte": 4490,
+          "raw_end_byte_exclusive": 5251,
+          "raw_span_sha256": "05ab05763948bb9fa1663b2f75842c4e52302c949bf6cd39159fdc89796b72c6",
+          "raw_start_byte": 4492,
+          "source_span": {
+            "Bytes": 396,
+            "FirstLine": 30,
+            "LastLine": 42,
+            "Path": "stdlib/encoding/reader.oak",
+            "SHA256": "6a081e32b27d37fb6d65d0e2712424f5fffa86c2f934ed0e3dd2832278182aaf"
+          }
+        },
+        {
+          "inventory_block_bytes": 94,
+          "inventory_block_sha256": "e58da6198fdccca24d02451d7acb218e84c43f9c4c9284ad266b37b758ebff1e",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "endian__Error",
+          "profiled_end_byte_exclusive": 447,
+          "profiled_start_byte": 352,
+          "raw_end_byte_exclusive": 449,
+          "raw_span_sha256": "ae7a3cc0d9627917c48e4c1a987c59650bc7815caea68a283e2d68aa9faad3dc",
+          "raw_start_byte": 354,
+          "source_span": {
+            "Bytes": 35,
+            "FirstLine": 6,
+            "LastLine": 6,
+            "Path": "stdlib/endian.oak",
+            "SHA256": "0c9926418d6ccf57730397aa2ef2ae23111e914407353b9ece2e6b26b8a2c877"
+          }
+        },
+        {
+          "callees": [
+            "bytes__range_ufits"
+          ],
+          "checked_ast_display_is_not_original_source": true,
+          "checked_ast_display_sha256": "ca1c87c5df33da7ceace9b81421dbc120eda956327715f98edf9832eae094892",
+          "inventory_block_bytes": 643,
+          "inventory_block_sha256": "9d9e4db66e86f3c7696999ecbd10c380c5c06a45a56125cf773f90ba79602bea",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "endian__read_uu16_ube",
+          "profiled_end_byte_exclusive": 7081,
+          "profiled_start_byte": 6437,
+          "raw_end_byte_exclusive": 7083,
+          "raw_span_sha256": "26b427540ef94f8a3ab625d8ad0de817a2ade2ee5d926f4d13e3a4a34dcbc0e5",
+          "raw_start_byte": 6439,
+          "source_span": {
+            "Bytes": 297,
+            "FirstLine": 25,
+            "LastLine": 32,
+            "Path": "stdlib/endian.oak",
+            "SHA256": "da4aa4ffeac3aa3679cd82724cbff12d899862244fd83448cbcc6032879abfc8"
+          }
+        },
+        {
+          "inventory_block_bytes": 569,
+          "inventory_block_sha256": "d16021353368965e806c0a2f23eed85cbcb2478b580abf8fb29dca23ee5599a7",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "smartcard_sapdu__Command",
+          "profiled_end_byte_exclusive": 2672,
+          "profiled_start_byte": 2102,
+          "raw_end_byte_exclusive": 2674,
+          "raw_span_sha256": "78d63b60f9daf3acd1930b5ff5904e486f32e7772284c1fe00299022ce7a0aba",
+          "raw_start_byte": 2104,
+          "source_span": {
+            "Bytes": 170,
+            "FirstLine": 11,
+            "LastLine": 21,
+            "Path": "stdlib/smartcard/apdu.oak",
+            "SHA256": "f53e2efacc90e7d0d6be9c19d440c96449fbd133f83653540d47af887c8a954c"
+          }
+        },
+        {
+          "inventory_block_bytes": 199,
+          "inventory_block_sha256": "84195f657b009de5a465fd867a30fa1c0140da8f64b5871beddc4439ce077e51",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "smartcard_sapdu__CommandCase",
+          "profiled_end_byte_exclusive": 1800,
+          "profiled_start_byte": 1600,
+          "raw_end_byte_exclusive": 1802,
+          "raw_span_sha256": "99871925b03183146deb3dec1b3c9208f5dc90bbc815a56ef5b76482e08efca8",
+          "raw_start_byte": 1602,
+          "source_span": {
+            "Bytes": 117,
+            "FirstLine": 8,
+            "LastLine": 8,
+            "Path": "stdlib/smartcard/apdu.oak",
+            "SHA256": "cde1c0a804bcc9ce6562959ea37b77bcc7130c26a6464f06d67403ce3a0ed9ba"
+          }
+        },
+        {
+          "inventory_block_bytes": 191,
+          "inventory_block_sha256": "c0798930a3e0f107a87a7622a18ed0272fa765ab2092ff2be4ec75b954384a86",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "smartcard_sapdu__Error",
+          "profiled_end_byte_exclusive": 1992,
+          "profiled_start_byte": 1800,
+          "raw_end_byte_exclusive": 1994,
+          "raw_span_sha256": "886976640102b3cde8c0e726ce27984a6bd376ee5a4e8b7e0512d3f7b0c2c00c",
+          "raw_start_byte": 1802,
+          "source_span": {
+            "Bytes": 111,
+            "FirstLine": 9,
+            "LastLine": 9,
+            "Path": "stdlib/smartcard/apdu.oak",
+            "SHA256": "5d8d1b61c83a56a9b8f0e30b75bfd83de1a35eaf2db460a610c71f21418be6f6"
+          }
+        },
+        {
+          "inventory_block_bytes": 263,
+          "inventory_block_sha256": "d408e4ab93f2d85a9ed1a20c10820f5942f12f4d5eade16768928417241600e6",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "smartcard_sapdu__Header",
+          "profiled_end_byte_exclusive": 2936,
+          "profiled_start_byte": 2672,
+          "raw_end_byte_exclusive": 2938,
+          "raw_span_sha256": "ebba45132d2e45fe845b5e7539d866820e6341f3d97a7b17ee13a680d9576204",
+          "raw_start_byte": 2674,
+          "source_span": {
+            "Bytes": 59,
+            "FirstLine": 23,
+            "LastLine": 23,
+            "Path": "stdlib/smartcard/apdu.oak",
+            "SHA256": "202b7111ea1f33e00bfb30da1cda0b55cd14cc0f41932cf39fc04eaabbf638bc"
+          }
+        },
+        {
+          "callees": [],
+          "checked_ast_display_is_not_original_source": true,
+          "checked_ast_display_sha256": "a9fe2036b3a7ad9d30042ca02b7f12ea83ad0486b707f342fd19e8595045a9f3",
+          "inventory_block_bytes": 447,
+          "inventory_block_sha256": "b99468c50b4567c85ed7fef5e9262c6019480e4a7453df8771a3c50ec5f804c4",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "smartcard_sapdu__command",
+          "profiled_end_byte_exclusive": 6232,
+          "profiled_start_byte": 5784,
+          "raw_end_byte_exclusive": 6234,
+          "raw_span_sha256": "f17aa00dbf7ee5087da093d5b199b19062e18c931ba08e3b520792659262fbf0",
+          "raw_start_byte": 5786,
+          "source_span": {
+            "Bytes": 300,
+            "FirstLine": 25,
+            "LastLine": 35,
+            "Path": "stdlib/smartcard/apdu.oak",
+            "SHA256": "f22f6eee7d60123e2b06c4feac16c3ad8834e93950a057882301df7bd0ceb7e1"
+          }
+        },
+        {
+          "callees": [
+            "encoding_sreader__read_uu8",
+            "smartcard_sapdu__command",
+            "smartcard_sapdu__extended",
+            "smartcard_sapdu__short_udata",
+            "smartcard_sapdu__short_uresponse"
+          ],
+          "checked_ast_display_is_not_original_source": true,
+          "checked_ast_display_sha256": "e2aff587d3bf0d5e59916b0f8d413765dfdc3bc52a9768efe429524483567206",
+          "inventory_block_bytes": 2491,
+          "inventory_block_sha256": "dba74d0bd1747f2f88db72919716a5db63e055a8e871d1080836abda97f6515e",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "smartcard_sapdu__decode",
+          "profiled_end_byte_exclusive": 15888,
+          "profiled_start_byte": 13396,
+          "raw_end_byte_exclusive": 15890,
+          "raw_span_sha256": "85a65577cdc2bbbe8ea46a2abc1101da7ddc05788cc8f264e98bb534c3fa197d",
+          "raw_start_byte": 13398,
+          "source_span": {
+            "Bytes": 881,
+            "FirstLine": 89,
+            "LastLine": 110,
+            "Path": "stdlib/smartcard/apdu.oak",
+            "SHA256": "1b13e7f23e690b43fc1af396e625f7b44ed3ba5f734553d51904ef76f4c5907c"
+          }
+        },
+        {
+          "callees": [
+            "encoding_sreader__read_uu16_ube",
+            "smartcard_sapdu__command",
+            "smartcard_sapdu__extended_udata",
+            "smartcard_sapdu__extended_uresponse"
+          ],
+          "checked_ast_display_is_not_original_source": true,
+          "checked_ast_display_sha256": "8a86abfabaa28c8a2cbdb4bf1e89fa6b913b4181ee180b1b6cab90b427f780cf",
+          "inventory_block_bytes": 1271,
+          "inventory_block_sha256": "f056f6436691a8198313da317ae595b5559e6fb33a2f5e0763e8ae21c2ddeb58",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "smartcard_sapdu__extended",
+          "profiled_end_byte_exclusive": 11422,
+          "profiled_start_byte": 10150,
+          "raw_end_byte_exclusive": 11424,
+          "raw_span_sha256": "577fa436d98a15a9322fa65a90f2e8344616dd485f7f106dbd9d350e90db73e0",
+          "raw_start_byte": 10152,
+          "source_span": {
+            "Bytes": 620,
+            "FirstLine": 72,
+            "LastLine": 84,
+            "Path": "stdlib/smartcard/apdu.oak",
+            "SHA256": "1dddfac1f4b2d0a31611ae05015d897fdd5ac88f8c4e1a77489b94c026e187bf"
+          }
+        },
+        {
+          "callees": [
+            "encoding_sreader__read_uu16_ube",
+            "encoding_sreader__take",
+            "smartcard_sapdu__command",
+            "smartcard_sapdu__extended_uresponse"
+          ],
+          "checked_ast_display_is_not_original_source": true,
+          "checked_ast_display_sha256": "240e7a4d281c8c9e4e6b0073c4d8fb1ee9897733e3944791ac92e49577815fd7",
+          "inventory_block_bytes": 2109,
+          "inventory_block_sha256": "16f406e00191c54d6f8518039e36499f60489d0a3ae9de5868ca9f697ae697c8",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "smartcard_sapdu__extended_udata",
+          "profiled_end_byte_exclusive": 10150,
+          "profiled_start_byte": 8040,
+          "raw_end_byte_exclusive": 10152,
+          "raw_span_sha256": "dfaeb8b4d3d83139b73af8b4c97f15a027dc0058228f41bab48bd9781fd70913",
+          "raw_start_byte": 8042,
+          "source_span": {
+            "Bytes": 739,
+            "FirstLine": 56,
+            "LastLine": 70,
+            "Path": "stdlib/smartcard/apdu.oak",
+            "SHA256": "0416c6fcb7218e8c2ba01af3d37a809451ef0fa59e6c8b602067d1635e1dbb28"
+          }
+        },
+        {
+          "callees": [],
+          "checked_ast_display_is_not_original_source": true,
+          "checked_ast_display_sha256": "c2d7c023e63e361fdfd135b481b65eadf03b7fee93413e3418a46ec44f9b13ba",
+          "inventory_block_bytes": 180,
+          "inventory_block_sha256": "4cece958539d3b1186648f014ff46c178062bef5d2f7c92f4246553216ac3816",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "smartcard_sapdu__extended_uresponse",
+          "profiled_end_byte_exclusive": 8040,
+          "profiled_start_byte": 7859,
+          "raw_end_byte_exclusive": 8042,
+          "raw_span_sha256": "658e33ee97b0da346d45d51f8171834335b77305abe1bff3940a08beec58b9ae",
+          "raw_start_byte": 7861,
+          "source_span": {
+            "Bytes": 87,
+            "FirstLine": 38,
+            "LastLine": 38,
+            "Path": "stdlib/smartcard/apdu.oak",
+            "SHA256": "f5a1001ae29dd5a7cce18777cd071e4eb3e820e88d1661915f2edadc497e6bb0"
+          }
+        },
+        {
+          "callees": [
+            "encoding_sreader__read_uu8",
+            "encoding_sreader__take",
+            "smartcard_sapdu__command",
+            "smartcard_sapdu__short_uresponse"
+          ],
+          "checked_ast_display_is_not_original_source": true,
+          "checked_ast_display_sha256": "05408d5cb1e851c61f2254e2825f0109128324561c5b1e5e101d5d3bc8ec3a04",
+          "inventory_block_bytes": 1799,
+          "inventory_block_sha256": "c8b97775ed39fbbd969aa8828844f48dd1da7c39e341836d14413497090796cf",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "smartcard_sapdu__short_udata",
+          "profiled_end_byte_exclusive": 13396,
+          "profiled_start_byte": 11596,
+          "raw_end_byte_exclusive": 13398,
+          "raw_span_sha256": "abdb11de8b7d2ec9d8d1341550e75f6d0879b094f9d0ff35f291af3b2f65a353",
+          "raw_start_byte": 11598,
+          "source_span": {
+            "Bytes": 743,
+            "FirstLine": 40,
+            "LastLine": 54,
+            "Path": "stdlib/smartcard/apdu.oak",
+            "SHA256": "9a688fbf26b075325024630ee75cf5cb0f121468833fe18fefb2630becf6d643"
+          }
+        },
+        {
+          "callees": [],
+          "checked_ast_display_is_not_original_source": true,
+          "checked_ast_display_sha256": "416ae8ae2b5087bf65b11de9f37dfd750d31199ef70ab023ba6072e1e8d17e2f",
+          "inventory_block_bytes": 173,
+          "inventory_block_sha256": "2bbd000c4014269293dd9f52e5f04177f108ddee679922eae1b0e85a00be6fa0",
+          "inventory_block_trailing_newlines_normalized": true,
+          "name": "smartcard_sapdu__short_uresponse",
+          "profiled_end_byte_exclusive": 11596,
+          "profiled_start_byte": 11422,
+          "raw_end_byte_exclusive": 11598,
+          "raw_span_sha256": "574ac31067f33fe7f28a445764f3965609fdcfd0ad985b3d2fddae8f89f4e372",
+          "raw_start_byte": 11424,
+          "source_span": {
+            "Bytes": 80,
+            "FirstLine": 37,
+            "LastLine": 37,
+            "Path": "stdlib/smartcard/apdu.oak",
+            "SHA256": "13a638e1fe912992c8b499320c045d05e8b9e30d742ad8c26315c4430e391ad6"
+          }
+        }
+      ],
+      "fixture_pins": [
+        {
+          "Bytes": 206,
+          "Module": "",
+          "Path": "main.oak",
+          "SHA256": "c8d040ccb0192ff1052f8c322fee2e2459f70fb635aee163777edb5c326761e1"
+        },
+        {
+          "Bytes": 45,
+          "Module": "",
+          "Path": "oak.mod",
+          "SHA256": "b1f1712f6263e579e8bafda81102e071699bff1424ca715674dd3b26a2323843"
+        }
+      ],
+      "generic_carriers": {
+        "byte": "Result_encoding_sreader__ByteRead_encoding_sreader__Error",
+        "command": "Result_smartcard_sapdu__Command_smartcard_sapdu__Error",
+        "endian": "Result_u16_endian__Error",
+        "read": "Result_encoding_sreader__WordRead_encoding_sreader__Error",
+        "remaining": "Result_u32_encoding_sreader__Error",
+        "response": "Option_u32",
+        "take": "Result_encoding_sreader__RangeRead_encoding_sreader__Error"
+      },
+      "lean_invocations": 0,
+      "namespace": "Oak.Stdlib.APDUExtracted",
+      "profiled_bytes": 15917,
+      "profiled_sha256": "55d97ce34d1a3436156ab6d7df32538f5f3a0be530ab27238494a19dfaedecc6",
+      "raw_bytes": 15919,
+      "raw_sha256": "0ea49a1772106b74d94a73d5a411ca8db6e799a8d145e5522306860889f7ba4b",
+      "roots": [
+        "smartcard_sapdu__decode"
+      ],
+      "schema_version": 1,
+      "source_pins": [
+        {
+          "Bytes": 4416,
+          "Module": "smartcard/apdu",
+          "Path": "stdlib/smartcard/apdu.oak",
+          "SHA256": "953113da1f6bcb91c8e8c3e038fdc179a095647e1ca09fb337e2308aa9cc3b07"
+        },
+        {
+          "Bytes": 2280,
+          "Module": "encoding/reader",
+          "Path": "stdlib/encoding/reader.oak",
+          "SHA256": "262a8e1571054f5ffd0ec6231571bd8265fbac7b08463a3058c1de86907576d6"
+        },
+        {
+          "Bytes": 2996,
+          "Module": "bytes",
+          "Path": "stdlib/bytes.oak",
+          "SHA256": "e4da6755200dbcfe409f9ec11ea928515d7fcd91838ba63e284d1c9f30603f7c"
+        },
+        {
+          "Bytes": 5553,
+          "Module": "endian",
+          "Path": "stdlib/endian.oak",
+          "SHA256": "7e7232c6f9fae60c97c1ea135c27e4d83b436c116812b2153b2e52d4b9dfc78d"
+        },
+        {
+          "Bytes": 31689,
+          "Module": "",
+          "Path": "stdlib/std.oak",
+          "SHA256": "10bbc09408ba76fccbac59f06936411e29eff8b81777c788b2b77b8e57eaa0e7"
+        }
+      ],
+      "status": "extracted_not_proved",
+      "tree_requires_outer_authentication": "b62ada7603f8311e2d25cf135a04464b4eb24323"
+    },
+    "receipt_reference": "spec/lean/reader_apdu/apdu-extraction.json",
+    "receipt_utf8": "{\n  \"c_invocations\": 0,\n  \"checks\": 2,\n  \"declarations\": [\n    {\n      \"generic_source_span\": {\n        \"Path\": \"stdlib/std.oak\",\n        \"FirstLine\": 2,\n        \"LastLine\": 2,\n        \"SHA256\": \"086932b8e8c139b02eb46b7c7d2991ae4a8450a2139876f53d2425d298c54f2a\",\n        \"Bytes\": 37\n      },\n      \"inventory_block_bytes\": 109,\n      \"inventory_block_sha256\": \"04749779381592042ffcea23eb0db3939caf49dbf96d821d9393822f37c5d9fe\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"Option_u32\",\n      \"profiled_end_byte_exclusive\": 2102,\n      \"profiled_start_byte\": 1992,\n      \"raw_end_byte_exclusive\": 2104,\n      \"raw_span_sha256\": \"6a008716f9420a84ece942854dc95498a037e89952fe433a2b9142b6a0bbdcb2\",\n      \"raw_start_byte\": 1994,\n      \"specialization_binding\": \"Option_u32\"\n    },\n    {\n      \"generic_source_span\": {\n        \"Path\": \"stdlib/std.oak\",\n        \"FirstLine\": 3,\n        \"LastLine\": 3,\n        \"SHA256\": \"013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f\",\n        \"Bytes\": 40\n      },\n      \"inventory_block_bytes\": 209,\n      \"inventory_block_sha256\": \"12641fac4f76da2bc6738add809fbf6d81102164de13be57b26309c1056eeeef\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"Result_encoding_sreader__ByteRead_encoding_sreader__Error\",\n      \"profiled_end_byte_exclusive\": 3146,\n      \"profiled_start_byte\": 2936,\n      \"raw_end_byte_exclusive\": 3148,\n      \"raw_span_sha256\": \"082db9a262e2402cbc9979f4b79a9c31ca0f80baf6463c5f1ac3de64840cc76d\",\n      \"raw_start_byte\": 2938,\n      \"specialization_binding\": \"Result_encoding_sreader__ByteRead_encoding_sreader__Error\"\n    },\n    {\n      \"generic_source_span\": {\n        \"Path\": \"stdlib/std.oak\",\n        \"FirstLine\": 3,\n        \"LastLine\": 3,\n        \"SHA256\": \"013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f\",\n        \"Bytes\": 40\n      },\n      \"inventory_block_bytes\": 211,\n      \"inventory_block_sha256\": \"c18b482bc8bfb5e559e656db6a9a86fb6268310ec3a765a0f9af807877f737a2\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"Result_encoding_sreader__RangeRead_encoding_sreader__Error\",\n      \"profiled_end_byte_exclusive\": 3358,\n      \"profiled_start_byte\": 3146,\n      \"raw_end_byte_exclusive\": 3360,\n      \"raw_span_sha256\": \"50bcdbace699528af237617231e9a3f661aec6a52b68258ae660cc2ea6d8c773\",\n      \"raw_start_byte\": 3148,\n      \"specialization_binding\": \"Result_encoding_sreader__RangeRead_encoding_sreader__Error\"\n    },\n    {\n      \"generic_source_span\": {\n        \"Path\": \"stdlib/std.oak\",\n        \"FirstLine\": 3,\n        \"LastLine\": 3,\n        \"SHA256\": \"013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f\",\n        \"Bytes\": 40\n      },\n      \"inventory_block_bytes\": 209,\n      \"inventory_block_sha256\": \"8f564c5043b4bf2b02e6a66eacf85e631343434c50a4aaa405c2a0ad3338fd1f\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"Result_encoding_sreader__WordRead_encoding_sreader__Error\",\n      \"profiled_end_byte_exclusive\": 3568,\n      \"profiled_start_byte\": 3358,\n      \"raw_end_byte_exclusive\": 3570,\n      \"raw_span_sha256\": \"fa3cbc7803fab98a88f7c1d89a2bde7cb960429e9831a49682e3e40b092145f3\",\n      \"raw_start_byte\": 3360,\n      \"specialization_binding\": \"Result_encoding_sreader__WordRead_encoding_sreader__Error\"\n    },\n    {\n      \"generic_source_span\": {\n        \"Path\": \"stdlib/std.oak\",\n        \"FirstLine\": 3,\n        \"LastLine\": 3,\n        \"SHA256\": \"013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f\",\n        \"Bytes\": 40\n      },\n      \"inventory_block_bytes\": 203,\n      \"inventory_block_sha256\": \"c4fe1116d1807a3bc57eef82eb8ceba6a0bb0c84e2220806ba29099ac721436e\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"Result_smartcard_sapdu__Command_smartcard_sapdu__Error\",\n      \"profiled_end_byte_exclusive\": 3772,\n      \"profiled_start_byte\": 3568,\n      \"raw_end_byte_exclusive\": 3774,\n      \"raw_span_sha256\": \"271fb65aa89dfa518589ccdf3c971f851e5f378157e214b10bd48951518170e8\",\n      \"raw_start_byte\": 3570,\n      \"specialization_binding\": \"Result_smartcard_sapdu__Command_smartcard_sapdu__Error\"\n    },\n    {\n      \"generic_source_span\": {\n        \"Path\": \"stdlib/std.oak\",\n        \"FirstLine\": 3,\n        \"LastLine\": 3,\n        \"SHA256\": \"013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f\",\n        \"Bytes\": 40\n      },\n      \"inventory_block_bytes\": 146,\n      \"inventory_block_sha256\": \"23c1a910a8a1af044845ecaea39dd56575cd14e486d57648ef403ecb488b132f\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"Result_u16_endian__Error\",\n      \"profiled_end_byte_exclusive\": 3919,\n      \"profiled_start_byte\": 3772,\n      \"raw_end_byte_exclusive\": 3921,\n      \"raw_span_sha256\": \"2162d912930832d65c4c245585e7943d3b0a4839c5d72bfaac9de94cb5fbe433\",\n      \"raw_start_byte\": 3774,\n      \"specialization_binding\": \"Result_u16_endian__Error\"\n    },\n    {\n      \"generic_source_span\": {\n        \"Path\": \"stdlib/std.oak\",\n        \"FirstLine\": 3,\n        \"LastLine\": 3,\n        \"SHA256\": \"013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f\",\n        \"Bytes\": 40\n      },\n      \"inventory_block_bytes\": 166,\n      \"inventory_block_sha256\": \"7b7fa2d6005de6fe0b82ce0b98a8136ebb09d1665b7742cdb49cf01f1e06aaf9\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"Result_u32_encoding_sreader__Error\",\n      \"profiled_end_byte_exclusive\": 4086,\n      \"profiled_start_byte\": 3919,\n      \"raw_end_byte_exclusive\": 4088,\n      \"raw_span_sha256\": \"23a19bc15f9f8b721e3136091fe1409e3e9138a3841f9613c3a7acdb6ac995ef\",\n      \"raw_start_byte\": 3921,\n      \"specialization_binding\": \"Result_u32_encoding_sreader__Error\"\n    },\n    {\n      \"callees\": [],\n      \"checked_ast_display_is_not_original_source\": true,\n      \"checked_ast_display_sha256\": \"e7e13577198a3300bd49b1af04cec69f4f92b94ec4bf157717cf0fdd91bd2de2\",\n      \"inventory_block_bytes\": 204,\n      \"inventory_block_sha256\": \"352679839274c8f7c21d8127875ca44722ee7f81649396c986b169a3516ba1f1\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"bytes__range_ufits\",\n      \"profiled_end_byte_exclusive\": 6437,\n      \"profiled_start_byte\": 6232,\n      \"raw_end_byte_exclusive\": 6439,\n      \"raw_span_sha256\": \"75a561d889c3a3fa5502d36bfdf09fb2bd15c76cbc8f06fffc8181493baee537\",\n      \"raw_start_byte\": 6234,\n      \"source_span\": {\n        \"Path\": \"stdlib/bytes.oak\",\n        \"FirstLine\": 9,\n        \"LastLine\": 11,\n        \"SHA256\": \"4d085b3aa5bcf47e223bb12a269275ca6b572c7c942d55086750322adac0bae4\",\n        \"Bytes\": 118\n      }\n    },\n    {\n      \"inventory_block_bytes\": 255,\n      \"inventory_block_sha256\": \"05d83eccf392571b1eaef91bd3d967e788b8553611e66f338791990d104cc11a\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"encoding_sreader__ByteRead\",\n      \"profiled_end_byte_exclusive\": 1038,\n      \"profiled_start_byte\": 782,\n      \"raw_end_byte_exclusive\": 1040,\n      \"raw_span_sha256\": \"309deb3417db31c745844f525f8633177421d21dcad9bfb303401b9dc9fefdb2\",\n      \"raw_start_byte\": 784,\n      \"source_span\": {\n        \"Path\": \"stdlib/encoding/reader.oak\",\n        \"FirstLine\": 10,\n        \"LastLine\": 10,\n        \"SHA256\": \"b580a41aec4ba44db0d85b4d7db2320d2c3c48ef3b9031f4608b8ebd66bd605b\",\n        \"Bytes\": 56\n      }\n    },\n    {\n      \"inventory_block_bytes\": 124,\n      \"inventory_block_sha256\": \"f935c890595191e3d304fdefb43c8961a2008b2679cef234cc6ad27ba487122f\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"encoding_sreader__Error\",\n      \"profiled_end_byte_exclusive\": 782,\n      \"profiled_start_byte\": 657,\n      \"raw_end_byte_exclusive\": 784,\n      \"raw_span_sha256\": \"45cc73b90bc2dd591f165f81a5ad4800fc8d39c958f58dccb3d63fa9c7b8342d\",\n      \"raw_start_byte\": 659,\n      \"source_span\": {\n        \"Path\": \"stdlib/encoding/reader.oak\",\n        \"FirstLine\": 9,\n        \"LastLine\": 9,\n        \"SHA256\": \"d16357a998cccf3c82fdacbbff07e3eb64f69fa6495325d36f1423d4c7921d67\",\n        \"Bytes\": 51\n      }\n    },\n    {\n      \"inventory_block_bytes\": 303,\n      \"inventory_block_sha256\": \"b793ce32120f9dd6d4adf300c6ecfa56027b4ef57b58771407199b5be07d3e0c\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"encoding_sreader__RangeRead\",\n      \"profiled_end_byte_exclusive\": 1600,\n      \"profiled_start_byte\": 1296,\n      \"raw_end_byte_exclusive\": 1602,\n      \"raw_span_sha256\": \"499fbfc001fb98c3b6c781e410a7420339f2a82fd4fd53999d9dfa75da0d8c0a\",\n      \"raw_start_byte\": 1298,\n      \"source_span\": {\n        \"Path\": \"stdlib/encoding/reader.oak\",\n        \"FirstLine\": 12,\n        \"LastLine\": 12,\n        \"SHA256\": \"d97e40e917b94a9821dabfcded5880874302de5d39d7b69b519b73f039de4cb2\",\n        \"Bytes\": 72\n      }\n    },\n    {\n      \"inventory_block_bytes\": 209,\n      \"inventory_block_sha256\": \"db90ad2b9f5e7bc2dde946d4f6bd245353d2699c030cfc4de3ae28c79e5c1910\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"encoding_sreader__Window\",\n      \"profiled_end_byte_exclusive\": 657,\n      \"profiled_start_byte\": 447,\n      \"raw_end_byte_exclusive\": 659,\n      \"raw_span_sha256\": \"94bc2e2b7295cb8a3d9cf579e12ca08003dd00e2ab5e6f8e8d964097ba9e0af4\",\n      \"raw_start_byte\": 449,\n      \"source_span\": {\n        \"Path\": \"stdlib/encoding/reader.oak\",\n        \"FirstLine\": 8,\n        \"LastLine\": 8,\n        \"SHA256\": \"15bc58785c9e6bbce9c9de54ebff824191d83b0064303bce572e35afa8f059a4\",\n        \"Bytes\": 50\n      }\n    },\n    {\n      \"inventory_block_bytes\": 257,\n      \"inventory_block_sha256\": \"ecf2d4ea5e6250220c45b7e5b0c0566465418b735385f7da9579f41f714586d1\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"encoding_sreader__WordRead\",\n      \"profiled_end_byte_exclusive\": 1296,\n      \"profiled_start_byte\": 1038,\n      \"raw_end_byte_exclusive\": 1298,\n      \"raw_span_sha256\": \"14c74bdf25165a9f335b3c19527314b12e2dafbe6944a7f9f041dcbd51f956a5\",\n      \"raw_start_byte\": 1040,\n      \"source_span\": {\n        \"Path\": \"stdlib/encoding/reader.oak\",\n        \"FirstLine\": 11,\n        \"LastLine\": 11,\n        \"SHA256\": \"aa3e7e895a3c56bbc73699d8c7ead8d38a49156c0e9dfbf6b6da72537378d0db\",\n        \"Bytes\": 57\n      }\n    },\n    {\n      \"callees\": [\n        \"encoding_sreader__take\",\n        \"endian__read_uu16_ube\"\n      ],\n      \"checked_ast_display_is_not_original_source\": true,\n      \"checked_ast_display_sha256\": \"123f840d1eab7c10da2cd1f93548320e33229178d648575db46ccbe32e1645aa\",\n      \"inventory_block_bytes\": 777,\n      \"inventory_block_sha256\": \"47d09debf96298ca4c3746efcee15286cb5e62458ab0c17de19cc5dc30903467\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"encoding_sreader__read_uu16_ube\",\n      \"profiled_end_byte_exclusive\": 7859,\n      \"profiled_start_byte\": 7081,\n      \"raw_end_byte_exclusive\": 7861,\n      \"raw_span_sha256\": \"a798da458de6568598ff3d9b76fac42be77c6bfd7b9e72b5dbf50a0cd0e96803\",\n      \"raw_start_byte\": 7083,\n      \"source_span\": {\n        \"Path\": \"stdlib/encoding/reader.oak\",\n        \"FirstLine\": 50,\n        \"LastLine\": 60,\n        \"SHA256\": \"f28a8df342c07ace7fe1aec533bd055523ca504f3c5d498603def44362740795\",\n        \"Bytes\": 487\n      }\n    },\n    {\n      \"callees\": [\n        \"encoding_sreader__take\"\n      ],\n      \"checked_ast_display_is_not_original_source\": true,\n      \"checked_ast_display_sha256\": \"92e5aeb17c75eeb3eb9e2e70ae467267ef64a997bec7b47e7eaf069cec366ce1\",\n      \"inventory_block_bytes\": 534,\n      \"inventory_block_sha256\": \"3a2d0149f98ff6c07ff77c4fdc283959d68033d71a7cda6dda5f7f1250f2e43e\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"encoding_sreader__read_uu8\",\n      \"profiled_end_byte_exclusive\": 5784,\n      \"profiled_start_byte\": 5249,\n      \"raw_end_byte_exclusive\": 5786,\n      \"raw_span_sha256\": \"ad1cafbb77f2636cb54eeb36b93081d8efba6aae1542697ca93e11460c2abd46\",\n      \"raw_start_byte\": 5251,\n      \"source_span\": {\n        \"Path\": \"stdlib/encoding/reader.oak\",\n        \"FirstLine\": 44,\n        \"LastLine\": 48,\n        \"SHA256\": \"81ca31f6ea21678a6bb9145b4036dbba9a6b7d0d3e2fc50e2c2ec96367cee445\",\n        \"Bytes\": 211\n      }\n    },\n    {\n      \"callees\": [],\n      \"checked_ast_display_is_not_original_source\": true,\n      \"checked_ast_display_sha256\": \"e71a61d34b271035c0a6798bb28742e74e9c9d6ad06c1e5e4390672df90b92fb\",\n      \"inventory_block_bytes\": 403,\n      \"inventory_block_sha256\": \"2b7dd3e76d1d92a646ec49993f895a85f41ab16b517a2e8d79d0e5f581d3f40c\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"encoding_sreader__remaining\",\n      \"profiled_end_byte_exclusive\": 4490,\n      \"profiled_start_byte\": 4086,\n      \"raw_end_byte_exclusive\": 4492,\n      \"raw_span_sha256\": \"9ee11b8db0d855d99de87780f85279694b140651f3da192158264db7a4f70a87\",\n      \"raw_start_byte\": 4088,\n      \"source_span\": {\n        \"Path\": \"stdlib/encoding/reader.oak\",\n        \"FirstLine\": 22,\n        \"LastLine\": 26,\n        \"SHA256\": \"7fc54b1b74a83ec0cc2992ef8c39cffa7bf68e9a5720fc23cab02b79e067dbfa\",\n        \"Bytes\": 182\n      }\n    },\n    {\n      \"callees\": [\n        \"encoding_sreader__remaining\"\n      ],\n      \"checked_ast_display_is_not_original_source\": true,\n      \"checked_ast_display_sha256\": \"2c8575087ea382f262205236608c8f3ae6cbaffd5a2163f35c4a8b662142a181\",\n      \"inventory_block_bytes\": 758,\n      \"inventory_block_sha256\": \"bf02c33e6db18098bd61c4d6d12193ffcc7e1c776d9385a28f99f01258dcb99d\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"encoding_sreader__take\",\n      \"profiled_end_byte_exclusive\": 5249,\n      \"profiled_start_byte\": 4490,\n      \"raw_end_byte_exclusive\": 5251,\n      \"raw_span_sha256\": \"05ab05763948bb9fa1663b2f75842c4e52302c949bf6cd39159fdc89796b72c6\",\n      \"raw_start_byte\": 4492,\n      \"source_span\": {\n        \"Path\": \"stdlib/encoding/reader.oak\",\n        \"FirstLine\": 30,\n        \"LastLine\": 42,\n        \"SHA256\": \"6a081e32b27d37fb6d65d0e2712424f5fffa86c2f934ed0e3dd2832278182aaf\",\n        \"Bytes\": 396\n      }\n    },\n    {\n      \"inventory_block_bytes\": 94,\n      \"inventory_block_sha256\": \"e58da6198fdccca24d02451d7acb218e84c43f9c4c9284ad266b37b758ebff1e\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"endian__Error\",\n      \"profiled_end_byte_exclusive\": 447,\n      \"profiled_start_byte\": 352,\n      \"raw_end_byte_exclusive\": 449,\n      \"raw_span_sha256\": \"ae7a3cc0d9627917c48e4c1a987c59650bc7815caea68a283e2d68aa9faad3dc\",\n      \"raw_start_byte\": 354,\n      \"source_span\": {\n        \"Path\": \"stdlib/endian.oak\",\n        \"FirstLine\": 6,\n        \"LastLine\": 6,\n        \"SHA256\": \"0c9926418d6ccf57730397aa2ef2ae23111e914407353b9ece2e6b26b8a2c877\",\n        \"Bytes\": 35\n      }\n    },\n    {\n      \"callees\": [\n        \"bytes__range_ufits\"\n      ],\n      \"checked_ast_display_is_not_original_source\": true,\n      \"checked_ast_display_sha256\": \"ca1c87c5df33da7ceace9b81421dbc120eda956327715f98edf9832eae094892\",\n      \"inventory_block_bytes\": 643,\n      \"inventory_block_sha256\": \"9d9e4db66e86f3c7696999ecbd10c380c5c06a45a56125cf773f90ba79602bea\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"endian__read_uu16_ube\",\n      \"profiled_end_byte_exclusive\": 7081,\n      \"profiled_start_byte\": 6437,\n      \"raw_end_byte_exclusive\": 7083,\n      \"raw_span_sha256\": \"26b427540ef94f8a3ab625d8ad0de817a2ade2ee5d926f4d13e3a4a34dcbc0e5\",\n      \"raw_start_byte\": 6439,\n      \"source_span\": {\n        \"Path\": \"stdlib/endian.oak\",\n        \"FirstLine\": 25,\n        \"LastLine\": 32,\n        \"SHA256\": \"da4aa4ffeac3aa3679cd82724cbff12d899862244fd83448cbcc6032879abfc8\",\n        \"Bytes\": 297\n      }\n    },\n    {\n      \"inventory_block_bytes\": 569,\n      \"inventory_block_sha256\": \"d16021353368965e806c0a2f23eed85cbcb2478b580abf8fb29dca23ee5599a7\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"smartcard_sapdu__Command\",\n      \"profiled_end_byte_exclusive\": 2672,\n      \"profiled_start_byte\": 2102,\n      \"raw_end_byte_exclusive\": 2674,\n      \"raw_span_sha256\": \"78d63b60f9daf3acd1930b5ff5904e486f32e7772284c1fe00299022ce7a0aba\",\n      \"raw_start_byte\": 2104,\n      \"source_span\": {\n        \"Path\": \"stdlib/smartcard/apdu.oak\",\n        \"FirstLine\": 11,\n        \"LastLine\": 21,\n        \"SHA256\": \"f53e2efacc90e7d0d6be9c19d440c96449fbd133f83653540d47af887c8a954c\",\n        \"Bytes\": 170\n      }\n    },\n    {\n      \"inventory_block_bytes\": 199,\n      \"inventory_block_sha256\": \"84195f657b009de5a465fd867a30fa1c0140da8f64b5871beddc4439ce077e51\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"smartcard_sapdu__CommandCase\",\n      \"profiled_end_byte_exclusive\": 1800,\n      \"profiled_start_byte\": 1600,\n      \"raw_end_byte_exclusive\": 1802,\n      \"raw_span_sha256\": \"99871925b03183146deb3dec1b3c9208f5dc90bbc815a56ef5b76482e08efca8\",\n      \"raw_start_byte\": 1602,\n      \"source_span\": {\n        \"Path\": \"stdlib/smartcard/apdu.oak\",\n        \"FirstLine\": 8,\n        \"LastLine\": 8,\n        \"SHA256\": \"cde1c0a804bcc9ce6562959ea37b77bcc7130c26a6464f06d67403ce3a0ed9ba\",\n        \"Bytes\": 117\n      }\n    },\n    {\n      \"inventory_block_bytes\": 191,\n      \"inventory_block_sha256\": \"c0798930a3e0f107a87a7622a18ed0272fa765ab2092ff2be4ec75b954384a86\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"smartcard_sapdu__Error\",\n      \"profiled_end_byte_exclusive\": 1992,\n      \"profiled_start_byte\": 1800,\n      \"raw_end_byte_exclusive\": 1994,\n      \"raw_span_sha256\": \"886976640102b3cde8c0e726ce27984a6bd376ee5a4e8b7e0512d3f7b0c2c00c\",\n      \"raw_start_byte\": 1802,\n      \"source_span\": {\n        \"Path\": \"stdlib/smartcard/apdu.oak\",\n        \"FirstLine\": 9,\n        \"LastLine\": 9,\n        \"SHA256\": \"5d8d1b61c83a56a9b8f0e30b75bfd83de1a35eaf2db460a610c71f21418be6f6\",\n        \"Bytes\": 111\n      }\n    },\n    {\n      \"inventory_block_bytes\": 263,\n      \"inventory_block_sha256\": \"d408e4ab93f2d85a9ed1a20c10820f5942f12f4d5eade16768928417241600e6\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"smartcard_sapdu__Header\",\n      \"profiled_end_byte_exclusive\": 2936,\n      \"profiled_start_byte\": 2672,\n      \"raw_end_byte_exclusive\": 2938,\n      \"raw_span_sha256\": \"ebba45132d2e45fe845b5e7539d866820e6341f3d97a7b17ee13a680d9576204\",\n      \"raw_start_byte\": 2674,\n      \"source_span\": {\n        \"Path\": \"stdlib/smartcard/apdu.oak\",\n        \"FirstLine\": 23,\n        \"LastLine\": 23,\n        \"SHA256\": \"202b7111ea1f33e00bfb30da1cda0b55cd14cc0f41932cf39fc04eaabbf638bc\",\n        \"Bytes\": 59\n      }\n    },\n    {\n      \"callees\": [],\n      \"checked_ast_display_is_not_original_source\": true,\n      \"checked_ast_display_sha256\": \"a9fe2036b3a7ad9d30042ca02b7f12ea83ad0486b707f342fd19e8595045a9f3\",\n      \"inventory_block_bytes\": 447,\n      \"inventory_block_sha256\": \"b99468c50b4567c85ed7fef5e9262c6019480e4a7453df8771a3c50ec5f804c4\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"smartcard_sapdu__command\",\n      \"profiled_end_byte_exclusive\": 6232,\n      \"profiled_start_byte\": 5784,\n      \"raw_end_byte_exclusive\": 6234,\n      \"raw_span_sha256\": \"f17aa00dbf7ee5087da093d5b199b19062e18c931ba08e3b520792659262fbf0\",\n      \"raw_start_byte\": 5786,\n      \"source_span\": {\n        \"Path\": \"stdlib/smartcard/apdu.oak\",\n        \"FirstLine\": 25,\n        \"LastLine\": 35,\n        \"SHA256\": \"f22f6eee7d60123e2b06c4feac16c3ad8834e93950a057882301df7bd0ceb7e1\",\n        \"Bytes\": 300\n      }\n    },\n    {\n      \"callees\": [\n        \"encoding_sreader__read_uu8\",\n        \"smartcard_sapdu__command\",\n        \"smartcard_sapdu__extended\",\n        \"smartcard_sapdu__short_udata\",\n        \"smartcard_sapdu__short_uresponse\"\n      ],\n      \"checked_ast_display_is_not_original_source\": true,\n      \"checked_ast_display_sha256\": \"e2aff587d3bf0d5e59916b0f8d413765dfdc3bc52a9768efe429524483567206\",\n      \"inventory_block_bytes\": 2491,\n      \"inventory_block_sha256\": \"dba74d0bd1747f2f88db72919716a5db63e055a8e871d1080836abda97f6515e\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"smartcard_sapdu__decode\",\n      \"profiled_end_byte_exclusive\": 15888,\n      \"profiled_start_byte\": 13396,\n      \"raw_end_byte_exclusive\": 15890,\n      \"raw_span_sha256\": \"85a65577cdc2bbbe8ea46a2abc1101da7ddc05788cc8f264e98bb534c3fa197d\",\n      \"raw_start_byte\": 13398,\n      \"source_span\": {\n        \"Path\": \"stdlib/smartcard/apdu.oak\",\n        \"FirstLine\": 89,\n        \"LastLine\": 110,\n        \"SHA256\": \"1b13e7f23e690b43fc1af396e625f7b44ed3ba5f734553d51904ef76f4c5907c\",\n        \"Bytes\": 881\n      }\n    },\n    {\n      \"callees\": [\n        \"encoding_sreader__read_uu16_ube\",\n        \"smartcard_sapdu__command\",\n        \"smartcard_sapdu__extended_udata\",\n        \"smartcard_sapdu__extended_uresponse\"\n      ],\n      \"checked_ast_display_is_not_original_source\": true,\n      \"checked_ast_display_sha256\": \"8a86abfabaa28c8a2cbdb4bf1e89fa6b913b4181ee180b1b6cab90b427f780cf\",\n      \"inventory_block_bytes\": 1271,\n      \"inventory_block_sha256\": \"f056f6436691a8198313da317ae595b5559e6fb33a2f5e0763e8ae21c2ddeb58\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"smartcard_sapdu__extended\",\n      \"profiled_end_byte_exclusive\": 11422,\n      \"profiled_start_byte\": 10150,\n      \"raw_end_byte_exclusive\": 11424,\n      \"raw_span_sha256\": \"577fa436d98a15a9322fa65a90f2e8344616dd485f7f106dbd9d350e90db73e0\",\n      \"raw_start_byte\": 10152,\n      \"source_span\": {\n        \"Path\": \"stdlib/smartcard/apdu.oak\",\n        \"FirstLine\": 72,\n        \"LastLine\": 84,\n        \"SHA256\": \"1dddfac1f4b2d0a31611ae05015d897fdd5ac88f8c4e1a77489b94c026e187bf\",\n        \"Bytes\": 620\n      }\n    },\n    {\n      \"callees\": [\n        \"encoding_sreader__read_uu16_ube\",\n        \"encoding_sreader__take\",\n        \"smartcard_sapdu__command\",\n        \"smartcard_sapdu__extended_uresponse\"\n      ],\n      \"checked_ast_display_is_not_original_source\": true,\n      \"checked_ast_display_sha256\": \"240e7a4d281c8c9e4e6b0073c4d8fb1ee9897733e3944791ac92e49577815fd7\",\n      \"inventory_block_bytes\": 2109,\n      \"inventory_block_sha256\": \"16f406e00191c54d6f8518039e36499f60489d0a3ae9de5868ca9f697ae697c8\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"smartcard_sapdu__extended_udata\",\n      \"profiled_end_byte_exclusive\": 10150,\n      \"profiled_start_byte\": 8040,\n      \"raw_end_byte_exclusive\": 10152,\n      \"raw_span_sha256\": \"dfaeb8b4d3d83139b73af8b4c97f15a027dc0058228f41bab48bd9781fd70913\",\n      \"raw_start_byte\": 8042,\n      \"source_span\": {\n        \"Path\": \"stdlib/smartcard/apdu.oak\",\n        \"FirstLine\": 56,\n        \"LastLine\": 70,\n        \"SHA256\": \"0416c6fcb7218e8c2ba01af3d37a809451ef0fa59e6c8b602067d1635e1dbb28\",\n        \"Bytes\": 739\n      }\n    },\n    {\n      \"callees\": [],\n      \"checked_ast_display_is_not_original_source\": true,\n      \"checked_ast_display_sha256\": \"c2d7c023e63e361fdfd135b481b65eadf03b7fee93413e3418a46ec44f9b13ba\",\n      \"inventory_block_bytes\": 180,\n      \"inventory_block_sha256\": \"4cece958539d3b1186648f014ff46c178062bef5d2f7c92f4246553216ac3816\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"smartcard_sapdu__extended_uresponse\",\n      \"profiled_end_byte_exclusive\": 8040,\n      \"profiled_start_byte\": 7859,\n      \"raw_end_byte_exclusive\": 8042,\n      \"raw_span_sha256\": \"658e33ee97b0da346d45d51f8171834335b77305abe1bff3940a08beec58b9ae\",\n      \"raw_start_byte\": 7861,\n      \"source_span\": {\n        \"Path\": \"stdlib/smartcard/apdu.oak\",\n        \"FirstLine\": 38,\n        \"LastLine\": 38,\n        \"SHA256\": \"f5a1001ae29dd5a7cce18777cd071e4eb3e820e88d1661915f2edadc497e6bb0\",\n        \"Bytes\": 87\n      }\n    },\n    {\n      \"callees\": [\n        \"encoding_sreader__read_uu8\",\n        \"encoding_sreader__take\",\n        \"smartcard_sapdu__command\",\n        \"smartcard_sapdu__short_uresponse\"\n      ],\n      \"checked_ast_display_is_not_original_source\": true,\n      \"checked_ast_display_sha256\": \"05408d5cb1e851c61f2254e2825f0109128324561c5b1e5e101d5d3bc8ec3a04\",\n      \"inventory_block_bytes\": 1799,\n      \"inventory_block_sha256\": \"c8b97775ed39fbbd969aa8828844f48dd1da7c39e341836d14413497090796cf\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"smartcard_sapdu__short_udata\",\n      \"profiled_end_byte_exclusive\": 13396,\n      \"profiled_start_byte\": 11596,\n      \"raw_end_byte_exclusive\": 13398,\n      \"raw_span_sha256\": \"abdb11de8b7d2ec9d8d1341550e75f6d0879b094f9d0ff35f291af3b2f65a353\",\n      \"raw_start_byte\": 11598,\n      \"source_span\": {\n        \"Path\": \"stdlib/smartcard/apdu.oak\",\n        \"FirstLine\": 40,\n        \"LastLine\": 54,\n        \"SHA256\": \"9a688fbf26b075325024630ee75cf5cb0f121468833fe18fefb2630becf6d643\",\n        \"Bytes\": 743\n      }\n    },\n    {\n      \"callees\": [],\n      \"checked_ast_display_is_not_original_source\": true,\n      \"checked_ast_display_sha256\": \"416ae8ae2b5087bf65b11de9f37dfd750d31199ef70ab023ba6072e1e8d17e2f\",\n      \"inventory_block_bytes\": 173,\n      \"inventory_block_sha256\": \"2bbd000c4014269293dd9f52e5f04177f108ddee679922eae1b0e85a00be6fa0\",\n      \"inventory_block_trailing_newlines_normalized\": true,\n      \"name\": \"smartcard_sapdu__short_uresponse\",\n      \"profiled_end_byte_exclusive\": 11596,\n      \"profiled_start_byte\": 11422,\n      \"raw_end_byte_exclusive\": 11598,\n      \"raw_span_sha256\": \"574ac31067f33fe7f28a445764f3965609fdcfd0ad985b3d2fddae8f89f4e372\",\n      \"raw_start_byte\": 11424,\n      \"source_span\": {\n        \"Path\": \"stdlib/smartcard/apdu.oak\",\n        \"FirstLine\": 37,\n        \"LastLine\": 37,\n        \"SHA256\": \"13a638e1fe912992c8b499320c045d05e8b9e30d742ad8c26315c4430e391ad6\",\n        \"Bytes\": 80\n      }\n    }\n  ],\n  \"fixture_pins\": [\n    {\n      \"Path\": \"main.oak\",\n      \"Module\": \"\",\n      \"SHA256\": \"c8d040ccb0192ff1052f8c322fee2e2459f70fb635aee163777edb5c326761e1\",\n      \"Bytes\": 206\n    },\n    {\n      \"Path\": \"oak.mod\",\n      \"Module\": \"\",\n      \"SHA256\": \"b1f1712f6263e579e8bafda81102e071699bff1424ca715674dd3b26a2323843\",\n      \"Bytes\": 45\n    }\n  ],\n  \"generic_carriers\": {\n    \"byte\": \"Result_encoding_sreader__ByteRead_encoding_sreader__Error\",\n    \"command\": \"Result_smartcard_sapdu__Command_smartcard_sapdu__Error\",\n    \"endian\": \"Result_u16_endian__Error\",\n    \"read\": \"Result_encoding_sreader__WordRead_encoding_sreader__Error\",\n    \"remaining\": \"Result_u32_encoding_sreader__Error\",\n    \"response\": \"Option_u32\",\n    \"take\": \"Result_encoding_sreader__RangeRead_encoding_sreader__Error\"\n  },\n  \"lean_invocations\": 0,\n  \"namespace\": \"Oak.Stdlib.APDUExtracted\",\n  \"profiled_bytes\": 15917,\n  \"profiled_sha256\": \"55d97ce34d1a3436156ab6d7df32538f5f3a0be530ab27238494a19dfaedecc6\",\n  \"raw_bytes\": 15919,\n  \"raw_sha256\": \"0ea49a1772106b74d94a73d5a411ca8db6e799a8d145e5522306860889f7ba4b\",\n  \"roots\": [\n    \"smartcard_sapdu__decode\"\n  ],\n  \"schema_version\": 1,\n  \"source_pins\": [\n    {\n      \"Path\": \"stdlib/smartcard/apdu.oak\",\n      \"Module\": \"smartcard/apdu\",\n      \"SHA256\": \"953113da1f6bcb91c8e8c3e038fdc179a095647e1ca09fb337e2308aa9cc3b07\",\n      \"Bytes\": 4416\n    },\n    {\n      \"Path\": \"stdlib/encoding/reader.oak\",\n      \"Module\": \"encoding/reader\",\n      \"SHA256\": \"262a8e1571054f5ffd0ec6231571bd8265fbac7b08463a3058c1de86907576d6\",\n      \"Bytes\": 2280\n    },\n    {\n      \"Path\": \"stdlib/bytes.oak\",\n      \"Module\": \"bytes\",\n      \"SHA256\": \"e4da6755200dbcfe409f9ec11ea928515d7fcd91838ba63e284d1c9f30603f7c\",\n      \"Bytes\": 2996\n    },\n    {\n      \"Path\": \"stdlib/endian.oak\",\n      \"Module\": \"endian\",\n      \"SHA256\": \"7e7232c6f9fae60c97c1ea135c27e4d83b436c116812b2153b2e52d4b9dfc78d\",\n      \"Bytes\": 5553\n    },\n    {\n      \"Path\": \"stdlib/std.oak\",\n      \"Module\": \"\",\n      \"SHA256\": \"10bbc09408ba76fccbac59f06936411e29eff8b81777c788b2b77b8e57eaa0e7\",\n      \"Bytes\": 31689\n    }\n  ],\n  \"status\": \"extracted_not_proved\",\n  \"tree_requires_outer_authentication\": \"b62ada7603f8311e2d25cf135a04464b4eb24323\"\n}\n"
+  },
+  "fixture": ".github/scripts/apdu_refinement/fixture",
+  "flags": [
+    "-j1",
+    "-s65536",
+    "-M1536",
+    "-T200000",
+    "-DmaxHeartbeats=200000",
+    "-DmaxRecDepth=2048",
+    "-DElab.async=false",
+    "-DwarningAsError=true",
+    "--json"
+  ],
+  "forbidden_oracles": [
+    "sorryAx",
+    "Lean.trustCompiler",
+    "Lean.ofReduceBool",
+    "Lean.ofReduceNat",
+    "Lean.reduceBool",
+    "Lean.reduceNat"
+  ],
+  "historical_extraction_tree": "b62ada7603f8311e2d25cf135a04464b4eb24323",
+  "host_tcb": "Ubuntu 24.04 runner, Python stdlib and system loader/libraries are trusted separately; no reuse of local host-library hashes.",
+  "inputs": {
+    ".github/scripts/apdu_refinement/adapter.go": {
+      "bytes": 34451,
+      "sha256": "32d94337c7d5db2592cd0bee26bdff81471cb6bfbf9c832fc01c8ce40873c4f0"
+    },
+    ".github/scripts/apdu_refinement/adapter_test.go": {
+      "bytes": 33183,
+      "sha256": "c726b3df2c1f81f145fa94b35a503c516f0c8bbb8f1b2e706629494fbf953419"
+    },
+    ".github/scripts/apdu_refinement/emit_test.go": {
+      "bytes": 702,
+      "sha256": "754824aa6d7930edc1ade7a5adc84123e30c430252d2c985193a9ff78854afbd"
+    },
+    ".github/scripts/apdu_refinement/fixture/main.oak": {
+      "bytes": 206,
+      "sha256": "c8d040ccb0192ff1052f8c322fee2e2459f70fb635aee163777edb5c326761e1"
+    },
+    ".github/scripts/apdu_refinement/fixture/oak.mod": {
+      "bytes": 45,
+      "sha256": "b1f1712f6263e579e8bafda81102e071699bff1424ca715674dd3b26a2323843"
+    },
+    "ast/ast.go": {
+      "bytes": 67409,
+      "sha256": "a1bc4c3fd240d9b41f7378c517ca624387c0fe513d0c75be76ce0831ac8651e7"
+    },
+    "codegen/lean/adt.go": {
+      "bytes": 23174,
+      "sha256": "92ec88768fce3a6402a77f579f09fb0afb8d87a205a7aa0ec029c1f9d94c7e1f"
+    },
+    "codegen/lean/assignment.go": {
+      "bytes": 2503,
+      "sha256": "c154e9403735cb50469a7a1c3a34433f6a7b7f6e077e8d2f6b84bc4edaca239f"
+    },
+    "codegen/lean/lean.go": {
+      "bytes": 99173,
+      "sha256": "1a86c1508726731b2ac8c8903da9a474d5f5da0acff3f872939b573cfd0f6414"
+    },
+    "codegen/lean/quantifier.go": {
+      "bytes": 3039,
+      "sha256": "49820d9c97af2bd7279c90b014d4af3d4e980126054e4637847e99e311ee70c0"
+    },
+    "codegen/lean/specialization.go": {
+      "bytes": 4911,
+      "sha256": "5c15130e62efa65f732f27d628caa59e26297c271c9e4cd25c98ad5cda31e4fe"
+    },
+    "compiler/compilation.go": {
+      "bytes": 48647,
+      "sha256": "5b9c21a6b6ebae7a83a4463748be2b5f446f5cc04def98fb07229c33be6a4d90"
+    },
+    "compiler/e2e_stdlib_reader_apdu_test.go": {
+      "bytes": 19459,
+      "sha256": "4419fd5bcd779c40baf75d00de52d0a5ea8ae85d51ec9eb6cedfbdab9d21d291"
+    },
+    "compiler/lean_stdlib_extract_test.go": {
+      "bytes": 10499,
+      "sha256": "c1d662d92207a7a524b63e156b70c11ca6500c7c128748c771cf0d8e2bbe5ddb"
+    },
+    "compiler/lean_stdlib_faithful_test.go": {
+      "bytes": 42254,
+      "sha256": "bec0dfc42d3961ccacb0aba7f934100d40042b5f8d06110ea49389c35011282f"
+    },
+    "compiler/modules.go": {
+      "bytes": 97444,
+      "sha256": "f34cd60b667d6194686071dad8384998a497540edd9fe033078fd4a170c1d73c"
+    },
+    "docs/spec/95-extraction.md": {
+      "bytes": 57884,
+      "sha256": "12e5d561dfe1211f9f64b42870fbc3825660303033475be180fe00973e3fbb60"
+    },
+    "evaluator/arithmetic.go": {
+      "bytes": 3791,
+      "sha256": "b8db262637147e3896f219e4112cce80198b463304ddffdec35ec9d9af27f44e"
+    },
+    "evaluator/evaluator.go": {
+      "bytes": 63415,
+      "sha256": "b1943d0e025d772174f5d1e777ac19208ad7885122c911942fff39505375bed6"
+    },
+    "experiments/verification-poc/proof/ExtractionDecoder.lean": {
+      "bytes": 99691,
+      "sha256": "6fef2be4017bdd84eae09b4f8092dec474d46afd38419104e27d636ec89e0b36"
+    },
+    "experiments/verification-poc/proof/ExtractionScanner.lean": {
+      "bytes": 33145,
+      "sha256": "c856d23731b89f4b81abce9b440aa3a2259b80d06a270cc2c878dcad3769a3ed"
+    },
+    "go.mod": {
+      "bytes": 186,
+      "sha256": "063c12ad4674294747ac0bf455e4571166abb8e143ff63b54715f2f27818b38d"
+    },
+    "go.sum": {
+      "bytes": 483,
+      "sha256": "a4b0392475d35f1e52a30ffda444fc45055c545e81904b14736a3721abcd0f22"
+    },
+    "modules/mangle.go": {
+      "bytes": 5943,
+      "sha256": "d42ad573fb04e907751c38f82c02b7304e870b96b7a98d0bcdb7602ac65c7ef3"
+    },
+    "parser/parser.go": {
+      "bytes": 181879,
+      "sha256": "600aabb9585a8fdb7ba007ef82cc06411c03dd641e4e587408dc0d1b1e439dfb"
+    },
+    "spec/lean/Oak/ADTSemantics.lean": {
+      "bytes": 3773,
+      "sha256": "739188cec524c9e640f3dafd7621e1185eb3422a4f065ee8a75086800b4c76a6"
+    },
+    "spec/lean/Oak/ArithmeticRefinement.lean": {
+      "bytes": 11764,
+      "sha256": "4df49f03d601ad75f5398c28355f68869bf245e4f8aae51aa35674a3cc3cf98b"
+    },
+    "spec/lean/Oak/BitwiseSource.lean": {
+      "bytes": 10773,
+      "sha256": "01fe7b45a81fc3904dfad97aa6c7686ebe47e57744c7868e2badd28df6013dae"
+    },
+    "spec/lean/Oak/LRATBounds.lean": {
+      "bytes": 4844,
+      "sha256": "c7fac88abb4283ca0a5945df706317ddb7a6f666abdaaa405690d28e566938e2"
+    },
+    "spec/lean/Oak/ModulesRefinement.lean": {
+      "bytes": 6576,
+      "sha256": "7895b296b5008af972a5d759697ac1b9763bd78087d50704223eed129e1bd8fa"
+    },
+    "spec/lean/Oak/Stdlib/APDUExtracted.lean": {
+      "bytes": 15917,
+      "sha256": "55d97ce34d1a3436156ab6d7df32538f5f3a0be530ab27238494a19dfaedecc6"
+    },
+    "spec/lean/Oak/Stdlib/APDULengthModel.lean": {
+      "bytes": 20026,
+      "sha256": "896b78507df003704c62c738660451275cfd0b53e0257abdac15e49e071223cf"
+    },
+    "spec/lean/Oak/Stdlib/APDUModelErrorContracts.lean": {
+      "bytes": 6848,
+      "sha256": "9bab755e837993691fe42dfeec46a73e4c33f9b1844220d7fcffa6428e4dac96"
+    },
+    "spec/lean/Oak/Stdlib/APDUParserControls.lean": {
+      "bytes": 3387,
+      "sha256": "2ec74a2b379c40484830fe5285c15fd2e476f3d68b9b68241043d46e9449e602"
+    },
+    "spec/lean/Oak/Stdlib/APDUParserCorrectness.lean": {
+      "bytes": 11872,
+      "sha256": "71db4c91f229424362802d044db6a32dc46238a5883259056640aaab2ba8553f"
+    },
+    "spec/lean/Oak/Stdlib/APDUParserHelperProofs.lean": {
+      "bytes": 22752,
+      "sha256": "86ec7c758ff3901fb90c4a1e9c468f8eb51f80a4a45cd66629e50350b6970d55"
+    },
+    "spec/lean/Oak/Stdlib/APDUParserRefinement.lean": {
+      "bytes": 9058,
+      "sha256": "4c7ce29c02e1a2ac1dcee39bf6f3c7bf9ef4d0636c5c13af708e1bc517446bc0"
+    },
+    "spec/lean/Oak/Stdlib/APDUReaderBridge.lean": {
+      "bytes": 23882,
+      "sha256": "4c33b141cbfa7350a99f3f5d76c01bc861f81f179ba7bbbb756c809dae05d564"
+    },
+    "spec/lean/Oak/Stdlib/BoundedReaderExtracted.lean": {
+      "bytes": 5624,
+      "sha256": "94f44f3e034bd421c1653304d5b8cb6558a2440f595854af962a2088fe08a335"
+    },
+    "spec/lean/Oak/Stdlib/BoundedReaderModel.lean": {
+      "bytes": 10433,
+      "sha256": "b7eaf77ba004107148989d476bc8818c482c5121abb4be2cc640f6d4ed4eecd7"
+    },
+    "spec/lean/Oak/Stdlib/BoundedReaderRefinement.lean": {
+      "bytes": 48400,
+      "sha256": "21f8c9bf4956e21a192a31192d70bddf997baf0e5f325450315b99ca42ec50b8"
+    },
+    "spec/lean/Oak/Stdlib/BufferLaws.lean": {
+      "bytes": 4941,
+      "sha256": "4780bf1a8706362b17a945af3d5d26568288cc82a9a9a88905a973d41e097bdc"
+    },
+    "spec/lean/Oak/Stdlib/BytesLaws.lean": {
+      "bytes": 3180,
+      "sha256": "3bad319d1efcb4afc9ccd4a6297696acb702055c8898b82929dba9f5160744b5"
+    },
+    "spec/lean/Oak/Stdlib/EndianExtracted.lean": {
+      "bytes": 11624,
+      "sha256": "674845e456e498c4120b6d28bb197631c7cccf6b0d4665be23665a6029cb6bbe"
+    },
+    "spec/lean/Oak/Stdlib/EndianLaws.lean": {
+      "bytes": 3358,
+      "sha256": "7340d0b19bf2a917cdf56747158084b9f38d609643f235ee5ffbc0e4a8ef24a5"
+    },
+    "spec/lean/Oak/ViewRefinement.lean": {
+      "bytes": 9266,
+      "sha256": "0e2a4b05ae55dd56a13dfaa9247712b1362c425a88f6e6157c1b3d3ccc0dd657"
+    },
+    "spec/lean/reader_apdu/APDURefinementAuditDriver.lean": {
+      "bytes": 35080,
+      "sha256": "a64bc110e9002c248a39cb3ad9b4ee964a3789fd9df9b6177a1f6a75c347a30a"
+    },
+    "spec/lean/reader_apdu/apdu-extraction.json": {
+      "bytes": 27838,
+      "sha256": "52823ee2c7a80ce1310487f13125ab5baa7cdf62e1579726b018bbf2bdf1ef99"
+    },
+    "spec/lean/reader_apdu/apdu-extraction.raw.lean.txt": {
+      "bytes": 15919,
+      "sha256": "0ea49a1772106b74d94a73d5a411ca8db6e799a8d145e5522306860889f7ba4b"
+    },
+    "spec/lean/reader_apdu/apdu_refinement_audit_consumer.py": {
+      "bytes": 13256,
+      "sha256": "0fbdcf498fff4921996ef99a031fe94cce214e4f30b58a670e3d0626ea1cf1bb"
+    },
+    "spec/lean/reader_apdu/apdu_refinement_inventory.json": {
+      "bytes": 273435,
+      "sha256": "6c9083ca782d19e97470b7a4c93ae76046ae7741be84d9cfd89ce5cbb117c0c1"
+    },
+    "spec/lean/reader_apdu/audit_consumer.py": {
+      "bytes": 9420,
+      "sha256": "ea1b574912062f056fdbabdc53d49a8e43d89a2738a81f9cfebacb2dbac63fc4"
+    },
+    "spec/lean/reader_apdu/check.py": {
+      "bytes": 21796,
+      "sha256": "255946f67ba31d7225b954046843777ff05b302fef2f2696b95f803e7db94cde"
+    },
+    "spec/lean/reader_apdu/contract.json": {
+      "bytes": 50758,
+      "sha256": "c1b39dffab66c62449e1cffda580550bafc0eb55a8d26cef49fff5a454d8c015"
+    },
+    "spec/lean/reader_apdu/distribution.json": {
+      "bytes": 1023362,
+      "sha256": "8daa33f7bc5b53cb6c0bc386a5155074068cd5cfc17c6506a459371914b42ecf"
+    },
+    "spec/lean/reader_apdu/support.py": {
+      "bytes": 4308,
+      "sha256": "3b39edfe0ad02d3c92482e21bba15296ce65343d5bda3c42e7525269c27591bb"
+    },
+    "spec/lean/reader_apdu/test_apdu_refinement.py": {
+      "bytes": 28279,
+      "sha256": "e549bab1f950d228027b3afa1ba20cc444d261bd7fc6b38d93666f1e407a65c0"
+    },
+    "spec/lean/reader_apdu/test_apdu_refinement_audit.py": {
+      "bytes": 31019,
+      "sha256": "3a1dc4677d42a4a27893d1919c8c27a1ddce90bb0a239c261df0d449d54f3aad"
+    },
+    "stdlib/bytes.oak": {
+      "bytes": 2996,
+      "sha256": "e4da6755200dbcfe409f9ec11ea928515d7fcd91838ba63e284d1c9f30603f7c"
+    },
+    "stdlib/encoding/reader.oak": {
+      "bytes": 2280,
+      "sha256": "262a8e1571054f5ffd0ec6231571bd8265fbac7b08463a3058c1de86907576d6"
+    },
+    "stdlib/endian.oak": {
+      "bytes": 5553,
+      "sha256": "7e7232c6f9fae60c97c1ea135c27e4d83b436c116812b2153b2e52d4b9dfc78d"
+    },
+    "stdlib/smartcard/apdu.oak": {
+      "bytes": 4416,
+      "sha256": "953113da1f6bcb91c8e8c3e038fdc179a095647e1ca09fb337e2308aa9cc3b07"
+    },
+    "stdlib/source.go": {
+      "bytes": 21693,
+      "sha256": "da4a3e4e36da3326dfa07afb56ba66c06b021e90b1ab8fe97621497879e06412"
+    },
+    "stdlib/std.oak": {
+      "bytes": 31689,
+      "sha256": "10bbc09408ba76fccbac59f06936411e29eff8b81777c788b2b77b8e57eaa0e7"
+    },
+    "typechecker/mono.go": {
+      "bytes": 18836,
+      "sha256": "c17d7d00dd417e559cf2a197b8a394af52866799e6c2995f1b9096b46414910b"
+    }
+  },
+  "lean_executable_sha256": "e8baaa71855a616dc351028f3ad2200051b0671f423a1696a100e809302d5550",
+  "module_order": [
+    "APDUExtracted",
+    "BoundedReaderExtracted",
+    "BoundedReaderModel",
+    "APDULengthModel",
+    "BoundedReaderRefinement",
+    "APDUModelErrorContracts",
+    "APDUReaderBridge",
+    "APDUParserRefinement",
+    "APDUParserHelperProofs",
+    "APDUParserCorrectness",
+    "APDUParserControls"
+  ],
+  "official_linux_archive_sha256": "890afd185370f85666025b883914ab4f4b339136f8c96167b69cfb62aecaf235",
+  "physical_guard_scope": "Sampled host available-memory and disk floors, direct Lean RSS and bounded fresh-tree logical/allocated size. Not continuous process-tree containment.",
+  "process_scope": "Fresh owned session/process group; direct child reaped after bounded pipe capture. No arbitrary escaped-descendant emptiness proof.",
+  "schema": "oak-apdu-refinement-hosted-contract-v1",
+  "signature_scope": "Exact locked source statements and examples; owner/name/kind audit is not independent restatement.",
+  "source_relocation": [
+    {
+      "bytes": 35080,
+      "original_path": "/workspace/shared/oak-apdu-remaining-proof-session01/final-source/AuditDriver.lean",
+      "repository_path": "spec/lean/reader_apdu/APDURefinementAuditDriver.lean",
+      "sha256": "a64bc110e9002c248a39cb3ad9b4ee964a3789fd9df9b6177a1f6a75c347a30a"
+    },
+    {
+      "bytes": 15917,
+      "original_path": "/workspace/shared/oak-apdu-remaining-proof-session01/final-source/lean/Oak/Stdlib/APDUExtracted.lean",
+      "repository_path": "spec/lean/Oak/Stdlib/APDUExtracted.lean",
+      "sha256": "55d97ce34d1a3436156ab6d7df32538f5f3a0be530ab27238494a19dfaedecc6"
+    },
+    {
+      "bytes": 20026,
+      "original_path": "/workspace/shared/oak-apdu-remaining-proof-session01/final-source/lean/Oak/Stdlib/APDULengthModel.lean",
+      "repository_path": "spec/lean/Oak/Stdlib/APDULengthModel.lean",
+      "sha256": "896b78507df003704c62c738660451275cfd0b53e0257abdac15e49e071223cf"
+    },
+    {
+      "bytes": 6848,
+      "original_path": "/workspace/shared/oak-apdu-remaining-proof-session01/final-source/lean/Oak/Stdlib/APDUModelErrorContracts.lean",
+      "repository_path": "spec/lean/Oak/Stdlib/APDUModelErrorContracts.lean",
+      "sha256": "9bab755e837993691fe42dfeec46a73e4c33f9b1844220d7fcffa6428e4dac96"
+    },
+    {
+      "bytes": 3387,
+      "original_path": "/workspace/shared/oak-apdu-remaining-proof-session01/final-source/lean/Oak/Stdlib/APDUParserControls.lean",
+      "repository_path": "spec/lean/Oak/Stdlib/APDUParserControls.lean",
+      "sha256": "2ec74a2b379c40484830fe5285c15fd2e476f3d68b9b68241043d46e9449e602"
+    },
+    {
+      "bytes": 11872,
+      "original_path": "/workspace/shared/oak-apdu-remaining-proof-session01/final-source/lean/Oak/Stdlib/APDUParserCorrectness.lean",
+      "repository_path": "spec/lean/Oak/Stdlib/APDUParserCorrectness.lean",
+      "sha256": "71db4c91f229424362802d044db6a32dc46238a5883259056640aaab2ba8553f"
+    },
+    {
+      "bytes": 22752,
+      "original_path": "/workspace/shared/oak-apdu-remaining-proof-session01/final-source/lean/Oak/Stdlib/APDUParserHelperProofs.lean",
+      "repository_path": "spec/lean/Oak/Stdlib/APDUParserHelperProofs.lean",
+      "sha256": "86ec7c758ff3901fb90c4a1e9c468f8eb51f80a4a45cd66629e50350b6970d55"
+    },
+    {
+      "bytes": 9058,
+      "original_path": "/workspace/shared/oak-apdu-remaining-proof-session01/final-source/lean/Oak/Stdlib/APDUParserRefinement.lean",
+      "repository_path": "spec/lean/Oak/Stdlib/APDUParserRefinement.lean",
+      "sha256": "4c7ce29c02e1a2ac1dcee39bf6f3c7bf9ef4d0636c5c13af708e1bc517446bc0"
+    },
+    {
+      "bytes": 23882,
+      "original_path": "/workspace/shared/oak-apdu-remaining-proof-session01/final-source/lean/Oak/Stdlib/APDUReaderBridge.lean",
+      "repository_path": "spec/lean/Oak/Stdlib/APDUReaderBridge.lean",
+      "sha256": "4c33b141cbfa7350a99f3f5d76c01bc861f81f179ba7bbbb756c809dae05d564"
+    },
+    {
+      "bytes": 5624,
+      "original_path": "/workspace/shared/oak-apdu-remaining-proof-session01/final-source/lean/Oak/Stdlib/BoundedReaderExtracted.lean",
+      "repository_path": "spec/lean/Oak/Stdlib/BoundedReaderExtracted.lean",
+      "sha256": "94f44f3e034bd421c1653304d5b8cb6558a2440f595854af962a2088fe08a335"
+    },
+    {
+      "bytes": 10433,
+      "original_path": "/workspace/shared/oak-apdu-remaining-proof-session01/final-source/lean/Oak/Stdlib/BoundedReaderModel.lean",
+      "repository_path": "spec/lean/Oak/Stdlib/BoundedReaderModel.lean",
+      "sha256": "b7eaf77ba004107148989d476bc8818c482c5121abb4be2cc640f6d4ed4eecd7"
+    },
+    {
+      "bytes": 48400,
+      "original_path": "/workspace/shared/oak-apdu-remaining-proof-session01/final-source/lean/Oak/Stdlib/BoundedReaderRefinement.lean",
+      "repository_path": "spec/lean/Oak/Stdlib/BoundedReaderRefinement.lean",
+      "sha256": "21f8c9bf4956e21a192a31192d70bddf997baf0e5f325450315b99ca42ec50b8"
+    },
+    {
+      "bytes": 273435,
+      "original_path": "/workspace/shared/oak-apdu-remaining-proof-session01/final-source/THEOREM_INVENTORY.json",
+      "repository_path": "spec/lean/reader_apdu/apdu_refinement_inventory.json",
+      "sha256": "6c9083ca782d19e97470b7a4c93ae76046ae7741be84d9cfd89ce5cbb117c0c1"
+    }
+  ],
+  "source_update_policy": "No runtime update mode. Review current extraction, exact accepted sources/theorem inventory, driver/consumer and hosted helper inputs before changing this contract and its literal runner digest. Preserve original absolute-path provenance; relocation is explicit. Review/Git composition binds check_apdu_refinement.py, avoiding a self-hash cycle. Historical object/audit hashes are provenance, not new output equality obligations.",
+  "toolchain": "leanprover/lean4:v4.33.1"
+}

@@ -54,3 +54,31 @@ Final composed evidence-manifest SHA-256:
 `4235f4f6322396c06f0a29628bb3d7dfd3db616f0c7d9b73d40a72eee2b1d460`.
 These identify retained local review authorities; they are not remotely available
 proof artifacts or a substitute for the new hosted result.
+
+
+## Accepted APDU generated semantics and hosted integration boundary
+
+The October14 local terminal audit accepted the exact APDU final assembly,
+manifest SHA256 `647640aa49aa93c98595d5c4a39d5d236aaa39c5fd41a69eb642988dc04278cd`.
+The driver is `a64bc110e9002c248a39cb3ad9b4ee964a3789fd9df9b6177a1f6a75c347a30a`;
+terminal review is `ac85a0cad14e4f90f10e3705f4bb757e88cb7ce95e1d73ef762bd7666a8e6543`.
+Its full graph contains 280 named theorems, 15 inherited examples, 2,226 owned
+declarations, 1,058 imports, 4,817 nodes and 99,722 edge occurrences. Independent
+traversal reconciled each theorem's approved foundational axioms. The local
+session is terminal and released.
+
+The fixed hosted APDU profile preserves original proof/generated/driver bytes
+and existing reader117/model48 obligations. It requires current-source extraction
+equality and a fresh build of all eleven modules before the full audit. That
+all-source hosted execution is not established by the historical run. The new
+source contract records repository relocation separately from immutable
+historical paths/receipts. Original candidate-status comments stay intact.
+
+`Oak.Stdlib.APDUParserCorrectness.decode_eq` says that for `src.size < 2^32` and
+any fuel, the lifted generated result equals the header-and-length specification.
+Oversized frames remain in its rejection domain. This covers header observations,
+error priority, seven command forms and sentinel response lengths. The extractor,
+Oak/native operational refinement chain, physical alias/frame behavior and full
+ISO/FIDO/PIV/OpenPGP conformance remain outside the claim. Current extraction-byte
+equality and normal Lean import trust are explicit boundaries. See
+`spec/lean/reader_apdu/README.md` for finite execution and replay requirements.

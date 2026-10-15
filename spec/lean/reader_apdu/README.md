@@ -134,3 +134,68 @@ record and dependency edge. `verify_retention` is a byte/coherence preflight, no
 full graph replay or object rechecking. Object hashes are receipts; they do not
 replace recompilation. The Ubuntu runner, Python, loader/libraries and build
 facilities are trusted separately from the exactly hashed official Lean files.
+
+
+## Qualified APDU extraction and generated-definition refinement
+
+The fixed `apdu-refinement` job preserves reader117 and abstract-model48 gates.
+It builds the three explicit Go files in `.github/scripts/apdu_refinement`,
+requires 70 named controls and one actual extraction, and compares complete raw,
+profiled and receipt bytes. Five current Oak files, two fixtures, 25 original
+source spans and 30 generated spans are authenticated. Only the two accepted
+header budget changes are permitted. Receipt tree
+`b62ada7603f8311e2d25cf135a04464b4eb24323` is historical; current checkout/build
+and source locks are separate authorities.
+
+`check_apdu_refinement.py` freshly compiles all eleven pinned modules in the
+contract's topological order into a private object root, then invokes the exact
+accepted `APDURefinementAuditDriver.lean`. The independent consumer requires 280
+named theorems, 15 anonymous examples checked by exact source compilation, 41
+named controls, 2,226 candidate declarations and 1,058 imports. It reconstructs
+complete graph coverage and each named theorem's reachable axioms. Only
+`propext`, `Quot.sound` and `Classical.choice` are allowed. The 100,000-edge cap
+remains fixed; local acceptance observed 99,722 edges, leaving 278. Drift fails
+closed and requires review. Existing117/48 obligations remain mandatory.
+
+`APDUParserCorrectness.decode_eq` relates the generated Lean root to the complete
+header/length model for arrays smaller than 2^32 and any fuel. Inputs longer than
+65,544 remain in its rejection domain. This is generated-definition refinement
+plus current extraction-byte equality. It does not prove the extractor, Oak
+operational semantics, physical alias/frame behavior, emitted C or machine code,
+or whole-protocol conformance. Historical source-only comments remain unchanged.
+
+### APDU bounds and retained evidence
+
+Go build limits remain 300 seconds and 80 MiB. One 1,560-second wrapper deadline
+covers 30 initial seconds, 60 shared controls/extraction seconds, eleven compile
+phases and one audit at up to 120 seconds each, and 30 final seconds. Phases retain
+cleanup/final reserves. The proof step has a 27-minute ceiling and the job 45
+minutes. These are refusal ceilings, not measured hosted completion forecasts.
+All existing Lean flags, 8-GiB direct address-space, 8-MiB child file and zero-core
+limits remain. Sampled guards retain 2-GiB direct RSS/host-memory thresholds,
+a 560-MiB free-space floor and 64-MiB fresh logical/allocated output cap. They do
+not establish continuous process-tree containment or escaped-descendant emptiness.
+
+Accepted work has exactly 64 entries: 42 phase stream/receipt files, 11 objects,
+three extraction files, two result/manifest files and six directories. There is
+no auxiliary slack. Direct exclusive writes create no temporary rename files.
+Archive packaging/additional manifests belong outside this tree. Unexpected or
+transient entries fail the existing cap; bounded cleanup evidence does not make
+the sampled guard a continuous filesystem quota. A local eleven-object checker
+leaves the shared three-object checker unchanged.
+
+Execution and pre-upload verification must both succeed before seven literal
+files are retained: audit stdout, empty audit stderr, result, object-hash manifest
+and three extraction outputs. Maximum accepted content is 12,845,056 bytes
+(12-MiB audit, two 32-KiB metadata files and three 64-KiB outputs), with 14-day
+retention and commit/run/attempt naming. No objects or caches are uploaded.
+`apdu_refinement_audit_consumer.diagnostics` replays the complete retained audit
+using the manifest's driver path and locked contract. Retention preflight alone
+is not graph replay; object hashes are receipts, not object rechecking.
+
+October14 local acceptance used eight authenticated existing objects and three
+newly promoted objects. It does not establish this all-source hosted rebuild.
+This integration is source-only until separately recorded controls, current
+extraction, fresh eleven-module compilation, audit and retained replay pass.
+Official Lean4.33.1 imports retain ordinary imported-object trust; Ubuntu, Python,
+system loader and the current Go build are separate hosted trust components.
