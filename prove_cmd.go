@@ -33,6 +33,10 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 	cnfDir := flags.String("cnf", "", "write every bit-level obligation's clauses to this directory as DIMACS, one name.cnf per theorem")
 	cross := flags.String("cross", "go", "with -solver oak or self, compare proof decisions with Go (go) or skip comparison (none); source validation always runs")
 	witness := flags.Bool("witness", false, "also evaluate the exhaustively decided theorems in the compiled program")
+	synthesize := flags.String("synthesize", "", "infer a checked inductive strengthening of this protocol theorem (one source file; -solver go)")
+	candidates := flags.String("candidates", "", "with -synthesize, read a JSON array of candidate predicate strings instead of built-in templates")
+	synthesisRounds := flags.Int("synthesis-rounds", 0, "candidate-pruning rounds (0: candidate count plus one; not an execution bound)")
+	synthesisJSON := flags.Bool("synthesis-json", false, "with -synthesize, print the structured evidence and candidate feedback")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -59,6 +63,17 @@ func proveCommand(args []string, stdout, stderr io.Writer) int {
 		target = flags.Arg(0)
 	}
 	target = filepath.Clean(target)
+	if *synthesize == "" && (*candidates != "" || *synthesisRounds != 0 || *synthesisJSON) {
+		fmt.Fprintln(stderr, "oak prove: -candidates, -synthesis-rounds, and -synthesis-json require -synthesize")
+		return 2
+	}
+	if *synthesize != "" {
+		if flags.NArg() != 1 || *solver != "go" || *cross != "go" || *leanOut != "" || *check || *witness || *cnfDir != "" {
+			fmt.Fprintln(stderr, "usage: oak prove -solver go -synthesize theorem [-candidates predicates.json] [-synthesis-rounds N] [-synthesis-json] [-cases N] file.oak")
+			return 2
+		}
+		return synthesizeCommand(target, *synthesize, *candidates, *cases, *synthesisRounds, *synthesisJSON, stdout, stderr)
+	}
 	if *solver == "self" {
 		// The prover written in Oak (prove/solver/shell.oak): the file to
 		// the rows, with the Go ladder as the cross-check when asked.
@@ -505,3 +520,4 @@ func leanDifference(got, want string) string {
 	}
 	return "oak prove: the Lean projection differs from the Go extractor\n"
 }
+

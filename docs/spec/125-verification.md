@@ -166,6 +166,77 @@ is `open` with the reason. Each side of an entry is projected as a Bool
 predicate (`name_liveK_from`, `name_liveK_to`) so the check evaluates
 the same expression the guards use.
 
+### 2c. Checked invariant synthesis
+
+`oak prove -solver go -synthesize NAME file.oak` searches for an inductive
+strengthening of an existing protocol invariant theorem. The source is read
+once and never rewritten. The report binds its exact bytes with SHA-256 and
+names the original property and protocol. This initial route accepts one
+self-contained file, scalar protocol data (fixed-width integers and Bool),
+and a pure scalar predicate as the target. Imports and resource `via`
+callables are refused. It proves properties of the generated protocol
+projection, not of arbitrary implementations of the protocol.
+
+The built-in candidate pool contains equalities and order relations between
+same-typed data fields and against literal initial values. An agent or user
+can supply a JSON array of predicate strings with `-candidates predicates.json`.
+A supplied empty array disables templates; `null`, trailing data, more than
+64 candidates, predicates over 4096 bytes, and input files over 1 MiB are
+refused. Predicates use the target theorem's parameter names. The allowed
+syntax is scalar literals, state variants, data-field reads, arithmetic,
+comparisons, Boolean operators, and built-in integer casts. Declarations,
+mutation, loops, user-function calls, and assumptions cannot be introduced.
+Candidate types and all generated obligations still pass the compiler gates.
+
+The search uses Houdini-style conjunct elimination. Its current invariant is
+the **unchanged original property conjoined with retained candidates**. For
+each candidate, it checks initialization and preservation under that whole
+conjunction. Refuted or unsupported candidates are removed. Removing a
+candidate weakens the induction hypothesis, so every remaining candidate is
+checked again in the next round. Success requires fresh checks of all three:
+
+1. The complete invariant holds initially.
+2. Every legal transition preserves the complete invariant.
+3. The complete invariant implies the original property.
+
+Only `decided` results from the existing Go interpreter/BDD ladder count.
+There is no reachable-state fallback, imported solver verdict, or new proof
+authority. A preservation counterexample can be unreachable, so failed
+synthesis is `open`, not a refutation of the original property. Candidate
+rejections retain their obligation and counterexample for the next proposal.
+
+Before searching, multiple lines of one step from one state require pairwise
+guard-exclusivity obligations to be decided. Unguarded alternatives, overlaps,
+and undecided exclusivity leave synthesis open. Thus this first scope avoids
+claiming that the executable first-match interpretation proves properties of
+a different nondeterministic transition relation. Fairness and liveness are
+not synthesized.
+
+`-synthesis-rounds N` bounds pruning rounds (zero selects candidate count plus
+one). Exhaustion is `open`; this is a search budget, not an execution horizon.
+An accepted inductive invariant covers arbitrary transition counts for the
+declared types and fixed configuration, not arbitrary system sizes.
+`-cases N` controls the existing exhaustive rung. `-synthesis-json` emits the
+structured source identity, retained/rejected predicates, final obligations,
+and status. Exit status is 0 only on acceptance, 1 for an open search, and 2
+for usage, input, or compilation errors. Other solver backends, Lean output,
+compiled witnesses, and CNF output are explicitly refused in this initial
+route. The ordinary `oak prove` path remains unchanged.
+
+Example:
+
+```sh
+oak prove -solver go -synthesize ordered examples/verification_synthesis.oak
+```
+
+The example increments two wrapping counters together. Its ordering property
+alone is not inductive over every possible counter pair; the inferred equality
+strengthens it. The source theorem remains unchanged. This Go orchestration
+is not a self-hosted search engine or a kernel proof of synthesis soundness;
+its acceptance relies on the existing decider and source-to-obligation trust
+boundary. Extending it to the Oak certificate rung must preserve fresh checks
+and bind each certificate to its exact generated obligation.
+
 ## 3. The discharge ladder
 
 Every theorem is placed on one rung, from the strongest evidence down:
@@ -1278,3 +1349,4 @@ In order of payoff, each reusing a surface that exists:
   and stated for TLC through the TLA+ module (`112-protocols.md` §4).
   Next: the every-line reading inside the compiler, and liveness over
   infinite data domains through Lean.
+
