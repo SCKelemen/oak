@@ -20,7 +20,16 @@ The Ubuntu 24.04 runner, Python standard library and system loader/libraries are
 
 From repository root, after selecting the repository toolchain:
 
-`python3 -B spec/lean/reader_apdu/check.py --lean "$(cd spec/lean && elan which lean)" --work "$RUNNER_TEMP/reader-apdu-model"`
+`reader_apdu_lean="$(bash .github/scripts/install_reader_apdu_lean.sh)"`
+
+`python3 -B spec/lean/reader_apdu/check.py --lean "$reader_apdu_lean" --work "$RUNNER_TEMP/reader-apdu-model"`
+
+The setup helper downloads only the pinned official Linux/amd64 archive and
+checks its SHA256 before extraction. It requires a fresh directory under
+`RUNNER_TEMP`; it does not resolve a release channel or run Lean. The hosted
+jobs use its absolute executable path and preserve the checker's full
+before/after distribution authentication. This avoids elan's unrelated
+latest-release self-update lookup during a cold toolchain installation.
 
 The work path must be absent. A fresh private object directory is the sole project LEAN_PATH. No cached project object or lake environment is used for this isolated check. Each object is bound by checked descriptor metadata, content hash, owner and private permissions; identical-byte inode replacement is refused. Exact model/driver sources are checked immediately before their relevant invocations and reauthenticated at acceptance.
 

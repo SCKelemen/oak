@@ -117,6 +117,14 @@ PYTHON_CONTROLS = (
     'test_process_confirmation_read_bounds',
     'test_process_unknown_rss_refusal_detail',
     'test_process_confirmation_detail_cap',
+    'test_work_scan_exact_accounting',
+    'test_work_scan_confirms_disappearing_members',
+    'test_work_scan_never_suppresses_other_errors',
+    'test_work_scan_reappearance_and_identity_refusals',
+    'test_work_scan_refuses_links_and_special_members',
+    'test_work_scan_bounds_and_final_deadline',
+    'test_work_scan_retains_observed_bytes_and_caps',
+    'test_work_scan_preserves_strict_evidence_and_monitor_cutoff',
 )
 
 
@@ -387,6 +395,123 @@ def tree_sizes(directory, *, max_files, deadline, allowed_dirs=None):
                             'non-private regular member in evidence/work tree')
                     found[Path(entry.path).relative_to(directory).as_posix()] = info.st_size
     return found
+
+
+def work_tree_sizes(directory, *, deadline, max_files=100000, allocated_limit=None):
+    """Sample live private work files; tolerate only confirmed name disappearance.
+
+    Directory descriptors anchor every child lookup. An ENOENT is followed by
+    exactly one no-follow lookup of the same name; any reappearance, replacement
+    or other error refuses the sample. The root must retain its identity.
+    Already observed bytes are never subtracted. Files created or resized between
+    observations can still escape this non-atomic sample; it is no disk quota.
+    Evidence and source membership must continue to use strict tree_sizes.
+    """
+    require(type(max_files) is int and 0 < max_files <= 100000,
+            'invalid work scan entry limit')
+    directory = no_symlinks(directory)
+    files = {}
+    observation = dict(entries=0, disappearance_confirmations=0,
+                       allocated_bytes=0, logical_bytes=0,
+                       observation='anchored_sample_non_atomic')
+
+    def check_time():
+        require(time.monotonic() < deadline, 'work scan deadline expired')
+
+    def identity(info):
+        return info.st_dev, info.st_ino, info.st_mode
+
+    def confirm_absent(error, name, parent):
+        # Do not turn EACCES, EIO, ENOTDIR, or an unspecified error into zero.
+        if error.errno != errno.ENOENT:
+            raise error
+        check_time()
+        try:
+            os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError as confirmation:
+            if confirmation.errno != errno.ENOENT:
+                raise
+            observation['disappearance_confirmations'] += 1
+            return
+        raise DiagnosticError('work member reappeared after ENOENT')
+
+    def named_stat(name, parent):
+        check_time()
+        try:
+            return os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError as error:
+            confirm_absent(error, name, parent)
+            return None
+
+    def account(info, relative):
+        require(stat.S_ISDIR(info.st_mode) or
+                (stat.S_ISREG(info.st_mode) and info.st_nlink == 1),
+                'non-private regular member in work tree')
+        require(type(info.st_blocks) is int and info.st_blocks >= 0,
+                'unknown allocated work bytes')
+        observation['allocated_bytes'] += info.st_blocks * 512
+        if allocated_limit is not None:
+            require(observation['allocated_bytes'] <= allocated_limit,
+                    'sampled allocated work exceeds cutoff')
+        if stat.S_ISREG(info.st_mode):
+            require(type(info.st_size) is int and info.st_size >= 0,
+                    'unknown logical work bytes')
+            files[relative] = info.st_size
+            observation['logical_bytes'] += info.st_size
+            require(observation['logical_bytes'] <= WORK_LIMIT,
+                    'sampled work/cache/temp/binary exceeded 4 GiB cutoff')
+
+    def descend(fd, relative, depth):
+        check_time()
+        require(depth <= 32, 'work tree exceeds depth limit')
+        with os.scandir(fd) as children:
+            for entry in children:
+                observation['entries'] += 1
+                require(observation['entries'] <= max_files, 'work tree exceeds entry limit')
+                info = named_stat(entry.name, fd)
+                if info is None:
+                    continue
+                member = relative + '/' + entry.name if relative else entry.name
+                account(info, member)
+                if not stat.S_ISDIR(info.st_mode):
+                    continue
+                check_time()
+                try:
+                    child = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                    dir_fd=fd)
+                except FileNotFoundError as error:
+                    confirm_absent(error, entry.name, fd)
+                    continue
+                try:
+                    require(identity(info) == identity(os.fstat(child)),
+                            'work directory replaced before scan')
+                    try:
+                        descend(child, member, depth + 1)
+                    except FileNotFoundError as error:
+                        confirm_absent(error, entry.name, fd)
+                    require(identity(info) == identity(os.fstat(child)),
+                            'opened work directory identity changed')
+                    named = named_stat(entry.name, fd)
+                    require(named is None or identity(info) == identity(named),
+                            'work directory replaced during scan')
+                finally:
+                    os.close(child)
+        check_time()
+
+    check_time()
+    root_info = directory.lstat()
+    require(stat.S_ISDIR(root_info.st_mode), 'work root is not a directory')
+    account(root_info, '')
+    root = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        require(identity(root_info) == identity(os.fstat(root)), 'work root replaced before scan')
+        descend(root, '', 0)
+        require(identity(root_info) == identity(os.fstat(root)) == identity(directory.lstat()),
+                'work root replaced during scan')
+        check_time()
+    finally:
+        os.close(root)
+    return files, observation
 
 
 def memory_available(snapshot):
@@ -695,6 +820,7 @@ class ResourceMonitor:
         self.last = None
         self.samples = 0
         self.max_rss = self.max_work = 0
+        self.last_work_scan = None
 
     def __call__(self, now):
         if now < self.next_sample:
@@ -727,7 +853,7 @@ class ResourceMonitor:
         require(reserve <= RESERVE_LIMIT, 'combined source/status reserve exceeds 5 MiB')
         if now >= self.next_disk_scan:
             self.next_disk_scan = now + 5
-            sizes = tree_sizes(self.work, max_files=100000, deadline=self.deadline)
+            sizes, self.last_work_scan = work_tree_sizes(self.work, deadline=self.deadline)
             self.max_work = max(self.max_work, sum(sizes.values()))
             require(sum(sizes.values()) <= WORK_LIMIT,
                     'sampled work/cache/temp/binary exceeded 4 GiB cutoff')
@@ -737,6 +863,7 @@ class ResourceMonitor:
                 'sample_interval_seconds': 1, 'work_scan_interval_seconds': 5,
                 'samples': self.samples, 'max_observed_tree_rss_bytes': self.max_rss,
                 'max_observed_work_logical_bytes': self.max_work, 'last': self.last,
+                'last_work_scan': self.last_work_scan,
                 'rss_cutoff_bytes': RSS_LIMIT, 'work_logical_cutoff_bytes': WORK_LIMIT,
                 'memory_reserve_bytes': MEMORY_RESERVE, 'disk_reserve_bytes': DISK_RESERVE}
 
@@ -1066,7 +1193,7 @@ def run(repo, started):
         command([go, 'mod', 'verify'])
         command([sys.executable, str(repo / '.github/scripts/native_scalar_text_profile.py'), '--controls'],
                 deadline=min(setup_end, time.monotonic() + 60))
-        status['python_controls'] = {'methods': 38, 'subtest_contexts': 172, 'skips': 0}
+        status['python_controls'] = {'methods': 46, 'subtest_contexts': 246, 'skips': 0}
         identity = source_identity(repo, command, env, setup_end)
         status['source_identity'] = identity
         build_end = phase_deadline(started, 'build', time.monotonic())
@@ -1161,11 +1288,17 @@ def run_controls():
     import test_native_scalar_text_profile as controls
     case = controls.ScalarProfileOwnerTests
     actual = unittest.defaultTestLoader.getTestCaseNames(case)
-    require(len(PYTHON_CONTROLS) == 38 and len(set(PYTHON_CONTROLS)) == 38
+    require(len(PYTHON_CONTROLS) == 46 and len(set(PYTHON_CONTROLS)) == 46
             and sorted(PYTHON_CONTROLS) == actual, 'Python control method inventory changed')
     suite = unittest.TestSuite(case(name) for name in PYTHON_CONTROLS)
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
-    return 0 if (result.wasSuccessful() and result.testsRun == 38 and not result.skipped
+    class CountedResult(unittest.TextTestResult):
+        contexts = 0
+        def addSubTest(self, test, subtest, error):
+            self.contexts += 1
+            super().addSubTest(test, subtest, error)
+    result = unittest.TextTestRunner(verbosity=2, resultclass=CountedResult).run(suite)
+    return 0 if (result.wasSuccessful() and result.testsRun == 46 and not result.skipped
+                 and result.contexts == 246
                  and not result.expectedFailures and not result.unexpectedSuccesses) else 1
 
 

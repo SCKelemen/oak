@@ -107,7 +107,8 @@ main: (): i32 = i32(probe())
 }
 
 func TestCReservedExplicitABISymbolsRejected(t *testing.T) {
-	for _, symbol := range []string{"oak_store", "oak_add_u32", "oak_view_u8", "oak_0f_p0__nstore", "__oak_cas_u32_seq_cst", "OAK_INLINE", "core_slice"} {
+	for _, symbol := range []string{"oak_store", "oak_add_u32", "oak_view_u8", "oak_0f_p0__nstore", "__oak_cas_u32_seq_cst", "OAK_INLINE", "core_slice",
+		"oak_test_host_unknown", "oak_test_host_fail_extra", "oak_test_host_command_limits", "oak_host_read"} {
 		for _, kind := range []string{"extern", "export"} {
 			t.Run(kind+"/"+symbol, func(t *testing.T) {
 				source := fmt.Sprintf("export(%q) pub entry: (x: i32): i32 = x\n", symbol)
@@ -124,17 +125,80 @@ func TestCReservedExplicitABISymbolsRejected(t *testing.T) {
 }
 
 func TestCRuntimeHostHooksRemainExternOnly(t *testing.T) {
-	for _, symbol := range []string{"oak_host_write_call", "oak_host_write", "oak_measured_value", "oak_test_host_launch_begin"} {
+	for _, symbol := range []string{
+		"oak_host_write_call", "oak_host_write", "oak_measured_value",
+		"oak_test_host_launch_begin", "oak_test_host_launch_arg", "oak_test_host_launch_out", "oak_test_host_launch_end",
+		"oak_test_host_dispatch_divergence", "oak_test_host_fail", "oak_test_host_fail_values",
+		"oak_test_host_discard", "oak_test_host_classify", "oak_test_host_liveness", "oak_test_host_trace",
+		"oak_test_host_command", "oak_test_host_command_limit",
+	} {
 		t.Run(symbol, func(t *testing.T) {
 			// Existing host contracts remain references to exactly their ABI
 			// spelling; the callable escape must not change an extern target.
 			if typechecker.ReservedCExternSymbol(symbol) {
 				t.Fatalf("documented host hook %s was rejected", symbol)
 			}
+			reference := fmt.Sprintf("entry: (): c.Int32 = c.extern(%q)\n", symbol)
+			if _, err := New().WithSource("host_reference.oak", reference).Check().Get(); err != nil {
+				t.Fatalf("runtime hook reference must be accepted: %v", err)
+			}
 			source := fmt.Sprintf("export(%q) pub entry: (): i32 = 1\n", symbol)
 			_, err := New().WithSource("host_export.oak", source).Check().Get()
 			if err == nil || !strings.Contains(err.Error(), "reserved by the C backend") {
 				t.Fatalf("runtime hook export must be rejected: %v", err)
+			}
+		})
+	}
+}
+
+// The actual testing module must typecheck and keep its exact host ABI in
+// both ordinary and simulation compilations. Each of its eight imports is
+// called with distinguishable arguments and linked against the real C types.
+func TestE2ETestingHostRuntimeSymbolsPreserveABI(t *testing.T) {
+	const source = `import(testing)
+main: (): i32 {
+  testing_fail_host(c.UInt32(1))
+  testing_fail_values_host(c.UInt32(2), c.UInt64(3), c.UInt64(4), c.UInt32(5))
+  testing_discard()
+  testing_classify_host(c.UInt32(6))
+  testing_liveness_host(c.UInt32(7))
+  testing_trace_host(c.UInt32(8), c.UInt64(9), c.UInt64(10))
+  testing_command_host(c.UInt32(11), c.UInt32(12), c.UInt32(13))
+  i32_bits_u32(u32(testing_command_limit_host()))
+}
+`
+	const host = `#include <stdint.h>
+#include <stdlib.h>
+static uint32_t seen;
+void oak_test_host_fail(uint32_t id) { if (id != 1) abort(); seen |= 1; }
+void oak_test_host_fail_values(uint32_t id, uint64_t got, uint64_t want, uint32_t kind) {
+  if (id != 2 || got != 3 || want != 4 || kind != 5) abort(); seen |= 2;
+}
+void oak_test_host_discard(void) { seen |= 4; }
+void oak_test_host_classify(uint32_t id) { if (id != 6) abort(); seen |= 8; }
+void oak_test_host_liveness(uint32_t id) { if (id != 7) abort(); seen |= 16; }
+void oak_test_host_trace(uint32_t id, uint64_t a, uint64_t b) {
+  if (id != 8 || a != 9 || b != 10) abort(); seen |= 32;
+}
+void oak_test_host_command(uint32_t kind, uint32_t target, uint32_t value) {
+  if (kind != 11 || target != 12 || value != 13) abort(); seen |= 64;
+}
+uint32_t oak_test_host_command_limit(void) { return seen == 127 ? 42 : 1; }
+`
+	dir := t.TempDir()
+	hostPath := filepath.Join(dir, "testing_host.c")
+	if err := os.WriteFile(hostPath, []byte(host), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, simulation := range []bool{false, true} {
+		t.Run(fmt.Sprintf("simulation=%v", simulation), func(t *testing.T) {
+			comp := New().WithSource("testing_host.oak", source)
+			if simulation {
+				comp = comp.WithSimulation(nil)
+			}
+			_, code, abnormal := buildAndRunFrom(t, "testing_host", comp, hostPath)
+			if abnormal || code != 42 {
+				t.Fatalf("host ABI execution = (%d, abnormal=%v), want 42", code, abnormal)
 			}
 		})
 	}

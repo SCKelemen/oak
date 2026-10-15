@@ -151,7 +151,7 @@ main: (): i32 = 0`, CodeKernelSubset},
   y[0] = 1.0
 }
 main: (): i32 = 0`, CodeKernelLoop},
-		"effect": {`host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern("oak_host_read")
+		"effect": {`host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern("fixture_host_read")
 peek: (x: u32): u32 = u32(host_read(c.UInt32(x)))
 k: (gid: u32, y: [*]u32): () (kernel) = { y[gid] = peek(gid) }
 main: (): i32 = 0`, CodeKernelEffect},

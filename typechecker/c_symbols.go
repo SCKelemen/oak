@@ -84,7 +84,13 @@ func ReservedCExternSymbol(symbol string) bool {
 	case "oak_host_write", "oak_host_write_call", "oak_measured_value",
 		"oak_test_host_launch_begin", "oak_test_host_launch_arg",
 		"oak_test_host_launch_out", "oak_test_host_launch_end",
-		"oak_test_host_dispatch_divergence":
+		"oak_test_host_dispatch_divergence",
+		// stdlib/testing.oak imports these exact contracts. Both the native
+		// test runner and fuzz harness define them; no prefix is exempted.
+		"oak_test_host_fail", "oak_test_host_fail_values",
+		"oak_test_host_discard", "oak_test_host_classify",
+		"oak_test_host_liveness", "oak_test_host_trace",
+		"oak_test_host_command", "oak_test_host_command_limit":
 		return false
 	}
 	return ReservedCABI(symbol)

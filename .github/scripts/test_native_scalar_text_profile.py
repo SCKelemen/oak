@@ -1,9 +1,11 @@
 """Focused controls for the actual scalar_text owner; no Go/profile execution."""
 import copy
+import errno
 import hashlib
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -441,6 +443,301 @@ class ScalarProfileOwnerTests(unittest.TestCase):
             profile.tree_sizes(self.root, max_files=1, deadline=time.monotonic() + 1)
         with self.assertRaises(profile.DiagnosticError):
             profile.tree_sizes(self.root, max_files=10, deadline=time.monotonic() - 1)
+
+    def work_scan(self, root=None, **kwargs):
+        return profile.work_tree_sizes(self.root if root is None else root,
+                                       deadline=time.monotonic() + 5, **kwargs)
+
+    def test_work_scan_exact_accounting(self):
+        (self.root / 'empty').mkdir()
+        (self.root / 'nested').mkdir()
+        (self.root / 'nested' / 'leaf').write_bytes(b'abc')
+        sizes, sample = self.work_scan()
+        self.assertEqual(sizes, {'nested/leaf': 3})
+        self.assertEqual(sample, dict(entries=3, disappearance_confirmations=0,
+            logical_bytes=3, allocated_bytes=sum(path.stat().st_blocks * 512 for path in
+                (self.root, self.root / 'empty', self.root / 'nested', self.root / 'nested/leaf')),
+            observation='anchored_sample_non_atomic'))
+
+    def test_work_scan_confirms_disappearing_members(self):
+        real_stat, real_open, real_scan = os.stat, os.open, os.scandir
+        for kind, phase in (('file', 'stat'), ('directory', 'stat'), ('directory', 'open'),
+                            ('directory', 'scan'), ('directory', 'iteration'),
+                            ('directory', 'after_scan')):
+            with self.subTest(kind=kind, phase=phase):
+                root = self.root / (kind + '-' + phase)
+                root.mkdir()
+                leaf = root / 'leaf'
+                leaf.mkdir() if kind == 'directory' else leaf.write_bytes(b'abc')
+                expected_blocks = root.stat().st_blocks + (leaf.stat().st_blocks
+                    if phase != 'stat' else 0)
+                calls, child_fds = [], set()
+                def remove():
+                    leaf.rmdir() if kind == 'directory' else leaf.unlink()
+                def observe(name, **kwargs):
+                    if name == 'leaf':
+                        calls.append(name)
+                        if phase == 'stat' and len(calls) == 1:
+                            remove()
+                    return real_stat(name, **kwargs)
+                def opened(name, flags, **kwargs):
+                    if name == 'leaf' and phase == 'open':
+                        remove()
+                    fd = real_open(name, flags, **kwargs)
+                    if name == 'leaf':
+                        child_fds.add(fd)
+                    return fd
+                class Scan:
+                    def __init__(self, fd):
+                        self.fd, self.source = fd, real_scan(fd)
+                    def __enter__(self):
+                        self.source.__enter__()
+                        return self
+                    def __exit__(self, *args):
+                        result = self.source.__exit__(*args)
+                        if self.fd in child_fds and phase == 'after_scan':
+                            remove()
+                        return result
+                    def __iter__(self):
+                        return self
+                    def __next__(self):
+                        if self.fd in child_fds and phase == 'iteration':
+                            remove()
+                            raise FileNotFoundError(errno.ENOENT, 'deleted during iteration')
+                        return next(self.source)
+                def scanned(fd):
+                    if fd in child_fds and phase == 'scan':
+                        remove()
+                        raise FileNotFoundError(errno.ENOENT, 'deleted before scan')
+                    return Scan(fd)
+                with mock.patch.object(profile.os, 'stat', side_effect=observe), \
+                     mock.patch.object(profile.os, 'open', side_effect=opened), \
+                     mock.patch.object(profile.os, 'scandir', side_effect=scanned):
+                    sizes, sample = self.work_scan(root)
+                self.assertEqual(sizes, {})
+                self.assertEqual(sample['entries'], 1)
+                self.assertEqual(sample['allocated_bytes'], expected_blocks * 512)
+                self.assertEqual(sample['disappearance_confirmations'],
+                                 2 if phase in ('scan', 'iteration') else 1)
+                self.assertEqual(len(calls), {'stat': 2, 'open': 2, 'scan': 4,
+                    'iteration': 4, 'after_scan': 3}[phase])
+
+    def test_work_scan_never_suppresses_other_errors(self):
+        errors = [errno.EACCES, errno.EPERM, errno.EIO, errno.ENOTDIR, errno.ELOOP,
+                  errno.ESTALE, None]
+        for phase in ('stat', 'confirmation', 'open', 'scan', 'final'):
+            for number in errors:
+                with self.subTest(phase=phase, errno=number):
+                    root = self.root / (phase + '-' + str(number))
+                    root.mkdir()
+                    (root / 'leaf').mkdir()
+                    real_stat, real_open, real_scan = os.stat, os.open, os.scandir
+                    calls, child_fds = [], set()
+                    error = OSError(number, 'unknown observation') if number is not None \
+                        else FileNotFoundError('unspecified observation')
+                    def observe(name, **kwargs):
+                        if name == 'leaf':
+                            calls.append(name)
+                            if phase == 'confirmation' and len(calls) == 1:
+                                raise FileNotFoundError(errno.ENOENT, 'needs confirmation')
+                            if phase in ('stat', 'confirmation') or (phase == 'final' and len(calls) == 2):
+                                raise error
+                        return real_stat(name, **kwargs)
+                    def opened(name, flags, **kwargs):
+                        if name == 'leaf' and phase == 'open':
+                            raise error
+                        fd = real_open(name, flags, **kwargs)
+                        if name == 'leaf':
+                            child_fds.add(fd)
+                        return fd
+                    def scanned(fd):
+                        if fd in child_fds and phase == 'scan':
+                            raise error
+                        return real_scan(fd)
+                    with mock.patch.object(profile.os, 'stat', side_effect=observe), \
+                         mock.patch.object(profile.os, 'open', side_effect=opened), \
+                         mock.patch.object(profile.os, 'scandir', side_effect=scanned), \
+                         self.assertRaises(OSError) as caught:
+                        self.work_scan(root)
+                    self.assertIs(caught.exception, error)
+                    self.assertLessEqual(len(calls), 2)
+
+    def test_work_scan_reappearance_and_identity_refusals(self):
+        for phase in ('stat', 'open', 'scan', 'before_open', 'after_scan',
+                      'root_before_open', 'root_after_scan', 'root_disappears'):
+            with self.subTest(phase=phase):
+                root = self.root / phase
+                root.mkdir()
+                leaf = root / 'leaf'
+                if phase != 'root_disappears':
+                    leaf.mkdir()
+                real_stat, real_open, real_scan = os.stat, os.open, os.scandir
+                calls, child_fds = [], set()
+                def replace(path):
+                    path.rename(self.root / ('saved-' + phase))
+                    path.mkdir()
+                def observe(name, **kwargs):
+                    if name == 'leaf':
+                        calls.append(name)
+                        if phase == 'stat' and len(calls) == 1:
+                            raise FileNotFoundError(errno.ENOENT, 'false disappearance')
+                    return real_stat(name, **kwargs)
+                def opened(name, flags, **kwargs):
+                    if name == 'leaf':
+                        if phase == 'open':
+                            raise FileNotFoundError(errno.ENOENT, 'false disappearance')
+                        if phase == 'before_open':
+                            replace(leaf)
+                    elif name == root and phase == 'root_before_open':
+                        replace(root)
+                    fd = real_open(name, flags, **kwargs)
+                    if name == 'leaf':
+                        child_fds.add(fd)
+                    return fd
+                class Scan:
+                    def __init__(self, fd):
+                        self.fd, self.source = fd, real_scan(fd)
+                    def __enter__(self):
+                        return self.source.__enter__()
+                    def __exit__(self, *args):
+                        result = self.source.__exit__(*args)
+                        if self.fd in child_fds and phase == 'after_scan':
+                            replace(leaf)
+                        if self.fd not in child_fds and phase == 'root_after_scan':
+                            replace(root)
+                        if phase == 'root_disappears':
+                            root.rmdir()
+                        return result
+                def scanned(fd):
+                    if fd in child_fds and phase == 'scan':
+                        raise FileNotFoundError(errno.ENOENT, 'false disappearance')
+                    return Scan(fd)
+                with mock.patch.object(profile.os, 'stat', side_effect=observe), \
+                     mock.patch.object(profile.os, 'open', side_effect=opened), \
+                     mock.patch.object(profile.os, 'scandir', side_effect=scanned), \
+                     self.assertRaises((profile.DiagnosticError, FileNotFoundError)):
+                    self.work_scan(root)
+
+    def test_work_scan_refuses_links_and_special_members(self):
+        for kind in ('symlink', 'dangling', 'hardlink', 'fifo', 'root_file', 'root_symlink'):
+            with self.subTest(kind=kind):
+                root = self.root / kind
+                if kind == 'root_file':
+                    root.write_bytes(b'a')
+                elif kind == 'root_symlink':
+                    root.symlink_to(self.root)
+                else:
+                    root.mkdir()
+                    path = root / 'member'
+                    if kind in ('symlink', 'dangling'):
+                        path.symlink_to(self.root if kind == 'symlink' else self.root / 'absent')
+                    elif kind == 'fifo':
+                        os.mkfifo(path)
+                    else:
+                        (root / 'original').write_bytes(b'a')
+                        os.link(root / 'original', path)
+                with self.assertRaises(profile.DiagnosticError):
+                    self.work_scan(root)
+
+    def test_work_scan_bounds_and_final_deadline(self):
+        for limit in (0, -1, 100001, True):
+            with self.subTest(limit=limit), self.assertRaises(profile.DiagnosticError):
+                self.work_scan(max_files=limit)
+        (self.root / 'one').write_bytes(b'a')
+        (self.root / 'two').write_bytes(b'b')
+        with self.subTest(limit='enumerated'), self.assertRaises(profile.DiagnosticError):
+            self.work_scan(max_files=1)
+        real_stat, absent_lookups = os.stat, []
+        def missing(name, **kwargs):
+            if kwargs.get('dir_fd') is not None:
+                absent_lookups.append(name)
+                raise FileNotFoundError(errno.ENOENT, 'confirmed absent')
+            return real_stat(name, **kwargs)
+        with self.subTest(limit='vanished_entries'), \
+             mock.patch.object(profile.os, 'stat', side_effect=missing) as observed, \
+             self.assertRaises(profile.DiagnosticError):
+            self.work_scan(max_files=1)
+        self.assertEqual(len(absent_lookups), 2)
+        deep = self.root / 'deep'
+        deep.mkdir()
+        directory = deep
+        for _ in range(33):
+            directory = directory / 'child'
+            directory.mkdir()
+        with self.subTest(limit='depth'), self.assertRaises(profile.DiagnosticError):
+            self.work_scan(deep)
+        empty = self.root / 'empty'
+        empty.mkdir()
+        for clocks in ([2], [0, 0, 2], [0, 0, 0, 2]):
+            with self.subTest(clocks=clocks), \
+                 mock.patch.object(profile.time, 'monotonic', side_effect=clocks), \
+                 self.assertRaises(profile.DiagnosticError):
+                profile.work_tree_sizes(empty, deadline=1)
+
+    def test_work_scan_retains_observed_bytes_and_caps(self):
+        leaf = self.root / 'leaf'
+        leaf.write_bytes(b'abc')
+        real_stat, real_scan = os.stat, os.scandir
+        allocated = (self.root.stat().st_blocks + leaf.stat().st_blocks) * 512
+        class Scan:
+            def __init__(self, fd):
+                self.source = real_scan(fd)
+            def __enter__(self):
+                return self.source.__enter__()
+            def __exit__(self, *args):
+                result = self.source.__exit__(*args)
+                leaf.unlink()
+                return result
+        with mock.patch.object(profile.os, 'scandir', side_effect=Scan):
+            sizes, sample = self.work_scan()
+        self.assertEqual(sizes, {'leaf': 3})
+        self.assertEqual(sample['allocated_bytes'], allocated)
+        self.assertEqual(sample['disappearance_confirmations'], 0)
+        leaf.write_bytes(b'abc')
+        for field, value, cap in (('st_size', profile.WORK_LIMIT + 1, None),
+            ('st_size', -1, None), ('st_size', None, None),
+            ('st_blocks', profile.WORK_LIMIT // 512 + 1, profile.WORK_LIMIT),
+            ('st_blocks', -1, None), ('st_blocks', None, None)):
+            with self.subTest(field=field, value=value):
+                def observed(name, **kwargs):
+                    info = real_stat(name, **kwargs)
+                    if name != 'leaf':
+                        return info
+                    fields = {key: getattr(info, key) for key in
+                              ('st_dev', 'st_ino', 'st_mode', 'st_nlink', 'st_size', 'st_blocks')}
+                    fields[field] = value
+                    return SimpleNamespace(**fields)
+                with mock.patch.object(profile.os, 'stat', side_effect=observed), \
+                     self.assertRaises(profile.DiagnosticError):
+                    self.work_scan(allocated_limit=cap)
+
+    def test_work_scan_preserves_strict_evidence_and_monitor_cutoff(self):
+        root = self.root / 'work'
+        root.mkdir()
+        (root / 'leaf').write_bytes(b'a')
+        entry = SimpleNamespace(path=str(root / 'leaf'),
+            stat=mock.Mock(side_effect=FileNotFoundError(errno.ENOENT, 'missing evidence')))
+        scanner = mock.MagicMock()
+        scanner.__enter__.return_value = [entry]
+        with self.subTest(role='strict_evidence'), \
+             mock.patch.object(profile.os, 'scandir', return_value=scanner), \
+             self.assertRaises(FileNotFoundError):
+            profile.tree_sizes(root, max_files=10, deadline=time.monotonic() + 5)
+        for size in (1, profile.WORK_LIMIT + 1):
+            with self.subTest(size=size):
+                monitor = profile.ResourceMonitor(root, self.root / 'result', self.root / 'artifact', {}, 100)
+                with mock.patch.object(profile, 'resource_snapshot', return_value=self.admitted()), \
+                     mock.patch.object(profile, 'tree_sizes', return_value={}) as strict, \
+                     mock.patch.object(profile, 'work_tree_sizes', return_value=({'leaf': size}, {'entries': 1})) as live:
+                    if size > profile.WORK_LIMIT:
+                        with self.assertRaises(profile.DiagnosticError):
+                            monitor(1)
+                    else:
+                        monitor(1)
+                        self.assertEqual(monitor.record()['last_work_scan'], {'entries': 1})
+                    live.assert_called_once_with(root, deadline=100)
+                    strict.assert_called_once_with(self.root / 'artifact', max_files=128,
+                                                   deadline=100, allowed_dirs={'source'})
 
     def test_artifact_partitions_and_exact_membership(self):
         sizes = {name: 1 for name in profile.PROFILE_NAMES + profile.RECORD_NAMES}

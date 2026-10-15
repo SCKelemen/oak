@@ -130,7 +130,7 @@ class RequiredBackendTests(unittest.TestCase):
     def test_audited_suite_manifest(self):
         expected_roots = {
             "asm-memory-markers": {'TestDecideSpansRejectsDifferentMemoryMarkerGuards', 'TestFrameSpanAccessRetainsFillAfterGuardedZero', 'TestMemoryAtGuardedZeroPreservesHistoryAndPruning', 'TestMergeWritesPreservesGuardedZeroMemory', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards', 'TestWriteLogsEqualUnderMarkerGuardUnknownFailsClosed'},
-            "c-symbol-compiler": {'TestCDispatchTemporariesAvoidCallableShadowing', 'TestCReservedExplicitABISymbolsRejected', 'TestCRuntimeHostHooksRemainExternOnly', 'TestE2CLaunchTemporariesAvoidCallableShadowing', 'TestE2ECCallablesAvoidRuntimeSymbols', 'TestE2EEscapedCallableHeaderAndABI'},
+            "c-symbol-compiler": {'TestAsmAddSymbolLowering', 'TestCDispatchTemporariesAvoidCallableShadowing', 'TestCFunctionDefinitionLookup', 'TestCReservedExplicitABISymbolsRejected', 'TestCRuntimeHostHooksRemainExternOnly', 'TestE2CLaunchTemporariesAvoidCallableShadowing', 'TestE2ECCallablesAvoidRuntimeSymbols', 'TestE2EEscapedCallableHeaderAndABI', 'TestE2ETestingHostRuntimeSymbolsPreserveABI'},
             "c-symbol-typechecker": {'TestCFunctionRuntimeEscapesAreInjective', 'TestCFunctionRuntimeFamilies', 'TestCFunctionSymbolsPreserveCompatibleABI'},
             "reader-apdu": {"TestE2EStdlibBoundedReader", "TestE2EStdlibCommandAPDUMatrix", "TestE2EStdlibCommandAPDUMaximumAndPayloads", "TestE2EStdlibCommandAPDUBufferNonMutation", "TestE2EStdlibCommandAPDUGuardPages"},
             "cross-compiler": {"TestE2EInferredValueNativeRV64UnderQEMU", "TestE2EDispatchSelectsSVEUnderQEMU", "TestE2EFreestandingPartialLink", "TestE2ENativeConstantTablesExecutable", "TestRingsCrossTargets"},
@@ -150,7 +150,7 @@ class RequiredBackendTests(unittest.TestCase):
                 self.assertIsNone(re.search(suite.pattern, "Other" + root))
         expected_children = {
             "asm-memory-markers": {'TestDecideSpansRejectsDifferentMemoryMarkerGuards/different', 'TestDecideSpansRejectsDifferentMemoryMarkerGuards/equal', 'TestFrameSpanAccessRetainsFillAfterGuardedZero/conditional', 'TestFrameSpanAccessRetainsFillAfterGuardedZero/unconditional', 'TestMergeWritesPreservesGuardedZeroMemory/zero_fallthrough', 'TestMergeWritesPreservesGuardedZeroMemory/zero_taken', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/conditional_and_unconditional', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/different_markers', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/equivalent_conjunctions', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/guard_implied_by_premise', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/independent_guards', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/opposite_guards', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/opposite_zero-fill_guards', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/same_conditional_zero_fill', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/same_guard', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/same_unconditional_marker', 'TestWriteLogsEqualUnderChecksMemoryMarkerGuards/same_unconditional_zero_fill'},
-            "c-symbol-compiler": {'TestCDispatchTemporariesAvoidCallableShadowing/-O0', 'TestCDispatchTemporariesAvoidCallableShadowing/-O2', 'TestCReservedExplicitABISymbolsRejected/export/OAK_INLINE', 'TestCReservedExplicitABISymbolsRejected/export/__oak_cas_u32_seq_cst', 'TestCReservedExplicitABISymbolsRejected/export/core_slice', 'TestCReservedExplicitABISymbolsRejected/export/oak_0f_p0__nstore', 'TestCReservedExplicitABISymbolsRejected/export/oak_add_u32', 'TestCReservedExplicitABISymbolsRejected/export/oak_store', 'TestCReservedExplicitABISymbolsRejected/export/oak_view_u8', 'TestCReservedExplicitABISymbolsRejected/extern/OAK_INLINE', 'TestCReservedExplicitABISymbolsRejected/extern/__oak_cas_u32_seq_cst', 'TestCReservedExplicitABISymbolsRejected/extern/core_slice', 'TestCReservedExplicitABISymbolsRejected/extern/oak_0f_p0__nstore', 'TestCReservedExplicitABISymbolsRejected/extern/oak_add_u32', 'TestCReservedExplicitABISymbolsRejected/extern/oak_store', 'TestCReservedExplicitABISymbolsRejected/extern/oak_view_u8', 'TestCRuntimeHostHooksRemainExternOnly/oak_host_write', 'TestCRuntimeHostHooksRemainExternOnly/oak_host_write_call', 'TestCRuntimeHostHooksRemainExternOnly/oak_measured_value', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_launch_begin', 'TestE2CLaunchTemporariesAvoidCallableShadowing/-O0', 'TestE2CLaunchTemporariesAvoidCallableShadowing/-O2', 'TestE2ECCallablesAvoidRuntimeSymbols/-O0', 'TestE2ECCallablesAvoidRuntimeSymbols/-O2', 'TestE2EEscapedCallableHeaderAndABI/option', 'TestE2EEscapedCallableHeaderAndABI/root', 'TestE2EEscapedCallableHeaderAndABI/source'},
+            "c-symbol-compiler": {'TestCDispatchTemporariesAvoidCallableShadowing/-O0', 'TestCDispatchTemporariesAvoidCallableShadowing/-O2', 'TestCReservedExplicitABISymbolsRejected/export/OAK_INLINE', 'TestCReservedExplicitABISymbolsRejected/export/__oak_cas_u32_seq_cst', 'TestCReservedExplicitABISymbolsRejected/export/core_slice', 'TestCReservedExplicitABISymbolsRejected/export/oak_0f_p0__nstore', 'TestCReservedExplicitABISymbolsRejected/export/oak_add_u32', 'TestCReservedExplicitABISymbolsRejected/export/oak_host_read', 'TestCReservedExplicitABISymbolsRejected/export/oak_store', 'TestCReservedExplicitABISymbolsRejected/export/oak_test_host_command_limits', 'TestCReservedExplicitABISymbolsRejected/export/oak_test_host_fail_extra', 'TestCReservedExplicitABISymbolsRejected/export/oak_test_host_unknown', 'TestCReservedExplicitABISymbolsRejected/export/oak_view_u8', 'TestCReservedExplicitABISymbolsRejected/extern/OAK_INLINE', 'TestCReservedExplicitABISymbolsRejected/extern/__oak_cas_u32_seq_cst', 'TestCReservedExplicitABISymbolsRejected/extern/core_slice', 'TestCReservedExplicitABISymbolsRejected/extern/oak_0f_p0__nstore', 'TestCReservedExplicitABISymbolsRejected/extern/oak_add_u32', 'TestCReservedExplicitABISymbolsRejected/extern/oak_host_read', 'TestCReservedExplicitABISymbolsRejected/extern/oak_store', 'TestCReservedExplicitABISymbolsRejected/extern/oak_test_host_command_limits', 'TestCReservedExplicitABISymbolsRejected/extern/oak_test_host_fail_extra', 'TestCReservedExplicitABISymbolsRejected/extern/oak_test_host_unknown', 'TestCReservedExplicitABISymbolsRejected/extern/oak_view_u8', 'TestCRuntimeHostHooksRemainExternOnly/oak_host_write', 'TestCRuntimeHostHooksRemainExternOnly/oak_host_write_call', 'TestCRuntimeHostHooksRemainExternOnly/oak_measured_value', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_classify', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_command', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_command_limit', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_discard', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_dispatch_divergence', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_fail', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_fail_values', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_launch_arg', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_launch_begin', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_launch_end', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_launch_out', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_liveness', 'TestCRuntimeHostHooksRemainExternOnly/oak_test_host_trace', 'TestE2CLaunchTemporariesAvoidCallableShadowing/-O0', 'TestE2CLaunchTemporariesAvoidCallableShadowing/-O2', 'TestE2ECCallablesAvoidRuntimeSymbols/-O0', 'TestE2ECCallablesAvoidRuntimeSymbols/-O2', 'TestE2EEscapedCallableHeaderAndABI/option', 'TestE2EEscapedCallableHeaderAndABI/root', 'TestE2EEscapedCallableHeaderAndABI/source', 'TestE2ETestingHostRuntimeSymbolsPreserveABI/simulation=false', 'TestE2ETestingHostRuntimeSymbolsPreserveABI/simulation=true'},
             "cross-compiler": {"TestE2ENativeConstantTablesExecutable/freestanding/riscv64", "TestE2ENativeConstantTablesExecutable/freestanding/arm64", "TestRingsCrossTargets/linux/riscv64", "TestRingsCrossTargets/linux/arm64"},
             "lean-compiler": {"TestE2ELeanFunctionArguments/Lean", "TestE2ELeanReduceLanesFunctionArgument/Lean", "TestE2ELeanNestedAssignment/Lean"},
             "lean-cli": {"TestBuildLeanNamespace/LeanImports"},
@@ -292,6 +292,74 @@ class RequiredMemoryMarkerTests(unittest.TestCase):
         with patch.object(required, "run_suite") as call:
             self.assertEqual(required.main(["asm-memory-markers"]), 0)
         call.assert_called_once_with(required.SUITES["asm-memory-markers"], race=True)
+
+
+class RequiredSymbolIntegrationTests(unittest.TestCase):
+    def results(self, omit=None, terminal="pass"):
+        suite = required.SUITES["c-symbol-compiler"]
+        result = required.RequiredResults(suite)
+        for name in suite.tests:
+            if name == omit:
+                continue
+            result.accept({"Action": "run", "Package": suite.import_path, "Test": name})
+            result.accept({"Action": "pass", "Package": suite.import_path, "Test": name})
+        result.accept({"Action": terminal, "Package": suite.import_path})
+        return suite, result
+
+    def test_all_nine_roots_and_forty_nine_children_required(self):
+        suite, result = self.results()
+        self.assertEqual(suite.package, "./compiler")
+        self.assertEqual(suite.timeout, "10m")
+        self.assertEqual(len(suite.roots), 9)
+        self.assertEqual(len(suite.tests), 58)
+        self.assertEqual(len([name for name in suite.tests if "/" in name]), 49)
+        result.finish(0)
+
+    def test_every_missing_identity_refused(self):
+        for name in required.SUITES["c-symbol-compiler"].tests:
+            with self.subTest(name=name):
+                _, result = self.results(omit=name)
+                with self.assertRaisesRegex(ValueError, "required tests did not pass"):
+                    result.finish(0)
+
+    def test_every_skipped_or_failed_identity_refused(self):
+        for name in required.SUITES["c-symbol-compiler"].tests:
+            for action in ("skip", "fail"):
+                with self.subTest(name=name, action=action):
+                    suite, result = self.results(omit=name)
+                    result.accept({"Action": "run", "Package": suite.import_path, "Test": name})
+                    result.accept({"Action": action, "Package": suite.import_path, "Test": name})
+                    with self.assertRaisesRegex(ValueError, action):
+                        result.finish(0)
+
+    def test_every_duplicate_identity_refused(self):
+        for name in required.SUITES["c-symbol-compiler"].tests:
+            with self.subTest(name=name):
+                suite, result = self.results()
+                with self.assertRaisesRegex(ValueError, "duplicate"):
+                    result.accept({"Action": "run", "Package": suite.import_path, "Test": name})
+
+    def test_unlisted_nested_skip_under_each_root_refused(self):
+        for root in required.SUITES["c-symbol-compiler"].roots:
+            with self.subTest(root=root):
+                suite, result = self.results()
+                child = root + "/FutureChild"
+                result.accept({"Action": "run", "Package": suite.import_path, "Test": child})
+                result.accept({"Action": "skip", "Package": suite.import_path, "Test": child})
+                with self.assertRaisesRegex(ValueError, "skip"):
+                    result.finish(0)
+
+    def test_package_and_process_failure_refused(self):
+        for action, exit_code in (("fail", 0), ("pass", 1)):
+            with self.subTest(action=action, exit_code=exit_code):
+                _, result = self.results(terminal=action)
+                with self.assertRaises(ValueError):
+                    result.finish(exit_code)
+
+    def test_cli_selects_race_for_symbol_integration(self):
+        with patch.object(required, "run_suite") as call:
+            self.assertEqual(required.main(["c-symbol-compiler"]), 0)
+        call.assert_called_once_with(required.SUITES["c-symbol-compiler"], race=True)
 
 
 if __name__ == "__main__":

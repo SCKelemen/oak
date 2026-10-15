@@ -9,7 +9,7 @@ from unittest import mock
 
 import native_bdd_lookup_abba as target
 
-EXPECTED_METHODS = 28
+EXPECTED_METHODS = 29
 
 
 def sample_snapshot():
@@ -183,6 +183,29 @@ class BDDLookupControls(unittest.TestCase):
                     target.work_sizes({prefix+'/x': cap+1})
         with self.assertRaises(ValueError):
             target.work_sizes({'unexpected/x': 1})
+
+    def test_work_monitor_uses_shared_accounting(self):
+        root, artifact = Path('/synthetic/work'), Path('/synthetic/artifact')
+        for condition in ('exact', 'component_cap', 'scan_failure'):
+            with self.subTest(condition=condition):
+                monitor = target.Monitor(root, artifact, 10)
+                size = target.PREFIX_CAPS['tmp'] + 1 if condition == 'component_cap' else 1
+                sample = {'allocated_bytes': 4096, 'disappearance_confirmations': 1}
+                with mock.patch.object(target.time, 'monotonic', return_value=0), \
+                     mock.patch.object(target.base, 'resource_snapshot', return_value=sample_snapshot()), \
+                     mock.patch.object(target.base, 'tree_sizes', return_value={}) as strict, \
+                     mock.patch.object(target.base, 'work_tree_sizes', return_value=({'tmp/x': size}, sample),
+                         side_effect=PermissionError('refused') if condition == 'scan_failure' else None) as live:
+                    if condition == 'exact':
+                        monitor(1)
+                        self.assertEqual(monitor.record()['max_observed_work_allocated_bytes'], 4096)
+                        self.assertEqual(monitor.record()['last_work_scan'], sample)
+                    else:
+                        with self.assertRaises((ValueError, PermissionError)):
+                            monitor(1)
+                    live.assert_called_once_with(root, deadline=10, allocated_limit=target.WORK_LIMIT)
+                    strict.assert_called_once_with(artifact, max_files=128,
+                        deadline=10, allowed_dirs={'A', 'B', 'evidence'})
 
     def test_measured_admission(self):
         good = sample_snapshot()

@@ -102,14 +102,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install elan
+      - name: Install pinned official Lean for reader and APDU gates
+        id: reader-apdu-lean
+        timeout-minutes: 5
         shell: bash
         run: |
           set -euo pipefail
-          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
-          tar -xzf /tmp/elan.tar.gz -C /tmp
-          /tmp/elan-init -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          lean="$(bash .github/scripts/install_reader_apdu_lean.sh)"
+          test -x "$lean"
+          printf 'lean=%s\n' "$lean" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$(dirname "$lean")" >> "$GITHUB_PATH"
 
       - name: Check RV64 encoding, layout, and execution proofs
         working-directory: spec/lean
@@ -130,7 +132,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          reader_apdu_lean="$(cd spec/lean && elan which lean)"
+          reader_apdu_lean="${{ steps.reader-apdu-lean.outputs.lean }}"
           test -n "$reader_apdu_lean"
           test -x "$reader_apdu_lean"
           python3 -B spec/lean/reader_apdu/check.py --lean "$reader_apdu_lean" --work "$RUNNER_TEMP/reader-apdu-model"
@@ -323,14 +325,16 @@ jobs:
           git diff --cached --exit-code
           test -z "$(git ls-files --others --exclude-standard)"
 
-      - name: Install elan
+      - name: Install pinned official Lean for reader and APDU gates
+        id: reader-apdu-lean
+        timeout-minutes: 5
         shell: bash
         run: |
           set -euo pipefail
-          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
-          tar -xzf /tmp/elan.tar.gz -C /tmp
-          /tmp/elan-init -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          lean="$(bash .github/scripts/install_reader_apdu_lean.sh)"
+          test -x "$lean"
+          printf 'lean=%s\n' "$lean" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$(dirname "$lean")" >> "$GITHUB_PATH"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -375,7 +379,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          reader_refinement_lean="$(cd spec/lean && elan which lean)"
+          reader_refinement_lean="${{ steps.reader-apdu-lean.outputs.lean }}"
           test -x "$reader_refinement_lean"
           python3 -B spec/lean/reader_apdu/check_refinement.py --lean "$reader_refinement_lean" --extractor "$RUNNER_TEMP/reader-extraction.test" --checkout-commit "$GITHUB_SHA" --work "$RUNNER_TEMP/reader-refinement"
 
@@ -427,14 +431,16 @@ jobs:
           git diff --cached --exit-code
           test -z "$(git ls-files --others --exclude-standard)"
 
-      - name: Install elan
+      - name: Install pinned official Lean for reader and APDU gates
+        id: reader-apdu-lean
+        timeout-minutes: 5
         shell: bash
         run: |
           set -euo pipefail
-          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
-          tar -xzf /tmp/elan.tar.gz -C /tmp
-          /tmp/elan-init -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          lean="$(bash .github/scripts/install_reader_apdu_lean.sh)"
+          test -x "$lean"
+          printf 'lean=%s\n' "$lean" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$(dirname "$lean")" >> "$GITHUB_PATH"
 
       # Existing reader-refinement still requires the four portable reader/APDU roots.
       - name: Set up Go
@@ -474,7 +480,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          apdu_refinement_lean="$(cd spec/lean && elan which lean)"
+          apdu_refinement_lean="${{ steps.reader-apdu-lean.outputs.lean }}"
           test -x "$apdu_refinement_lean"
           python3 -B spec/lean/reader_apdu/check_apdu_refinement.py --lean "$apdu_refinement_lean" --extractor "$RUNNER_TEMP/apdu-extraction.test" --checkout-commit "$GITHUB_SHA" --work "$RUNNER_TEMP/apdu-refinement"
 
