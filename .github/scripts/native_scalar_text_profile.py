@@ -7,6 +7,7 @@ The dedicated hosted VM remains the isolation boundary. All work is ephemeral;
 only the separately named, capped result directory is uploaded.
 """
 import argparse
+import errno
 import hashlib
 import json
 import math
@@ -51,6 +52,9 @@ STATUS_LIMIT = 256 * 1024
 PARSER_LIMIT = 128 * 1024
 PROCESS_LIMIT = 4096
 PROCESS_STATUS_LIMIT = 8192
+PROCESS_IDENTITY_LIMIT = 2048
+PROCESS_SAMPLE_READ_LIMIT = PROCESS_LIMIT * PROCESS_STATUS_LIMIT
+PROCESS_CONFIRMATION_LIMIT = 16
 WORK_NAME = 'native-scalar-text-profile-work'
 RESULT_NAME = 'native-scalar-text-profile-results'
 ARTIFACT_NAME = 'native-scalar-text-profile-artifact'
@@ -104,6 +108,15 @@ PYTHON_CONTROLS = (
     'test_tool_environment_binds_authenticated_paths',
     'test_go_environment_matches_bound_compilers',
     'test_cleanup_always_attempts_direct_reap',
+    'test_process_identity_fields',
+    'test_process_confirmation_paths',
+    'test_process_confirmation_identity_refusals',
+    'test_process_confirmed_disappearance',
+    'test_process_disappearance_refusals',
+    'test_process_confirmation_preserves_descendants',
+    'test_process_confirmation_read_bounds',
+    'test_process_unknown_rss_refusal_detail',
+    'test_process_confirmation_detail_cap',
 )
 
 
@@ -386,11 +399,23 @@ def memory_available(snapshot):
     return min(host, checked_number(headroom, 'visible cgroup headroom'))
 
 
-def process_status(path):
+def process_status(path, *, dir_fd=None, limit=PROCESS_STATUS_LIMIT, budget=None, deadline=None):
     """Read one bounded proc status; only a disappeared PID may be omitted."""
+    if deadline is not None:
+        require(time.monotonic() < deadline, 'process observation deadline expired')
+    if budget is not None:
+        require(budget['reads'] < 4 * PROCESS_LIMIT
+                and budget['bytes'] + limit + 1 <= PROCESS_SAMPLE_READ_LIMIT,
+                'process sample read budget exhausted')
+        budget['reads'] += 1
+        # Reserve the whole attempted read even if the process exits mid-read.
+        budget['bytes'] += limit + 1
+        budget['identity_reads' if path == 'stat' else 'status_reads'] += 1
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
     except FileNotFoundError:
+        if dir_fd is not None:
+            raise
         try:
             path.parent.stat()
         except FileNotFoundError:
@@ -398,13 +423,15 @@ def process_status(path):
         raise DiagnosticError('live process status is unavailable')
     with os.fdopen(fd, 'rb') as source:
         require(stat.S_ISREG(os.fstat(source.fileno()).st_mode), 'non-regular process status')
-        raw = source.read(PROCESS_STATUS_LIMIT + 1)
-    require(len(raw) <= PROCESS_STATUS_LIMIT and raw.endswith(b'\n'),
+        raw = source.read(limit + 1)
+    require(len(raw) <= limit and raw.endswith(b'\n'),
             'truncated/oversized process status')
+    if deadline is not None:
+        require(time.monotonic() < deadline, 'process observation deadline expired')
     return raw
 
 
-def parse_process_status(raw, pid):
+def parse_process_status(raw, pid, *, detail=False):
     fields = {}
     for line in raw.splitlines():
         key, separator, value = line.partition(b':')
@@ -431,7 +458,115 @@ def parse_process_status(raw, pid):
         rss = int(match[1]) * 1024
     elif state[:1] == b'Z':
         rss = 0  # A zombie has already released its address space.
+    if detail:
+        return {'parent': parent, 'rss': rss, 'state': state[:1].decode('ascii'),
+                'rss_present': b'VmRSS' in fields}
     return parent, rss
+
+
+def parse_process_identity(raw, pid):
+    # Field 2 (comm) can contain spaces and parentheses. Numeric fields after
+    # its final ') ' cannot; starttime is field 22, index 19 after comm.
+    prefix, separator, tail = raw.rpartition(b') ')
+    require(separator and prefix.startswith(str(pid).encode() + b' ('),
+            'invalid process stat identity')
+    fields = tail.split()
+    require(len(fields) >= 20 and re.fullmatch(rb'[A-Za-z]', fields[0]) is not None,
+            'invalid process stat fields')
+    require(re.fullmatch(rb'[0-9]{1,10}', fields[1]) is not None
+            and int(fields[1]) < 2**31 and int(fields[1]) != pid
+            and re.fullmatch(rb'[0-9]{1,20}', fields[19]) is not None
+            and int(fields[19]) < 2**64, 'invalid process parent/starttime')
+    return {'pid': pid, 'parent': int(fields[1]), 'starttime': int(fields[19]),
+            'state': fields[0].decode('ascii')}
+
+
+def observe_process(path, pid, deadline, budget):
+    """At most one confirmation, anchored to one opened Linux proc PID inode.
+
+    A missing status is never a zero-RSS live process. Confirmed disappearance
+    preserves the already observed parent edge, so sampled live descendants are
+    still traversed. A replacement/reparenting or unknown live RSS stays fatal.
+    """
+    def gone(cookie=None):
+        try:
+            named = path.lstat()
+        except FileNotFoundError:
+            return True
+        require(cookie is None or (named.st_dev, named.st_ino) == cookie,
+                f'process PID directory replaced: pid={pid}')
+        raise DiagnosticError(f'process disappearance unconfirmed: pid={pid}')
+    require(time.monotonic() < deadline, 'process observation deadline expired')
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        gone()
+        return None
+    identity = row = None
+    try:
+        info = os.fstat(fd)
+        require(stat.S_ISDIR(info.st_mode), 'non-directory process identity')
+        cookie = (info.st_dev, info.st_ino)
+        def read(name, limit):
+            return process_status(name, dir_fd=fd, limit=limit, budget=budget, deadline=deadline)
+        try:
+            identity = parse_process_identity(read('stat', PROCESS_IDENTITY_LIMIT), pid)
+            row = parse_process_status(read('status', PROCESS_STATUS_LIMIT), pid, detail=True)
+            require(row['parent'] == identity['parent'],
+                    f'process parent changed: pid={pid} starttime={identity["starttime"]}')
+            row.update(starttime=identity['starttime'], confirmation='none',
+                       identity_state=identity['state'], first_state=row['state'])
+            if not row['rss_present']:
+                budget['confirmations'] += 1
+                before = row
+                row = parse_process_status(read('status', PROCESS_STATUS_LIMIT), pid, detail=True)
+                row['first_state'] = before['first_state']
+                after = parse_process_identity(read('stat', PROCESS_IDENTITY_LIMIT), pid)
+                require(all(after[k] == identity[k] for k in ('pid', 'parent', 'starttime'))
+                        and row['parent'] == identity['parent'],
+                        f'process confirmation identity changed: pid={pid} starttime={identity["starttime"]}')
+                row.update(starttime=identity['starttime'], confirmation='reread',
+                           identity_state=after['state'])
+                if row['rss'] is not None and row['rss_present']:
+                    budget['recovered_rss'] += 1
+                elif after['state'] == 'Z':
+                    row.update(rss=0, confirmation='stat_zombie')
+                else:
+                    row['rss'] = None  # A status-only Z is not the final identity confirmation.
+            if row['rss'] == 0 and not row['rss_present'] and (
+                    row['state'] == 'Z' or row['identity_state'] == 'Z'):
+                budget['zombies'] += 1
+            try:
+                named = path.lstat()
+            except FileNotFoundError:
+                pass  # Retain the observed row and parent edge; do not invent zero RSS.
+            else:
+                require((named.st_dev, named.st_ino) == cookie,
+                        f'process PID directory replaced: pid={pid}')
+            return row
+        except OSError as error:
+            if error.errno not in (errno.ENOENT, errno.ESRCH):
+                raise
+            gone(cookie)
+            if identity is None:
+                return None
+            budget['disappearances'] += 1
+            return {'parent': identity['parent'], 'rss': 0, 'state': 'gone',
+                    'starttime': identity['starttime'], 'rss_present': False,
+                    'first_state': 'unread' if row is None else row.get('first_state', row['state']),
+                    'last_status_state': 'unread' if row is None else row['state'],
+                    'identity_state': identity['state'],
+                    'confirmation': 'anchored_enoent_or_esrch_and_named_directory_absent'}
+    except (DiagnosticError, OSError) as error:
+        raise DiagnosticError(
+            f'process observation refused: pid={pid} '
+            f'parent={"unread" if identity is None else identity["parent"]} '
+            f'starttime={"unread" if identity is None else identity["starttime"]} '
+            f'state={"unread" if row is None else row["state"]} '
+            f'identity_state={"unread" if identity is None else identity["state"]}: '
+            f'{str(error)[:512]}') from error
+    finally:
+        os.close(fd)
 
 
 def strict_process_rss(pid, deadline):
@@ -443,6 +578,8 @@ def strict_process_rss(pid, deadline):
     explicit sampling limitation, as do PID reuse and shared-page overcounting.
     """
     processes, scanned, vanished = {}, 0, 0
+    budget = dict(reads=0, identity_reads=0, status_reads=0, bytes=0,
+                  confirmations=0, recovered_rss=0, zombies=0, disappearances=0)
     with os.scandir(resources.PROC) as entries:
         for entry in entries:
             if re.fullmatch('[0-9]+', entry.name) is None:
@@ -452,28 +589,56 @@ def strict_process_rss(pid, deadline):
             require(time.monotonic() < deadline, 'process observation deadline expired')
             child = int(entry.name)
             require(0 < child < 2**31 and child not in processes, 'invalid/duplicate process PID')
-            raw = process_status(Path(entry.path) / 'status')
-            if raw is None:
+            row = observe_process(Path(entry.path), child, deadline, budget)
+            if row is None:
                 vanished += 1
                 continue
-            processes[child] = parse_process_status(raw, child)
+            processes[child] = row
     require(pid in processes, 'owned runner missing from process observation')
     children = {}
-    for child, (parent, _) in processes.items():
-        children.setdefault(parent, []).append(child)
+    for child, row in processes.items():
+        children.setdefault(row['parent'], []).append(child)
     descendants, pending = {pid}, [pid]
     while pending:
         for child in children.get(pending.pop(), []):
             if child not in descendants:
                 descendants.add(child)
                 pending.append(child)
-    values = [processes[child][1] for child in descendants]
-    require(all(type(value) is int for value in values), 'missing RSS in owned process sample')
+    for child in sorted(descendants):
+        row = processes[child]
+        require(type(row['rss']) is int,
+                f'missing RSS in owned process sample: pid={child} parent={row["parent"]} '
+                f'starttime={row["starttime"]} state={row["state"]} '
+                f'first_state={row.get("first_state", row["state"])} confirmation={row["confirmation"]} '
+                f'identity_state={row["identity_state"]}')
+    values = [processes[child]['rss'] for child in descendants]
+    confirmations = []
+    for child in sorted(descendants):
+        row = processes[child]
+        if row['confirmation'] != 'none' or (row['state'] == 'Z' and not row['rss_present']):
+            require(len(confirmations) < PROCESS_CONFIRMATION_LIMIT,
+                    'owned process confirmation detail cap exhausted')
+            confirmations.append({'pid': child, 'parent': row['parent'],
+                'starttime': row['starttime'], 'state': row['state'],
+                'first_state': row.get('first_state', row['state']),
+                'last_status_state': row.get('last_status_state', row['state']),
+                'identity_state': row['identity_state'],
+                'confirmation': row['confirmation'], 'rss_bytes': row['rss']})
     require(time.monotonic() < deadline, 'process observation deadline expired')
-    return {'runner_rss_bytes': processes[pid][1], 'tree_rss_sum_bytes': sum(values),
+    return {'runner_rss_bytes': processes[pid]['rss'], 'tree_rss_sum_bytes': sum(values),
             'tree_max_rss_bytes': max(values), 'tree_processes': len(descendants),
             'process_scan': 'complete', 'process_observation': 'strict_sample_non_atomic',
-            'process_entries_scanned': scanned, 'process_entries_vanished': vanished}
+            'process_entries_scanned': scanned, 'process_entries_vanished': vanished,
+            'process_read_reserved_bytes': budget['bytes'], 'process_file_reads': budget['reads'],
+            'process_identity_reads': budget['identity_reads'],
+            'process_status_reads': budget['status_reads'],
+            'process_status_confirmations': budget['confirmations'],
+            'process_recovered_rss': budget['recovered_rss'],
+            'process_observed_zombies': budget['zombies'],
+            'process_confirmed_disappearances': budget['disappearances'],
+            'owned_process_confirmations': confirmations,
+            'process_unowned_missing_rss': sum(row['rss'] is None for child, row in processes.items()
+                                              if child not in descendants)}
 
 
 def resource_snapshot(pid, directory, deadline):
@@ -901,7 +1066,7 @@ def run(repo, started):
         command([go, 'mod', 'verify'])
         command([sys.executable, str(repo / '.github/scripts/native_scalar_text_profile.py'), '--controls'],
                 deadline=min(setup_end, time.monotonic() + 60))
-        status['python_controls'] = {'methods': 29, 'subtest_contexts': 130, 'skips': 0}
+        status['python_controls'] = {'methods': 38, 'subtest_contexts': 172, 'skips': 0}
         identity = source_identity(repo, command, env, setup_end)
         status['source_identity'] = identity
         build_end = phase_deadline(started, 'build', time.monotonic())
@@ -996,11 +1161,11 @@ def run_controls():
     import test_native_scalar_text_profile as controls
     case = controls.ScalarProfileOwnerTests
     actual = unittest.defaultTestLoader.getTestCaseNames(case)
-    require(len(PYTHON_CONTROLS) == 29 and len(set(PYTHON_CONTROLS)) == 29
+    require(len(PYTHON_CONTROLS) == 38 and len(set(PYTHON_CONTROLS)) == 38
             and sorted(PYTHON_CONTROLS) == actual, 'Python control method inventory changed')
     suite = unittest.TestSuite(case(name) for name in PYTHON_CONTROLS)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
-    return 0 if (result.wasSuccessful() and result.testsRun == 29 and not result.skipped
+    return 0 if (result.wasSuccessful() and result.testsRun == 38 and not result.skipped
                  and not result.expectedFailures and not result.unexpectedSuccesses) else 1
 
 

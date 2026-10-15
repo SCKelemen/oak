@@ -24,9 +24,9 @@ from native_arm64 import pattern, validate_events
 
 MiB, GiB = 1024**2, 1024**3
 INPUT = '.github/scripts/native_bdd_lookup_abba_inputs.json'
-BASE_TREE = 'bc7e84e81a19e756b13fa20e28bd8dc1b59267aa'
+BASE_TREE = '74c9b65f0c265a9539346a55c1a0f3079ac7d489'
 INTEGRATION_PATHS = {INPUT, '.github/scripts/native_bdd_lookup_abba.py',
-    '.github/scripts/test_native_bdd_lookup_abba.py', '.github/workflows/native-arm64.yml'}
+    '.github/scripts/native_scalar_text_profile.py', '.github/scripts/test_native_scalar_text_profile.py'}
 JOB_SECONDS, SETUP_SECONDS, BUILD_SECONDS = 1800, 420, 900
 CONTROL_SECONDS, BENCH_SECONDS, FINAL_SECONDS, UPLOAD_SECONDS = 120, 120, 240, 60
 BINARY_LIMIT, EVIDENCE_LIMIT, ARTIFACT_LIMIT = 128*MiB, 32*MiB, 288*MiB

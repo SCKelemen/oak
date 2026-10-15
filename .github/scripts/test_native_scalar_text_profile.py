@@ -64,6 +64,20 @@ class ScalarProfileOwnerTests(unittest.TestCase):
         return (f'Name:\ttest\nState:\t{state} (state)\nPid:\t{pid}\nPPid:\t{parent}\n'
                 + (f'VmRSS:\t{rss}\n' if rss is not None else '')).encode()
 
+    def stat_bytes(self, pid=100, parent=1, starttime=42, name='test', state='S'):
+        return (f'{pid} ({name}) {state} {parent} ' + '0 ' * 17 + f'{starttime} 0 0\n').encode()
+
+    def proc_fixture(self, pid=100, parent=1, root=None):
+        path = (self.root if root is None else root) / str(pid)
+        path.mkdir()
+        (path / 'stat').write_bytes(self.stat_bytes(pid, parent))
+        (path / 'status').write_bytes(self.status_bytes(pid, parent))
+        return path
+
+    def read_budget(self):
+        return dict(reads=0, identity_reads=0, status_reads=0, bytes=0,
+                    confirmations=0, recovered_rss=0, zombies=0, disappearances=0)
+
     def test_process_status_reads_are_bounded(self):
         for name in ('exact', 'overflow', 'vanished', 'missing_status', 'permission', 'fifo', 'symlink'):
             with self.subTest(name=name):
@@ -118,6 +132,7 @@ class ScalarProfileOwnerTests(unittest.TestCase):
         for pid, parent in ((100, 1), (101, 100), (102, 1)):
             (proc / str(pid)).mkdir()
             (proc / str(pid) / 'status').write_bytes(self.status_bytes(pid, parent))
+            (proc / str(pid) / 'stat').write_bytes(self.stat_bytes(pid, parent))
         with mock.patch.object(profile.resources, 'PROC', proc):
             sample = profile.strict_process_rss(100, time.monotonic() + 2)
             self.assertEqual(sample['tree_rss_sum_bytes'], 8192)
@@ -129,6 +144,8 @@ class ScalarProfileOwnerTests(unittest.TestCase):
                     if name in ('owned_missing_rss', 'zombie'):
                         owned.write_bytes(self.status_bytes(101, 100,
                                                            'Z' if name == 'zombie' else 'S', None))
+                        (proc / '101/stat').write_bytes(self.stat_bytes(101, 100,
+                                                                      state='Z' if name == 'zombie' else 'S'))
                     if name == 'unrelated_missing_rss':
                         unrelated.write_bytes(self.status_bytes(102, 1, rss=None))
                     try:
@@ -150,6 +167,7 @@ class ScalarProfileOwnerTests(unittest.TestCase):
                                                           time.monotonic() + (-1 if name == 'deadline' else 2))
                     finally:
                         owned.write_bytes(self.status_bytes(101, 100))
+                        (proc / '101/stat').write_bytes(self.stat_bytes(101, 100))
                         unrelated.write_bytes(self.status_bytes(102, 1))
 
     def test_resource_snapshot_uses_strict_local_observation(self):
@@ -164,6 +182,205 @@ class ScalarProfileOwnerTests(unittest.TestCase):
         self.assertEqual(snapshot['mem_available_bytes'], 42 * 1024)
         self.assertEqual(snapshot['cgroup_headroom_bytes'], 200)
         self.assertEqual(snapshot['tree_rss_sum_bytes'], 300)
+
+    def test_process_identity_fields(self):
+        for name in ('space', 'parentheses'):
+            with self.subTest(name=name):
+                raw = self.stat_bytes(name='some name' if name == 'space' else 'some ) ( name)')
+                self.assertEqual(profile.parse_process_identity(raw, 100),
+                                 {'pid': 100, 'parent': 1, 'starttime': 42, 'state': 'S'})
+        for raw in (self.stat_bytes(pid=101), b'100 missing separator\n', b'100 (x) S 1\n',
+                    self.stat_bytes(parent=-1), self.stat_bytes(parent=100),
+                    self.stat_bytes(parent=2**31), self.stat_bytes(starttime=-1),
+                    self.stat_bytes(starttime=2**64)):
+            with self.subTest(raw=raw), self.assertRaises(profile.DiagnosticError):
+                profile.parse_process_identity(raw, 100)
+
+    def test_process_confirmation_paths(self):
+        cases = [('numeric', [('S', '4 kB')], 4096, 0, 0, 0),
+                 ('recovered', [('S', None), ('S', '8 kB')], 8192, 1, 1, 0),
+                 ('zombie_after', [('S', None), ('Z', None)], 0, 1, 0, 1),
+                 ('stat_zombie', [('S', None), ('S', None)], 0, 1, 0, 1),
+                 ('unknown', [('S', None), ('S', None)], None, 1, 0, 0),
+                 ('dead_final', [('Z', None), ('Z', None)], None, 1, 0, 0),
+                 ('unknown_final', [('S', None), ('S', None)], None, 1, 0, 0),
+                 ('zombie_first', [('Z', None), ('Z', None)], 0, 1, 0, 1)]
+        for name, values, rss, confirmations, recovered, zombies in cases:
+            with self.subTest(name=name):
+                root = self.root/name; root.mkdir(); path = self.proc_fixture(root=root)
+                original = profile.process_status; calls = []
+                def reading(file, **kwargs):
+                    if file == 'status':
+                        state, value = values[len(calls)]; calls.append(kwargs['dir_fd'])
+                        (path/'status').write_bytes(self.status_bytes(state=state, rss=value))
+                        if name in ('stat_zombie', 'zombie_after', 'zombie_first') and len(calls) == 2:
+                            (path/'stat').write_bytes(self.stat_bytes(state='Z'))
+                        if name in ('dead_final', 'unknown_final') and len(calls) == 2:
+                            (path/'stat').write_bytes(self.stat_bytes(
+                                state='X' if name == 'dead_final' else 'Q'))
+                    return original(file, **kwargs)
+                budget = self.read_budget()
+                with mock.patch.object(profile, 'process_status', side_effect=reading):
+                    row = profile.observe_process(path, 100, time.monotonic()+2, budget)
+                self.assertEqual(row['rss'], rss)
+                self.assertEqual(row['parent'], 1)
+                self.assertEqual(row['starttime'], 42)
+                self.assertEqual(len(set(calls)), 1)
+                self.assertEqual(budget['confirmations'], confirmations)
+                self.assertEqual(budget['recovered_rss'], recovered)
+                self.assertEqual(budget['zombies'], zombies)
+                self.assertEqual(budget['status_reads'], len(values))
+                self.assertEqual(budget['identity_reads'], len(values))
+                if name == 'stat_zombie':
+                    self.assertEqual((row['state'], row['first_state'], row['identity_state'],
+                                      row['confirmation']), ('S', 'S', 'Z', 'stat_zombie'))
+
+    def test_process_confirmation_identity_refusals(self):
+        for name in ('pid', 'status_parent', 'stat_parent', 'starttime', 'replacement'):
+            with self.subTest(name=name):
+                root = self.root/name; root.mkdir(); path = self.proc_fixture(root=root)
+                original = profile.process_status; calls = []
+                def reading(file, **kwargs):
+                    if file == 'status':
+                        calls.append(file); location = path
+                        if len(calls) == 1:
+                            (path/'status').write_bytes(self.status_bytes(rss=None))
+                        else:
+                            if name == 'replacement':
+                                location = root/'old'; path.rename(location); path.mkdir()
+                            (location/'status').write_bytes(self.status_bytes(
+                                pid=101 if name == 'pid' else 100,
+                                parent=2 if name == 'status_parent' else 1))
+                            (location/'stat').write_bytes(self.stat_bytes(
+                                parent=2 if name == 'stat_parent' else 1,
+                                starttime=43 if name == 'starttime' else 42, state='Z'))
+                    return original(file, **kwargs)
+                with mock.patch.object(profile, 'process_status', side_effect=reading), \
+                        self.assertRaises(profile.DiagnosticError):
+                    profile.observe_process(path, 100, time.monotonic()+2, self.read_budget())
+
+    def test_process_confirmed_disappearance(self):
+        for phase, code in ((1, profile.errno.ENOENT), (1, profile.errno.ESRCH),
+                            (2, profile.errno.ENOENT), (2, profile.errno.ESRCH),
+                            (3, profile.errno.ENOENT)):
+            with self.subTest(phase=phase, code=code):
+                root = self.root/f'{phase}-{code}'; root.mkdir(); path = self.proc_fixture(root=root)
+                (path/'status').write_bytes(self.status_bytes(rss=None))
+                original = profile.process_status; calls = []
+                def reading(file, **kwargs):
+                    if file == 'status':
+                        calls.append(file)
+                        if phase == 3 and len(calls) == 2:
+                            (path/'status').write_bytes(self.status_bytes(state='R', rss=None))
+                    if ((file == 'status' and len(calls) == phase)
+                            or (phase == 3 and file == 'stat' and len(calls) == 2)):
+                        (path/'status').unlink(); (path/'stat').unlink(); path.rmdir()
+                        raise OSError(code, 'synthetic process exit')
+                    return original(file, **kwargs)
+                budget = self.read_budget()
+                with mock.patch.object(profile, 'process_status', side_effect=reading):
+                    row = profile.observe_process(path, 100, time.monotonic()+2, budget)
+                self.assertEqual((row['parent'], row['starttime'], row['rss'], row['state']),
+                                 (1, 42, 0, 'gone'))
+                self.assertEqual(budget['disappearances'], 1)
+                if phase == 3:
+                    self.assertEqual((row['first_state'], row['last_status_state']), ('S', 'R'))
+                self.assertEqual(row['confirmation'],
+                                 'anchored_enoent_or_esrch_and_named_directory_absent')
+
+    def test_process_disappearance_refusals(self):
+        for name, code in (('present_enoent', profile.errno.ENOENT),
+                           ('present_esrch', profile.errno.ESRCH),
+                           ('permission', profile.errno.EACCES), ('io', profile.errno.EIO),
+                           ('malformed_after_gone', None)):
+            with self.subTest(name=name):
+                root = self.root/name; root.mkdir(); path = self.proc_fixture(root=root)
+                (path/'status').write_bytes(self.status_bytes(rss=None))
+                original = profile.process_status; calls = []
+                def reading(file, **kwargs):
+                    if file == 'status':
+                        calls.append(file)
+                        if len(calls) == 2:
+                            if code is None:
+                                (path/'status').unlink(); (path/'stat').unlink(); path.rmdir()
+                                return b'malformed\n'
+                            raise OSError(code, 'synthetic unconfirmed failure')
+                    return original(file, **kwargs)
+                budget = self.read_budget()
+                with mock.patch.object(profile, 'process_status', side_effect=reading), \
+                        self.assertRaises((profile.DiagnosticError, OSError)):
+                    profile.observe_process(path, 100, time.monotonic()+2, budget)
+                self.assertEqual(budget['disappearances'], 0)
+
+    def test_process_confirmation_preserves_descendants(self):
+        for state, rss in (('gone', 0), ('Z', 0), ('S', 8192)):
+            with self.subTest(state=state):
+                root = self.root/state; root.mkdir()
+                for pid, parent in ((100, 1), (101, 100), (102, 101)):
+                    self.proc_fixture(pid, parent, root)
+                original = profile.observe_process
+                def observing(path, pid, deadline, budget):
+                    if pid == 101:
+                        return {'parent': 100, 'rss': rss, 'state': state,
+                                'starttime': 42, 'confirmation': 'synthetic', 'rss_present': rss > 0,
+                                'identity_state': 'S'}
+                    return original(path, pid, deadline, budget)
+                with mock.patch.object(profile.resources, 'PROC', root), \
+                        mock.patch.object(profile, 'observe_process', side_effect=observing):
+                    sample = profile.strict_process_rss(100, time.monotonic()+2)
+                self.assertEqual(sample['tree_processes'], 3)
+                self.assertEqual(sample['tree_rss_sum_bytes'], 8192+rss)
+
+    def test_process_confirmation_read_bounds(self):
+        for name in ('deadline', 'bytes', 'reads', 'identity_oversize'):
+            with self.subTest(name=name):
+                root = self.root/name; root.mkdir(); path = self.proc_fixture(root=root)
+                budget = self.read_budget(); deadline = time.monotonic()+2
+                if name == 'deadline': deadline = time.monotonic()-1
+                if name == 'bytes': budget['bytes'] = profile.PROCESS_SAMPLE_READ_LIMIT
+                if name == 'reads': budget['reads'] = 4*profile.PROCESS_LIMIT
+                if name == 'identity_oversize':
+                    (path/'stat').write_bytes(b'x'*(profile.PROCESS_IDENTITY_LIMIT+1))
+                with mock.patch.object(profile.os, 'close', wraps=os.close) as closed, \
+                        self.assertRaises(profile.DiagnosticError):
+                    profile.observe_process(path, 100, deadline, budget)
+                self.assertEqual(closed.call_count, 0 if name == 'deadline' else 1)
+        budget = self.read_budget()
+        with self.assertRaises(profile.DiagnosticError):
+            profile.process_status(self.root/'absent', budget=budget, deadline=time.monotonic()+2)
+        self.assertEqual((budget['reads'], budget['bytes']), (1, profile.PROCESS_STATUS_LIMIT+1))
+
+    def test_process_unknown_rss_refusal_detail(self):
+        for pid, parent in ((100, 1), (101, 100)):
+            path = self.proc_fixture(pid, parent)
+            if pid == 101:
+                (path/'status').write_bytes(self.status_bytes(pid, parent, rss=None))
+        with mock.patch.object(profile.resources, 'PROC', self.root), \
+                self.assertRaisesRegex(profile.DiagnosticError,
+                    'pid=101 parent=100 starttime=42 state=S first_state=S confirmation=reread'):
+            profile.strict_process_rss(100, time.monotonic()+2)
+
+    def test_process_confirmation_detail_cap(self):
+        for pid, parent in ((100, 1), (101, 100), (102, 101)):
+            path = self.proc_fixture(pid, parent)
+            if pid != 100:
+                (path/'status').write_bytes(self.status_bytes(pid, parent, 'Z', None))
+                (path/'stat').write_bytes(self.stat_bytes(pid, parent, state='Z'))
+        for limit in (2, 1):
+            with self.subTest(limit=limit), mock.patch.object(profile.resources, 'PROC', self.root), \
+                    mock.patch.object(profile, 'PROCESS_CONFIRMATION_LIMIT', limit):
+                if limit == 1:
+                    with self.assertRaisesRegex(profile.DiagnosticError, 'detail cap'):
+                        profile.strict_process_rss(100, time.monotonic()+2)
+                else:
+                    sample = profile.strict_process_rss(100, time.monotonic()+2)
+                    self.assertEqual(sample['tree_processes'], 3)
+                    self.assertEqual(sample['tree_rss_sum_bytes'], 4096)
+                    self.assertEqual(sample['owned_process_confirmations'], [
+                        {'pid': pid, 'parent': parent, 'starttime': 42, 'state': 'Z',
+                         'first_state': 'Z', 'last_status_state': 'Z', 'identity_state': 'Z',
+                         'confirmation': 'stat_zombie', 'rss_bytes': 0}
+                        for pid, parent in ((101, 100), (102, 101))])
 
     def test_log_cap_keeps_bounded_prefix_and_records_overflow(self):
         output = profile.CappedOutput(self.root / 'log', 4)

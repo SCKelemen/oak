@@ -1,6 +1,6 @@
 {
-  "baseline_commit": "936f05f6c830f10d730aed65b9b83b3fa1b99153",
-  "baseline_tree": "bc7e84e81a19e756b13fa20e28bd8dc1b59267aa",
+  "baseline_commit": "272fe5ec13ee9305b7412cd7a950b7082b84fce4",
+  "baseline_tree": "74c9b65f0c265a9539346a55c1a0f3079ac7d489",
   "baseline_tree_members": {
     ".gitattributes": {
       "blob": "9d9918ca4608fae8f2a3974c3b575a95514b6a21",
@@ -48,6 +48,14 @@
     },
     ".github/scripts/native_arm64_shards.py": {
       "blob": "def527b1c1b743e3d705b514460bc5a54adf1ede",
+      "mode": "100644"
+    },
+    ".github/scripts/native_bdd_lookup_abba.py": {
+      "blob": "e094771d4e6681b85b05e492abfd306363105c38",
+      "mode": "100644"
+    },
+    ".github/scripts/native_bdd_lookup_abba_inputs.json": {
+      "blob": "2eb4b64a7aac2d821ae6c890d6bceab478d1942d",
       "mode": "100644"
     },
     ".github/scripts/native_prover_inventory.json": {
@@ -106,6 +114,10 @@
       "blob": "129cbda2585937dc30c8aa36e5f453b1bf3d784f",
       "mode": "100644"
     },
+    ".github/scripts/test_native_bdd_lookup_abba.py": {
+      "blob": "02c7aa10500e4cc596d7da17a16b4b88a80dfa1a",
+      "mode": "100644"
+    },
     ".github/scripts/test_native_scalar_text_profile.py": {
       "blob": "86e88b01ba0c4ad178a769c2dc53ca2c04a004ec",
       "mode": "100644"
@@ -159,7 +171,7 @@
       "mode": "100644"
     },
     ".github/workflows/native-arm64.yml": {
-      "blob": "3357e7f7a7eb8d8d2ef337b7ad3f5c7c65686739",
+      "blob": "79213ddb585c34512fd062a1fa1bdd9d24116bbb",
       "mode": "100644"
     },
     ".github/workflows/no-neon.yml": {
@@ -16971,25 +16983,25 @@
     ".github/scripts/native_arm64_prerequisite.py": "1a6be5b624b5a4c67722376a05ae115890acfa3d544f6bb9096681bb08c3dbe4",
     ".github/scripts/native_arm64_resources.py": "9169fcd5bad65bf9fd57fe9d93e43db41270ca85ac62a47b662620cb4714028f",
     ".github/scripts/native_arm64_shards.py": "9a8c53da4e1459ff037ceab79dc9ff6dd4ee434615a25446624fc429159022ed",
-    ".github/scripts/native_scalar_text_profile.py": "02a5aacbb10890258cd4551e1f19db88f326a5d35f7e7748344f1746ddc47793",
-    ".github/scripts/test_native_scalar_text_profile.py": "2df97d815a0a6fdce4f752889d9e35d7236aa44f766b637614f3155814afd8dd"
+    ".github/scripts/native_scalar_text_profile.py": "3160b4e8cdbb123c05c1793051d8ec80d5a5addbc506b49de2f11954bb4bcc09",
+    ".github/scripts/test_native_scalar_text_profile.py": "f8b133b67d3539fedffde08b03641ae4b39b472ea39050196a33b42ab87b14ae"
   },
   "integration_members": {
     ".github/scripts/native_bdd_lookup_abba.py": {
-      "blob": "e094771d4e6681b85b05e492abfd306363105c38",
+      "blob": "f1eb5184e17359c3e4cb5a88afbb89b86b5f76e9",
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba_inputs.json": null,
-    ".github/scripts/test_native_bdd_lookup_abba.py": {
-      "blob": "02c7aa10500e4cc596d7da17a16b4b88a80dfa1a",
+    ".github/scripts/native_scalar_text_profile.py": {
+      "blob": "c71308d66e0fbdd32db285c0bb5c2b6d02618aae",
       "mode": "100644"
     },
-    ".github/workflows/native-arm64.yml": {
-      "blob": "79213ddb585c34512fd062a1fa1bdd9d24116bbb",
+    ".github/scripts/test_native_scalar_text_profile.py": {
+      "blob": "d13a2bd5ff1f43d0aff7122ee02052cb263301e2",
       "mode": "100644"
     }
   },
-  "local_commit": "3f79ae2ff14d4917ac923c77ebf7285c214c8267",
+  "local_commit": "820e955b6aa8d706f568c26437c107d381c3ce1f",
   "lookup": {
     "baseline_sha256": "cad08ae43e5551133432071366ce08c0220989a2b41d819a34b3db53070ab15c",
     "candidate_sha256": "bab3949644ebc413d1a111b035b0d5b8da8013c6a205e21dc5c23e9467e7ebe0"
