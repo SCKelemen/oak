@@ -1,0 +1,15 @@
+// The ordering property alone is not inductive over wrapping counters:
+// x < y with y = 255 can step to x > y. The reachable states satisfy x == y.
+Counters: protocol = {
+  data { x: u8, y: u8 }
+  init { x: u8(0), y: u8(0) }
+  initial Running
+  tick: Running -> Running then {
+    data.x = data.x + u8(1)
+    data.y = data.y + u8(1)
+  }
+}
+
+ordered: theorem (s: CountersState, d: CountersData) { d.x <= d.y }
+
+main: (): i32 = 0
