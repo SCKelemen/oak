@@ -43,7 +43,8 @@ func TestSynthesisStrengthensNonInductiveProperty(t *testing.T) {
 		t.Fatalf("unstrengthened result: %+v", without)
 	}
 	got := synthesize(t, synthesisCounters, SynthesisOptions{})
-	if got.Status != Decided || !strings.Contains(got.Invariant, "d.x == d.y") || !strings.HasPrefix(got.Invariant, "ordered(s, d)") {
+	readable := strings.NewReplacer("(", "", ")", "").Replace(got.Invariant)
+	if got.Status != Decided || !strings.Contains(readable, "d.x == d.y") || !strings.HasPrefix(got.Invariant, "ordered(s, d)") {
 		t.Fatalf("strengthened result: %+v", got)
 	}
 	if got.Rounds < 2 || len(got.Rejected) == 0 || len(got.Checks) != 3 {
@@ -165,9 +166,16 @@ Switch: protocol = {
 ordered: theorem (state: SwitchState) { state == .Off || state == .On }
 main: (): i32 = 0
 `
-	got := synthesize(t, source, SynthesisOptions{})
+	// Enumerate the complete small state/action domains. The bit-level rung
+	// does not support every enum expression. Step names deliberately overlap
+	// state names: the evaluator must use the checker's enum resolution.
+	got := synthesize(t, source, SynthesisOptions{Cases: 16})
 	if got.Status != Decided {
 		t.Fatalf("state-only protocol: %+v", got)
+	}
+	broken := strings.Replace(source, "state == .Off || state == .On", "state == .Off", 1)
+	if result := synthesize(t, broken, SynthesisOptions{Cases: 16}); result.Status != Open {
+		t.Fatalf("state-changing protocol accepted a false property: %+v", result)
 	}
 	for _, bad := range []string{
 		"import(std)\n" + source,

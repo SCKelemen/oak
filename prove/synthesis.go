@@ -12,6 +12,7 @@ import (
 	"github.com/SCKelemen/oak/object"
 	"github.com/SCKelemen/oak/parser"
 	"github.com/SCKelemen/oak/scanner"
+	"github.com/SCKelemen/oak/token"
 )
 
 const synthesisPrefix = "oak_synth_"
@@ -213,28 +214,35 @@ func SynthesizeInvariant(source compiler.SourceText, property string, options Sy
 		if err != nil {
 			return report, fmt.Errorf("synthesis: check candidate obligations: %w", err)
 		}
-		// Every candidate must hold initially and be preserved under the whole
-		// current conjunction. Remove unsupported as well as refuted candidates;
-		// this loses search power but cannot authorize a false result.
-		candidateChecks, err := synthesisDecide(checked, names[3:], options.Cases)
-		if err != nil {
-			return report, err
-		}
-		var next []string
-		for i, predicate := range retained {
-			base, step := candidateChecks[2*i], candidateChecks[2*i+1]
-			failed := base
-			if base.Status == Decided {
-				failed = step
+		// Prune initialization failures before using the conjunction as a step
+		// hypothesis. A trapping candidate must not poison other candidates'
+		// preservation checks. After either phase removes anything, rebuild.
+		changed := false
+		for phase := 0; phase < 2; phase++ {
+			var obligations []string
+			for i := range retained {
+				obligations = append(obligations, names[3+2*i+phase])
 			}
-			if failed.Status != Decided {
-				report.Rejected = append(report.Rejected, SynthesisRejection{Predicate: predicate, Round: round, Check: failed})
-			} else {
-				next = append(next, predicate)
+			candidateChecks, err := synthesisDecide(checked, obligations, options.Cases)
+			if err != nil {
+				return report, err
+			}
+			var next []string
+			for i, predicate := range retained {
+				check := candidateChecks[i]
+				if check.Status != Decided {
+					report.Rejected = append(report.Rejected, SynthesisRejection{Predicate: predicate, Round: round, Check: check})
+				} else {
+					next = append(next, predicate)
+				}
+			}
+			if len(next) != len(retained) {
+				retained = next
+				changed = true
+				break
 			}
 		}
-		if len(next) != len(retained) {
-			retained = next
+		if changed {
 			continue // The hypothesis weakened: all remaining checks must rerun.
 		}
 		// Do not infer success from the search's cached candidate results.
@@ -416,7 +424,7 @@ func synthesisObligations(target *ast.FunctionStatement, decl *ast.ProtocolDecla
 
 func synthesisAppend(source string) func(*compiler.SyntaxTree) error {
 	return func(tree *compiler.SyntaxTree) error {
-		p := parser.New(layout.New(scanner.New(source)))
+		p := parser.New(layout.New(synthesisTokens{scanner.New(source)}))
 		program := p.ParseProgram()
 		if errs := p.Errors(); len(errs) != 0 {
 			return fmt.Errorf("synthesis: generated obligations: %s", strings.Join(errs, "; "))
@@ -426,10 +434,30 @@ func synthesisAppend(source string) func(*compiler.SyntaxTree) error {
 	}
 }
 
+// Generated positions must not alias checked type/arithmetic facts from the
+// original source or the compiler's protocol helpers.
+type synthesisTokens struct{ *scanner.Scanner }
+
+func (s synthesisTokens) NextToken() token.Token {
+	tok := s.Scanner.NextToken()
+	tok.SemanticContext = synthesisPrefix + "obligations"
+	return tok
+}
+
 func synthesisDecide(model *compiler.SemanticModel, names []string, cases int) ([]SynthesisCheck, error) {
 	if len(names) == 0 {
 		return nil, nil
 	}
+	// The interpreter otherwise resolves an implicit variant by name alone.
+	// Carry the checker's resolution into the checked tree so e.g. .On cannot
+	// silently switch between a protocol's State and Step enums.
+	walkAST(model.Tree.Root, func(node ast.Node) {
+		if expr, ok := node.(*ast.VariantExpression); ok && expr.TypeName == nil {
+			if name, resolved := model.TypeChecker.VariantResolution(expr); resolved {
+				expr.TypeName = &ast.Identifier{Token: expr.Token, Value: name}
+			}
+		}
+	})
 	env := object.NewEnvironment()
 	env.SetArithmeticWidths(model.TypeChecker.ArithmeticType)
 	if evaluated := evaluator.Eval(model.Tree.Root, env); evaluated != nil {
