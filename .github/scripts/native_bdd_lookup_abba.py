@@ -24,7 +24,7 @@ from native_arm64 import pattern, validate_events
 
 MiB, GiB = 1024**2, 1024**3
 INPUT = '.github/scripts/native_bdd_lookup_abba_inputs.json'
-BASE_TREE = '424920df6222538474a3ef0bab3c6fb4a38f2894'
+BASE_TREE = '706574c8f69fefb43e60d0cab4004a3b1fa45103'
 # The immediate production parent is a complete reviewed tree. Only this
 # diagnostic script and its self-excluded input contract differ from it.
 INTEGRATION_PATHS = {INPUT, '.github/scripts/native_bdd_lookup_abba.py'}
@@ -75,8 +75,8 @@ RECORD_NAMES = {'status.json', 'comparison.json', 'source-manifest.json',
                 'inputs.json', 'baseline-bdd.go', 'candidate-bdd.go', 'manifest.json'}
 
 
-PYTHON_CONTROL_METHODS = ('test_allocated_scan_includes_empty_directories', 'test_artifact_partition_refusals', 'test_benchmark_leaf_goldens', 'test_benchmark_refusals', 'test_binary_identity_binds_elf_and_bytes', 'test_build_identity_refusals', 'test_build_native_race_identity', 'test_compare_preserves_order_and_noise', 'test_compare_retains_parity_failures', 'test_complete_artifact_membership', 'test_expired_or_invalid_clock', 'test_git_rows_exact', 'test_git_rows_refuse_bad_members', 'test_git_tree_order_and_empty', 'test_json_refusals', 'test_measured_admission', 'test_original_deadlines', 'test_publish_closed_manifest', 'test_publish_post_fsync_deadline', 'test_semantic_absence_skip_duplicate_refused', 'test_semantic_inventory_exact', 'test_snapshot_inverse_and_source_preservation', 'test_snapshot_reverification_refuses_drift', 'test_source_relation_exact', 'test_source_relation_refuses_changes', 'test_transform_exact_inverse', 'test_transform_refuses_drift', 'test_work_components')
-EXPECTED_SUBTESTS = 95
+PYTHON_CONTROL_METHODS = ('test_allocated_scan_includes_empty_directories', 'test_artifact_partition_refusals', 'test_benchmark_leaf_goldens', 'test_benchmark_refusals', 'test_binary_identity_binds_elf_and_bytes', 'test_build_identity_refusals', 'test_build_native_race_identity', 'test_compare_preserves_order_and_noise', 'test_compare_retains_parity_failures', 'test_complete_artifact_membership', 'test_expired_or_invalid_clock', 'test_git_rows_exact', 'test_git_rows_refuse_bad_members', 'test_git_tree_order_and_empty', 'test_json_refusals', 'test_measured_admission', 'test_original_deadlines', 'test_publish_closed_manifest', 'test_publish_post_fsync_deadline', 'test_semantic_absence_skip_duplicate_refused', 'test_semantic_inventory_exact', 'test_snapshot_inverse_and_source_preservation', 'test_snapshot_reverification_refuses_drift', 'test_source_relation_exact', 'test_source_relation_refuses_changes', 'test_transform_exact_inverse', 'test_transform_refuses_drift', 'test_work_components', 'test_work_monitor_uses_shared_accounting')
+EXPECTED_SUBTESTS = 98
 
 
 def require(ok, message):
@@ -266,27 +266,8 @@ def work_sizes(sizes):
 
 def allocated_work(root, stop):
     """Include empty directories and the root in the sampled allocated total."""
-    total, visited, pending = root.lstat().st_blocks*512, 0, [(root, 0)]
-    while pending:
-        directory, depth = pending.pop()
-        check_time(stop)
-        require(depth <= 32, 'allocated scan depth exceeded')
-        with os.scandir(directory) as entries:
-            for entry in entries:
-                visited += 1
-                require(visited <= 100000, 'allocated scan count exceeded')
-                if visited % 128 == 0:
-                    check_time(stop)
-                info = entry.stat(follow_symlinks=False)
-                require(stat.S_ISDIR(info.st_mode) or
-                        (stat.S_ISREG(info.st_mode) and info.st_nlink == 1),
-                        'unsupported allocated work member')
-                total += info.st_blocks*512
-                require(total <= WORK_LIMIT, 'sampled allocated work exceeds 4 GiB')
-                if stat.S_ISDIR(info.st_mode):
-                    pending.append((Path(entry.path), depth+1))
-    check_time(stop)
-    return total
+    _, sample = base.work_tree_sizes(root, deadline=stop, allocated_limit=WORK_LIMIT)
+    return sample['allocated_bytes']
 
 
 class Monitor:
@@ -296,6 +277,7 @@ class Monitor:
         self.next_sample = self.next_scan = 0
         self.samples = self.max_rss = self.max_work = self.max_allocated = 0
         self.last = None
+        self.last_work_scan = None
 
     def __call__(self, now):
         if now < self.next_sample:
@@ -318,9 +300,10 @@ class Monitor:
             deadline=self.deadline, allowed_dirs={'A', 'B', 'evidence'}))
         if now >= self.next_scan:
             self.next_scan = now+5
-            sizes = base.tree_sizes(self.work, max_files=100000, deadline=self.deadline)
+            sizes, self.last_work_scan = base.work_tree_sizes(
+                self.work, deadline=self.deadline, allocated_limit=WORK_LIMIT)
             work_sizes(sizes)
-            allocated = allocated_work(self.work, self.deadline)
+            allocated = self.last_work_scan['allocated_bytes']
             self.max_work = max(self.max_work, sum(sizes.values()))
             self.max_allocated = max(self.max_allocated, allocated)
         check_time(self.deadline)
@@ -329,6 +312,7 @@ class Monitor:
         return dict(samples=self.samples, max_observed_tree_rss_bytes=self.max_rss,
                     max_observed_work_logical_bytes=self.max_work,
                     max_observed_work_allocated_bytes=self.max_allocated,
+                    last_work_scan=self.last_work_scan,
                     last=self.last, sample_seconds=1, work_scan_seconds=5,
                     hard_isolation=False, non_atomic=True)
 
