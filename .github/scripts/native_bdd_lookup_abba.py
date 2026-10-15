@@ -24,7 +24,7 @@ from native_arm64 import pattern, validate_events
 
 MiB, GiB = 1024**2, 1024**3
 INPUT = '.github/scripts/native_bdd_lookup_abba_inputs.json'
-BASE_TREE = '224062d47571b3656646e9cdac69a4bcc4aea043'
+BASE_TREE = '424920df6222538474a3ef0bab3c6fb4a38f2894'
 # The immediate production parent is a complete reviewed tree. Only this
 # diagnostic script and its self-excluded input contract differ from it.
 INTEGRATION_PATHS = {INPUT, '.github/scripts/native_bdd_lookup_abba.py'}

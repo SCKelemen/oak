@@ -1,5 +1,5 @@
 {
-  "baseline_tree": "224062d47571b3656646e9cdac69a4bcc4aea043",
+  "baseline_tree": "424920df6222538474a3ef0bab3c6fb4a38f2894",
   "baseline_tree_members": {
     ".gitattributes": {
       "blob": "9d9918ca4608fae8f2a3974c3b575a95514b6a21",
@@ -70,11 +70,11 @@
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba.py": {
-      "blob": "f1eb5184e17359c3e4cb5a88afbb89b86b5f76e9",
+      "blob": "fe24d245747d1a566f22cd2a7a12d73c9408edb9",
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba_inputs.json": {
-      "blob": "a90c4fd737fc8962843b765fff7eb2848a2a78bc",
+      "blob": "fb4f68b2fc055c6b3090a9713dfeb337df964105",
       "mode": "100644"
     },
     ".github/scripts/native_prover_inventory.json": {
@@ -114,7 +114,7 @@
       "mode": "100644"
     },
     ".github/scripts/required_backend_tests.py": {
-      "blob": "eed81ad734dd0df3125fa5a34ecbc748a9040b63",
+      "blob": "693471f504ae1c2effeebb6ec714fc841277626a",
       "mode": "100644"
     },
     ".github/scripts/required_c_regressions.py": {
@@ -142,7 +142,7 @@
       "mode": "100644"
     },
     ".github/scripts/test_required_backend_tests.py": {
-      "blob": "5523e1affe2f6790917fbd51b139f4095b62d49d",
+      "blob": "75b4a4cede1fb89c52025b6094b3cff5386eef97",
       "mode": "100644"
     },
     ".github/scripts/test_required_c_regressions.py": {
@@ -158,7 +158,7 @@
       "mode": "100644"
     },
     ".github/workflows/ci.yml": {
-      "blob": "408ec0f6e2aedd93120261d76cf6320ab9b5e035",
+      "blob": "12567ed06a2ba17fc9803542aaaab35cb5c8c2b2",
       "mode": "100644"
     },
     ".github/workflows/crypto.yml": {
@@ -730,7 +730,7 @@
       "mode": "100644"
     },
     "asm/effects.go": {
-      "blob": "8fdcfa85cd11690ca5c50ff4a36e7c3d4efc8a52",
+      "blob": "54c8ccd04fc33de55d59c91fc4ebc68e65a92871",
       "mode": "100644"
     },
     "asm/effects_test.go": {
@@ -994,7 +994,7 @@
       "mode": "100644"
     },
     "asm/loops.go": {
-      "blob": "d1026bd15eb548b80dcc9894413327632e56cd59",
+      "blob": "a1453ac507be06170a0c49bc714e0fb4859ddb05",
       "mode": "100644"
     },
     "asm/loops_entry_test.go": {
@@ -1007,6 +1007,10 @@
     },
     "asm/lowering_refinement_test.go": {
       "blob": "b855be6e42be7214140925fcddc4e48516aab8fc",
+      "mode": "100644"
+    },
+    "asm/marker_guard_test.go": {
+      "blob": "bdbb3cdcfac7a8b8b2e444617645c3f69df99e23",
       "mode": "100644"
     },
     "asm/memory_result_test.go": {
@@ -1694,7 +1698,7 @@
       "mode": "100644"
     },
     "asm/verify.go": {
-      "blob": "c37896d393e4447e4a821a7644846440bbe4ac17",
+      "blob": "05c83d28bebc7728456f6b6408c6791b81d20c13",
       "mode": "100644"
     },
     "asm/verify_addp_test.go": {
@@ -1731,6 +1735,10 @@
     },
     "asm/width_views_test.go": {
       "blob": "6151d297bee3a6bf5e7bd1e2c691d4c475188422",
+      "mode": "100644"
+    },
+    "asm/zero_marker_guard_test.go": {
+      "blob": "900843a35694eaa3f495ea2bf53c3271ad0ed3a7",
       "mode": "100644"
     },
     "ast/ast.go": {
@@ -6902,7 +6910,7 @@
       "mode": "100644"
     },
     "docs/spec/94-assembler.md": {
-      "blob": "c52433091d5393ecd0967fe26b6bac9670a9ae5a",
+      "blob": "c46f0f044de14ebde33f42f2f5bd378cc26fa1d0",
       "mode": "100644"
     },
     "docs/spec/94-rv64-call-execution-proofs.md": {
@@ -17093,7 +17101,7 @@
   "historical_local_commit": "820e955b6aa8d706f568c26437c107d381c3ce1f",
   "integration_members": {
     ".github/scripts/native_bdd_lookup_abba.py": {
-      "blob": "fe24d245747d1a566f22cd2a7a12d73c9408edb9",
+      "blob": "495d7effbe6e36515f177d35b5630e14d6034051",
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba_inputs.json": null
