@@ -27,7 +27,7 @@
 # toolchain: it needs the Sail Lean support library checked out at
 # `external/lean-sail` beside the `oak` checkout (`../setup.sh`).
 name = "oak-sail-bridge"
-defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge", "RegisterBridge", "SyndromeBridge", "STRExecutionBridge", "STRShortCircuit", "STRMemoryBridge", "STRMemSingleBridge", "STRConcreteHelpers", "MemoryEventProjection", "ScalarExecutionBridge", "ReturnSimulation"]
+defaultTargets = ["Out", "Bridge", "MemoryBridge", "SpanStateBridge", "RegisterBridge", "SyndromeBridge", "STRExecutionBridge", "STRShortCircuit", "STRMemoryBridge", "STRMemSingleBridge", "STRConcreteHelpers", "MemoryEventProjection", "ScalarExecutionBridge", "ReturnSimulation", "ReturnBTIControls", "ReturnBTISourceControls"]
 moreLeanArgs = ["--tstack=400000"]
 
 [[lean_lib]]
@@ -114,3 +114,18 @@ name = "ReturnMode"
 
 [[lean_lib]]
 name = "ReturnELMode"
+
+[[lean_lib]]
+name = "ReturnBTI"
+
+[[lean_lib]]
+name = "ReturnBTIExecution"
+
+[[lean_lib]]
+name = "ReturnBTIControls"
+
+[[lean_lib]]
+name = "ReturnBTISource"
+
+[[lean_lib]]
+name = "ReturnBTISourceControls"

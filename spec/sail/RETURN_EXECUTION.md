@@ -24,8 +24,9 @@ that erasing the new fields has precisely this effect.
 
 The supported return configuration is intentionally narrow: PSTATE.EL is EL1,
 TCR_EL1 is zero, and the concrete current-mode/EL-mode configuration profiles
-below are initialized. The composed instruction theorem explicitly requires
-`versions.v85 = false`, a nondefault BTI-disabled configuration. `install`
+below are initialized. The original `ReturnComposition.exact_bytes_return` theorem retains its explicit
+`versions.v85 = false` profile. The new `ReturnBTIExecution.exact_bytes_return`
+proves the enabled path described below. `install`
 installs the concrete generated current-mode, PAC and BTI feature queries.
 Eager queries in the exported model remain present; these premises cover them.
 Sign extension, host/EL2 configuration and nonzero-tag paths are not discharged.
@@ -119,15 +120,64 @@ value and complete state preservation. All five eager reads remain; erasing
 each version register gives exact Unreachable failure. Constructive witnesses
 show both the pinned default true and explicitly configured false.
 
-The full existing instruction composition now uses concrete reads plus the
-explicit `versions.v85=false` condition; no global successful-pure callback
-equality is assumed. This condition excludes the pinned default true setting.
-`postdecode_enabled_boundary` instead proves that true forwards the complete
-`BranchTargetCheck` result, including arbitrary failure/state changes. It does
-not claim enabled-BTI instruction success, replace that body with a no-op, or
-expand into hint/exception execution. Default-enabled coverage requires binding
-ThisInstr to each decoded word and proving the real branch-target checks and
-BTypeNext updates. These obligations remain open.
+The older composition uses concrete reads plus the explicit
+`versions.v85=false` condition. Its `postdecode_enabled_boundary` theorem is
+retained as a factorization of the enabled control callback.
+
+## Concrete BTI-enabled execution
+
+`ReturnBTIExecution.exact_bytes_return` covers the same exact three logical
+words and plain RET with `versions.v85=true`, including the pinned default
+version values. It installs the actual guarded export of `BranchTargetCheck`;
+there is no successful or state-preserving callback premise for that check.
+The added intact helpers are `ThisInstr`, `ThisInstrAddr`, `Halted`,
+`AArch64_ExecutingBTIInstr`, and `AArch64_ExecutingBROrBLROrRetInstr`.
+Their signatures/bodies are pinned separately in `query_bodies`. The guarded
+compiler, patch and admission policy are unchanged. The scalar raw export is
+still the original official artifact.
+
+The initialized control profile requires PSTATE.BTYPE=00, EDSCR=1 (ordinary
+running state), and explicit values for InGuardedPage and BTypeCompatible.
+Both Boolean values are accepted for each of the latter registers. Even with
+BTYPE=00, the exported Boolean expression eagerly reads compatibility and debug
+state. Those reads are retained. The architectural-version and AArch64-mode
+queries also retain all their prior eager reads. This proves a configured
+instruction-entry profile, not complete default machine state or reset/startup
+reachability.
+
+For AND/ORR/EOR, the actual check writes BTypeNext=00 before the logical body.
+For RET, PostDecode preserves BTypeNext, then the existing RET body writes00.
+The full-state equations keep this sequencing. The new current-instruction,
+compatibility and debug registers are explicitly represented. The total
+projection back to the original scalar state preserves all its registers and
+non-register fields; `final_state_frame` shows that the new final state differs
+from the existing return result only by the explicit current-instruction value.
+
+Each harness dispatch first writes its decoded word to __currentInstr, then
+uses the existing SEE=-1 initializer and selected scalar dispatch. The same
+word comes from `takeWord(functionBytes op)`; the production compiler/ELF pin
+checks all three actual byte sequences against this theorem. Pinned
+`main.sail` at the same Arm revision writes the fetched A64 word to
+__currentInstr (line94) and calls decode64 on that register (line140).
+`--check-source` also pins that complete file, SHA256
+`9831f30fe70bd10bb65dd9055b1dc29da3c3c1789d257b8a1788cc75d11c9cb9`.
+The small harness is an explicit prefetched-word adapter, not an export of
+main, proof of fetch, or proof of intermediate PC advancement.
+
+`ReturnBTIControls.initial_admits` constructs the complete enabled profile for
+arbitrary operand banks and both guarded-page values, with the existing EL1
+return configuration. Missing version, PSTATE, guarded-page, compatibility,
+debug or current-instruction reads preserve the exact failure state.
+`logical_dispatch_missing_version` retains the current-word, SEE and
+unconditional writes preceding the failed query.
+
+The exception callback remains arbitrary. BTYPE=00 proves it unreachable even
+if it would fail and replace the entire state. Outside that profile, the
+nonzero-BTYPE, guarded, incompatible, non-halted branch retains the actual
+exception call: failure propagates its exact error/state; successful state
+changes feed the subsequent instruction recognizers and BTypeNext update.
+Exception delivery itself is not proved. Neither are BTI hints, arbitrary
+branch instructions, authentication, or all possible BTYPE values successful.
 
 The pinned `BranchTo` body itself performs no target-alignment check.
 `aligned_return_observation` carries an explicit caller X30 alignment premise.
@@ -136,6 +186,49 @@ loader behavior, exception delivery, authentication, or a Linux EL0 run.
 `Hint_Branch` is the original pinned body, whose empty behavior is not a claim
 about hardware branch prediction. Failed mode queries preserve their complete
 error and post-state in `branchTo64_query_failure`.
+
+## Original source to enabled execution
+
+`ReturnBTISource.accepted_source_execution` now binds the original canonical
+ASCII source bytes and complete eight-byte compiler function body in one theorem.
+Admission checks the existing `BitwiseSource` parser/grammar and the exact
+ARM64/AAPCS64-u32 body; it does not accept a source hash or reconstructed AST.
+For every pair of u32 inputs, arbitrary upper halves of X0/X1, arbitrary remaining
+register-bank values and callbacks, and the explicit initialized enabled context,
+it derives all of the following:
+
+- Named-source `Means` and successful evaluation in the existing typed
+  `BitwiseSourceLowering.toExpr` / `LoweringRefinement.evalX` model, for every fuel.
+- Successful execution of that same entire body through
+  `ReturnBTIExecution.executeBytes`, with the exact complete final state.
+- The source result zero-extended into X0, every other bank entry preserved,
+  actual return to incoming X30, PC-changed true, current instruction RET and
+  BTypeNext zero.
+- Every PSTATE field and every register outside the seven explicit written
+  cells preserved, including absent cells, plus memory, tags, choice state,
+  cycle count and output preserved.
+
+`ReturnBTISourceControls.initialized_source_success` constructs the context for
+every input pair, arbitrary explicit upper-half values, and both guarded-page
+settings. It proves nonvacuity by initialization rather than assuming an
+execution succeeds. Controls reject every single-bit body mutation, incomplete
+or trailing bytes, wrong target/ABI, and changed source names, parameter order,
+operators, widths, bindings or suffixes. Universal source/body replay lemmas
+reject any changed original identity, including mathematically equivalent source.
+
+The required `TestArmBTIEnabledCompilerBytes` gate sends the unchanged source to
+the production compiler, extracts the whole named relocation-free ELF function,
+serializes those same source and body bytes into Lean, and instantiates the
+source/execution and initialized all-input theorems for AND/OR/XOR. It checks
+negative source/body replays and audits every generated public theorem closure.
+The existing return audit automatically covers every new public library theorem;
+only `propext`, `Classical.choice` and `Quot.sound` are allowed.
+
+This remains the existing restricted canonical grammar and initialized,
+prefetched selected-decoder model. ELF extraction is operational evidence,
+not a proved ELF loader or compiler implementation. There is still no actual
+full-decoder/fetch/reset/OS, arbitrary Oak parser, exporter-to-source or hardware
+equivalence theorem, and `TranslationVerified` is not promoted.
 
 ## Two generator provenances, one proved state relation
 
@@ -182,9 +275,13 @@ all earlier/later compiler passes correct.
   It is included in the existing formal Sail job's mandatory test selection.
 - `cd spec/sail/lean && lake build ReturnSimulation` checks the new models,
   concrete execution, total state projection and simulation. It is also a
-  default target. `audit_return.py` fail-closes on missing/extra results or any
+  default target. `ReturnBTIControls` is also a default target and imports the
+  enabled execution/projection graph. `audit_return.py` fail-closes on missing/extra results or any
   axiom outside the standard allowlist, and runs in that same CI lane. Reports contain only `propext`, `Classical.choice`, and
   `Quot.sound`.
+- `TestArmBTIEnabledCompilerBytes` binds actual compiled AND/OR/XOR function
+  bytes to the all-input enabled theorem and rejects changed byte artifacts.
+  The formal Sail lane requires it.
 - `python3 spec/sail/return_execution_regen.py --check-source` verifies intact
   declarations against the pinned external Arm checkout.
 - With the exact separate profile available, `--regenerate` checks its executable
@@ -197,3 +294,14 @@ the guarded regression suite. Its build receipt/logs are retained as CI artifact
 A local run of that recipe is not a hosted-CI result: adoption must wait for this
 lane to pass on the exact proposed commit. The older local binary profile remains
 separately identified; receipts from another build do not relabel it.
+
+The focused enabled-proof validation used Lean 4.33.1 with the same pinned Sail
+support cache as the earlier return graph. A bare `import Sail` measured
+1,583,180 KiB peak RSS; expanded raw definitions measured 1,628,432 KiB. Local
+checks therefore used one child at a time with a 2.5 GiB/60-second ceiling and
+a 2 GiB available-memory floor. The largest observed proof module used
+1,729,100 KiB. This is resource accounting, not a changed proof option or
+permission to exceed unrelated certificate-batch limits. The final local
+source/object-bound graph contains 43 modules and 141 standard-only closures;
+fresh exact-head hosted generation, build, audit and compiler pins remain
+required before merge.

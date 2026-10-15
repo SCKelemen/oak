@@ -78,6 +78,9 @@ inductive exception where
   open exception
 
 inductive Register : Type where
+  | BTypeCompatible
+  | EDSCR
+  | __currentInstr
   | __v85_implemented
   | __v84_implemented
   | __v83_implemented
@@ -105,6 +108,9 @@ inductive Register : Type where
 open Register
 
 abbrev RegisterType : Register → Type
+  | .BTypeCompatible => Bool
+  | .EDSCR => (BitVec 32)
+  | .__currentInstr => (BitVec 32)
   | .__v85_implemented => Bool
   | .__v84_implemented => Bool
   | .__v83_implemented => Bool
