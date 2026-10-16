@@ -1,5 +1,5 @@
 {
-  "baseline_tree": "45692f1c0de75e005723d13205fffea611a29344",
+  "baseline_tree": "9cd895d465286191bff200b8d9968aa75d6d7312",
   "baseline_tree_members": {
     ".gitattributes": {
       "blob": "9d9918ca4608fae8f2a3974c3b575a95514b6a21",
@@ -74,11 +74,11 @@
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba.py": {
-      "blob": "6cde73ffe5b3ebb4032f411f4302c00fb7e64768",
+      "blob": "6063631368464c83eee16f3de91bb05b5a280d84",
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba_inputs.json": {
-      "blob": "4f725c556d8f1952664b3e784f55f7ca3d75b7f6",
+      "blob": "8f60bfad9e161f40497a037a28ad6f94d588a2c1",
       "mode": "100644"
     },
     ".github/scripts/native_prover_inventory.json": {
@@ -90,7 +90,7 @@
       "mode": "100644"
     },
     ".github/scripts/native_scalar_text_profile.py": {
-      "blob": "52a0b5ae8e3a683431a5d655eda5cf07a134a859",
+      "blob": "e186e6bfa8c130ef6a2901175a4f2637f1daa194",
       "mode": "100644"
     },
     ".github/scripts/native_scalar_text_profile_inputs.json": {
@@ -118,7 +118,7 @@
       "mode": "100644"
     },
     ".github/scripts/required_backend_tests.py": {
-      "blob": "d8d775ff1d45ff1fa90bcaa440a5ae15217b10e7",
+      "blob": "4d895f4600481c74a022a96f78191445ef7fa586",
       "mode": "100644"
     },
     ".github/scripts/required_c_regressions.py": {
@@ -142,11 +142,11 @@
       "mode": "100644"
     },
     ".github/scripts/test_native_scalar_text_profile.py": {
-      "blob": "04a4e769a9ba62e4eb9fb0cef6b99e5debda8537",
+      "blob": "8462667012717fb1374c42fe2c3c36f176deccff",
       "mode": "100644"
     },
     ".github/scripts/test_required_backend_tests.py": {
-      "blob": "8877b17d9086e1410132fa22fe9919c5ea2701a0",
+      "blob": "2e901c2df14c1338a28950840497d61e9717deb0",
       "mode": "100644"
     },
     ".github/scripts/test_required_c_regressions.py": {
@@ -502,7 +502,11 @@
       "mode": "100644"
     },
     "asm/blast.go": {
-      "blob": "7c384c3a166e51846a626e44fa8771d3acc31b05",
+      "blob": "07ed658dcc2ece8fa53c20223809fdf317a92c08",
+      "mode": "100644"
+    },
+    "asm/blast_memory_width_test.go": {
+      "blob": "3bd28a3bfc72556912614791fd5531d31c1034fc",
       "mode": "100644"
     },
     "asm/bounded_regions_verify_test.go": {
@@ -1570,7 +1574,7 @@
       "mode": "100644"
     },
     "asm/structural_cases_order_test.go": {
-      "blob": "bb6898ccefd1ae7064f46debfc93bc2abd1fa67b",
+      "blob": "ec3361cc68d40ff7531e06e64b1e0dfb98961039",
       "mode": "100644"
     },
     "asm/sum_guard_test.go": {
@@ -17126,14 +17130,14 @@
     ".github/scripts/native_arm64_prerequisite.py": "1a6be5b624b5a4c67722376a05ae115890acfa3d544f6bb9096681bb08c3dbe4",
     ".github/scripts/native_arm64_resources.py": "9169fcd5bad65bf9fd57fe9d93e43db41270ca85ac62a47b662620cb4714028f",
     ".github/scripts/native_arm64_shards.py": "9a8c53da4e1459ff037ceab79dc9ff6dd4ee434615a25446624fc429159022ed",
-    ".github/scripts/native_scalar_text_profile.py": "35a18a5a0f3f7f40a932a1e54b205994460782b98afe586b5e262a92fc56ffa1",
-    ".github/scripts/test_native_scalar_text_profile.py": "17797b806362a935f9f24141dfa46c067c4ead35afdfd9e78207e4a035af3798"
+    ".github/scripts/native_scalar_text_profile.py": "8031ba05925331edfbace3c1afa26db41e1c9781528cc709b8530fa22a46929c",
+    ".github/scripts/test_native_scalar_text_profile.py": "23b1c159bb56c11f3a83b112ceee09bb49732ffe39294da7318f1ba4d496432d"
   },
   "historical_baseline_commit": "272fe5ec13ee9305b7412cd7a950b7082b84fce4",
   "historical_local_commit": "820e955b6aa8d706f568c26437c107d381c3ce1f",
   "integration_members": {
     ".github/scripts/native_bdd_lookup_abba.py": {
-      "blob": "6063631368464c83eee16f3de91bb05b5a280d84",
+      "blob": "16b8ffba9de36b91f0874e8801bbe432e9af4c56",
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba_inputs.json": null
