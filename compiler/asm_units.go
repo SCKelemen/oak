@@ -19,7 +19,7 @@ import (
 // diagnostic in the "asm" phase: a body-less declaration with no unit, a
 // unit function with no declaration, a signature mismatch, or any checker
 // finding rejects the compilation.
-func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, map[string]asm.Verdict, []*diagnostic.Diagnostic) {
+func (comp Compilation) stitchAsmUnits(root *ast.Program, verification verificationRun) ([]*asm.Function, map[string]asm.Verdict, []*diagnostic.Diagnostic) {
 	var diagnostics []*diagnostic.Diagnostic
 	verdicts := map[string]asm.Verdict{}
 	report := func(format string, args ...interface{}) {
@@ -160,7 +160,7 @@ func (comp Compilation) stitchAsmUnits(root *ast.Program) ([]*asm.Function, map[
 			// mismatch rejects; proof, evidence, and trust are reported as
 			// labeled information.
 			if len(findings) == 0 && fn.Fallback && decl.Body != nil {
-				verdict := asm.Verify(fn, decl, decl.Body)
+				verdict := asm.VerifyWithOptions(fn, decl, decl.Body, verification.options)
 				verdicts[fn.Name] = verdict
 				if verdict.Kind == asm.VerdictMismatch {
 					report("%s: %s", unitText.Path, verdict.Message)

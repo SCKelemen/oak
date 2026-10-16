@@ -1,0 +1,3 @@
+package main
+import("os";"runtime/pprof";"time";"fmt";"github.com/SCKelemen/oak/compiler";"github.com/SCKelemen/oak/target";"github.com/SCKelemen/oak/internal/nativetiming")
+func main(){ f,e:=os.Create(os.Args[2]);if e!=nil{panic(e)};if e=pprof.StartCPUProfile(f);e!=nil{panic(e)}; go func(){time.Sleep(120*time.Second);pprof.StopCPUProfile();f.Close();fmt.Fprintln(os.Stderr,"bounded profile stopped; compilation incomplete");os.Exit(2)}();s,e:=nativetiming.Start(os.Stderr);if e!=nil{panic(e)};defer s.Close(); _,e=compiler.New().WithPackageDir(os.Args[1]).WithTarget(target.Target{OS:target.OSLinux,Arch:target.ArchArm64}).WithNativeBodies().WithNativeAsm().WithVerifyFresh().Check().Get();pprof.StopCPUProfile();f.Close();fmt.Fprintln(os.Stderr,e)}

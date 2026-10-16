@@ -184,6 +184,10 @@ import Oak.Stdlib.BytesExtracted
 import Oak.Stdlib.BitsetExtracted
 import Oak.Stdlib.EndianExtracted
 import Oak.Stdlib.BufferExtracted
+import Oak.Stdlib.BoundedReaderModel
+import Oak.Stdlib.BoundedReaderExtracted
+import Oak.Stdlib.BoundedReaderRefinement
+import Oak.Stdlib.APDULengthModel
 import Oak.Stdlib.ArrayListExtracted
 import Oak.Stdlib.ArrayListLaws
 import Oak.Stdlib.EncodingExtracted
@@ -256,6 +260,7 @@ import Oak.BinaryCodec
 import Oak.BddComplement
 import Oak.IndexCongruence
 import Oak.IndexBounds
+import Oak.UnsignedSuccessor
 import Oak.SolverScheduling
 import Oak.RupCheck
 import Oak.LRATBounds

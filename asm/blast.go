@@ -13,7 +13,6 @@ package asm
 
 import (
 	"math/bits"
-	"os"
 	"strconv"
 )
 
@@ -108,28 +107,6 @@ const NodeBudget = blastNodeBudget
 // arithmetic of a page-table walk. A large term past the budget stays
 // evidence, as before.
 const escalationTermNodes = 400
-
-// escalatedNodeBudget is the node budget a build opts into for small
-// equalities past the base budget: OAK_VERIFY_BUDGET=high is eight times
-// the base (sixteen million nodes, where the OS pilot's translate and
-// unmap_page close at eleven million), a number is that many nodes, and
-// unset or 0 is no retry — the default, so a corpus of evidence verdicts
-// does not pay the retry's time at every decision. The verdict cache keys
-// on the setting (compiler/verdict_cache.go).
-func escalatedNodeBudget() int {
-	switch value := os.Getenv("OAK_VERIFY_BUDGET"); value {
-	case "", "0", "base":
-		return 0
-	case "high":
-		return 8 * blastNodeBudget
-	default:
-		n, err := strconv.Atoi(value)
-		if err != nil || n <= blastNodeBudget {
-			return 0
-		}
-		return n
-	}
-}
 
 // withBudget gives the blaster a fresh diagram store of the budget.
 func (bl *blaster) withBudget(budget int) *blaster {
@@ -418,14 +395,32 @@ func (bl *blaster) selectVariable(slot, bit int) int {
 // (span, index) — sound for equality proofs: terms equal under independent
 // element values are equal under every memory.
 func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []int {
+	if bl.exceeded() {
+		return nil
+	}
 	// The index's linear form, once per read (a form per comparison over
 	// a large index term made the prover's tally crawl).
 	var form *linearForm
 	if index != nil {
 		form = index.linearAt(32)
 	}
+	knownSpan := false
 	for _, known := range bl.selects {
-		if known.span != span || len(known.idx) != len(idx) {
+		if bl.exceeded() {
+			return nil
+		}
+		if known.span != span {
+			continue
+		}
+		knownSpan = true
+		// A span has one element width. Reusing a narrower slot would
+		// zero-extend its value, and consistency would impose the same
+		// unjustified restriction even at different symbolic indices.
+		// Explicit width views preserve the underlying select's width.
+		if len(known.vars) != width {
+			return bl.refuseSelectWidth()
+		}
+		if len(known.idx) != len(idx) {
 			continue
 		}
 		same := true
@@ -448,6 +443,21 @@ func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []
 			return bl.varsBits(known.vars, width)
 		}
 	}
+	if !knownSpan {
+		// Constant elements are parameters, including record leaves
+		// (v[3].field belongs to v.field). Check their solver-domain widths,
+		// not a parameter term's possibly truncated or widened use width.
+		// Premise-narrowed domains may conservatively make this incomplete.
+		// Do this once per span, before admitting any slot or memo result.
+		for _, name := range bl.params {
+			if bl.exceeded() {
+				return nil
+			}
+			if memory, _, ok := elementParam(name); ok && memory == span && bl.widths[name] != width {
+				return bl.refuseSelectWidth()
+			}
+		}
+	}
 	slot := len(bl.selects)
 	if bl.components {
 		bl.placeSlot(span, index)
@@ -458,6 +468,18 @@ func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []
 	}
 	bl.selects = append(bl.selects, selectAbstraction{span: span, idx: idx, vars: vars, index: index, form: form})
 	return bl.varsBits(vars, width)
+}
+
+// refuseSelectWidth fails closed through the existing incomplete-result path.
+// selectBits is shared by the diagram and clause engines; neither may publish
+// a proof or a counterexample after a conflicting memory width is encountered.
+func (bl *blaster) refuseSelectWidth() []int {
+	if bl.cnf != nil {
+		bl.cnf.exceeded = true
+	} else {
+		bl.bdd.exceeded = true
+	}
+	return nil
 }
 
 // linearFormsRelate is indexRelation over two forms already computed.
@@ -472,6 +494,9 @@ func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []
 // a span, each an equality over the 32 index bits; the node budget bounds
 // it like everything else.
 func (bl *blaster) consistency() int {
+	if bl.exceeded() {
+		return bddFalse
+	}
 	cons := bddTrue
 	if len(bl.selects) == 0 {
 		return cons
@@ -519,8 +544,11 @@ func (bl *blaster) consistency() int {
 	// against `base + 16` — needs no implication, which keeps the
 	// constraint linear in the reads of such a body rather than quadratic.
 	forms := make([]*linearForm, len(bl.selects))
-	bounds := map[*term]indexBounds{}
+	bounds := newIndexBoundsMemo()
 	for k := range bl.selects {
+		if bl.exceeded() {
+			return bddFalse
+		}
 		if bl.selects[k].index != nil {
 			forms[k] = bl.selects[k].index.linearAt(32)
 		}
@@ -530,6 +558,9 @@ func (bl *blaster) consistency() int {
 		formA := forms[k]
 		aVal := bl.varsBits(a.vars, len(a.vars))
 		for l := k + 1; l < len(bl.selects); l++ {
+			if bl.exceeded() {
+				return bddFalse
+			}
 			b := bl.selects[l]
 			if b.span != a.span {
 				continue
@@ -549,6 +580,9 @@ func (bl *blaster) consistency() int {
 		}
 		// The constant-index reads of the span are parameters (`v[3]`).
 		for _, name := range bl.params {
+			if bl.exceeded() {
+				return bddFalse
+			}
 			if rootParam(name) != a.span || len(name) <= len(a.span)+2 || name[len(a.span)] != '[' {
 				continue
 			}
@@ -599,6 +633,9 @@ func (bl *blaster) blast(t *term) []int {
 		return cached
 	}
 	out := bl.blastUncached(t)
+	if bl.exceeded() {
+		return nil
+	}
 	if out != nil {
 		bl.memo[t] = out
 	}
@@ -766,7 +803,8 @@ func (bl *blaster) blastUncached(t *term) []int {
 		out = bl.multiply(left, right)
 	case "ror":
 		if t.right.kind == termConst {
-			out = rotateRight(left, int(t.right.value%uint64(t.width)))
+			count := t.right.value & mask(t.right.width) & mask(t.width)
+			out = rotateRight(left, int(count%uint64(t.width)))
 		} else {
 			out = bl.rotateBarrel(left, right)
 		}
@@ -1016,15 +1054,23 @@ func rotateRight(a []int, k int) []int {
 
 // rotateBarrel rotates by a term count reduced modulo the width.
 func (bl *blaster) rotateBarrel(a, count []int) []int {
-	stages := bits.Len(uint(len(a) - 1))
+	n := len(a)
 	current := a
-	for s := 0; s < stages; s++ {
-		rotated := rotateRight(current, 1<<uint(s))
+	// Bit s contributes 2^s modulo n. For a power-of-two width the
+	// distance becomes zero after the original log2(n) stages; otherwise
+	// every adapted count bit can contribute to the rotation.
+	distance := 1 % n
+	for s := 0; s < n && distance != 0; s++ {
+		rotated := rotateRight(current, distance)
 		next := make([]int, len(a))
 		for i := range a {
 			next[i] = bl.ite(count[s], rotated[i], current[i])
 		}
 		current = next
+		if bl.exceeded() {
+			return nil
+		}
+		distance = (2 * distance) % n
 	}
 	return current
 }
@@ -1133,6 +1179,9 @@ func (bl *blaster) counterexample(x, y int) map[string]uint64 {
 // a node.
 func (bl *blaster) counterexampleOf(node int) map[string]uint64 {
 	assignment := bl.bdd.satisfyingPath(node)
+	if bl.exceeded() {
+		return nil
+	}
 	env := make(map[string]uint64, len(bl.params))
 	for variable, value := range assignment {
 		owner, isParam := bl.owners[variable]
@@ -1149,6 +1198,9 @@ func (bl *blaster) counterexampleOf(node int) map[string]uint64 {
 	// the evaluation computes the operation itself, which is what tells a
 	// difference under the abstraction from a counterexample).
 	for _, sel := range bl.selects {
+		if bl.exceeded() {
+			return nil
+		}
 		if sel.index == nil {
 			continue
 		}

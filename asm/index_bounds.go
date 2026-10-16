@@ -7,6 +7,18 @@ package asm
 // lowering's responsibility.
 type indexBounds struct{ lo, hi uint64 }
 
+// indexBoundsMemo belongs to one memory-read or blaster-consistency pass.
+// Both analyses retain DAG sharing without mutating the terms, which other
+// variable-order workers may be reading concurrently.
+type indexBoundsMemo struct {
+	bounds map[*term]indexBounds
+	known  knownBitsMemo
+}
+
+func newIndexBoundsMemo() *indexBoundsMemo {
+	return &indexBoundsMemo{bounds: map[*term]indexBounds{}, known: knownBitsMemo{}}
+}
+
 func (a indexBounds) disjoint(b indexBounds) bool {
 	return a.hi < b.lo || b.hi < a.lo
 }
@@ -14,21 +26,21 @@ func (a indexBounds) disjoint(b indexBounds) bool {
 // boundsAt adapts the native-width interval just as the bitvector evaluator
 // adapts an operand. A truncation that might wrap loses the interval; known
 // bits can still bound its low word. Memo entries always use native widths.
-func boundsAt(t *term, width int, memo map[*term]indexBounds) indexBounds {
+func boundsAt(t *term, width int, memo *indexBoundsMemo) indexBounds {
 	b := termBounds(t, memo)
 	if b.hi <= mask(width) {
 		return b
 	}
-	v, k := adaptKnown(t, width)
+	v, k := memo.known.adapt(t, width)
 	return indexBounds{v & k, (v & k) | (mask(width) &^ k)}
 }
 
-func termBounds(t *term, memo map[*term]indexBounds) indexBounds {
-	if b, ok := memo[t]; ok {
+func termBounds(t *term, memo *indexBoundsMemo) indexBounds {
+	if b, ok := memo.bounds[t]; ok {
 		return b
 	}
 	m := mask(t.width)
-	v, k := knownBits(t)
+	v, k := memo.known.bits(t)
 	b := indexBounds{v & k, (v & k) | (m &^ k)}
 	var refined indexBounds
 	refine := false
@@ -74,7 +86,7 @@ func termBounds(t *term, memo map[*term]indexBounds) indexBounds {
 	if refine {
 		b.lo, b.hi = max(b.lo, refined.lo), min(b.hi, refined.hi)
 	}
-	memo[t] = b
+	memo.bounds[t] = b
 	return b
 }
 
@@ -88,7 +100,7 @@ func termBounds(t *term, memo map[*term]indexBounds) indexBounds {
 //
 // Addition is flattened only at the compared width. A narrower nested add
 // wraps before extension and therefore remains one opaque addend.
-func boundedIndexSumsDisjoint(a, b *term, width int, memo map[*term]indexBounds) bool {
+func boundedIndexSumsDisjoint(a, b *term, width int, memo *indexBoundsMemo) bool {
 	if a == nil || b == nil || width < 1 || width > 64 {
 		return false
 	}
@@ -152,7 +164,7 @@ func flattenBoundedIndexAddends(t *term, width int, out *[boundedIndexAddendLimi
 	return n + 1, true
 }
 
-func boundedIndexAddendSum(terms []*term, width int, memo map[*term]indexBounds) (indexBounds, bool) {
+func boundedIndexAddendSum(terms []*term, width int, memo *indexBoundsMemo) (indexBounds, bool) {
 	out := indexBounds{}
 	m := mask(width)
 	for _, t := range terms {

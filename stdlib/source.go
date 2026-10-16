@@ -182,6 +182,15 @@ var mathSource string
 //go:embed hash.oak
 var hashSource string
 
+// Experimental bounded reading and structural APDU parsing stay qualified.
+// Neither package establishes protocol conformance or command authority.
+//
+//go:embed encoding/reader.oak
+var boundedReaderSource string
+
+//go:embed smartcard/apdu.oak
+var commandAPDUSource string
+
 // Experimental crypto packages remain qualified and outside import(std).
 //
 //go:embed crypto/subtle.oak
@@ -537,6 +546,8 @@ var Packages = map[string]string{
 	"float":           floatSource,
 	"causal_frontier": causalFrontierSource,
 	"encoding":        encodingSource,
+	"encoding/reader": boundedReaderSource,
+	"smartcard/apdu":  commandAPDUSource,
 	"url":             urlSource,
 	"math":            mathSource,
 	"hash":            hashSource,

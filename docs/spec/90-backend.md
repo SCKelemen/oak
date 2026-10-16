@@ -403,6 +403,30 @@ live in the reserved `__` namespace (`oak__scrutinee_0`, `__oak_tail_0`),
 which user identifiers can never spell (`83-modules.md`), so the mapping
 passes them through untouched.
 
+Callable names retain `oak_<name>` (or `oak_<package>_<name>`) except when
+that spelling belongs to the C runtime or a generated helper/type family.
+Those callables use `oak_0f_p<N>_<package>_n<name>`, where package and name
+use the module escape encoding, `N` is the escaped package's byte length,
+and empty/main normalize to the empty package. For example, root `store`
+is `oak_0f_p0__nstore`, distinct from the unchanged `oak_store` bounds macro.
+The zero-prefixed family cannot be a source identifier or a nonempty
+receiver-length method prefix. It is reserved from explicit ABI symbols.
+`typechecker.CFunctionSymbol` is shared by declarations, calls, function
+values, address queries, assembly symbols, headers and export validation.
+Dispatch-check and host-launch temporaries use the already reserved
+`oak_dispatch_` and `oak_host_` families, so a local initializer cannot
+shadow a callable named `claimed` or `la1_grid`. Those callable ABIs remain
+unchanged. Ordinary noncolliding symbols keep their ABI. Runtime-family names change
+ABI even when that particular helper was not emitted by an older program;
+use an explicit, nonreserved export for a stable external spelling.
+
+Explicit export or extern symbols are never silently renamed. Conflicting
+runtime/generated names are rejected (`OAK-F0108` for exports, `OAK-F0102`
+for externs); documented host hooks remain permitted as extern references.
+This is callable/runtime separation, not a claim of complete C symbol
+hygiene: arbitrary nominal-type collisions and the legacy package/name
+concatenation of otherwise nonreserved symbols are unchanged.
+
 ## 9. Small helpers
 
 Naming an operation must not cost a call. A private (not `pub`), named,
@@ -419,7 +443,10 @@ the C compiler is never asked to inline what it cannot. A function used as
 a value (its address is taken, including as an argument, local initializer,
 or aggregate member) is not forced inline: an indirect call need not have a
 compile-time-known target. Direct source inlining and ordinary C optimization
-remain available. The shape judgment is the
+remain available. A processor-feature dispatch realization is also not forced
+inline: its target attribute may require instructions the baseline wrapper
+cannot execute. The C compiler retains that boundary and may inline when
+the caller's target supports the realization's feature. The shape judgment is the
 discipline analyzer's call-graph and loop walk (`InlineHelperShape`), so the
 backend and the recursion policy share one authority.
 

@@ -219,7 +219,7 @@ func (bl *blaster) exceeded() bool {
 	if bl.cnf != nil {
 		return bl.cnf.exceeded
 	}
-	return bl.bdd.exceeded
+	return bl.bdd.interrupted()
 }
 
 // newCNFBlaster is a blaster over the clause engine under the interleaved

@@ -31,11 +31,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/internal/nativetiming"
 )
 
 // loopShape is a recognized asm loop: a header label, an exit test (`cmp`
@@ -4282,7 +4281,7 @@ func laneSlots(events []*loopEvent, machine []*loopEvent) []loopSlot {
 }
 
 // verifyLoops is the loop-mode verdict: witnesses, then the coupling proof.
-func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerms, oakTerms []*term, width int) Verdict {
+func (session *verificationSession) verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerms, oakTerms []*term, width int) Verdict {
 	// The coupling first under reach conditions abstracted: each loop's
 	// condition for being reached — on the Oak side the arm it sits in, on
 	// the machine side the path to the call it came through — is a fresh
@@ -4294,11 +4293,11 @@ func verifyLoops(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expressio
 	// the diagrams ran out on; the OS pilots' walkers need them, and keep
 	// them through the second run.
 	if hasReachConditions(exec.loops, lowering.loops) {
-		if verdict := verifyLoopsWith(fn, sig, oakBody, exec, lowering, asmTerms, oakTerms, width, true); verdict.Kind == VerdictProven {
+		if verdict := session.verifyLoopsWith(fn, sig, oakBody, exec, lowering, asmTerms, oakTerms, width, true); verdict.Kind == VerdictProven {
 			return verdict
 		}
 	}
-	return verifyLoopsWith(fn, sig, oakBody, exec, lowering, asmTerms, oakTerms, width, false)
+	return session.verifyLoopsWith(fn, sig, oakBody, exec, lowering, asmTerms, oakTerms, width, false)
 }
 
 // abstractAttemptShare is the fraction of the proof's allowances the
@@ -4325,7 +4324,9 @@ func hasReachConditions(asmLoops, oakLoops []*loopEvent) bool {
 	return false
 }
 
-func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerms, oakTerms []*term, width int, abstractReach bool) Verdict {
+func (session *verificationSession) verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, exec *pathExecutor, lowering *oakLowering, asmTerms, oakTerms []*term, width int, abstractReach bool) Verdict {
+	finishTiming := nativetiming.BeginLoops(len(exec.loops), len(lowering.loops), exec.resultChunk, abstractReach)
+	defer finishTiming()
 	// A scalar result is one term a side; a record result through memory
 	// is its words (verifyChunk): one coupling proves them all. asmTerm
 	// stands for "there is a result".
@@ -4515,7 +4516,7 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 	// but a body whose obligations are large DAGs (a callee's reach
 	// condition, a summarized call) spent hours in a thousand of them.
 	couplingWork := couplingWorkBudget
-	budget := &nodeBudget{remaining: proofNodes, loop: true}
+	budget := &nodeBudget{session: session, remaining: proofNodes, loop: true}
 	if abstractReach {
 		// The abstracted attempt is a first try, kept only if it proves:
 		// a sixteenth of the allowances, so a search it cannot finish ends
@@ -4533,8 +4534,17 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 		couplingWork /= share
 		budget.remaining /= share
 	}
-	implies := func(premise, a, b *term) (bool, bool) {
-		return impliesEqualWithin(premise, a, b, widthOfName, budget)
+	implies := func(class nativetiming.ObligationClass, premise, a, b *term) (bool, bool) {
+		return session.impliesEqualWithinClass(class, premise, a, b, widthOfName, budget)
+	}
+	entryImplies := func(premise, a, b *term) (bool, bool) {
+		return implies(nativetiming.ObligationLoopEntryMemory, premise, a, b)
+	}
+	iterationImplies := func(premise, a, b *term) (bool, bool) {
+		return implies(nativetiming.ObligationLoopIterationEffect, premise, a, b)
+	}
+	exitImplies := func(premise, a, b *term) (bool, bool) {
+		return implies(nativetiming.ObligationLoopExitEffect, premise, a, b)
 	}
 	domainPremise := lowering.domainCondition()
 
@@ -4571,6 +4581,7 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 	// rather than the register that held it inside the body, which the
 	// header values (both zero) cannot tell apart.
 	stage(fmt.Sprintf("the witness pass (%d inputs, %d work)", checked, work))
+	nativetiming.Coupling(checked, work, len(slots))
 	defer func() { stage("the coupling and the decisions") }()
 	exitReadAsm := exitReadSymbols(asmLoops, asmTerms...)
 	exitReadOak := exitReadSymbols(oakLoops, oakTerms...)
@@ -4619,8 +4630,8 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 			atHeader[ev.freshName(local)] = ev.header[local]
 			afterBody[ev.freshName(local)] = ev.next[local]
 		}
-		holds, decidedEntry := implies(constTerm(1, 1), substitute(inv, atHeader), constTerm(1, 1))
-		preserved, decidedStep := implies(binaryTerm("and", truncate(inv, 1), truncate(guard, 1)), substitute(inv, afterBody), constTerm(1, 1))
+		holds, decidedEntry := implies(nativetiming.ObligationLoopInvariant, constTerm(1, 1), substitute(inv, atHeader), constTerm(1, 1))
+		preserved, decidedStep := implies(nativetiming.ObligationLoopInvariant, binaryTerm("and", truncate(inv, 1), truncate(guard, 1)), substitute(inv, afterBody), constTerm(1, 1))
 		if decidedEntry && holds && decidedStep && preserved {
 			invariants[k] = truncate(inv, 1)
 		}
@@ -4849,7 +4860,7 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 				for _, a := range signs {
 					var b *term
 					switch {
-					case a == 1 && headersEqual(hr, hx, widthOfName):
+					case a == 1 && session.headersEqual(hr, hx, widthOfName):
 						b = constTerm(0, hr.width) // equality: the header values are one value
 					case a == 1:
 						// The offset in its canonical spelling: the two
@@ -5144,7 +5155,7 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 		if i == len(slots) {
 			for k := range oakLoops {
 				oakEv, asmEv := oakLoops[k], asmLoops[k]
-				if equal, decided := implies(bodyPremise(k, sigma, false), substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma)); !decided || !equal {
+				if equal, decided := implies(nativetiming.ObligationLoopContinue, bodyPremise(k, sigma, false), substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma)); !decided || !equal {
 					failure = fmt.Sprintf("loop %d's continue conditions were not proven equal", k+1)
 					if trace {
 						fmt.Fprintf(os.Stderr, "verify %s: %s (decided=%v)\n  oak: %s\n  asm: %s\n  premise: %s\n", fn.Name, failure, decided, substitute(oakEv.cond, sigma), substitute(asmEv.cond, sigma), bodyPremise(k, sigma, false))
@@ -5192,7 +5203,7 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 					} else {
 						next = binaryTerm("sub", c.b, next)
 					}
-					if equal, decided := implies(premise, next, substitute(asmEv.next[c.reg], sigma)); !decided || !equal {
+					if equal, decided := implies(nativetiming.ObligationCouplingPreservation, premise, next, substitute(asmEv.next[c.reg], sigma)); !decided || !equal {
 						failure = fmt.Sprintf("one iteration of loop %d was not proven to preserve %s", k+1, c.show())
 						if trace {
 							fmt.Fprintf(os.Stderr, "verify %s: %s (decided=%v)\n  oak next: %s\n  asm next: %s\n", fn.Name, failure, decided, next, substitute(asmEv.next[c.reg], sigma))
@@ -5287,7 +5298,7 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 			}
 			oakHeader := widen(substitute(s.pack(oakEv.header), sigma), c.ext, asmEv.width[c.reg])
 			asmHeader := substitute(asmEv.header[c.reg], sigma)
-			headerEqual, headerDecided := implies(constTerm(1, 1), oakHeader, asmHeader)
+			headerEqual, headerDecided := implies(nativetiming.ObligationCouplingHeader, constTerm(1, 1), oakHeader, asmHeader)
 			if !headerDecided || !headerEqual {
 				continue
 			}
@@ -5298,7 +5309,7 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 			trial[asmName] = widen(substitute(s.pack(oakEv.fresh), sigma), c.ext, asmEv.width[c.reg])
 			oakNext := widen(substitute(s.pack(oakEv.next), trial), c.ext, asmEv.width[c.reg])
 			asmNext := substitute(asmEv.next[c.reg], trial)
-			stepEqual, stepDecided := implies(bodyPremise(s.event, trial, true), oakNext, asmNext)
+			stepEqual, stepDecided := implies(nativetiming.ObligationCouplingPreservation, bodyPremise(s.event, trial, true), oakNext, asmNext)
 			if !stepDecided || !stepEqual {
 				continue
 			}
@@ -5336,10 +5347,10 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 		}
 		oakReached = truncate(substitute(oakReached, sigma), 1)
 		asmReached = truncate(substitute(asmReached, sigma), 1)
-		equal, decided := implies(premise, oakReached, asmReached)
+		equal, decided := implies(nativetiming.ObligationLoopReach, premise, oakReached, asmReached)
 		if (!decided || !equal) && domainPremise != nil {
 			premise = binaryTerm("and", domainPremise, premise)
-			equal, decided = implies(premise, oakReached, asmReached)
+			equal, decided = implies(nativetiming.ObligationLoopReach, premise, oakReached, asmReached)
 		}
 		// A bottom-tested loop (docs/spec/94-assembler.md §9 "Loop
 		// rotation") is entered only where its first test passes; the
@@ -5351,13 +5362,13 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 		if !decided || !equal {
 			if entry, known := oakEv.entryCondition(); known && entry != nil {
 				oakRuns := binaryTerm("and", oakReached, truncate(substitute(entry, sigma), 1))
-				equal, decided = implies(premise, oakRuns, asmReached)
+				equal, decided = implies(nativetiming.ObligationLoopReach, premise, oakRuns, asmReached)
 			}
 		}
 		if !decided || !equal {
 			if entry, known := asmEv.entryCondition(); known && entry != nil {
 				asmRuns := binaryTerm("and", asmReached, truncate(substitute(entry, sigma), 1))
-				equal, decided = implies(premise, oakReached, asmRuns)
+				equal, decided = implies(nativetiming.ObligationLoopReach, premise, oakReached, asmRuns)
 			}
 		}
 		if !decided || !equal {
@@ -5372,9 +5383,9 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 	// the shared one on the pairings it tried, and an obligation that is
 	// cheap on its own was then left undecided (the prover's le_init).
 	newTrapImplies := func() func(premise, a, b *term) (bool, bool) {
-		trapBudget := &nodeBudget{remaining: proofNodes, loop: true}
+		trapBudget := &nodeBudget{session: session, remaining: proofNodes, loop: true}
 		return func(premise, a, b *term) (bool, bool) {
-			return impliesEqualWithin(premise, a, b, widthOfName, trapBudget)
+			return session.impliesEqualWithinClass(nativetiming.ObligationTrapDomain, premise, a, b, widthOfName, trapBudget)
 		}
 	}
 	if reason, ok := decideLoopTrapDomains(exec, lowering, sigma, newTrapImplies); !ok {
@@ -5402,15 +5413,15 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 			// agree only under it.
 			entryPremise = binaryTerm("and", entryPremise, truncate(substitute(reached, sigma), 1))
 		}
-		if reason, ok := coupledEntryMemories(k, oakEv, asmEv, sigma, entryPremise, lowering, implies, splitsFor(earlierSiblings(k, oakLoops), oakLoops, asmLoops, sigma)); !ok {
+		if reason, ok := coupledEntryMemories(k, oakEv, asmEv, sigma, entryPremise, lowering, entryImplies, splitsFor(earlierSiblings(k, oakLoops), oakLoops, asmLoops, sigma)); !ok {
 			return evidence(reason)
 		}
-		if reason, ok := coupledWrites(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, implies); !ok {
+		if reason, ok := coupledWrites(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, iterationImplies); !ok {
 			// The stores did not pair one for one; the memories they leave
 			// may still be one memory (stores in another order, a guarded
 			// store against a split path): the iteration's memories are
 			// compared whole at a fresh index.
-			if memReason, memOk := coupledIterationMemories(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, implies, splitsFor(children[k], oakLoops, asmLoops, sigma)); !memOk {
+			if memReason, memOk := coupledIterationMemories(k, oakEv, asmEv, sigma, bodyPremise(k, sigma, true), lowering, iterationImplies, splitsFor(children[k], oakLoops, asmLoops, sigma)); !memOk {
 				return evidence(reason + "; " + memReason)
 			}
 		}
@@ -5541,16 +5552,16 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 		return true, true
 	}
 	impliesPostconditions := func(a, b *term) (bool, bool) {
-		return impliesPostconditionTerms(func(*term) (*term, *term) { return a, b }, implies)
+		return impliesPostconditionTerms(func(*term) (*term, *term) { return a, b }, exitImplies)
 	}
 	decideResult := func(premise, a, b *term) (bool, bool) {
-		if equal, decided, applicable := impliesFiniteConditionalEqual(premise, a, b, widthOfName, budget); applicable {
+		if equal, decided, applicable := session.impliesFiniteConditionalEqualClass(nativetiming.ObligationLoopResult, premise, a, b, widthOfName, budget); applicable {
 			return equal, decided
 		}
 		if trace {
 			fmt.Fprintf(os.Stderr, "verify %s: finite result theorem not applicable (oak width %d, asm width %d)\n  oak: %s\n  asm: %s\n", fn.Name, a.width, b.width, spineOf(a, 6), spineOf(b, 6))
 		}
-		if equal, decided := implies(premise, a, b); decided {
+		if equal, decided := implies(nativetiming.ObligationLoopResult, premise, a, b); decided {
 			return equal, true
 		}
 		// Undecided at the bit level: one term once pruned under the
@@ -5650,7 +5661,7 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 		terms := func(premise *term) (*term, *term) {
 			oakLog := pruneWritesUnder(premise, lowering.writes[name], widthOfName)
 			prunedAsmLog := pruneWritesUnder(premise, asmLog, widthOfName)
-			if writeLogsEqualUnder(oakLog, prunedAsmLog, premise, implies) {
+			if writeLogsEqualUnder(oakLog, prunedAsmLog, premise, exitImplies) {
 				return entry, entry
 			}
 			oakMemory = memoryAt(oakLog, at, entry)
@@ -5671,13 +5682,13 @@ func verifyLoopsWith(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expre
 					premise = binaryTerm("and", premise, pins)
 				}
 			}
-			if equal, decided := spanEqualByCases(fn.Name, name, premise, oak, machine, implies); decided {
+			if equal, decided := spanEqualByCases(fn.Name, name, premise, oak, machine, exitImplies); decided {
 				return equal, true
 			}
-			if equal, decided := implies(premise, oak, machine); decided {
+			if equal, decided := implies(nativetiming.ObligationLoopExitEffect, premise, oak, machine); decided {
 				return equal, true
 			}
-			return spanEqualSplitting(premise, name, elemWidth, oak, machine, topSplits, implies)
+			return spanEqualSplitting(premise, name, elemWidth, oak, machine, topSplits, exitImplies)
 		}
 		if equal, decided := impliesPostconditionTerms(terms, decideSpan); !decided || !equal {
 			if trace {
@@ -6056,8 +6067,9 @@ func booleanGuardsEqualUnder(premise, oakGuard, asmGuard *term, implies func(pre
 
 // writeLogsEqualUnder proves that two already-pruned logs apply the same
 // ordered operations to one memory. A loop marker names memory whose
-// equality the induction established. Ordinary stores need equivalent guards;
-// where that guard holds, they need equal indices and values. Failure only
+// equality the induction established, but its guard must still agree: a guarded
+// marker selects that memory only on its active paths. Ordinary stores also
+// need equal indices and values where their common guard holds. Failure only
 // selects the whole-memory fallback.
 func writeLogsEqualUnder(oakLog, asmLog []*spanWrite, premise *term, implies func(premise, a, b *term) (bool, bool)) bool {
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
@@ -6076,9 +6088,6 @@ func writeLogsEqualUnder(oakLog, asmLog []*spanWrite, premise *term, implies fun
 			}
 			return false
 		}
-		if oakWrite.memory != "" {
-			continue
-		}
 		oakGuard, asmGuard := oakWrite.guard, asmWrite.guard
 		if oakGuard == nil {
 			oakGuard = always
@@ -6091,6 +6100,9 @@ func writeLogsEqualUnder(oakLog, asmLog []*spanWrite, premise *term, implies fun
 				fmt.Fprintf(os.Stderr, "verify: pointwise write %d guard not proven equal\n  oak: %s\n  asm: %s\n", i+1, spineOf(oakGuard, 7), spineOf(asmGuard, 7))
 			}
 			return false
+		}
+		if oakWrite.memory != "" {
+			continue // the same memory is selected under equivalent guards
 		}
 		active := binaryTerm("and", premise, truncate(oakGuard, 1))
 		if equal, decided := implies(active, truncate(oakWrite.index, 32), truncate(asmWrite.index, 32)); !decided || !equal {
@@ -6360,7 +6372,7 @@ func restoreLoopEntryMemories(t *term, ev *loopEvent, memo map[*term]*term, vali
 		return t
 	}
 	out := *t
-	out.kbDone, out.sigBits = false, 0
+	out.sigBits = 0
 	out.cond, out.left, out.right = cond, left, right
 	out.args = args
 	memo[t] = &out
@@ -6421,7 +6433,7 @@ func substituteMemo(t *term, sigma map[string]*term, memo map[*term]*term) *term
 		return t
 	}
 	out := *t
-	out.kbDone, out.sigBits = false, 0
+	out.sigBits = 0
 	out.cond, out.left, out.right = cond, left, right
 	if lane, isExtraction := extractedLane(&out); isExtraction {
 		// A lane read out of a register the substitution made a pack of
@@ -6501,6 +6513,9 @@ func loopTermNodes(asmLoops, oakLoops []*loopEvent) int {
 // once. An undecided result stays: the decision is deterministic and the
 // budget only shrinks.
 type nodeBudget struct {
+	// session fixes the rule selection for this proof owner and its children.
+	session *verificationSession
+
 	remaining int // diagram nodes the proof may still spend
 	calls     int // implications tried so far (implicationCallLimit)
 	decided   map[decisionKey]decisionResult
@@ -6523,13 +6538,13 @@ func (budget *nodeBudget) bounded(limit int, attempt func(*nodeBudget) (bool, bo
 	if budget == nil {
 		return attempt(nil)
 	}
-	if limit > budget.remaining || verifyOff("bounded") {
+	if limit > budget.remaining || budget.session.optionsValue().verifyOff("bounded") {
 		limit = budget.remaining
 	}
 	if budget.decided == nil {
 		budget.decided = map[decisionKey]decisionResult{}
 	}
-	child := &nodeBudget{remaining: limit, calls: budget.calls, decided: budget.decided, loop: budget.loop, optimistic: true}
+	child := &nodeBudget{session: budget.session, remaining: limit, calls: budget.calls, decided: budget.decided, loop: budget.loop, optimistic: true}
 	holds, decided = attempt(child)
 	budget.remaining -= limit - child.remaining
 	budget.calls = child.calls
@@ -6576,8 +6591,8 @@ const (
 // does), then bit-blasting under the variable orders of equalityBlasters
 // raced as decideEqual races them; decided is false when every order
 // exceeds the node budget.
-func impliesEqual(premise, a, b *term, widthOf func(string) int) (holds bool, decided bool) {
-	return impliesEqualWithin(premise, a, b, widthOf, nil)
+func (session *verificationSession) impliesEqual(premise, a, b *term, widthOf func(string) int) (holds bool, decided bool) {
+	return session.impliesEqualWithin(premise, a, b, widthOf, nil)
 }
 
 // finiteConditionalValues returns the complete range of a bounded decision
@@ -6630,7 +6645,11 @@ func finiteConditionalValues(t *term, limit int) ([]uint64, bool) {
 // Each value in their complete finite range must select exactly the same inputs
 // on both sides. Since every input selects one of those leaves, the collection
 // of predicate equivalences entails equality of the original values.
-func impliesFiniteConditionalEqual(premise, a, b *term, widthOf func(string) int, budget *nodeBudget) (holds, decided, applicable bool) {
+func (session *verificationSession) impliesFiniteConditionalEqual(premise, a, b *term, widthOf func(string) int, budget *nodeBudget) (holds, decided, applicable bool) {
+	return session.impliesFiniteConditionalEqualClass(nativetiming.ObligationUnspecified, premise, a, b, widthOf, budget)
+}
+
+func (session *verificationSession) impliesFiniteConditionalEqualClass(class nativetiming.ObligationClass, premise, a, b *term, widthOf func(string) int, budget *nodeBudget) (holds, decided, applicable bool) {
 	const valueLimit = 8
 	if a == nil || b == nil || a.width != b.width || a.width > 8 {
 		return false, false, false
@@ -6660,7 +6679,7 @@ func impliesFiniteConditionalEqual(premise, a, b *term, widthOf func(string) int
 		constant := constTerm(value, a.width)
 		leftIsValue := truncate(cmpTerm("eq", a, constant), 1)
 		rightIsValue := truncate(cmpTerm("eq", b, constant), 1)
-		if equal, decided := impliesEqualWithin(premise, leftIsValue, rightIsValue, widthOf, budget); !decided || !equal {
+		if equal, decided := session.impliesEqualWithinClass(class, premise, leftIsValue, rightIsValue, widthOf, budget); !decided || !equal {
 			if os.Getenv("OAK_VERIFY_TRACE") != "" {
 				fmt.Fprintf(os.Stderr, "verify: finite result value %d not proven equivalent (holds=%v decided=%v)\n  left: %s\n  right: %s\n  premise: %s\n", value, equal, decided, spineOf(leftIsValue, 5), spineOf(rightIsValue, 5), spineOf(premise, 4))
 			}
@@ -6672,8 +6691,14 @@ func impliesFiniteConditionalEqual(premise, a, b *term, widthOf func(string) int
 
 // impliesEqualWithin is impliesEqual spending from a shared budget when
 // one is given: a decision that would exceed what remains is undecided.
-func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *nodeBudget) (holds bool, decided bool) {
-	return impliesEqualDepth(premise, a, b, widthOf, budget, 0)
+func (session *verificationSession) impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *nodeBudget) (holds bool, decided bool) {
+	return session.impliesEqualWithinClass(nativetiming.ObligationUnspecified, premise, a, b, widthOf, budget)
+}
+
+func (session *verificationSession) impliesEqualWithinClass(class nativetiming.ObligationClass, premise, a, b *term, widthOf func(string) int, budget *nodeBudget) (holds bool, decided bool) {
+	timing, finishTiming := nativetiming.BeginClassifiedImplication(class)
+	defer finishTiming()
+	return session.impliesEqualDepthObserved(premise, a, b, widthOf, budget, 0, timing)
 }
 
 // impliesEqualDepth is impliesEqualWithin at a case-split depth: when every
@@ -6681,7 +6706,9 @@ func impliesEqualWithin(premise, a, b *term, widthOf func(string) int, budget *n
 // of the largest branch in the terms and decides both cases under it
 // (splitDecide), up to splitDepth deep. Each decision is made once per
 // proof (nodeBudget.decided).
-func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+func (session *verificationSession) impliesEqualDepthObserved(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int, timing *nativetiming.ImplicationObservation) (holds bool, decided bool) {
+	stage := timing.Push(nativetiming.StageOther)
+	defer stage.End()
 	if budget == nil {
 		// A decision that arrives without a budget (decideEqual on a
 		// chunk's terms) still ends: the case splits and the congruence
@@ -6695,7 +6722,7 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 		// crc32c_chunk proves within it in seven seconds; under one
 		// implication's allowance it was witness-checked after sixteen,
 		// the rules and splits tried and failed.
-		budget = &nodeBudget{remaining: loopProofNodeBudget}
+		budget = &nodeBudget{session: session, remaining: loopProofNodeBudget}
 	}
 	// One term on both sides holds under any premise, before any budget
 	// is charged: a proof whose coupling spent the shared allowance still
@@ -6719,7 +6746,12 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 	if budget.calls > implicationCallLimit {
 		return false, false
 	}
-	nodes, exceeded := dagNodes(implicationNodeLimit, premise, a, b)
+	// Equality and memo hits above remain available after exhaustion. A
+	// fresh unequal implication cannot spend a new DAG admission then.
+	if budget.remaining <= 0 {
+		return false, false
+	}
+	nodes, exceeded := implicationDAGNodes(timing, implicationNodeLimit, premise, a, b)
 	if exceeded {
 		budget.remaining -= blastNodeBudget
 		return false, false
@@ -6733,7 +6765,11 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 	if budget.remaining <= 0 {
 		return false, false
 	}
-	holds, decided = impliesEqualDepthUncached(premise, a, b, widthOf, budget, depth)
+	if impliesUnsignedSuccessor(premise, a, b) {
+		holds, decided = true, true
+	} else {
+		holds, decided = session.impliesEqualDepthUncachedObserved(premise, a, b, widthOf, budget, depth, timing)
+	}
 	if budget.decided == nil {
 		budget.decided = map[decisionKey]decisionResult{}
 	}
@@ -6743,9 +6779,9 @@ func impliesEqualDepth(premise, a, b *term, widthOf func(string) int, budget *no
 	return holds, decided
 }
 
-func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+func (session *verificationSession) impliesEqualDepthUncachedObserved(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int, timing *nativetiming.ImplicationObservation) (holds bool, decided bool) {
 	if depth == 0 {
-		premise, a, b = canonical(premise), canonical(a), canonical(b)
+		premise, a, b = implicationCanonical(timing, premise), implicationCanonical(timing, a), implicationCanonical(timing, b)
 	}
 	if os.Getenv("OAK_VERIFY_TRACE") != "" {
 		fmt.Fprintf(os.Stderr, "verify: implication at depth %d: a %d nodes, b %d nodes, premise %d nodes, budget %d, optimistic=%v\n", depth, termSize(a, map[*term]int{}), termSize(b, map[*term]int{}), termSize(premise, map[*term]int{}), budget.remaining, budget.optimistic)
@@ -6768,17 +6804,17 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 		// This pass is structural and cheap even when the premise's complete
 		// diagram is too large for pruneUnder's bounded branch pass.
 		pruned := pruneUnderFacts(premise, []*term{a, b})
-		a, b = canonical(pruned[0]), canonical(pruned[1])
+		a, b = implicationCanonical(timing, pruned[0]), implicationCanonical(timing, pruned[1])
 	}
 	branching := hasLargeBranch(a) || hasLargeBranch(b)
 	if premise.kind != termConst && branching {
 		// The premise settles branches on both sides (a loop guard, a case
 		// split's condition): with those pruned the sides may be one term.
-		pruned := pruneUnder(premise, []*term{a, b}, widthOf)
+		pruned := implicationPruneUnder(timing, premise, []*term{a, b}, widthOf)
 		// Pruning rebuilds the branches it settles; the rebuilt terms
 		// take the canonical spelling again, or the rules the sides met
 		// under (a negation, a cset) are lost to the arm rule below.
-		a, b = canonical(pruned[0]), canonical(pruned[1])
+		a, b = implicationCanonical(timing, pruned[0]), implicationCanonical(timing, pruned[1])
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "verify: pruned under the premise: a %d nodes, b %d nodes, same=%v\n", termSize(a, map[*term]int{}), termSize(b, map[*term]int{}), equalTerms(a, b))
 		}
@@ -6817,8 +6853,8 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 		// diagram first, where the premise — a conjunction of the inner
 		// loops' exit facts over their element reads — costs every order
 		// its budget for nothing.
-		if holds, decided := budget.bounded(optimisticNodeBudget, func(b2 *nodeBudget) (bool, bool) {
-			return impliesEqualDepth(constTerm(1, 1), a, b, widthOf, b2, depth)
+		if holds, decided := implicationBounded(timing, budget, optimisticNodeBudget, func(b2 *nodeBudget) (bool, bool) {
+			return session.impliesEqualDepthObserved(constTerm(1, 1), a, b, widthOf, b2, depth, timing)
 		}); decided && holds {
 			return true, true
 		}
@@ -6834,7 +6870,7 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 	// reaching them outside memory indices — were tried and withdrawn:
 	// step_count's coupling spent thirty times its proof's time refuting
 	// them, and ident did not decide under them.)
-	premise = premiseUnderItself(premise)
+	premise = session.premiseUnderItselfObserved(premise, timing)
 	if os.Getenv("OAK_VERIFY_TRACE") != "" && premise.kind != termConst {
 		fmt.Fprintf(os.Stderr, "verify: premise at depth %d: kind %d op %q width %d, %d conjuncts, %d nodes\n", depth, premise.kind, premise.op, premise.width, len(conjunctsOf(premise)), termSize(premise, map[*term]int{}))
 		if termSize(premise, map[*term]int{}) > 5000 {
@@ -6847,8 +6883,8 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "verify: relevant premise at depth %d: %d of %d nodes, %d of %d conjuncts\n", depth, termSize(relevant, map[*term]int{}), termSize(premise, map[*term]int{}), len(conjunctsOf(relevant)), len(conjunctsOf(premise)))
 		}
-		if holds, decided := budget.bounded(optimisticNodeBudget, func(b2 *nodeBudget) (bool, bool) {
-			return impliesEqualDepth(relevant, a, b, widthOf, b2, depth)
+		if holds, decided := implicationBounded(timing, budget, optimisticNodeBudget, func(b2 *nodeBudget) (bool, bool) {
+			return session.impliesEqualDepthObserved(relevant, a, b, widthOf, b2, depth, timing)
 		}); decided && holds {
 			return true, true
 		}
@@ -6860,86 +6896,78 @@ func impliesEqualDepthUncached(premise, a, b *term, widthOf func(string) int, bu
 			// the guard through every carry before the implication is considered.
 			// Split before building that diagram. Both cases are implications under
 			// stronger premises, so this proves (and never guesses) the original.
-			if holds, decided := splitDecideOn(premise, a, b, cond, widthOf, budget, depth); decided {
+			if holds, decided := session.splitDecideOnObserved(premise, a, b, cond, widthOf, budget, depth, timing); decided {
 				return holds, true
 			}
 		}
 	}
-	if holds, decided := impliesEqualByArms(premise, a, b, widthOf, budget, depth); decided {
+	if holds, decided := session.impliesEqualByArmsObserved(premise, a, b, widthOf, budget, depth, timing); decided {
 		return holds, true
 	}
-	if holds, decided := impliesEqualOneSidedArms(premise, a, b, widthOf, budget, depth); decided && !verifyOff("onesided") {
+	if holds, decided := session.impliesEqualOneSidedArmsObserved(premise, a, b, widthOf, budget, depth, timing); decided && !session.optionsValue().verifyOff("onesided") {
 		return holds, true
 	}
-	if holds, decided := impliesEqualCongruent(premise, a, b, widthOf, budget, depth); decided {
+	if holds, decided := session.impliesEqualCongruentObserved(premise, a, b, widthOf, budget, depth, timing); decided {
 		return holds, true
 	}
-	blasters := equalityBlasters(names, widths, a, b)
-	if cb := componentBlaster(names, widths, premise, a, b); cb != nil && !verifyOff("components") {
-		blasters = append(blasters, cb)
-	}
-	var stop atomic.Bool
-	type attempt struct{ holds, decided bool }
-	results := make(chan attempt, len(blasters))
-	for _, bl := range blasters {
-		bl.bdd.stop = &stop
-		if budget != nil {
-			// One implication spends no more than the proof has left: the
-			// shared budget bounds the diagrams as they grow, not only the
-			// number of implications tried — and no more than a loop
-			// proof's per-implication cap (loopDecisionNodeBudget).
-			if budget.loop && bl.bdd.budget > loopDecisionNodeBudget {
-				bl.bdd.budget = loopDecisionNodeBudget
-			}
-			if budget.remaining < bl.bdd.budget {
-				bl.bdd.budget = budget.remaining
+	// Recursive rules above may have exhausted the effective owner. Keep
+	// the final split below available for equality and memo fast paths,
+	// but do not initialize another diagram without remaining allowance.
+	if budget == nil || budget.remaining > 0 {
+		blasters := equalityBlasters(names, widths, a, b)
+		if cb := componentBlaster(names, widths, premise, a, b); cb != nil && !session.optionsValue().verifyOff("components") {
+			blasters = append(blasters, cb)
+		}
+		for _, bl := range blasters {
+			if budget != nil {
+				// One implication spends no more than the proof has left: the
+				// shared budget bounds the diagrams as they grow, not only the
+				// number of implications tried — and no more than a loop
+				// proof's per-implication cap (loopDecisionNodeBudget).
+				if budget.loop && bl.bdd.budget > loopDecisionNodeBudget {
+					bl.bdd.budget = loopDecisionNodeBudget
+				}
+				if budget.remaining < bl.bdd.budget {
+					bl.bdd.budget = budget.remaining
+				}
 			}
 		}
-		go func(bl *blaster) {
+		holds, decided = implicationBDDOrders(timing, blasters, func(bl *blaster) (bool, bool) {
 			holds, decided := impliesEqualUnder(bl, premise, a, b, width)
-			results <- attempt{holds, decided}
-		}(bl)
-	}
-	holds, decided = false, false
-	for range blasters {
-		// The first order to finish decides; the rest stop at their next
-		// node, and every racer has returned before its diagram is read.
-		if r := <-results; r.decided && !decided {
-			holds, decided = r.holds, true
-			stop.Store(true)
-		}
-	}
-	if budget != nil {
-		// The decision cost the proof its largest diagram: undecided ones
-		// near the per-decision budget exhaust the proof's in a few tries.
-		spent := 0
-		for _, bl := range blasters {
-			if n := len(bl.bdd.nodes); n > spent {
-				spent = n
-			}
-		}
-		budget.remaining -= spent
-	}
-	if decided {
-		return holds, true
-	}
-	if os.Getenv("OAK_VERIFY_TRACE") != "" {
-		remaining := -1
+			return holds, !decided
+		})
 		if budget != nil {
-			remaining = budget.remaining
+			// The decision cost the proof its largest diagram: undecided ones
+			// near the per-decision budget exhaust the proof's in a few tries.
+			spent := 0
+			for _, bl := range blasters {
+				if n := bl.bdd.completedNodes; n > spent {
+					spent = n
+				}
+			}
+			budget.remaining -= spent
 		}
-		fmt.Fprintf(os.Stderr, "verify: undecided implication at depth %d: a %d nodes (width %d), b %d nodes (width %d), premise %d nodes, %d names %v, branching=%v, budget remaining %d\n  premise: %s\n", depth, termSize(a, map[*term]int{}), a.width, termSize(b, map[*term]int{}), b.width, termSize(premise, map[*term]int{}), len(names), names, branching, remaining, premise)
-		if termSize(a, map[*term]int{}) <= 256 && termSize(b, map[*term]int{}) <= 256 {
-			fmt.Fprintf(os.Stderr, "  a: %s\n  b: %s\n", a, b)
+		if decided {
+			return holds, true
 		}
-		for _, bl := range blasters {
-			fmt.Fprintf(os.Stderr, "  order %s: %d bdd nodes, exceeded=%v, budget %d\n", bl.label, len(bl.bdd.nodes), bl.bdd.exceeded, bl.bdd.budget)
+		if os.Getenv("OAK_VERIFY_TRACE") != "" {
+			remaining := -1
+			if budget != nil {
+				remaining = budget.remaining
+			}
+			fmt.Fprintf(os.Stderr, "verify: undecided implication at depth %d: a %d nodes (width %d), b %d nodes (width %d), premise %d nodes, %d names %v, branching=%v, budget remaining %d\n  premise: %s\n", depth, termSize(a, map[*term]int{}), a.width, termSize(b, map[*term]int{}), b.width, termSize(premise, map[*term]int{}), len(names), names, branching, remaining, premise)
+			if termSize(a, map[*term]int{}) <= 256 && termSize(b, map[*term]int{}) <= 256 {
+				fmt.Fprintf(os.Stderr, "  a: %s\n  b: %s\n", a, b)
+			}
+			for _, bl := range blasters {
+				fmt.Fprintf(os.Stderr, "  order %s: %d bdd nodes, memory exhausted=%v, budget %d\n", bl.label, bl.bdd.completedNodes, bl.bdd.memoryExhausted, bl.bdd.budget)
+			}
 		}
 	}
 	if !branching {
 		return false, false // no branch worth a split: the diagrams were the decision
 	}
-	return splitDecide(premise, a, b, widthOf, budget, depth)
+	return session.splitDecideObserved(premise, a, b, widthOf, budget, depth, timing)
 }
 
 // pushNarrowArithmetic applies the modular homomorphism for an explicit
@@ -7022,7 +7050,9 @@ const largeBranch = 200
 // the case settles, so a branch on a condition over many inputs — the
 // UTF-8 kernel's "any high bit in the sixty-four bytes" — no longer
 // multiplies its arms' diagrams. Undecided past splitDepth.
-func splitDecide(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+func (session *verificationSession) splitDecideObserved(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int, timing *nativetiming.ImplicationObservation) (holds bool, decided bool) {
+	stage := timing.Push(nativetiming.StageRecursiveScheduling)
+	defer stage.End()
 	if depth >= splitDepth {
 		return false, false
 	}
@@ -7030,7 +7060,7 @@ func splitDecide(premise, a, b *term, widthOf func(string) int, budget *nodeBudg
 	if cond == nil {
 		return false, false
 	}
-	return splitDecideOn(premise, a, b, cond, widthOf, budget, depth)
+	return session.splitDecideOnObserved(premise, a, b, cond, widthOf, budget, depth, timing)
 }
 
 // splitDecideOn is splitDecide on a chosen condition. Before deciding a
@@ -7038,7 +7068,9 @@ func splitDecide(premise, a, b *term, widthOf func(string) int, budget *nodeBudg
 // particularly important when the branch being split is inside the premise,
 // which otherwise has to be blasted in full before the BDD can assume the
 // condition that simplifies it.
-func splitDecideOn(premise, a, b, cond *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+func (session *verificationSession) splitDecideOnObserved(premise, a, b, cond *term, widthOf func(string) int, budget *nodeBudget, depth int, timing *nativetiming.ImplicationObservation) (holds bool, decided bool) {
+	stage := timing.Push(nativetiming.StageRecursiveScheduling)
+	defer stage.End()
 	if depth >= splitDepth || cond == nil {
 		return false, false
 	}
@@ -7048,8 +7080,8 @@ func splitDecideOn(premise, a, b, cond *term, widthOf func(string) int, budget *
 	c := truncate(cond, 1)
 	for polarity, branch := range []*term{c, binaryTerm("xor", c, constTerm(1, 1))} {
 		pruned := pruneUnderFacts(branch, []*term{premise, a, b})
-		casePremise := canonical(binaryTerm("and", branch, pruned[0]))
-		holds, decided := impliesEqualDepth(casePremise, canonical(pruned[1]), canonical(pruned[2]), widthOf, budget, depth+1)
+		casePremise := implicationCanonical(timing, binaryTerm("and", branch, pruned[0]))
+		holds, decided := session.impliesEqualDepthObserved(casePremise, implicationCanonical(timing, pruned[1]), implicationCanonical(timing, pruned[2]), widthOf, budget, depth+1, timing)
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "verify: case split depth %d polarity %d: holds=%v decided=%v\n", depth, polarity, holds, decided)
 		}
@@ -7078,12 +7110,27 @@ func splitDecideOn(premise, a, b, cond *term, widthOf func(string) int, budget *
 // read, then the arena facts, where any interleaving multiplied the table
 // by the facts).
 func componentBlaster(names []string, widths map[string]int, premise, a, b *term) *blaster {
+	// The atom graph is immutable during this call. Reuse only its ordered
+	// leaf walks; every query still registers reads and builds its own members.
+	atoms := newComponentAtoms()
+	return componentBlasterWithAtoms(names, widths, premise, a, b, atoms.walk)
+}
+
+func componentBlasterWithAtoms(names []string, widths map[string]int, premise, a, b *term, walkAtoms func(*term, func(*term))) *blaster {
 	parent := map[string]string{}
 	find := func(x string) string {
-		for parent[x] != "" && parent[x] != x {
-			x = parent[x]
+		root := x
+		for parent[root] != "" && parent[root] != root {
+			root = parent[root]
 		}
-		return x
+		// Compress paths without changing the representative: its spelling
+		// participates in the sorted traversal of the weak links below.
+		for x != root {
+			next := parent[x]
+			parent[x] = root
+			x = next
+		}
+		return root
 	}
 	union := func(x, y string) {
 		rx, ry := find(x), find(y)
@@ -7100,30 +7147,16 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 	// atoms gathers the parameters and reads beneath a term (not those
 	// inside a read's index: the index relates the read to the memory,
 	// not its value to the index's parameters).
-	var atoms func(t *term, into map[string]bool, seen map[*term]bool)
-	atoms = func(t *term, into map[string]bool, seen map[*term]bool) {
-		if t == nil || seen[t] {
-			return
-		}
-		seen[t] = true
-		switch t.kind {
-		case termParam:
-			into[t.name] = true
-			return
-		case termConst:
-			return
-		case termSelect:
-			key := readKey(read{t.name, t.left})
-			reads[key] = read{t.name, t.left}
+	atoms := func(t *term, into map[string]bool) {
+		walkAtoms(t, func(leaf *term) {
+			if leaf.kind == termParam {
+				into[leaf.name] = true
+				return
+			}
+			key := readKey(read{leaf.name, leaf.left})
+			reads[key] = read{leaf.name, leaf.left}
 			into[key] = true
-			return
-		}
-		atoms(t.cond, into, seen)
-		atoms(t.left, into, seen)
-		atoms(t.right, into, seen)
-		for _, arg := range t.args {
-			atoms(arg, into, seen)
-		}
+		})
 	}
 	linkAll := func(members map[string]bool) {
 		var first string
@@ -7150,18 +7183,18 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 		switch {
 		case t.kind == termCmp:
 			members := map[string]bool{}
-			atoms(t, members, map[*term]bool{})
+			atoms(t, members)
 			linkAll(members)
 		case t.kind == termSelect:
 			// The index's operands interleave among themselves (an adder
 			// over the base and the position); the read's value is a block
 			// of its own unless a comparison relates it.
 			members := map[string]bool{}
-			atoms(t.left, members, map[*term]bool{})
+			atoms(t.left, members)
 			linkAll(members)
 		case t.kind == termIte && t.width == 1, t.kind == termBinary && t.width == 1 && (t.op == "or" || t.op == "xor" || t.op == "and"):
 			members := map[string]bool{}
-			atoms(t, members, map[*term]bool{})
+			atoms(t, members)
 			if len(members) > 1 {
 				list := make([]string, 0, len(members))
 				for m := range members {
@@ -7186,8 +7219,8 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 	walk(a)
 	walk(b)
 	sides := map[string]bool{}
-	atoms(a, sides, map[*term]bool{})
-	atoms(b, sides, map[*term]bool{})
+	atoms(a, sides)
+	atoms(b, sides)
 	linkAll(sides)
 	for _, name := range names {
 		if parent[name] == "" {
@@ -7220,50 +7253,12 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 	}
 	// Weak adjacency between blocks, and the order: from the sides' block
 	// along the weak links, reversed.
-	adjacent := map[string][]string{}
-	for _, members := range weak {
-		for i := range members {
-			for j := range members {
-				bi, bj := find(members[i]), find(members[j])
-				if bi != bj {
-					adjacent[bi] = append(adjacent[bi], bj)
-				}
-			}
-		}
-	}
 	var sideBlock string
 	for m := range sides {
 		sideBlock = find(m)
 		break
 	}
-	var order []string
-	queued := map[string]bool{}
-	if sideBlock != "" {
-		queue := []string{sideBlock}
-		queued[sideBlock] = true
-		for len(queue) > 0 {
-			block := queue[0]
-			queue = queue[1:]
-			order = append(order, block)
-			next := append([]string(nil), adjacent[block]...)
-			sort.Strings(next)
-			for _, n := range next {
-				if !queued[n] {
-					queued[n] = true
-					queue = append(queue, n)
-				}
-			}
-		}
-	}
-	for _, block := range blocks {
-		if !queued[block] {
-			queued[block] = true
-			order = append(order, block)
-		}
-	}
-	for i, j := 0, len(order)-1; i < j; i, j = i+1, j-1 {
-		order[i], order[j] = order[j], order[i]
-	}
+	order := componentBlockOrder(blocks, weak, sideBlock, find)
 	reserved := map[string]int{}
 	for _, block := range readBlocks {
 		reserved[block]++
@@ -7291,26 +7286,76 @@ func componentBlaster(names []string, widths map[string]int, premise, a, b *term
 	return newComponentBlaster(names, widths, blockOf, order, reserved, readBlock)
 }
 
-// verifyOff reports a rule named in OAK_VERIFY_OFF (a comma list): the
-// bisection switch that attributed a pilot regression to one canonical
-// form in minutes (docs/spec/94-assembler.md §9). Rules: selfprune,
-// onesided, components, bounded. Read once.
-func verifyOff(name string) bool {
-	verifyOffOnce.Do(func() {
-		verifyOffRules = map[string]bool{}
-		for _, off := range strings.Split(os.Getenv("OAK_VERIFY_OFF"), ",") {
-			if off != "" {
-				verifyOffRules[off] = true
+// componentBlockOrder walks the same weak adjacency as a clique for every
+// Boolean connective, without constructing those cliques. One connective can
+// mention hundreds of atoms from only a few strong components, and a nested
+// Boolean DAG repeats those atoms at many connectives. Materializing every
+// atom pair repeatedly spent minutes here, outside the diagram node budget.
+//
+// A connective is a hyperedge. The first reached block queues all its members,
+// so expanding it again from another block cannot discover anything new. Sort
+// the newly adjacent blocks before queuing, as the explicit-clique traversal
+// did; preserve its representatives, disconnected-block order and reversal.
+func componentBlockOrder(blocks []string, weak [][]string, sideBlock string, find func(string) string) []string {
+	members := make([][]string, len(weak))
+	incident := map[string][]int{}
+	for edge, atoms := range weak {
+		seen := map[string]bool{}
+		for _, atom := range atoms {
+			block := find(atom)
+			if !seen[block] {
+				seen[block] = true
+				members[edge] = append(members[edge], block)
 			}
 		}
-	})
-	return verifyOffRules[name]
+		if len(members[edge]) < 2 {
+			continue
+		}
+		for _, block := range members[edge] {
+			incident[block] = append(incident[block], edge)
+		}
+	}
+	var order []string
+	queued := map[string]bool{}
+	expanded := make([]bool, len(weak))
+	if sideBlock != "" {
+		queue := []string{sideBlock}
+		queued[sideBlock] = true
+		for head := 0; head < len(queue); head++ {
+			block := queue[head]
+			order = append(order, block)
+			nextSet := map[string]bool{}
+			var next []string
+			for _, edge := range incident[block] {
+				if expanded[edge] {
+					continue
+				}
+				expanded[edge] = true
+				for _, neighbor := range members[edge] {
+					if !queued[neighbor] && !nextSet[neighbor] {
+						nextSet[neighbor] = true
+						next = append(next, neighbor)
+					}
+				}
+			}
+			sort.Strings(next)
+			for _, neighbor := range next {
+				queued[neighbor] = true
+				queue = append(queue, neighbor)
+			}
+		}
+	}
+	for _, block := range blocks {
+		if !queued[block] {
+			queued[block] = true
+			order = append(order, block)
+		}
+	}
+	for i, j := 0, len(order)-1; i < j; i, j = i+1, j-1 {
+		order[i], order[j] = order[j], order[i]
+	}
+	return order
 }
-
-var (
-	verifyOffOnce  sync.Once
-	verifyOffRules map[string]bool
-)
 
 // premiseUnderItself rewrites each large conjunct of a premise by the
 // facts its other conjuncts state. A path condition repeats the guards it
@@ -7321,8 +7366,8 @@ var (
 // arena facts to the table's words in one conjunct (relevantPremise can
 // then leave the table out of a decision over the arena alone). Small
 // premises and small conjuncts are left as they are.
-func premiseUnderItself(premise *term) *term {
-	if verifyOff("selfprune") || premise.kind == termConst || termSize(premise, map[*term]int{}) < premiseSelfPruneSize {
+func (session *verificationSession) premiseUnderItselfObserved(premise *term, timing *nativetiming.ImplicationObservation) *term {
+	if session.optionsValue().verifyOff("selfprune") || premise.kind == termConst || termSize(premise, map[*term]int{}) < premiseSelfPruneSize {
 		return premise
 	}
 	conjuncts := conjunctsOf(premise)
@@ -7355,7 +7400,7 @@ func premiseUnderItself(premise *term) *term {
 	if !changed {
 		return premise
 	}
-	rewritten := canonical(conjoinAll(out))
+	rewritten := implicationCanonical(timing, conjoinAll(out))
 	if os.Getenv("OAK_VERIFY_TRACE") != "" {
 		fmt.Fprintf(os.Stderr, "verify: premise under itself: %d nodes from %d\n", termSize(rewritten, map[*term]int{}), termSize(premise, sizes))
 	}
@@ -7429,7 +7474,9 @@ func writeTermDAG(w io.Writer, widthOf func(string) int, roots ...*term) {
 // branch per step — and proves but never refutes. Lookup steps (a table
 // walked by a chain of equalities) are not split: their arms are the
 // rows, not the paths.
-func impliesEqualOneSidedArms(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+func (session *verificationSession) impliesEqualOneSidedArmsObserved(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int, timing *nativetiming.ImplicationObservation) (holds bool, decided bool) {
+	stage := timing.Push(nativetiming.StageRecursiveScheduling)
+	defer stage.End()
 	a, b = pushMask(a), pushMask(b)
 	if (a.kind == termIte) == (b.kind == termIte) {
 		return false, false
@@ -7454,8 +7501,8 @@ func impliesEqualOneSidedArms(premise, a, b *term, widthOf func(string) int, bud
 			arm = b.right
 		}
 		pruned := pruneUnderFacts(branch, []*term{premise, a, arm})
-		casePremise := canonical(binaryTerm("and", branch, pruned[0]))
-		holds, decided := impliesEqualDepth(casePremise, canonical(pruned[1]), canonical(pruned[2]), widthOf, budget, depth)
+		casePremise := implicationCanonical(timing, binaryTerm("and", branch, pruned[0]))
+		holds, decided := session.impliesEqualDepthObserved(casePremise, implicationCanonical(timing, pruned[1]), implicationCanonical(timing, pruned[2]), widthOf, budget, depth, timing)
 		if trace {
 			fmt.Fprintf(os.Stderr, "verify: one-sided arms depth %d polarity %d: holds=%v decided=%v\n", depth, polarity, holds, decided)
 		}
@@ -7578,7 +7625,9 @@ func maskedZeroTestRelation(a, b *term) int {
 }
 
 // zeroTestOf reports a fact `(Y eq 0)` (1) or `(Y ne 0)` (-1) whose Y,
-// read at one bit, is the value asked about; 0 otherwise.
+// read at one bit, is the value asked about; 0 otherwise. Zero implies a
+// clear low bit at any width. Nonzero implies a set low bit only when Y
+// is structurally known to range over 0 and 1; a wider integer may be even.
 func zeroTestOf(fact, value *term, cmemo *canonicalTable, cbool map[*term]bool) int {
 	if fact.kind != termCmp || (fact.op != "eq" && fact.op != "ne") || fact.right.kind != termConst || fact.right.value != 0 {
 		return 0
@@ -7588,6 +7637,9 @@ func zeroTestOf(fact, value *term, cmemo *canonicalTable, cbool map[*term]bool) 
 	}
 	if fact.op == "eq" {
 		return 1
+	}
+	if !booleanValued(fact.left, cbool) {
+		return 0
 	}
 	return -1
 }
@@ -7800,7 +7852,7 @@ func pruneUnderFacts(premise *term, terms []*term) []*term {
 		args, argsChanged := rewriteTermArgs(t.args, rewrite)
 		if cond != t.cond || left != t.left || right != t.right || argsChanged {
 			copy := *t
-			copy.kbDone, copy.sigBits = false, 0
+			copy.sigBits = 0
 			copy.cond, copy.left, copy.right = cond, left, right
 			copy.args = args
 			out = &copy
@@ -7844,6 +7896,11 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 	sort.Strings(names)
 	bl := newBlaster(names, widths)
 	bl.bdd = newBDD(pruneNodeBudget)
+	finish, admitted := admitBDDStandalone(bl, false)
+	if !admitted {
+		return terms // an optional simplification cannot claim a proof
+	}
+	defer finish()
 	pBits := bl.blast(premise)
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
 	if pBits == nil || bl.bdd.exceeded || pBits[0] == bddTrue {
@@ -7885,7 +7942,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 				c, l, r := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
 				if c != t.cond || l != t.left || r != t.right {
 					copy := *t
-					copy.kbDone, copy.sigBits = false, 0
+					copy.sigBits = 0
 					copy.cond, copy.left, copy.right = c, l, r
 					out = &copy
 				}
@@ -7917,7 +7974,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 				c, l, r := rewrite(t.cond), rewrite(t.left), rewrite(t.right)
 				if c != t.cond || l != t.left || r != t.right {
 					copy := *t
-					copy.kbDone, copy.sigBits = false, 0
+					copy.sigBits = 0
 					copy.cond, copy.left, copy.right = c, l, r
 					out = &copy
 				}
@@ -7926,7 +7983,7 @@ func pruneUnder(premise *term, terms []*term, widthOf func(string) int) []*term 
 			l, r := rewrite(t.left), rewrite(t.right)
 			if l != t.left || r != t.right {
 				copy := *t
-				copy.kbDone, copy.sigBits = false, 0
+				copy.sigBits = 0
 				copy.left, copy.right = l, r
 				out = &copy
 			}
@@ -8185,13 +8242,15 @@ func refutedByCoupling(premise, a, b *term, widthOf func(string) int, work *int)
 // refutes: conditionals with different conditions may still agree
 // (where their arms do), so a part that fails leaves the decision to
 // the whole. A mask over a conditional is pushed into its arms first.
-func impliesEqualByArms(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+func (session *verificationSession) impliesEqualByArmsObserved(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int, timing *nativetiming.ImplicationObservation) (holds bool, decided bool) {
+	stage := timing.Push(nativetiming.StageRecursiveScheduling)
+	defer stage.End()
 	a, b = pushMask(a), pushMask(b)
 	if a.kind != termIte || b.kind != termIte {
 		return false, false
 	}
 	trace := os.Getenv("OAK_VERIFY_TRACE") != ""
-	if holds, decided := impliesEqualDepth(premise, truncate(a.cond, 1), truncate(b.cond, 1), widthOf, budget, depth); !decided || !holds {
+	if holds, decided := session.impliesEqualDepthObserved(premise, truncate(a.cond, 1), truncate(b.cond, 1), widthOf, budget, depth, timing); !decided || !holds {
 		if trace {
 			fmt.Fprintf(os.Stderr, "verify: arm rule: conditions not proven equal (holds=%v decided=%v; a.cond %d nodes, b.cond %d nodes)\n  a.cond: %s\n  b.cond: %s\n", holds, decided, termSize(a.cond, map[*term]int{}), termSize(b.cond, map[*term]int{}), spineOf(a.cond, 4), spineOf(b.cond, 4))
 		}
@@ -8199,12 +8258,12 @@ func impliesEqualByArms(premise, a, b *term, widthOf func(string) int, budget *n
 		// swapped (`x == 0 ? p : q` against `x != 0 ? q : p`, a branch
 		// taken on the other side): the arms are compared crosswise under
 		// the proven negation, once.
-		if holds, decided := impliesEqualDepth(premise, truncate(a.cond, 1), notTerm(b.cond), widthOf, budget, depth); decided && holds {
-			return impliesEqualArms(premise, a, iteTerm(notTerm(b.cond), b.right, b.left), widthOf, budget, depth)
+		if holds, decided := session.impliesEqualDepthObserved(premise, truncate(a.cond, 1), notTerm(b.cond), widthOf, budget, depth, timing); decided && holds {
+			return session.impliesEqualArmsObserved(premise, a, iteTerm(notTerm(b.cond), b.right, b.left), widthOf, budget, depth, timing)
 		}
 		return false, false
 	}
-	return impliesEqualArms(premise, a, b, widthOf, budget, depth)
+	return session.impliesEqualArmsObserved(premise, a, b, widthOf, budget, depth, timing)
 }
 
 // impliesEqualCongruent proves premise → (a = b) for two terms of one
@@ -8215,7 +8274,9 @@ func impliesEqualByArms(premise, a, b *term, widthOf func(string) int, budget *n
 // one value — so a part that fails leaves the decision to the whole. A
 // sum of a selected value and a call's result on both sides, each side
 // a diagram beyond any budget, is two small decisions.
-func impliesEqualCongruent(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+func (session *verificationSession) impliesEqualCongruentObserved(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int, timing *nativetiming.ImplicationObservation) (holds bool, decided bool) {
+	stage := timing.Push(nativetiming.StageRecursiveScheduling)
+	defer stage.End()
 	if a.kind != b.kind || a.width != b.width {
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "verify: congruence: shapes differ\n  a: %s\n  b: %s\n", spineOf(a, 4), spineOf(b, 4))
@@ -8229,7 +8290,7 @@ func impliesEqualCongruent(premise, a, b *term, widthOf func(string) int, budget
 		if x == nil || y == nil {
 			return x == y
 		}
-		holds, decided := impliesEqualDepth(premise, x, y, widthOf, budget, depth)
+		holds, decided := session.impliesEqualDepthObserved(premise, x, y, widthOf, budget, depth, timing)
 		if !(decided && holds) && os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "verify: congruence: operands not proven equal (holds=%v decided=%v)\n  a: %s\n  b: %s\n", holds, decided, spineOf(x, 4), spineOf(y, 4))
 		}
@@ -8316,16 +8377,18 @@ func spineOf(t *term, depth int) string {
 
 // impliesEqualArms is the arms' half of impliesEqualByArms: a's condition
 // already proven b's, each pair of arms under it or its negation.
-func impliesEqualArms(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int) (holds bool, decided bool) {
+func (session *verificationSession) impliesEqualArmsObserved(premise, a, b *term, widthOf func(string) int, budget *nodeBudget, depth int, timing *nativetiming.ImplicationObservation) (holds bool, decided bool) {
+	stage := timing.Push(nativetiming.StageRecursiveScheduling)
+	defer stage.End()
 	taken := binaryTerm("and", premise, truncate(a.cond, 1))
-	if holds, decided := impliesEqualDepth(taken, a.left, b.left, widthOf, budget, depth); !decided || !holds {
+	if holds, decided := session.impliesEqualDepthObserved(taken, a.left, b.left, widthOf, budget, depth, timing); !decided || !holds {
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "verify: arm rule: taken arms not proven equal (holds=%v decided=%v; %d vs %d nodes)\n", holds, decided, termSize(a.left, map[*term]int{}), termSize(b.left, map[*term]int{}))
 		}
 		return false, false
 	}
 	other := binaryTerm("and", premise, notTerm(a.cond))
-	if holds, decided := impliesEqualDepth(other, a.right, b.right, widthOf, budget, depth); !decided || !holds {
+	if holds, decided := session.impliesEqualDepthObserved(other, a.right, b.right, widthOf, budget, depth, timing); !decided || !holds {
 		if os.Getenv("OAK_VERIFY_TRACE") != "" {
 			fmt.Fprintf(os.Stderr, "verify: arm rule: other arms not proven equal (holds=%v decided=%v; %d vs %d nodes)\n", holds, decided, termSize(a.right, map[*term]int{}), termSize(b.right, map[*term]int{}))
 		}
@@ -8364,14 +8427,19 @@ func diagnoseBlast(bl *blaster, premise, t *term) {
 		nb.memo = nil
 		nb.owners = map[int]variableOwner{}
 		nb.assumed = false
-		p := nb.blast(premise)
-		if p != nil && p[0] != bddTrue {
-			nb.assume, nb.assumed = p[0], true
-		}
 		return &nb
 	}
 	size := func(t *term) int {
 		nb := fresh()
+		finish, admitted := admitBDDStandalone(nb, true)
+		if !admitted {
+			return -1 // optional nested diagnostic, not a proof result
+		}
+		defer finish()
+		p := nb.blast(premise)
+		if p != nil && p[0] != bddTrue {
+			nb.assume, nb.assumed = p[0], true
+		}
 		before := len(nb.bdd.nodes)
 		nb.blast(t)
 		if nb.bdd.exceeded {
@@ -8555,6 +8623,11 @@ func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool,
 			// each alone, under a fresh diagram of the decision's budget.
 			for k, c := range conjunctsOf(premise) {
 				probe := bl.fresh(loopDecisionNodeBudget) // the same order, a fresh diagram
+				finish, admitted := admitBDDStandalone(probe, true)
+				if !admitted {
+					fmt.Fprintln(os.Stderr, "verify: premise diagnostic skipped: memory admission allowance")
+					continue
+				}
 				bits := probe.blast(c)
 				n, _ := dagNodes(1<<20, c)
 				show := 160
@@ -8571,6 +8644,7 @@ func impliesEqualUnder(bl *blaster, premise, a, b *term, width int) (holds bool,
 						}
 					}
 				}
+				finish()
 				if exceeded {
 					blastCulprits(bl, c, 2)
 				}
@@ -8693,6 +8767,8 @@ func refutedByValuationWithin(premise, a, b *term, names []string, widths map[st
 	// no random valuation, and an obligation over two distinct symbols
 	// (`off = found`, a wrong pairing) goes undecided instead of refuted.
 	bindings := premiseBindings(premise)
+	finishTiming := nativetiming.BeginValuation(len(evaluator.terms), len(names), len(targets), rounds, len(bindings))
+	defer func() { finishTiming(evaluator.gen) }()
 	settle := func(env map[string]uint64, pinned string) {
 		for pass := 0; pass < 3 && len(bindings) > 0; pass++ {
 			for _, bind := range bindings {
@@ -8918,7 +8994,7 @@ const couplingValuations = 80
 // was offered only as an affine image with a symbolic offset, behind every
 // wrong pairing's refutation, and the coupling search spent its budget
 // (hash.sha256_update; docs/spec/94-assembler.md §9 "Loop invariants").
-func headersEqual(hr, hx *term, widthOf func(string) int) bool {
+func (session *verificationSession) headersEqual(hr, hx *term, widthOf func(string) int) bool {
 	if equalTerms(hr, hx) {
 		return true
 	}
@@ -8929,7 +9005,7 @@ func headersEqual(hr, hx *term, widthOf func(string) int) bool {
 	if termSize(cr, map[*term]int{})+termSize(cx, map[*term]int{}) > headerEqualityTermLimit {
 		return false
 	}
-	holds, decided := impliesEqual(constTerm(1, 1), cr, cx, widthOf)
+	holds, decided := session.impliesEqualWithinClass(nativetiming.ObligationCouplingHeader, constTerm(1, 1), cr, cx, widthOf, nil)
 	return decided && holds
 }
 
@@ -9160,6 +9236,11 @@ func blastCulprits(bl *blaster, t *term, maxReports int) int {
 	cost := func(u *term) (int, bool) {
 		probe := newBlaster(bl.params, bl.widths)
 		probe.bdd = newBDD(loopDecisionNodeBudget)
+		finish, admitted := admitBDDStandalone(probe, true)
+		if !admitted {
+			return 0, true // optional nested diagnostic
+		}
+		defer finish()
 		bits := probe.blast(u)
 		return len(probe.bdd.nodes), bits == nil || probe.bdd.exceeded
 	}

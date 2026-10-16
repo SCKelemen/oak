@@ -143,6 +143,11 @@ type Function struct {
 	// checker admits guarded element reads inside them (a read-only
 	// region), as it admits a frame array's. Set by the native backend.
 	Tables map[string]Table
+	// LoweringMetadata is opaque, function-owned native backend bookkeeping.
+	// It is not part of the assembly contract or verifier authority. The
+	// backend checks its owner identity, so copying a Function does not
+	// transfer lowering counters or allocation frame-object metadata.
+	LoweringMetadata any `json:"-"`
 }
 
 // Table is a constant data symbol's shape: its size in bytes, the width of

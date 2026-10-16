@@ -1,0 +1,689 @@
+{
+  "c_invocations": 0,
+  "checks": 2,
+  "declarations": [
+    {
+      "generic_source_span": {
+        "Path": "stdlib/std.oak",
+        "FirstLine": 2,
+        "LastLine": 2,
+        "SHA256": "086932b8e8c139b02eb46b7c7d2991ae4a8450a2139876f53d2425d298c54f2a",
+        "Bytes": 37
+      },
+      "inventory_block_bytes": 109,
+      "inventory_block_sha256": "04749779381592042ffcea23eb0db3939caf49dbf96d821d9393822f37c5d9fe",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "Option_u32",
+      "profiled_end_byte_exclusive": 2102,
+      "profiled_start_byte": 1992,
+      "raw_end_byte_exclusive": 2104,
+      "raw_span_sha256": "6a008716f9420a84ece942854dc95498a037e89952fe433a2b9142b6a0bbdcb2",
+      "raw_start_byte": 1994,
+      "specialization_binding": "Option_u32"
+    },
+    {
+      "generic_source_span": {
+        "Path": "stdlib/std.oak",
+        "FirstLine": 3,
+        "LastLine": 3,
+        "SHA256": "013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f",
+        "Bytes": 40
+      },
+      "inventory_block_bytes": 209,
+      "inventory_block_sha256": "12641fac4f76da2bc6738add809fbf6d81102164de13be57b26309c1056eeeef",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "Result_encoding_sreader__ByteRead_encoding_sreader__Error",
+      "profiled_end_byte_exclusive": 3146,
+      "profiled_start_byte": 2936,
+      "raw_end_byte_exclusive": 3148,
+      "raw_span_sha256": "082db9a262e2402cbc9979f4b79a9c31ca0f80baf6463c5f1ac3de64840cc76d",
+      "raw_start_byte": 2938,
+      "specialization_binding": "Result_encoding_sreader__ByteRead_encoding_sreader__Error"
+    },
+    {
+      "generic_source_span": {
+        "Path": "stdlib/std.oak",
+        "FirstLine": 3,
+        "LastLine": 3,
+        "SHA256": "013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f",
+        "Bytes": 40
+      },
+      "inventory_block_bytes": 211,
+      "inventory_block_sha256": "c18b482bc8bfb5e559e656db6a9a86fb6268310ec3a765a0f9af807877f737a2",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "Result_encoding_sreader__RangeRead_encoding_sreader__Error",
+      "profiled_end_byte_exclusive": 3358,
+      "profiled_start_byte": 3146,
+      "raw_end_byte_exclusive": 3360,
+      "raw_span_sha256": "50bcdbace699528af237617231e9a3f661aec6a52b68258ae660cc2ea6d8c773",
+      "raw_start_byte": 3148,
+      "specialization_binding": "Result_encoding_sreader__RangeRead_encoding_sreader__Error"
+    },
+    {
+      "generic_source_span": {
+        "Path": "stdlib/std.oak",
+        "FirstLine": 3,
+        "LastLine": 3,
+        "SHA256": "013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f",
+        "Bytes": 40
+      },
+      "inventory_block_bytes": 209,
+      "inventory_block_sha256": "8f564c5043b4bf2b02e6a66eacf85e631343434c50a4aaa405c2a0ad3338fd1f",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "Result_encoding_sreader__WordRead_encoding_sreader__Error",
+      "profiled_end_byte_exclusive": 3568,
+      "profiled_start_byte": 3358,
+      "raw_end_byte_exclusive": 3570,
+      "raw_span_sha256": "fa3cbc7803fab98a88f7c1d89a2bde7cb960429e9831a49682e3e40b092145f3",
+      "raw_start_byte": 3360,
+      "specialization_binding": "Result_encoding_sreader__WordRead_encoding_sreader__Error"
+    },
+    {
+      "generic_source_span": {
+        "Path": "stdlib/std.oak",
+        "FirstLine": 3,
+        "LastLine": 3,
+        "SHA256": "013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f",
+        "Bytes": 40
+      },
+      "inventory_block_bytes": 203,
+      "inventory_block_sha256": "c4fe1116d1807a3bc57eef82eb8ceba6a0bb0c84e2220806ba29099ac721436e",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "Result_smartcard_sapdu__Command_smartcard_sapdu__Error",
+      "profiled_end_byte_exclusive": 3772,
+      "profiled_start_byte": 3568,
+      "raw_end_byte_exclusive": 3774,
+      "raw_span_sha256": "271fb65aa89dfa518589ccdf3c971f851e5f378157e214b10bd48951518170e8",
+      "raw_start_byte": 3570,
+      "specialization_binding": "Result_smartcard_sapdu__Command_smartcard_sapdu__Error"
+    },
+    {
+      "generic_source_span": {
+        "Path": "stdlib/std.oak",
+        "FirstLine": 3,
+        "LastLine": 3,
+        "SHA256": "013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f",
+        "Bytes": 40
+      },
+      "inventory_block_bytes": 146,
+      "inventory_block_sha256": "23c1a910a8a1af044845ecaea39dd56575cd14e486d57648ef403ecb488b132f",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "Result_u16_endian__Error",
+      "profiled_end_byte_exclusive": 3919,
+      "profiled_start_byte": 3772,
+      "raw_end_byte_exclusive": 3921,
+      "raw_span_sha256": "2162d912930832d65c4c245585e7943d3b0a4839c5d72bfaac9de94cb5fbe433",
+      "raw_start_byte": 3774,
+      "specialization_binding": "Result_u16_endian__Error"
+    },
+    {
+      "generic_source_span": {
+        "Path": "stdlib/std.oak",
+        "FirstLine": 3,
+        "LastLine": 3,
+        "SHA256": "013231e4be47c82e13657437fcd2cac5da07391fa52867a4abdbcc3c9553a17f",
+        "Bytes": 40
+      },
+      "inventory_block_bytes": 166,
+      "inventory_block_sha256": "7b7fa2d6005de6fe0b82ce0b98a8136ebb09d1665b7742cdb49cf01f1e06aaf9",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "Result_u32_encoding_sreader__Error",
+      "profiled_end_byte_exclusive": 4086,
+      "profiled_start_byte": 3919,
+      "raw_end_byte_exclusive": 4088,
+      "raw_span_sha256": "23a19bc15f9f8b721e3136091fe1409e3e9138a3841f9613c3a7acdb6ac995ef",
+      "raw_start_byte": 3921,
+      "specialization_binding": "Result_u32_encoding_sreader__Error"
+    },
+    {
+      "callees": [],
+      "checked_ast_display_is_not_original_source": true,
+      "checked_ast_display_sha256": "e7e13577198a3300bd49b1af04cec69f4f92b94ec4bf157717cf0fdd91bd2de2",
+      "inventory_block_bytes": 204,
+      "inventory_block_sha256": "352679839274c8f7c21d8127875ca44722ee7f81649396c986b169a3516ba1f1",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "bytes__range_ufits",
+      "profiled_end_byte_exclusive": 6437,
+      "profiled_start_byte": 6232,
+      "raw_end_byte_exclusive": 6439,
+      "raw_span_sha256": "75a561d889c3a3fa5502d36bfdf09fb2bd15c76cbc8f06fffc8181493baee537",
+      "raw_start_byte": 6234,
+      "source_span": {
+        "Path": "stdlib/bytes.oak",
+        "FirstLine": 9,
+        "LastLine": 11,
+        "SHA256": "4d085b3aa5bcf47e223bb12a269275ca6b572c7c942d55086750322adac0bae4",
+        "Bytes": 118
+      }
+    },
+    {
+      "inventory_block_bytes": 255,
+      "inventory_block_sha256": "05d83eccf392571b1eaef91bd3d967e788b8553611e66f338791990d104cc11a",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "encoding_sreader__ByteRead",
+      "profiled_end_byte_exclusive": 1038,
+      "profiled_start_byte": 782,
+      "raw_end_byte_exclusive": 1040,
+      "raw_span_sha256": "309deb3417db31c745844f525f8633177421d21dcad9bfb303401b9dc9fefdb2",
+      "raw_start_byte": 784,
+      "source_span": {
+        "Path": "stdlib/encoding/reader.oak",
+        "FirstLine": 10,
+        "LastLine": 10,
+        "SHA256": "b580a41aec4ba44db0d85b4d7db2320d2c3c48ef3b9031f4608b8ebd66bd605b",
+        "Bytes": 56
+      }
+    },
+    {
+      "inventory_block_bytes": 124,
+      "inventory_block_sha256": "f935c890595191e3d304fdefb43c8961a2008b2679cef234cc6ad27ba487122f",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "encoding_sreader__Error",
+      "profiled_end_byte_exclusive": 782,
+      "profiled_start_byte": 657,
+      "raw_end_byte_exclusive": 784,
+      "raw_span_sha256": "45cc73b90bc2dd591f165f81a5ad4800fc8d39c958f58dccb3d63fa9c7b8342d",
+      "raw_start_byte": 659,
+      "source_span": {
+        "Path": "stdlib/encoding/reader.oak",
+        "FirstLine": 9,
+        "LastLine": 9,
+        "SHA256": "d16357a998cccf3c82fdacbbff07e3eb64f69fa6495325d36f1423d4c7921d67",
+        "Bytes": 51
+      }
+    },
+    {
+      "inventory_block_bytes": 303,
+      "inventory_block_sha256": "b793ce32120f9dd6d4adf300c6ecfa56027b4ef57b58771407199b5be07d3e0c",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "encoding_sreader__RangeRead",
+      "profiled_end_byte_exclusive": 1600,
+      "profiled_start_byte": 1296,
+      "raw_end_byte_exclusive": 1602,
+      "raw_span_sha256": "499fbfc001fb98c3b6c781e410a7420339f2a82fd4fd53999d9dfa75da0d8c0a",
+      "raw_start_byte": 1298,
+      "source_span": {
+        "Path": "stdlib/encoding/reader.oak",
+        "FirstLine": 12,
+        "LastLine": 12,
+        "SHA256": "d97e40e917b94a9821dabfcded5880874302de5d39d7b69b519b73f039de4cb2",
+        "Bytes": 72
+      }
+    },
+    {
+      "inventory_block_bytes": 209,
+      "inventory_block_sha256": "db90ad2b9f5e7bc2dde946d4f6bd245353d2699c030cfc4de3ae28c79e5c1910",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "encoding_sreader__Window",
+      "profiled_end_byte_exclusive": 657,
+      "profiled_start_byte": 447,
+      "raw_end_byte_exclusive": 659,
+      "raw_span_sha256": "94bc2e2b7295cb8a3d9cf579e12ca08003dd00e2ab5e6f8e8d964097ba9e0af4",
+      "raw_start_byte": 449,
+      "source_span": {
+        "Path": "stdlib/encoding/reader.oak",
+        "FirstLine": 8,
+        "LastLine": 8,
+        "SHA256": "15bc58785c9e6bbce9c9de54ebff824191d83b0064303bce572e35afa8f059a4",
+        "Bytes": 50
+      }
+    },
+    {
+      "inventory_block_bytes": 257,
+      "inventory_block_sha256": "ecf2d4ea5e6250220c45b7e5b0c0566465418b735385f7da9579f41f714586d1",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "encoding_sreader__WordRead",
+      "profiled_end_byte_exclusive": 1296,
+      "profiled_start_byte": 1038,
+      "raw_end_byte_exclusive": 1298,
+      "raw_span_sha256": "14c74bdf25165a9f335b3c19527314b12e2dafbe6944a7f9f041dcbd51f956a5",
+      "raw_start_byte": 1040,
+      "source_span": {
+        "Path": "stdlib/encoding/reader.oak",
+        "FirstLine": 11,
+        "LastLine": 11,
+        "SHA256": "aa3e7e895a3c56bbc73699d8c7ead8d38a49156c0e9dfbf6b6da72537378d0db",
+        "Bytes": 57
+      }
+    },
+    {
+      "callees": [
+        "encoding_sreader__take",
+        "endian__read_uu16_ube"
+      ],
+      "checked_ast_display_is_not_original_source": true,
+      "checked_ast_display_sha256": "123f840d1eab7c10da2cd1f93548320e33229178d648575db46ccbe32e1645aa",
+      "inventory_block_bytes": 777,
+      "inventory_block_sha256": "47d09debf96298ca4c3746efcee15286cb5e62458ab0c17de19cc5dc30903467",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "encoding_sreader__read_uu16_ube",
+      "profiled_end_byte_exclusive": 7859,
+      "profiled_start_byte": 7081,
+      "raw_end_byte_exclusive": 7861,
+      "raw_span_sha256": "a798da458de6568598ff3d9b76fac42be77c6bfd7b9e72b5dbf50a0cd0e96803",
+      "raw_start_byte": 7083,
+      "source_span": {
+        "Path": "stdlib/encoding/reader.oak",
+        "FirstLine": 50,
+        "LastLine": 60,
+        "SHA256": "f28a8df342c07ace7fe1aec533bd055523ca504f3c5d498603def44362740795",
+        "Bytes": 487
+      }
+    },
+    {
+      "callees": [
+        "encoding_sreader__take"
+      ],
+      "checked_ast_display_is_not_original_source": true,
+      "checked_ast_display_sha256": "92e5aeb17c75eeb3eb9e2e70ae467267ef64a997bec7b47e7eaf069cec366ce1",
+      "inventory_block_bytes": 534,
+      "inventory_block_sha256": "3a2d0149f98ff6c07ff77c4fdc283959d68033d71a7cda6dda5f7f1250f2e43e",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "encoding_sreader__read_uu8",
+      "profiled_end_byte_exclusive": 5784,
+      "profiled_start_byte": 5249,
+      "raw_end_byte_exclusive": 5786,
+      "raw_span_sha256": "ad1cafbb77f2636cb54eeb36b93081d8efba6aae1542697ca93e11460c2abd46",
+      "raw_start_byte": 5251,
+      "source_span": {
+        "Path": "stdlib/encoding/reader.oak",
+        "FirstLine": 44,
+        "LastLine": 48,
+        "SHA256": "81ca31f6ea21678a6bb9145b4036dbba9a6b7d0d3e2fc50e2c2ec96367cee445",
+        "Bytes": 211
+      }
+    },
+    {
+      "callees": [],
+      "checked_ast_display_is_not_original_source": true,
+      "checked_ast_display_sha256": "e71a61d34b271035c0a6798bb28742e74e9c9d6ad06c1e5e4390672df90b92fb",
+      "inventory_block_bytes": 403,
+      "inventory_block_sha256": "2b7dd3e76d1d92a646ec49993f895a85f41ab16b517a2e8d79d0e5f581d3f40c",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "encoding_sreader__remaining",
+      "profiled_end_byte_exclusive": 4490,
+      "profiled_start_byte": 4086,
+      "raw_end_byte_exclusive": 4492,
+      "raw_span_sha256": "9ee11b8db0d855d99de87780f85279694b140651f3da192158264db7a4f70a87",
+      "raw_start_byte": 4088,
+      "source_span": {
+        "Path": "stdlib/encoding/reader.oak",
+        "FirstLine": 22,
+        "LastLine": 26,
+        "SHA256": "7fc54b1b74a83ec0cc2992ef8c39cffa7bf68e9a5720fc23cab02b79e067dbfa",
+        "Bytes": 182
+      }
+    },
+    {
+      "callees": [
+        "encoding_sreader__remaining"
+      ],
+      "checked_ast_display_is_not_original_source": true,
+      "checked_ast_display_sha256": "2c8575087ea382f262205236608c8f3ae6cbaffd5a2163f35c4a8b662142a181",
+      "inventory_block_bytes": 758,
+      "inventory_block_sha256": "bf02c33e6db18098bd61c4d6d12193ffcc7e1c776d9385a28f99f01258dcb99d",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "encoding_sreader__take",
+      "profiled_end_byte_exclusive": 5249,
+      "profiled_start_byte": 4490,
+      "raw_end_byte_exclusive": 5251,
+      "raw_span_sha256": "05ab05763948bb9fa1663b2f75842c4e52302c949bf6cd39159fdc89796b72c6",
+      "raw_start_byte": 4492,
+      "source_span": {
+        "Path": "stdlib/encoding/reader.oak",
+        "FirstLine": 30,
+        "LastLine": 42,
+        "SHA256": "6a081e32b27d37fb6d65d0e2712424f5fffa86c2f934ed0e3dd2832278182aaf",
+        "Bytes": 396
+      }
+    },
+    {
+      "inventory_block_bytes": 94,
+      "inventory_block_sha256": "e58da6198fdccca24d02451d7acb218e84c43f9c4c9284ad266b37b758ebff1e",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "endian__Error",
+      "profiled_end_byte_exclusive": 447,
+      "profiled_start_byte": 352,
+      "raw_end_byte_exclusive": 449,
+      "raw_span_sha256": "ae7a3cc0d9627917c48e4c1a987c59650bc7815caea68a283e2d68aa9faad3dc",
+      "raw_start_byte": 354,
+      "source_span": {
+        "Path": "stdlib/endian.oak",
+        "FirstLine": 6,
+        "LastLine": 6,
+        "SHA256": "0c9926418d6ccf57730397aa2ef2ae23111e914407353b9ece2e6b26b8a2c877",
+        "Bytes": 35
+      }
+    },
+    {
+      "callees": [
+        "bytes__range_ufits"
+      ],
+      "checked_ast_display_is_not_original_source": true,
+      "checked_ast_display_sha256": "ca1c87c5df33da7ceace9b81421dbc120eda956327715f98edf9832eae094892",
+      "inventory_block_bytes": 643,
+      "inventory_block_sha256": "9d9e4db66e86f3c7696999ecbd10c380c5c06a45a56125cf773f90ba79602bea",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "endian__read_uu16_ube",
+      "profiled_end_byte_exclusive": 7081,
+      "profiled_start_byte": 6437,
+      "raw_end_byte_exclusive": 7083,
+      "raw_span_sha256": "26b427540ef94f8a3ab625d8ad0de817a2ade2ee5d926f4d13e3a4a34dcbc0e5",
+      "raw_start_byte": 6439,
+      "source_span": {
+        "Path": "stdlib/endian.oak",
+        "FirstLine": 25,
+        "LastLine": 32,
+        "SHA256": "da4aa4ffeac3aa3679cd82724cbff12d899862244fd83448cbcc6032879abfc8",
+        "Bytes": 297
+      }
+    },
+    {
+      "inventory_block_bytes": 569,
+      "inventory_block_sha256": "d16021353368965e806c0a2f23eed85cbcb2478b580abf8fb29dca23ee5599a7",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "smartcard_sapdu__Command",
+      "profiled_end_byte_exclusive": 2672,
+      "profiled_start_byte": 2102,
+      "raw_end_byte_exclusive": 2674,
+      "raw_span_sha256": "78d63b60f9daf3acd1930b5ff5904e486f32e7772284c1fe00299022ce7a0aba",
+      "raw_start_byte": 2104,
+      "source_span": {
+        "Path": "stdlib/smartcard/apdu.oak",
+        "FirstLine": 11,
+        "LastLine": 21,
+        "SHA256": "f53e2efacc90e7d0d6be9c19d440c96449fbd133f83653540d47af887c8a954c",
+        "Bytes": 170
+      }
+    },
+    {
+      "inventory_block_bytes": 199,
+      "inventory_block_sha256": "84195f657b009de5a465fd867a30fa1c0140da8f64b5871beddc4439ce077e51",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "smartcard_sapdu__CommandCase",
+      "profiled_end_byte_exclusive": 1800,
+      "profiled_start_byte": 1600,
+      "raw_end_byte_exclusive": 1802,
+      "raw_span_sha256": "99871925b03183146deb3dec1b3c9208f5dc90bbc815a56ef5b76482e08efca8",
+      "raw_start_byte": 1602,
+      "source_span": {
+        "Path": "stdlib/smartcard/apdu.oak",
+        "FirstLine": 8,
+        "LastLine": 8,
+        "SHA256": "cde1c0a804bcc9ce6562959ea37b77bcc7130c26a6464f06d67403ce3a0ed9ba",
+        "Bytes": 117
+      }
+    },
+    {
+      "inventory_block_bytes": 191,
+      "inventory_block_sha256": "c0798930a3e0f107a87a7622a18ed0272fa765ab2092ff2be4ec75b954384a86",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "smartcard_sapdu__Error",
+      "profiled_end_byte_exclusive": 1992,
+      "profiled_start_byte": 1800,
+      "raw_end_byte_exclusive": 1994,
+      "raw_span_sha256": "886976640102b3cde8c0e726ce27984a6bd376ee5a4e8b7e0512d3f7b0c2c00c",
+      "raw_start_byte": 1802,
+      "source_span": {
+        "Path": "stdlib/smartcard/apdu.oak",
+        "FirstLine": 9,
+        "LastLine": 9,
+        "SHA256": "5d8d1b61c83a56a9b8f0e30b75bfd83de1a35eaf2db460a610c71f21418be6f6",
+        "Bytes": 111
+      }
+    },
+    {
+      "inventory_block_bytes": 263,
+      "inventory_block_sha256": "d408e4ab93f2d85a9ed1a20c10820f5942f12f4d5eade16768928417241600e6",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "smartcard_sapdu__Header",
+      "profiled_end_byte_exclusive": 2936,
+      "profiled_start_byte": 2672,
+      "raw_end_byte_exclusive": 2938,
+      "raw_span_sha256": "ebba45132d2e45fe845b5e7539d866820e6341f3d97a7b17ee13a680d9576204",
+      "raw_start_byte": 2674,
+      "source_span": {
+        "Path": "stdlib/smartcard/apdu.oak",
+        "FirstLine": 23,
+        "LastLine": 23,
+        "SHA256": "202b7111ea1f33e00bfb30da1cda0b55cd14cc0f41932cf39fc04eaabbf638bc",
+        "Bytes": 59
+      }
+    },
+    {
+      "callees": [],
+      "checked_ast_display_is_not_original_source": true,
+      "checked_ast_display_sha256": "a9fe2036b3a7ad9d30042ca02b7f12ea83ad0486b707f342fd19e8595045a9f3",
+      "inventory_block_bytes": 447,
+      "inventory_block_sha256": "b99468c50b4567c85ed7fef5e9262c6019480e4a7453df8771a3c50ec5f804c4",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "smartcard_sapdu__command",
+      "profiled_end_byte_exclusive": 6232,
+      "profiled_start_byte": 5784,
+      "raw_end_byte_exclusive": 6234,
+      "raw_span_sha256": "f17aa00dbf7ee5087da093d5b199b19062e18c931ba08e3b520792659262fbf0",
+      "raw_start_byte": 5786,
+      "source_span": {
+        "Path": "stdlib/smartcard/apdu.oak",
+        "FirstLine": 25,
+        "LastLine": 35,
+        "SHA256": "f22f6eee7d60123e2b06c4feac16c3ad8834e93950a057882301df7bd0ceb7e1",
+        "Bytes": 300
+      }
+    },
+    {
+      "callees": [
+        "encoding_sreader__read_uu8",
+        "smartcard_sapdu__command",
+        "smartcard_sapdu__extended",
+        "smartcard_sapdu__short_udata",
+        "smartcard_sapdu__short_uresponse"
+      ],
+      "checked_ast_display_is_not_original_source": true,
+      "checked_ast_display_sha256": "e2aff587d3bf0d5e59916b0f8d413765dfdc3bc52a9768efe429524483567206",
+      "inventory_block_bytes": 2491,
+      "inventory_block_sha256": "dba74d0bd1747f2f88db72919716a5db63e055a8e871d1080836abda97f6515e",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "smartcard_sapdu__decode",
+      "profiled_end_byte_exclusive": 15888,
+      "profiled_start_byte": 13396,
+      "raw_end_byte_exclusive": 15890,
+      "raw_span_sha256": "85a65577cdc2bbbe8ea46a2abc1101da7ddc05788cc8f264e98bb534c3fa197d",
+      "raw_start_byte": 13398,
+      "source_span": {
+        "Path": "stdlib/smartcard/apdu.oak",
+        "FirstLine": 89,
+        "LastLine": 110,
+        "SHA256": "1b13e7f23e690b43fc1af396e625f7b44ed3ba5f734553d51904ef76f4c5907c",
+        "Bytes": 881
+      }
+    },
+    {
+      "callees": [
+        "encoding_sreader__read_uu16_ube",
+        "smartcard_sapdu__command",
+        "smartcard_sapdu__extended_udata",
+        "smartcard_sapdu__extended_uresponse"
+      ],
+      "checked_ast_display_is_not_original_source": true,
+      "checked_ast_display_sha256": "8a86abfabaa28c8a2cbdb4bf1e89fa6b913b4181ee180b1b6cab90b427f780cf",
+      "inventory_block_bytes": 1271,
+      "inventory_block_sha256": "f056f6436691a8198313da317ae595b5559e6fb33a2f5e0763e8ae21c2ddeb58",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "smartcard_sapdu__extended",
+      "profiled_end_byte_exclusive": 11422,
+      "profiled_start_byte": 10150,
+      "raw_end_byte_exclusive": 11424,
+      "raw_span_sha256": "577fa436d98a15a9322fa65a90f2e8344616dd485f7f106dbd9d350e90db73e0",
+      "raw_start_byte": 10152,
+      "source_span": {
+        "Path": "stdlib/smartcard/apdu.oak",
+        "FirstLine": 72,
+        "LastLine": 84,
+        "SHA256": "1dddfac1f4b2d0a31611ae05015d897fdd5ac88f8c4e1a77489b94c026e187bf",
+        "Bytes": 620
+      }
+    },
+    {
+      "callees": [
+        "encoding_sreader__read_uu16_ube",
+        "encoding_sreader__take",
+        "smartcard_sapdu__command",
+        "smartcard_sapdu__extended_uresponse"
+      ],
+      "checked_ast_display_is_not_original_source": true,
+      "checked_ast_display_sha256": "240e7a4d281c8c9e4e6b0073c4d8fb1ee9897733e3944791ac92e49577815fd7",
+      "inventory_block_bytes": 2109,
+      "inventory_block_sha256": "16f406e00191c54d6f8518039e36499f60489d0a3ae9de5868ca9f697ae697c8",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "smartcard_sapdu__extended_udata",
+      "profiled_end_byte_exclusive": 10150,
+      "profiled_start_byte": 8040,
+      "raw_end_byte_exclusive": 10152,
+      "raw_span_sha256": "dfaeb8b4d3d83139b73af8b4c97f15a027dc0058228f41bab48bd9781fd70913",
+      "raw_start_byte": 8042,
+      "source_span": {
+        "Path": "stdlib/smartcard/apdu.oak",
+        "FirstLine": 56,
+        "LastLine": 70,
+        "SHA256": "0416c6fcb7218e8c2ba01af3d37a809451ef0fa59e6c8b602067d1635e1dbb28",
+        "Bytes": 739
+      }
+    },
+    {
+      "callees": [],
+      "checked_ast_display_is_not_original_source": true,
+      "checked_ast_display_sha256": "c2d7c023e63e361fdfd135b481b65eadf03b7fee93413e3418a46ec44f9b13ba",
+      "inventory_block_bytes": 180,
+      "inventory_block_sha256": "4cece958539d3b1186648f014ff46c178062bef5d2f7c92f4246553216ac3816",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "smartcard_sapdu__extended_uresponse",
+      "profiled_end_byte_exclusive": 8040,
+      "profiled_start_byte": 7859,
+      "raw_end_byte_exclusive": 8042,
+      "raw_span_sha256": "658e33ee97b0da346d45d51f8171834335b77305abe1bff3940a08beec58b9ae",
+      "raw_start_byte": 7861,
+      "source_span": {
+        "Path": "stdlib/smartcard/apdu.oak",
+        "FirstLine": 38,
+        "LastLine": 38,
+        "SHA256": "f5a1001ae29dd5a7cce18777cd071e4eb3e820e88d1661915f2edadc497e6bb0",
+        "Bytes": 87
+      }
+    },
+    {
+      "callees": [
+        "encoding_sreader__read_uu8",
+        "encoding_sreader__take",
+        "smartcard_sapdu__command",
+        "smartcard_sapdu__short_uresponse"
+      ],
+      "checked_ast_display_is_not_original_source": true,
+      "checked_ast_display_sha256": "05408d5cb1e851c61f2254e2825f0109128324561c5b1e5e101d5d3bc8ec3a04",
+      "inventory_block_bytes": 1799,
+      "inventory_block_sha256": "c8b97775ed39fbbd969aa8828844f48dd1da7c39e341836d14413497090796cf",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "smartcard_sapdu__short_udata",
+      "profiled_end_byte_exclusive": 13396,
+      "profiled_start_byte": 11596,
+      "raw_end_byte_exclusive": 13398,
+      "raw_span_sha256": "abdb11de8b7d2ec9d8d1341550e75f6d0879b094f9d0ff35f291af3b2f65a353",
+      "raw_start_byte": 11598,
+      "source_span": {
+        "Path": "stdlib/smartcard/apdu.oak",
+        "FirstLine": 40,
+        "LastLine": 54,
+        "SHA256": "9a688fbf26b075325024630ee75cf5cb0f121468833fe18fefb2630becf6d643",
+        "Bytes": 743
+      }
+    },
+    {
+      "callees": [],
+      "checked_ast_display_is_not_original_source": true,
+      "checked_ast_display_sha256": "416ae8ae2b5087bf65b11de9f37dfd750d31199ef70ab023ba6072e1e8d17e2f",
+      "inventory_block_bytes": 173,
+      "inventory_block_sha256": "2bbd000c4014269293dd9f52e5f04177f108ddee679922eae1b0e85a00be6fa0",
+      "inventory_block_trailing_newlines_normalized": true,
+      "name": "smartcard_sapdu__short_uresponse",
+      "profiled_end_byte_exclusive": 11596,
+      "profiled_start_byte": 11422,
+      "raw_end_byte_exclusive": 11598,
+      "raw_span_sha256": "574ac31067f33fe7f28a445764f3965609fdcfd0ad985b3d2fddae8f89f4e372",
+      "raw_start_byte": 11424,
+      "source_span": {
+        "Path": "stdlib/smartcard/apdu.oak",
+        "FirstLine": 37,
+        "LastLine": 37,
+        "SHA256": "13a638e1fe912992c8b499320c045d05e8b9e30d742ad8c26315c4430e391ad6",
+        "Bytes": 80
+      }
+    }
+  ],
+  "fixture_pins": [
+    {
+      "Path": "main.oak",
+      "Module": "",
+      "SHA256": "c8d040ccb0192ff1052f8c322fee2e2459f70fb635aee163777edb5c326761e1",
+      "Bytes": 206
+    },
+    {
+      "Path": "oak.mod",
+      "Module": "",
+      "SHA256": "b1f1712f6263e579e8bafda81102e071699bff1424ca715674dd3b26a2323843",
+      "Bytes": 45
+    }
+  ],
+  "generic_carriers": {
+    "byte": "Result_encoding_sreader__ByteRead_encoding_sreader__Error",
+    "command": "Result_smartcard_sapdu__Command_smartcard_sapdu__Error",
+    "endian": "Result_u16_endian__Error",
+    "read": "Result_encoding_sreader__WordRead_encoding_sreader__Error",
+    "remaining": "Result_u32_encoding_sreader__Error",
+    "response": "Option_u32",
+    "take": "Result_encoding_sreader__RangeRead_encoding_sreader__Error"
+  },
+  "lean_invocations": 0,
+  "namespace": "Oak.Stdlib.APDUExtracted",
+  "profiled_bytes": 15917,
+  "profiled_sha256": "55d97ce34d1a3436156ab6d7df32538f5f3a0be530ab27238494a19dfaedecc6",
+  "raw_bytes": 15919,
+  "raw_sha256": "0ea49a1772106b74d94a73d5a411ca8db6e799a8d145e5522306860889f7ba4b",
+  "roots": [
+    "smartcard_sapdu__decode"
+  ],
+  "schema_version": 1,
+  "source_pins": [
+    {
+      "Path": "stdlib/smartcard/apdu.oak",
+      "Module": "smartcard/apdu",
+      "SHA256": "953113da1f6bcb91c8e8c3e038fdc179a095647e1ca09fb337e2308aa9cc3b07",
+      "Bytes": 4416
+    },
+    {
+      "Path": "stdlib/encoding/reader.oak",
+      "Module": "encoding/reader",
+      "SHA256": "262a8e1571054f5ffd0ec6231571bd8265fbac7b08463a3058c1de86907576d6",
+      "Bytes": 2280
+    },
+    {
+      "Path": "stdlib/bytes.oak",
+      "Module": "bytes",
+      "SHA256": "e4da6755200dbcfe409f9ec11ea928515d7fcd91838ba63e284d1c9f30603f7c",
+      "Bytes": 2996
+    },
+    {
+      "Path": "stdlib/endian.oak",
+      "Module": "endian",
+      "SHA256": "7e7232c6f9fae60c97c1ea135c27e4d83b436c116812b2153b2e52d4b9dfc78d",
+      "Bytes": 5553
+    },
+    {
+      "Path": "stdlib/std.oak",
+      "Module": "",
+      "SHA256": "10bbc09408ba76fccbac59f06936411e29eff8b81777c788b2b77b8e57eaa0e7",
+      "Bytes": 31689
+    }
+  ],
+  "status": "extracted_not_proved",
+  "tree_requires_outer_authentication": "b62ada7603f8311e2d25cf135a04464b4eb24323"
+}

@@ -141,6 +141,28 @@ theorem decodeGate_binary {record : EncodedGate} {gate : RawGate}
               simpa [leftDecoded, rightDecoded, operation] using decoded.symm
     · simp at decoded
 
+/-- Public mux decoding characterization. -/
+theorem decodeGate_ite {record : EncodedGate} {gate : RawGate}
+    (operation : record.op = 3) (decoded : record.decode? = some gate) :
+    ∃ condition thenValue elseValue,
+      literalOfEdge? record.x = some condition ∧
+      literalOfEdge? record.y = some thenValue ∧
+      literalOfEdge? record.z = some elseValue ∧
+      gate = .iteGate record.out condition thenValue elseValue := by
+  unfold EncodedGate.decode? at decoded
+  simp only [EncodedGate.decodeWithProof?, operation] at decoded
+  cases conditionDecoded : literalOfEdge? record.x with
+  | none => simp [conditionDecoded] at decoded
+  | some condition =>
+      cases thenDecoded : literalOfEdge? record.y with
+      | none => simp [conditionDecoded, thenDecoded] at decoded
+      | some thenValue =>
+          cases elseDecoded : literalOfEdge? record.z with
+          | none => simp [conditionDecoded, thenDecoded, elseDecoded] at decoded
+          | some elseValue =>
+              refine ⟨condition, thenValue, elseValue, rfl, rfl, rfl, ?_⟩
+              simpa [conditionDecoded, thenDecoded, elseDecoded] using decoded.symm
+
 /-- Every raw operand has a nonzero DIMACS index below the next allocation ID. -/
 def OperandsBefore (next : Nat) (gate : RawGate) : Prop :=
   ∀ operand ∈ gate.operands, 0 < operand.index ∧ operand.index < next

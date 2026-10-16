@@ -384,7 +384,11 @@ func canonicalLinear(t *term, memo map[*term]*term) *term {
 			break
 		}
 		if left != t.left || right != t.right {
-			out = binaryTerm(t.op, left, right)
+			if t.op == "ror" {
+				out = rebuildROR(t, left, right)
+			} else {
+				out = binaryTerm(t.op, left, right)
+			}
 		}
 	case termIte:
 		cond, left, right := canonicalLinear(t.cond, memo), canonicalLinear(t.left, memo), canonicalLinear(t.right, memo)

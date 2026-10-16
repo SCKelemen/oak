@@ -108,3 +108,23 @@ The goal is not to replace mature cryptographic analysis tools. It is to minimiz
 ## Current proof boundary
 
 The branch now deliberately spans three different evidence classes: static typestate/resource rejection for one-use authority, invariant theorems over reachable protocol states, and executable transition tests. None of those imply symbolic or computational cryptographic security. The next qualitatively new capability is therefore not another Boolean protocol field; it is an explicit adversary/network model and a projection to a crypto-specific verifier.
+
+## Bounded reader foundation: current evidence
+
+The first shared protocol foundation now has a bounded reader and a partial
+seven-case command-APDU length parser, with portable interpreter/C fixtures.
+A separate abstract model proves the structural length cases and bounds.
+The next accepted bridge covers actual qualified extraction of the reader's
+window, remaining, take and big-endian-word definitions: 117 audited named
+propositions, including 18 finite controls, under the standard three Lean axioms.
+The fresh-source CI profile binds the complete extraction bytes and receipt before
+recompiling and auditing those generated-definition proofs.
+
+This is one concrete step toward “verified all the way.” The remaining links are
+explicit: Oak-to-Lean extractor correctness; correspondence of physical reads,
+aliasing and nonmutation to the logical array model; compiler/emitted-machine
+correctness; and refinement of the APDU parser itself. Protocol semantics,
+authorization, secure messaging, cryptographic primitives and device behavior
+still need their own specifications and evidence. No FIDO2/PIV/OpenPGP or full
+ISO conformance follows from this parser or generated-reader proof. See
+[the evaluation scope](../verification/reader-apdu-model-evaluation.md).

@@ -23,6 +23,12 @@ import (
 // functions, helpers, globals, and bodies are not part of the surface.
 func (cg *CodeGenerator) GenerateHeader(program *ast.Program, tc *typechecker.TypeChecker) (string, error) {
 	cg.typeChecker = tc
+	for _, stmt := range program.Statements {
+		if pkg, ok := stmt.(*ast.PackageStatement); ok {
+			cg.packageName = pkg.Name.Value
+			break
+		}
+	}
 	guard := headerGuard(cg.packageName)
 	cg.write(fmt.Sprintf("/* Generated C header from Oak: package %s. Include it from C; link the generated C. */\n", cg.packageName))
 	cg.write(fmt.Sprintf("#ifndef %s\n#define %s\n\n", guard, guard))

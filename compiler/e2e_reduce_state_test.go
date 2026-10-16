@@ -44,7 +44,7 @@ func TestE2EReduceFoldAndTreeMap(t *testing.T) {
 	}
 	// A step that performs an effect is not a fold step.
 	bad := strings.Replace(reduceStateProgram, "step: (s: Top, x: i32): Top effects { } = merge(s, lift(x))",
-		"host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern(\"oak_host_read\")\nstep: (s: Top, x: i32): Top = merge(s, lift(x + i32_bits_u32(u32(host_read(c.UInt32(0))))))", 1)
+		"host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern(\"fixture_host_read\")\nstep: (s: Top, x: i32): Top = merge(s, lift(x + i32_bits_u32(u32(host_read(c.UInt32(0))))))", 1)
 	root = writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": bad})
 	_, err := New().WithPackageDir(root).EmitC().Get()
 	if err == nil || !strings.Contains(err.Error(), "OAK-E0105") {

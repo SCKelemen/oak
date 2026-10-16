@@ -12,6 +12,7 @@ import (
 	"github.com/SCKelemen/oak/codegen"
 	"github.com/SCKelemen/oak/diagnostic"
 	"github.com/SCKelemen/oak/evaluator"
+	"github.com/SCKelemen/oak/internal/nativetiming"
 	"github.com/SCKelemen/oak/lsp"
 	"github.com/SCKelemen/oak/nativegen"
 	"github.com/SCKelemen/oak/object"
@@ -30,9 +31,19 @@ import (
 // are reported), and its Oak body stays as the portable realization. A
 // function outside the backend's subset is left to the C backend, with the
 // reason reported as information.
-func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker) nativeLowering {
+func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.TypeChecker, suppliedFunctions []*asm.Function, suppliedVerdicts map[string]asm.Verdict, verification verificationRun) nativeLowering {
 	var diagnostics []*diagnostic.Diagnostic
 	result := nativeLowering{Verdicts: map[string]asm.Verdict{}, Fallbacks: map[string]string{}}
+	var buildReport *NativeBuildReport
+	buildRows := map[string]*NativeBuildFunction{}
+	if comp.nativeBuildReport != nil {
+		inventory := nativeBuildInventory(root, suppliedFunctions)
+		buildReport = &NativeBuildReport{SchemaVersion: 2, Inventory: inventory, Functions: make([]NativeBuildFunction, len(inventory.Eligible)), Supplied: nativeBuildSuppliedRows(inventory.Supplied, suppliedVerdicts)}
+		for i, input := range inventory.Eligible {
+			buildReport.Functions[i] = NativeBuildFunction{Input: input, Status: "unfinished", Callees: []string{}, Validations: []NativeBuildCandidate{}}
+			buildRows[input.Name] = &buildReport.Functions[i]
+		}
+	}
 	functions := map[string]*ast.FunctionStatement{}
 	externs := map[string]*ast.FunctionStatement{}
 	records := map[string]*ast.RecordLiteral{}
@@ -82,10 +93,7 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	// The verdict cache (compiler/verdict_cache.go), the optimization
 	// report (opt.Report; printed under -opt-report or OAK_OPT_REPORT), and
 	// the lane's candidate search, shared by every body.
-	cacheDir := verdictCacheDir()
-	if comp.options.VerifyFresh {
-		cacheDir = ""
-	}
+	cacheDir := verification.cacheDir
 	report := &opt.Report{}
 	search := nativeSearch(comp.options.Target.AsmArch(), report)
 	var lowered []*asm.Function
@@ -156,9 +164,39 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		// the seam checker and the verifier judge each, and the cheapest
 		// proven body is kept, else the strongest verdict, the plain lowering
 		// last. A refused or weaker form is reported as set aside.
-		driver := &nativeDriver{source: source, functions: functions, externs: externs, records: records, adts: adts, constants: constants, tc: tc, tcFingerprint: tcFingerprint, symbols: symbols, declarations: declarations, cacheDir: cacheDir, verdicts: map[*asm.Function]asm.Verdict{}, verified: &verified, fromCache: &fromCache}
+		driver := &nativeDriver{source: source, functions: functions, externs: externs, records: records, adts: adts, constants: constants, tc: tc, tcFingerprint: tcFingerprint, symbols: symbols, declarations: declarations, cacheDir: cacheDir, verificationOptions: verification.options, verdicts: map[*asm.Function]asm.Verdict{}, verified: &verified, fromCache: &fromCache}
 		facts := nativegen.FunctionFacts(source, tc)
-		selection, err := search.Run(fn.Name.Value, opt.Identity(nativegen.PlainLane(lane)), facts, driver)
+		selection, err := func() (selection *opt.Selection, err error) {
+			finish := nativetiming.BeginSearch(fn.Name.Value)
+			returned := false
+			defer func() {
+				considered, materialized, validations := 0, 0, 0
+				if selection != nil {
+					considered, materialized, validations = selection.Considered, selection.Materialized, len(selection.Validations)
+				}
+				finish(considered, materialized, validations, err != nil || !returned)
+			}()
+			selection, err = driver.withMaterializationRecipe(func() (*opt.Selection, error) {
+				if row := buildRows[fn.Name.Value]; row != nil {
+					row.Considered = 1
+				}
+				selected, failure := search.Run(fn.Name.Value, opt.Identity(nativegen.PlainLane(lane)), facts, driver)
+				if row := buildRows[fn.Name.Value]; row != nil && selected != nil {
+					row.Considered, row.Materialized = selected.Considered, selected.Materialized
+					chosen := nativeBuildCandidate(driver, selected.Candidate, selected.Verdict)
+					row.Selected = &chosen
+					// Preserve the actual selection's dependencies even when
+					// the later vector-callee fixpoint demotes this body to C.
+					row.Callees = append([]string{}, driver.verdicts[selected.Candidate.Body.(*asm.Function)].Callees...)
+					for _, validation := range selected.Validations {
+						row.Validations = append(row.Validations, nativeBuildCandidate(driver, validation.Candidate, validation.Verdict))
+					}
+				}
+				return selected, failure
+			})
+			returned = true
+			return selection, err
+		}()
 		if stats := driver.compileSession.ReallocationStats(); os.Getenv("OAK_NATIVE_TIMING") != "" && stats.Requests > 0 {
 			fmt.Fprintf(os.Stderr, "timing: %s allocation reuse: %d/%d hits, %d entries, %d retained payload bytes\n",
 				fn.Name.Value, stats.Hits, stats.Requests, stats.Entries, stats.PayloadBytes)
@@ -290,6 +328,10 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 	}
 	result.Report = report
 	result.Functions, result.Data, result.Diagnostics = lowered, data, diagnostics
+	if buildReport != nil {
+		finishNativeBuildReport(buildReport, result)
+		comp.nativeBuildReport(*buildReport)
+	}
 	return result
 }
 

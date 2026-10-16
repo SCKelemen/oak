@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/internal/nativetiming"
 )
 
 // TestOakSolverAgrees runs the default prover — the solver written in Oak
@@ -106,6 +108,17 @@ func TestOakShellAgreesNative(t *testing.T) {
 	if runtime.GOARCH != "arm64" {
 		t.Skip("the native backend's host lane is AArch64")
 	}
+	// Bounded status sampling survives the package timeout in the native shard's
+	// existing stderr/JSON artifacts, without printing source or witness data.
+	timing, err := nativetiming.Start(os.Stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := timing.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	t.Setenv("OAK_SOLVER_NATIVE", "1")
 	shellAgrees(t)
 }

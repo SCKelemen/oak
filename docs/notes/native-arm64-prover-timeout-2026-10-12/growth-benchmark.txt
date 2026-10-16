@@ -1,0 +1,12 @@
+goos: linux
+goarch: amd64
+pkg: github.com/SCKelemen/oak/asm
+cpu: AMD EPYC 9V74 80-Core Processor                
+BenchmarkBDDTableGrowth/doubling-8         	      10	  87025550 ns/op	66060316 B/op	       6 allocs/op
+BenchmarkBDDTableGrowth/doubling-8         	      10	  77114792 ns/op	66060344 B/op	       6 allocs/op
+BenchmarkBDDTableGrowth/doubling-8         	      10	  61108503 ns/op	66060289 B/op	       6 allocs/op
+BenchmarkBDDTableGrowth/bounded-fourfold-8 	      10	  71095067 ns/op	55574561 B/op	       4 allocs/op
+BenchmarkBDDTableGrowth/bounded-fourfold-8 	      10	  62924504 ns/op	55574585 B/op	       4 allocs/op
+BenchmarkBDDTableGrowth/bounded-fourfold-8 	      10	  75329298 ns/op	55574539 B/op	       4 allocs/op
+PASS
+ok  	github.com/SCKelemen/oak/asm	5.013s

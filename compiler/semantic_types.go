@@ -263,31 +263,7 @@ func semanticTypeName(expression ast.Expression) (string, error) {
 		return left + " & " + right, nil
 
 	case *ast.IndexExpression:
-		if expression == nil {
-			return "", fmt.Errorf("nil indexed type")
-		}
-		base, err := semanticTypeName(expression.Left)
-		if err != nil {
-			return "", err
-		}
-		switch index := expression.Index.(type) {
-		case *ast.Identifier:
-			if index.Value == "" {
-				return "[]" + base, nil
-			}
-			if index.Value == "*" {
-				return "[*]" + base, nil
-			}
-			return appendGenericArgument(base, index.Value), nil
-		case *ast.IntegerLiteral:
-			return "[" + strconv.FormatInt(index.Value, 10) + "]" + base, nil
-		default:
-			argument, err := semanticTypeName(expression.Index)
-			if err != nil {
-				return "", err
-			}
-			return appendGenericArgument(base, argument), nil
-		}
+		return indexedTypeName(expression, semanticTypeName)
 
 	case *ast.RecordLiteral:
 		fields, err := buildRecordFields(expression)
@@ -305,11 +281,102 @@ func semanticTypeName(expression ast.Expression) (string, error) {
 	}
 }
 
-func appendGenericArgument(base, argument string) string {
-	if strings.HasSuffix(base, "]") {
-		if open := strings.LastIndex(base, "["); open >= 0 {
-			return base[:len(base)-1] + ", " + argument + "]"
+// indexedTypeName uses the parser's constructor tag: the same integer or
+// identifier can be an array extent or a generic argument. The renderer keeps
+// nested types in the caller's format (source-order semantic types or canonical
+// API identities), rather than flattening their printed bracket suffixes.
+func indexedTypeName(expression *ast.IndexExpression, render func(ast.Expression) (string, error)) (string, error) {
+	if expression == nil || expression.Left == nil || expression.Index == nil {
+		return "", fmt.Errorf("incomplete indexed type")
+	}
+	switch expression.TypeForm {
+	case ast.IndexArrayType:
+		base, err := render(expression.Left)
+		if err != nil {
+			return "", err
+		}
+		index, err := typeConstExpression(expression.Index)
+		if err != nil {
+			return "", err
+		}
+		if _, infix := expression.Index.(*ast.InfixExpression); infix {
+			index = strings.TrimSuffix(strings.TrimPrefix(index, "("), ")")
+		}
+		if expression.Align != 0 {
+			if index != "" {
+				index += " "
+			}
+			index += "align " + strconv.FormatUint(uint64(expression.Align), 10)
+		}
+		return "[" + index + "]" + base, nil
+	case ast.IndexGenericType:
+		var arguments []ast.Expression
+		var base ast.Expression = expression
+		for {
+			indexed, ok := base.(*ast.IndexExpression)
+			if !ok || indexed.TypeForm != ast.IndexGenericType {
+				break
+			}
+			if indexed.Left == nil || indexed.Index == nil {
+				return "", fmt.Errorf("incomplete generic type")
+			}
+			arguments = append(arguments, indexed.Index)
+			base = indexed.Left
+		}
+		name, err := render(base)
+		if err != nil {
+			return "", err
+		}
+		parts := make([]string, len(arguments))
+		for i, argument := range arguments {
+			var part string
+			switch argument.(type) {
+			case *ast.IntegerLiteral:
+				part, err = typeConstExpression(argument)
+			default:
+				part, err = render(argument)
+			}
+			if err != nil {
+				return "", err
+			}
+			parts[len(parts)-1-i] = part
+		}
+		return name + "[" + strings.Join(parts, ", ") + "]", nil
+	default:
+		return "", fmt.Errorf("value indexing is not a type constructor")
+	}
+}
+
+// typeConstExpression preserves symbolic extents and their grouping while
+// normalizing integer spellings. It does not guess an array's length or evaluate
+// arithmetic involving an uninstantiated const parameter.
+func typeConstExpression(expression ast.Expression) (string, error) {
+	switch value := expression.(type) {
+	case *ast.Identifier:
+		return value.Value, nil
+	case *ast.IntegerLiteral:
+		return strconv.FormatUint(value.Magnitude(), 10), nil
+	case *ast.InfixExpression:
+		switch value.Operator {
+		case "+", "-", "*", "/", "%":
+			left, err := typeConstExpression(value.Left)
+			if err != nil {
+				return "", err
+			}
+			right, err := typeConstExpression(value.Right)
+			if err != nil {
+				return "", err
+			}
+			return "(" + left + " " + value.Operator + " " + right + ")", nil
+		}
+	case *ast.PrefixExpression:
+		if value.Operator == "+" || value.Operator == "-" {
+			right, err := typeConstExpression(value.Right)
+			if err != nil {
+				return "", err
+			}
+			return "(" + value.Operator + right + ")", nil
 		}
 	}
-	return base + "[" + argument + "]"
+	return "", fmt.Errorf("unsupported type constant expression %T", expression)
 }

@@ -3,6 +3,8 @@ package compiler
 import (
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/typechecker"
 )
 
 // The derived record reader's hot path (docs/spec/71-codecs.md section 20):
@@ -33,8 +35,7 @@ func TestE2EDerivedJsonReaderDecodesScalarsInline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compilation failed: %v", err)
 	}
-	reader := output[strings.Index(output, "oak___oak_json_read_Bench( oak_view_u8 src, u32 offset ) {"):]
-	reader = reader[:strings.Index(reader, "\n}\n")]
+	reader := cFunctionBody(t, output, typechecker.CFunctionSymbol("main", codecName("read", "Bench")))
 	for _, want := range []string{
 		"oak_json_scan_integer( src, colon.end )",  // the u64 field, in place
 		"oak_json_scan_integer( src, at )",         // the array elements, from the element start
@@ -44,7 +45,7 @@ func TestE2EDerivedJsonReaderDecodesScalarsInline(t *testing.T) {
 		// ASCII (escapes to ASCII included); only other shapes reach the
 		// tokenizer (section 20).
 		"oak_json_key_ascii( src, at, (oak_span_u8){ keybuf.v, 64 } )",
-		"oak___oak_json_keydecoded_Bench( oak_view_subslice_u8( keyview",
+		typechecker.CFunctionSymbol("main", codecName("keydecoded", "Bench")) + "( oak_view_subslice_u8( keyview",
 		// The fixed integer array: one structural pass over the span, then
 		// every element parsed from its own extent (section 21).
 		"oak_json_array_index( src, at, (oak_span_u32){ marks.v, 4 } )",
@@ -54,15 +55,14 @@ func TestE2EDerivedJsonReaderDecodesScalarsInline(t *testing.T) {
 			t.Fatalf("record reader lacks %q:\n%s", want, reader)
 		}
 	}
-	for _, unwanted := range []string{"oak___oak_json_read_u64( src", "oak___oak_json_read_i32( src", "oak___oak_json_read_Bool( src", "oak_byte_pack_le_u32( src", "oak_byte_pack_le_u64( src", "oak_JsonToken separator"} {
+	for _, unwanted := range []string{typechecker.CFunctionSymbol("main", codecName("read", "u64")) + "( src", typechecker.CFunctionSymbol("main", codecName("read", "i32")) + "( src", typechecker.CFunctionSymbol("main", codecName("read", "Bool")) + "( src", "oak_byte_pack_le_u32( src", "oak_byte_pack_le_u64( src", "oak_JsonToken separator"} {
 		if strings.Contains(reader, unwanted) {
 			t.Fatalf("record reader still calls the per-type reader %q:\n%s", unwanted, reader)
 		}
 	}
 	// The scanner's word loop loads through proven packs: its guard is the
 	// wrap-free form the checker recognizes, and no range check remains.
-	scanner := output[strings.Index(output, "oak_json_scan_integer( oak_view_u8 src, u32 offset ) {"):]
-	scanner = scanner[:strings.Index(scanner, "\n}\n")]
+	scanner := cFunctionBody(t, output, typechecker.CFunctionSymbol("main", "json_scan_integer"))
 	for _, unwanted := range []string{"oak_byte_pack_le_u64( src", "oak_byte_pack_le_u32( src", "oak_view_index_u8("} {
 		if strings.Contains(scanner, unwanted) {
 			t.Fatalf("scanner still carries a range check %q:\n%s", unwanted, scanner)
@@ -76,13 +76,11 @@ func TestE2EDerivedJsonReaderDecodesScalarsInline(t *testing.T) {
 	// The key classifier spells its field names as views of string
 	// literals — static storage, no stores per call — and the key decoder
 	// stores under its own guard.
-	classifier := output[strings.Index(output, "oak___oak_json_key_Bench( oak_view_u8 src, oak_JsonToken key ) {"):]
-	classifier = classifier[:strings.Index(classifier, "\n}\n")]
+	classifier := cFunctionBody(t, output, typechecker.CFunctionSymbol("main", codecName("key", "Bench")))
 	if strings.Count(classifier, "oak_str_bytes(") != 3 || strings.Contains(classifier, "_data.v[") {
 		t.Fatalf("key classifier does not spell its keys as string literals:\n%s", classifier)
 	}
-	decoder := output[strings.Index(output, "oak_json_key_decode( oak_view_u8 src, oak_JsonToken key, oak_span_u8 dst ) {"):]
-	decoder = decoder[:strings.Index(decoder, "\n}\n")]
+	decoder := cFunctionBody(t, output, typechecker.CFunctionSymbol("main", "json_key_decode"))
 	for _, unwanted := range []string{"oak_span_store_u8(", "oak_view_index_u8("} {
 		if strings.Contains(decoder, unwanted) {
 			t.Fatalf("key decoder still carries a range check %q:\n%s", unwanted, decoder)

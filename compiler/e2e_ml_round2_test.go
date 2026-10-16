@@ -139,7 +139,7 @@ main: (): i32 = {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
 	hostReading := `
-host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern("oak_host_read")
+host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern("fixture_host_read")
 peek: (x: u32): u32 = u32(host_read(c.UInt32(x)))
 Step: type = struct { run: (u32) -> u32 effects { } }
 main: (): i32 = {

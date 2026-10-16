@@ -284,6 +284,4 @@ func postScheduleAliasLabelCleanup(fn *asm.Function) int {
 
 // PostScheduledCleanup reports instructions removed by the verifier-gated
 // cleanup pass over the final scheduled spelling.
-func PostScheduledCleanup(fn *asm.Function) int { return postScheduledCleanup[fn] }
-
-var postScheduledCleanup = map[*asm.Function]int{}
+func PostScheduledCleanup(fn *asm.Function) int { return readLoweringMetadata(fn).postScheduledCleanup }

@@ -1989,7 +1989,7 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 			}
 			if err == nil {
 				out.Globals = verificationGlobals(fn, functions, withArrayAggregates(lane.Globals, lane.Aggregates), out.Globals)
-				optIRLowered[out] = lane.OptIRChanges
+				editLoweringMetadata(out).optIRLowered = lane.OptIRChanges
 			}
 		} else {
 			out, err = compileArm64(fn, functions, records, adts, constants, lane.Globals, lane.Aggregates, tc, lane.ElideProven, lane.GuardLines, lane.Strength, lane.VectorHomes, lane.LoopArrayHomes, lane.LoopResultHomes, lane.ReuseFlags, lane.Tables, lane.PackedStackArgs, !lane.NoReductions, lane.UnrollFills, lane.HoistInvariants, lane.RotateLoops, lane.VectorBlocks, lane.MultiplyAdd, lane.ValueSelect, lane.VectorReductions, lane.VectorMaps, lane.VectorFolds, lane.UnrollVectorMaps, lane.UnrollVectorFolds, lane.VectorLanes, lane.UnrollConstant, lane.UnrollSmall)
@@ -1999,10 +1999,10 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 		}
 		if lane.Cleanup {
 			// Late copy and branch cleanup (nativegen/cleanup.go).
-			out.Items, cleanedCopies[out] = cleanupItems(out.Items)
+			out.Items, editLoweringMetadata(out).cleanedCopies = cleanupItems(out.Items)
 		}
 		if lane.ShareVectorAddresses {
-			out.Items, sharedVectorAddressCount[out] = shareVectorAddresses(out.Items)
+			out.Items, editLoweringMetadata(out).sharedVectorAddressCount = shareVectorAddresses(out.Items)
 		}
 		// Global register reallocation (machine.Reallocate): the body's
 		// webs recolored and its copies coalesced; a lift the package
@@ -2026,7 +2026,7 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 				return nil, unsupported("%v", err)
 			}
 			out.Items, out.Clobbers = trimmed.Items, trimmed.Clobbers
-			trimmedCalleeSaves[out] = sites
+			editLoweringMetadata(out).trimmedCalleeSaves = sites
 		}
 		if lane.ElideEmptyFrame {
 			if !lane.TrimCalleeSaves {
@@ -2037,13 +2037,13 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 				return nil, unsupported("%v", err)
 			}
 			out.Items, out.Frame = elided.Items, elided.Frame
-			elidedEmptyFrames[out] = frames
+			editLoweringMetadata(out).elidedEmptyFrames = frames
 		}
 		if lane.CarryLoopIndices {
-			out.Items, carriedLoopIndices[out] = carryLoopIndices(out.Items)
+			out.Items, editLoweringMetadata(out).carriedLoopIndices = carryLoopIndices(out.Items)
 		}
 		if lane.ElideRedundantGuards {
-			out.Items, redundantGuards[out] = elideRedundantGuards(out.Items)
+			out.Items, editLoweringMetadata(out).redundantGuards = elideRedundantGuards(out.Items)
 		}
 		return scheduleLane(lane, out)
 	case asm.ArchRV64:
@@ -2087,7 +2087,7 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 			}
 			if err == nil {
 				out.Globals = verificationGlobals(fn, functions, withArrayAggregates(lane.Globals, lane.Aggregates), out.Globals)
-				optIRLowered[out] = lane.OptIRChanges
+				editLoweringMetadata(out).optIRLowered = lane.OptIRChanges
 			}
 		} else {
 			out, err = compileRV64(fn, functions, records, adts, constants, tc, lane.SoftFloat, lane.Tables, lane.Globals, lane.Vector, !lane.NoReductions, lane.UnrollFills, lane.VectorMaps, lane.ElideProven, lane.GuardLines, lane.Strength)
@@ -2181,7 +2181,7 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 			return nil, unsupported("%v", err)
 		}
 		out.Items = fused.Items
-		fusedOf[out] = n
+		editLoweringMetadata(out).fusedOf = n
 	}
 	if lane.FuseExits {
 		fused, n, err := machine.FuseExits(out)
@@ -2189,7 +2189,7 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 			return nil, unsupported("%v", err)
 		}
 		out.Items = fused.Items
-		fusedExitsOf[out] = n
+		editLoweringMetadata(out).fusedExitsOf = n
 	}
 	if lane.Schedule {
 		scheduled, moved, err := machine.Schedule(out)
@@ -2197,44 +2197,44 @@ func scheduleLane(lane Lane, out *asm.Function) (*asm.Function, error) {
 			return nil, unsupported("%v", err)
 		}
 		out.Items = scheduled.Items
-		scheduledOf[out] = moved
+		editLoweringMetadata(out).scheduledOf = moved
 	}
 	// Record-base sharing recognizes final local materializations, including
 	// nearby independent instructions interleaved by this scheduler. Running it
 	// afterward also prevents scheduling from shortening or splitting the
 	// deliberately longer-lived carried value.
 	if lane.ShareRecordBases && lane.Schedule {
-		sharedRecordBases[out] = shareRecordBase(out)
+		editLoweringMetadata(out).sharedRecordBases = shareRecordBase(out)
 	}
 	if lane.ReuseRecordBaseDestinations && lane.ShareRecordBases && lane.Schedule {
-		reusedRecordBaseDestinations[out] = reuseRecordBaseDestination(out)
+		editLoweringMetadata(out).reusedRecordBaseDestinations = reuseRecordBaseDestination(out)
 	}
-	if lane.ReuseRemainingRecordBaseDestinations && reusedRecordBaseDestinations[out] > 0 {
-		reusedRemainingRecordBaseDestinations[out] = reuseRemainingRecordBaseDestinations(out)
+	if lane.ReuseRemainingRecordBaseDestinations && readLoweringMetadata(out).reusedRecordBaseDestinations > 0 {
+		editLoweringMetadata(out).reusedRemainingRecordBaseDestinations = reuseRemainingRecordBaseDestinations(out)
 	}
 	if lane.ShareGlobalAddresses && lane.Schedule {
-		sharedGlobalAddresses[out] = shareGlobalAddresses(out)
+		editLoweringMetadata(out).sharedGlobalAddresses = shareGlobalAddresses(out)
 	}
 	if lane.ForwardGlobalLoads && lane.Schedule {
-		forwardedGlobalLoads[out] = forwardGlobalLoads(out)
+		editLoweringMetadata(out).forwardedGlobalLoads = forwardGlobalLoads(out)
 	}
 	if lane.ElideGlobalLoadMasks && lane.ForwardGlobalLoads && lane.Schedule {
-		elidedGlobalLoadMasks[out] = elideGlobalLoadMasks(out)
+		editLoweringMetadata(out).elidedGlobalLoadMasks = elideGlobalLoadMasks(out)
 	}
 	if lane.PostScheduleCleanup {
-		postScheduledCleanup[out] = postScheduleCleanup(out)
+		editLoweringMetadata(out).postScheduledCleanup = postScheduleCleanup(out)
 	}
-	if lane.RescheduleRecordBaseCarriers && reusedRecordBaseDestinations[out] > 0 {
+	if lane.RescheduleRecordBaseCarriers && readLoweringMetadata(out).reusedRecordBaseDestinations > 0 {
 		moved, err := rescheduleForFewerStalls(out)
 		if err != nil {
 			return nil, unsupported("%v", err)
 		}
 		if moved > 0 {
-			rescheduledRecordBaseCarriers[out] = moved
+			editLoweringMetadata(out).rescheduledRecordBaseCarriers = moved
 		}
 	}
 	if lane.PostScheduleCleanup {
-		postScheduledCleanup[out] += postScheduleAliasLabelCleanup(out)
+		editLoweringMetadata(out).postScheduledCleanup += postScheduleAliasLabelCleanup(out)
 	}
 	return out, nil
 }
@@ -2259,64 +2259,52 @@ func rescheduleForFewerStalls(fn *asm.Function) (int, error) {
 
 // Scheduled reports how many instructions a lowering moved under
 // Lane.Schedule.
-func Scheduled(fn *asm.Function) int { return scheduledOf[fn] }
-
-var scheduledOf = map[*asm.Function]int{}
+func Scheduled(fn *asm.Function) int { return readLoweringMetadata(fn).scheduledOf }
 
 // Fused reports how many instruction pairs a lowering fused under
 // Lane.Fuse.
-func Fused(fn *asm.Function) int { return fusedOf[fn] }
-
-var fusedOf = map[*asm.Function]int{}
+func Fused(fn *asm.Function) int { return readLoweringMetadata(fn).fusedOf }
 
 // FusedExits reports how many loop tails a lowering fused under
 // Lane.FuseExits.
-func FusedExits(fn *asm.Function) int { return fusedExitsOf[fn] }
-
-var fusedExitsOf = map[*asm.Function]int{}
+func FusedExits(fn *asm.Function) int { return readLoweringMetadata(fn).fusedExitsOf }
 
 // Reallocated reports how many webs a lowering recolored and copies it
 // coalesced under Lane.Reallocate.
-func Reallocated(fn *asm.Function) int { return reallocated[fn] }
+func Reallocated(fn *asm.Function) int { return readLoweringMetadata(fn).reallocated }
 
 // EvictedLeafCalleeSaves reports how many non-call-crossing AArch64 GPR webs
 // moved from callee-saved to caller-saved registers under the optional
 // allocation hint.
-func EvictedLeafCalleeSaves(fn *asm.Function) int { return evictedLeafCalleeSaves[fn] }
-
-var evictedLeafCalleeSaves = map[*asm.Function]int{}
+func EvictedLeafCalleeSaves(fn *asm.Function) int {
+	return readLoweringMetadata(fn).evictedLeafCalleeSaves
+}
 
 // RetainedCalleeSaveCarriers reports how many non-call-crossing AArch64 GPR
 // webs had a free caller-saved alternative but kept their stable callee-saved
 // color in the carrier-aware fallback candidate.
-func RetainedCalleeSaveCarriers(fn *asm.Function) int { return retainedCalleeSaveCarriers[fn] }
-
-var retainedCalleeSaveCarriers = map[*asm.Function]int{}
+func RetainedCalleeSaveCarriers(fn *asm.Function) int {
+	return readLoweringMetadata(fn).retainedCalleeSaveCarriers
+}
 
 // TrimmedCalleeSaves reports the dead callee homes and saved registers removed
 // under Lane.TrimCalleeSaves.
-func TrimmedCalleeSaves(fn *asm.Function) int { return trimmedCalleeSaves[fn] }
-
-var trimmedCalleeSaves = map[*asm.Function]int{}
+func TrimmedCalleeSaves(fn *asm.Function) int { return readLoweringMetadata(fn).trimmedCalleeSaves }
 
 // ElidedEmptyFrames reports whether Lane.ElideEmptyFrame removed the exact
 // adjustment pair around an otherwise stack-free body.
-func ElidedEmptyFrames(fn *asm.Function) int { return elidedEmptyFrames[fn] }
-
-var elidedEmptyFrames = map[*asm.Function]int{}
+func ElidedEmptyFrames(fn *asm.Function) int { return readLoweringMetadata(fn).elidedEmptyFrames }
 
 // OptIRLowered reports the generic SSA operations eliminated or hoisted by
 // the optimized CFG selected into fn. Zero means the body came from the
 // existing direct lowering.
-func OptIRLowered(fn *asm.Function) int { return optIRLowered[fn] }
-
-var optIRLowered = map[*asm.Function]int{}
+func OptIRLowered(fn *asm.Function) int { return readLoweringMetadata(fn).optIRLowered }
 
 // FrameObjects reports the aggregates a lowering placed in its frame, by
 // sp-relative offset and size, for the machine package's slot promotion.
-func FrameObjects(fn *asm.Function) []machine.FrameObject { return frameObjectsOf[fn] }
-
-var frameObjectsOf = map[*asm.Function][]machine.FrameObject{}
+func FrameObjects(fn *asm.Function) []machine.FrameObject {
+	return readLoweringMetadata(fn).frameObjectsOf
+}
 
 // recordFrameObjects translates the generator's slot-relative aggregates
 // to sp-relative offsets for the function.
@@ -2328,70 +2316,46 @@ func recordFrameObjects(fn *asm.Function, objects []machine.FrameObject, slotBas
 	for _, obj := range objects {
 		out = append(out, machine.FrameObject{Offset: slotBase + obj.Offset, Size: obj.Size, Name: obj.Name, Elem: obj.Elem})
 	}
-	frameObjectsOf[fn] = out
+	editLoweringMetadata(fn).frameObjectsOf = out
 	fn.FrameObjects = out
 }
 
-var reallocated = map[*asm.Function]int{}
-
 // PromotedSlots reports how many frame slots a lowering moved into
 // registers under Lane.Reallocate (machine.Promote).
-func PromotedSlots(fn *asm.Function) int { return promotedSlots[fn] }
-
-var promotedSlots = map[*asm.Function]int{}
+func PromotedSlots(fn *asm.Function) int { return readLoweringMetadata(fn).promotedSlots }
 
 // ElidedGuards reports how many element guards a lowering left out under
 // Lane.ElideProven (for the compiler's diagnostics).
-func ElidedGuards(fn *asm.Function) int { return elidedGuards[fn] }
-
-var elidedGuards = map[*asm.Function]int{}
+func ElidedGuards(fn *asm.Function) int { return readLoweringMetadata(fn).elidedGuards }
 
 // Reduced reports how many constant multiplications, divisions, and
 // remainders a lowering strength-reduced under Lane.Strength.
-func Reduced(fn *asm.Function) int { return reducedOps[fn] }
+func Reduced(fn *asm.Function) int { return readLoweringMetadata(fn).reducedOps }
 
 // ReusedCompares reports how many compares a lowering left out under
 // Lane.ReuseFlags (an else arm reading its guard's flags).
-func ReusedCompares(fn *asm.Function) int { return reusedCompares[fn] }
-
-var reusedCompares = map[*asm.Function]int{}
+func ReusedCompares(fn *asm.Function) int { return readLoweringMetadata(fn).reusedCompares }
 
 // Hoisted reports how many loops the loop-invariant pass changed under
 // Lane.HoistInvariants (the compiler's fallback lowers again without it
 // when the checker refuses the hoisted form).
-func Hoisted(fn *asm.Function) int { return hoistedLoops[fn] }
-
-var hoistedLoops = map[*asm.Function]int{}
+func Hoisted(fn *asm.Function) int { return readLoweringMetadata(fn).hoistedLoops }
 
 // RotatedLoops reports how many loops a lowering bottom-tested under
 // Lane.RotateLoops.
-func RotatedLoops(fn *asm.Function) int { return rotatedLoops[fn] }
-
-var rotatedLoops = map[*asm.Function]int{}
-
-var reducedOps = map[*asm.Function]int{}
+func RotatedLoops(fn *asm.Function) int { return readLoweringMetadata(fn).rotatedLoops }
 
 // VectorHomes reports how many vector locals a lowering kept in registers
 // across calls under Lane.VectorHomes.
-func VectorHomes(fn *asm.Function) int { return vectorHomesOf[fn] }
-
-var vectorHomesOf = map[*asm.Function]int{}
+func VectorHomes(fn *asm.Function) int { return readLoweringMetadata(fn).vectorHomesOf }
 
 // LeafVectorHomes reports how many vector locals of a leaf a lowering
 // homed in the argument registers v1–v7 under Lane.VectorHomes.
-func LeafVectorHomes(fn *asm.Function) int { return leafVectorHomesOf[fn] }
-
-var leafVectorHomesOf = map[*asm.Function]int{}
+func LeafVectorHomes(fn *asm.Function) int { return readLoweringMetadata(fn).leafVectorHomesOf }
 
 // Rotated reports how many shift-spelled rotations a lowering emitted as
 // `ror` (docs/spec/94-assembler.md §9 "Rotates").
-func Rotated(fn *asm.Function) int { return rotatedOps[fn] }
-
-var rotatedOps = map[*asm.Function]int{}
-
-// pressured marks a lowering in which some scalar variable had to take a
-// caller-saved home or a frame slot: the second pass is worth its cost.
-var pressured = map[*asm.Function]bool{}
+func Rotated(fn *asm.Function) int { return readLoweringMetadata(fn).rotatedOps }
 
 func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, records map[string]*ast.RecordLiteral, adts map[string]*ast.ADTType, constants map[string]asm.Constant, globals map[string]asm.Global, aggregates map[string]*ast.VariableDeclaration, tc *typechecker.TypeChecker, elide bool, guardLines map[int]bool, strength bool, vhomes bool, arrayHomes bool, resultHomes bool, reuse bool, tables map[string]GlobalArray, packed bool, unroll bool, fills bool, hoist bool, rotate bool, vblocks bool, fuse bool, selects bool, vectorize bool, vmaps bool, vfolds bool, unrollMaps bool, unrollFolds bool, vlanes bool, constant bool, small bool) (*asm.Function, error) {
 	if fn.Body == nil || fn.ExternSymbol != "" || fn.Receiver != nil || len(fn.TypeParams) > 0 || fn.AsmBacked {
@@ -2410,7 +2374,7 @@ func compileArm64(fn *ast.FunctionStatement, functions map[string]*ast.FunctionS
 			if stage.judged {
 				out.Body = stage.body
 			}
-			rewriteSitesOf[out] = stage.sites
+			editLoweringMetadata(out).rewriteSitesOf = stage.sites
 			return out, nil
 		} else if _, outside := err.(Unsupported); !outside {
 			return nil, err
@@ -2442,7 +2406,7 @@ func compileArm64Body(fn *ast.FunctionStatement, scalarEligibilityReference ast.
 		return nil, err
 	}
 	spare := scratchHigh - scratchLow + 1 - peak
-	if spare <= 0 || !pressured[first] {
+	if spare <= 0 || !readLoweringMetadata(first).pressured {
 		spare = 0 // nothing to gain: every variable already has a register
 	}
 	// The loop-invariant pass reports the values it could not hoist for
@@ -2891,7 +2855,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, scalarEligibilityReference ast.
 	// The vector loads of a block read off one element address
 	// (nativegen/vector_blocks.go).
 	if vblocks {
-		body, fusedVectorBlocks[out] = blockVectorLoads(body)
+		body, editLoweringMetadata(out).fusedVectorBlocks = blockVectorLoads(body)
 	}
 	// Loop-invariant code motion (nativegen/licm.go): the registers a rename
 	// may take are those neither the prologue nor the body names.
@@ -2901,7 +2865,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, scalarEligibilityReference ast.
 		var hoistedInto []int
 		var moved int
 		body, hoistedInto, moved, hoistWanted = hoistInvariants(body, named, g.loopHomes, g.licmReserve, g.globals, g.trap)
-		hoistedLoops[out] = moved
+		editLoweringMetadata(out).hoistedLoops = moved
 		for _, r := range hoistedInto {
 			if r >= 16 && r-16 >= g.ipScratch {
 				g.ipScratch = r - 16 + 1 // x16/x17 taken: declared as clobbers below
@@ -2980,7 +2944,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, scalarEligibilityReference ast.
 	out.Composites = Composites(records, adts)
 	out.Constants = constants
 	out.StackArgs, out.PackedStackArgs = g.stackArgs, g.packedStack
-	pressured[out] = g.pressure
+	editLoweringMetadata(out).pressured = g.pressure
 	spell := func(expr ast.Expression) {
 		if expr == nil {
 			return
@@ -3023,37 +2987,37 @@ func compileArm64Pass(fn *ast.FunctionStatement, scalarEligibilityReference ast.
 		}
 	}
 	if g.elided > 0 {
-		elidedGuards[out] = g.elided
+		editLoweringMetadata(out).elidedGuards = g.elided
 	}
 	if g.reduced > 0 {
-		reducedOps[out] = g.reduced
+		editLoweringMetadata(out).reducedOps = g.reduced
 	}
 	if g.fusedMultiplies > 0 {
-		fusedMultiplies[out] = g.fusedMultiplies
+		editLoweringMetadata(out).fusedMultiplies = g.fusedMultiplies
 	}
 	if g.valueSelects > 0 {
-		valueSelects[out] = g.valueSelects
+		editLoweringMetadata(out).valueSelects = g.valueSelects
 	}
 	if g.vecHomes > 0 {
-		vectorHomesOf[out] = g.vecHomes
+		editLoweringMetadata(out).vectorHomesOf = g.vecHomes
 	}
 	if g.leafVecHomes > 0 {
-		leafVectorHomesOf[out] = g.leafVecHomes
+		editLoweringMetadata(out).leafVectorHomesOf = g.leafVecHomes
 	}
 	if g.rotated > 0 {
-		rotatedOps[out] = g.rotated
+		editLoweringMetadata(out).rotatedOps = g.rotated
 	}
 	if g.reused > 0 {
-		reusedCompares[out] = g.reused
+		editLoweringMetadata(out).reusedCompares = g.reused
 	}
 	if g.bottomTested > 0 {
-		rotatedLoops[out] = g.bottomTested
+		editLoweringMetadata(out).rotatedLoops = g.bottomTested
 	}
 	if g.arrayHomesCount > 0 {
-		loopArrayHomesOf[out] = g.arrayHomesCount
+		editLoweringMetadata(out).loopArrayHomesOf = g.arrayHomesCount
 	}
 	if g.resultHomesCount > 0 {
-		loopResultHomesOf[out] = g.resultHomesCount
+		editLoweringMetadata(out).loopResultHomesOf = g.resultHomesCount
 	}
 	return out, g.peakScratch, hoistWanted, nil
 }

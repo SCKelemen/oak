@@ -1,0 +1,169 @@
+{
+  "support": {
+    "status": {
+      "schema_version": 1,
+      "command": [
+        "/home/runner/work/oak/oak/native-arm64-results/root-harness",
+        "native-prover-build",
+        "/home/runner/work/oak/oak/native-arm64-results/native-prover"
+      ],
+      "returncode": -9,
+      "timeout_seconds": 5372.72735337,
+      "elapsed_seconds": 5373.242451209,
+      "timed_out": true
+    },
+    "last_sample": {
+      "schema": "oak.native.timing.v1",
+      "event": "status",
+      "sequence": 1045,
+      "elapsed_ns": 5220004928191,
+      "phase": "coupling",
+      "phase_age_ns": 78986074722,
+      "function_age_ns": 82437029566,
+      "candidate_age_ns": 79941789808,
+      "current": {
+        "function": "count_candidates",
+        "function_ordinal": 235,
+        "candidate": "strength-reduce+hoist-invariants+fuse+schedule+reallocate+late-cleanup+post-schedule-cleanup",
+        "candidate_ordinal": 1,
+        "asm_loops": 5,
+        "oak_loops": 5,
+        "result_chunk": 0,
+        "abstract": false,
+        "checked_witnesses": 56,
+        "witness_work": 600717,
+        "slots": 8,
+        "nodes": 0,
+        "names": 0,
+        "targets": 0,
+        "rounds": 0,
+        "bindings": 0
+      },
+      "totals": {
+        "searches_started": 235,
+        "searches_completed": 234,
+        "searches_failed": 35,
+        "search_ns": 5001494991939,
+        "considered": 13141,
+        "materialized": 13135,
+        "search_validations": 350,
+        "validations_started": 351,
+        "validations_completed": 350,
+        "validation_ns": 4241294440827,
+        "cached": 0,
+        "last_outcome": 3,
+        "loops_started": 176,
+        "loops_completed": 175,
+        "loop_ns": 3123458128532,
+        "couplings": 161,
+        "checked_witnesses": 12802,
+        "witness_work": 85130924,
+        "slots": 2409,
+        "valuations_started": 62305,
+        "valuations_completed": 62305,
+        "valuation_ns": 96423178117,
+        "evaluations": 2432788,
+        "exclusive_phase_ns": {
+          "search": 762695790870,
+          "validation": 1118113122096,
+          "witnesses": 86260235997,
+          "coupling": 3020439694425,
+          "valuation": 96423178117
+        }
+      },
+      "last_search": {
+        "function": "serialize_function_in_oak",
+        "ordinal": 234,
+        "duration_ns": 258127708,
+        "failed": true
+      },
+      "output_limited": false
+    },
+    "inventory_eligible": 1086
+  },
+  "latest-support": {
+    "status": {
+      "schema_version": 1,
+      "command": [
+        "/home/runner/work/oak/oak/native-arm64-results/root-harness",
+        "native-prover-build",
+        "/home/runner/work/oak/oak/native-arm64-results/native-prover"
+      ],
+      "returncode": -9,
+      "timeout_seconds": 5373.510808074,
+      "elapsed_seconds": 5374.0757949789995,
+      "timed_out": true
+    },
+    "last_sample": {
+      "schema": "oak.native.timing.v1",
+      "event": "status",
+      "sequence": 1045,
+      "elapsed_ns": 5220009108673,
+      "phase": "implication",
+      "phase_age_ns": 26818838795,
+      "function_age_ns": 259165740137,
+      "candidate_age_ns": 55340081495,
+      "current": {
+        "function": "count_candidates",
+        "function_ordinal": 235,
+        "candidate": "identity",
+        "candidate_ordinal": 3,
+        "asm_loops": 5,
+        "oak_loops": 5,
+        "result_chunk": 0,
+        "abstract": false,
+        "checked_witnesses": 56,
+        "witness_work": 602129,
+        "slots": 8,
+        "nodes": 0,
+        "names": 0,
+        "targets": 0,
+        "rounds": 0,
+        "bindings": 0
+      },
+      "totals": {
+        "searches_started": 235,
+        "searches_completed": 234,
+        "searches_failed": 35,
+        "search_ns": 4827719007596,
+        "considered": 13140,
+        "materialized": 13134,
+        "search_validations": 350,
+        "validations_started": 353,
+        "validations_completed": 352,
+        "validation_ns": 4292100792964,
+        "cached": 0,
+        "last_outcome": 3,
+        "loops_started": 180,
+        "loops_completed": 179,
+        "loop_ns": 3215373336576,
+        "couplings": 165,
+        "checked_witnesses": 13026,
+        "witness_work": 87536616,
+        "slots": 2441,
+        "valuations_started": 62486,
+        "valuations_completed": 62486,
+        "valuation_ns": 97471379392,
+        "evaluations": 2520944,
+        "implications_started": 29867,
+        "implications_finished": 29866,
+        "exclusive_phase_ns": {
+          "search": 739443873274,
+          "validation": 1039499338394,
+          "witnesses": 86063743785,
+          "coupling": 318390711054,
+          "valuation": 97471379392,
+          "implication": 2806015701834
+        }
+      },
+      "last_search": {
+        "function": "serialize_function_in_oak",
+        "ordinal": 234,
+        "duration_ns": 452953368,
+        "failed": true
+      },
+      "output_limited": false
+    },
+    "inventory_eligible": 1086
+  }
+}

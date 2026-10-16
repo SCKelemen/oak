@@ -1010,7 +1010,7 @@ func vectorParamValue(name string, shape typechecker.SimdShape, input func(name 
 // its lanes (asm/verify_simd.go) packed the same way, and each half is
 // decided as a scalar equality. Data-dependent loops on either side stay
 // trusted for vector results (the loop machinery couples scalars).
-func verifyVectorResult(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, shape typechecker.SimdShape) Verdict {
+func (session *verificationSession) verifyVectorResult(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression, shape typechecker.SimdShape) Verdict {
 	trusted := func(reason string) Verdict {
 		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("asm unit %s: not verified (%s) — trusted per docs/spec/94-assembler.md §5", fn.Name, reason)}
 	}
@@ -1059,19 +1059,17 @@ func verifyVectorResult(fn *Function, sig *ast.FunctionStatement, oakBody ast.Ex
 			}
 			asmTerm = packLanes(machine, bits)[0]
 		}
-		verdict := decideEqual(fn, lowering, asmTerm, oakHalves[half], 64, note)
+		verdict := session.decideEqual(fn, lowering, asmTerm, oakHalves[half], 64, note)
 		verdict = verdictWithCallees(verdict, exec.summarized)
-		verdict = verifyTrapDomain(fn, sig, oakBody, exec, verdict)
+		verdict = session.verifyTrapDomain(fn, sig, oakBody, exec, verdict)
 		if verdict.Kind == VerdictMismatch {
 			return verdict
 		}
 		verdicts = append(verdicts, verdict)
 	}
 	if verdicts[0].Kind == VerdictProven && verdicts[1].Kind == VerdictProven {
-		return verdictWithCallees(
-			Verdict{Kind: VerdictProven, Message: fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (128-bit vector result, both halves)", fn.Name)},
-			verdicts[0].Callees, verdicts[1].Callees,
-		)
+		return composeProvenPair(verdicts[0], verdicts[1],
+			fmt.Sprintf("asm unit %s: proven equal to its Oak body at the bit level (128-bit vector result, both halves)", fn.Name))
 	}
 	for _, verdict := range verdicts {
 		if verdict.Kind == VerdictWitnessed {

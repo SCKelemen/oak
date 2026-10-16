@@ -47,7 +47,7 @@ func (cg *CodeGenerator) emitTestLaunch(call *ast.InvocationExpression, tc *type
 		return
 	}
 	cg.launchCounter++
-	prefix := fmt.Sprintf("oak_la%d_", cg.launchCounter)
+	prefix := fmt.Sprintf("oak_host_la%d_", cg.launchCounter)
 	cg.write("  {\n")
 	cg.write(fmt.Sprintf("    u32 %sgrid = ", prefix))
 	cg.emitExpressionFragment(call.Arguments[1], tc)

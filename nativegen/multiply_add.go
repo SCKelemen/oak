@@ -130,6 +130,4 @@ func (g *generator) multiplyAddForm(e *ast.InfixExpression, typ scalar) (int, bo
 
 // FusedMultiplies reports how many multiply-add forms a lowering emitted
 // under Lane.MultiplyAdd.
-func FusedMultiplies(fn *asm.Function) int { return fusedMultiplies[fn] }
-
-var fusedMultiplies = map[*asm.Function]int{}
+func FusedMultiplies(fn *asm.Function) int { return readLoweringMetadata(fn).fusedMultiplies }

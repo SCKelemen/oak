@@ -11,6 +11,7 @@ import (
 
 	"github.com/SCKelemen/oak/asm"
 	"github.com/SCKelemen/oak/ast"
+	"github.com/SCKelemen/oak/internal/nativetiming"
 	"github.com/SCKelemen/oak/nativegen"
 	"github.com/SCKelemen/oak/opt"
 	"github.com/SCKelemen/oak/typechecker"
@@ -44,13 +45,20 @@ type nativeDriver struct {
 	// fingerprint hashes every position-keyed one in the program — taken
 	// per candidate it was a twentieth of a native build.
 	tcFingerprint string
-	// cacheDir is the verdict cache, "" to verify afresh.
-	cacheDir string
+	// cacheDir and verificationOptions are copied from one check-local snapshot.
+	// An empty cacheDir disables both lookup and store; zero options are defaults
+	// for private helper callers, never a request to recapture the environment.
+	cacheDir            string
+	verificationOptions asm.VerificationOptions
 	// verdicts keeps the verifier's verdict by body for the compiler's
 	// report; verified and fromCache tally the cache's use.
 	verdicts  map[*asm.Function]asm.Verdict
 	verified  *int
 	fromCache *int
+
+	// Serialized recipe bytes for the current closed search only. The driver,
+	// its checked context, and this scope are not shared between goroutines.
+	materializationRecipe []byte
 }
 
 // Materialize lowers the candidate's lane configuration.
@@ -114,16 +122,25 @@ func (d *nativeDriver) Check(c *opt.Candidate) []string {
 // the same assembly, Oak body, reachable callees, declarations, and
 // compiler — keeps its verdict.
 func (d *nativeDriver) Validate(c *opt.Candidate) opt.Verdict {
+	candidateName := ""
+	if nativetiming.Enabled() {
+		candidateName = c.Name()
+	}
+	finish := nativetiming.BeginValidation(candidateName)
+	timingOutcome, timingCached := -1, false
+	defer func() { finish(timingOutcome, timingCached) }()
 	fn := c.Body.(*asm.Function)
 	start := time.Now()
+	// Pin both operations to this validation's captured policy and key.
+	cacheDir, options := d.cacheDir, d.verificationOptions
 	key := ""
-	if d.cacheDir != "" {
-		key = verdictCacheKey(fn, d.source, d.functions, d.declarations)
+	if cacheDir != "" {
+		key = verdictCacheKey(fn, d.source, d.functions, d.declarations, options)
 	}
-	verdict, cached := cachedVerdict(d.cacheDir, key, d.functions)
+	verdict, cached := cachedVerdict(cacheDir, key, d.functions)
 	if !cached {
-		verdict = asm.Verify(fn, d.source, verifiedBody(fn, d.source))
-		storeVerdict(d.cacheDir, key, verdict)
+		verdict = asm.VerifyWithOptions(fn, d.source, verifiedBody(fn, d.source), options)
+		storeVerdict(cacheDir, key, verdict)
 	} else {
 		*d.fromCache++
 	}
@@ -137,7 +154,9 @@ func (d *nativeDriver) Validate(c *opt.Candidate) opt.Verdict {
 		}
 		fmt.Fprintf(os.Stderr, "timing: %s (%s): %.2fs (%s%s)\n", d.source.Name.Value, c.Name(), time.Since(start).Seconds(), verdict.Kind, note)
 	}
-	return opt.Verdict{Outcome: outcomeOf(verdict.Kind), Message: verdict.Message, Cached: cached}
+	result := opt.Verdict{Outcome: outcomeOf(verdict.Kind), Message: verdict.Message, Cached: cached}
+	timingOutcome, timingCached = int(result.Outcome), result.Cached
+	return result
 }
 
 // ValidationFallback retains the downstream work of a blocked-fill candidate

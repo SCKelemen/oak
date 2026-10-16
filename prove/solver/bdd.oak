@@ -889,9 +889,13 @@ shift_barrel_arith: (l: Layout, mem: [*]u32, a: Bits, count: Bits, w: u32): Bits
 rotate_barrel: (l: Layout, mem: [*]u32, a: Bits, count: Bits, w: u32): Bits {
   current: Bits = a
   s: u32 = 0
-  stages: u32 = stages_for(w)
-  while s < stages {
-    current = mux_bits(l, mem, count.at[s], rotate_right(current, u32(1) << s, w), current, w)
+  // Every adapted count bit contributes 2^s modulo w. Doubling the
+  // remainder avoids a u32 shift overflow for stages above bit 31.
+  // Power-of-two widths keep their original stages and mux order.
+  distance: u32 = u32(1) % w
+  while s < w && distance != u32(0) && !paused(l, mem) && !exceeded(l, mem) {
+    current = mux_bits(l, mem, count.at[s], rotate_right(current, distance, w), current, w)
+    distance = (distance * u32(2)) % w
     s = s + u32(1)
   }
   current
@@ -1233,7 +1237,17 @@ blast_term: (l: Layout, mem: [*]u32, p: []u32, t: u32): Bool {
     op == BOP_SHR ? { out = right_const ? { shift_const(left, const_count(p, term_b(p, t), w), false, w) } | { shift_barrel(l, mem, left, right, false, w) } } | {
     op == BOP_SAR ? { out = right_const ? { shift_right_arith(left, const_count(p, term_b(p, t), w), w) } | { shift_barrel_arith(l, mem, left, right, w) } } | {
     op == BOP_MUL ? { out = multiply(l, mem, left, right, w) } | {
-    op == BOP_ROR ? { out = right_const ? { rotate_right(left, const_count(p, term_b(p, t), w), w) } | { rotate_barrel(l, mem, left, right, w) } } | {
+    op == BOP_ROR ? {
+      right_const ? {
+        // ROR adapts the count at its own width, then at the operation
+        // width, before modulo. Keep the shared shift rule unchanged.
+        count_term: u32 = term_b(p, t)
+        value: u64 = (u64(term_vhi(p, count_term)) << u64(32)) | u64(term_vlo(p, count_term))
+        own_mask: u64 = u64(0xFFFFFFFFFFFFFFFF) >> u64(u32(64) - term_width(p, count_term))
+        op_mask: u64 = u64(0xFFFFFFFFFFFFFFFF) >> u64(u32(64) - w)
+        out = rotate_right(left, u32_trunc_u64((value & own_mask & op_mask) % u64(w)), w)
+      } | { out = rotate_barrel(l, mem, left, right, w) }
+    } | {
     (op == BOP_REV || op == BOP_REV16 || op == BOP_REV32 || op == BOP_RBIT) ? { out = permute_bits(op, left, w) } | {
     op == BOP_CLZ ? { out = count_leading_zeros(l, mem, left, w) } | {
     op == BOP_CNT ? { out = pop_count(l, mem, left, w) } | {

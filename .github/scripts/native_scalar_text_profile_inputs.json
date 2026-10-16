@@ -1,0 +1,69 @@
+{
+  "sources": {
+    "bdd.oak": "0312fbc8bc3940d74d3b6b7c45aeed2dbd02cf1136060eaef7b9f996c58dd3f1",
+    "certify.oak": "ffb0ef8795c8bd0a05a4a9970a653dfbc17ebc707c6b14c30aa26ae9992abbc5",
+    "cnf.oak": "1d93fb52729540899458dfb77179957d579de9f65008bbe682331ebdc2e5d43b",
+    "driver.oak": "3dcad5e0a53c1a4942f20526303b086811a11e10ae9e4e229836bddf756fa788",
+    "explore.oak": "3f157442ceb63aaa48699bc1d0384c70c339663b510a75a3e50584b4cd59c03e",
+    "lean.oak": "c3edfb5d8fceb662dbd656851d7d0a732b61f35d1394a734673310288af7d38b",
+    "lower.oak": "de210781e879e1a0d45c54854224b8926d736141b46ee11fc64b94796a517e8f",
+    "lrat.arm64.oakasm": "fee6183de33e43cff99d8b9e06fe3c47f42937b610050c1f7ce3ea7aa868c544",
+    "lrat.oak": "73cce09f50cf599925341479e94dfd24ff8301ae91ac75d09844057c7caf4789",
+    "lrat.rv64.oakasm": "c77a0364bc6861068772eecf8cc028f81932d18e079de7050905e4b66adbd907",
+    "main.oak": "1532922d640259ebea95617e815f5604b28f551bfba3c05fbd9a631d830eb0f9",
+    "model.oak": "e2e0d0154640fafc1a6ba445f92241fff06ac2ca157e4adb345884d96c1355df",
+    "oak.mod": "461775d39cab67c620b8d8f4989cef8afa5ff6a70c526bc7081034f81074ae7b",
+    "protocol.oak": "db4ab32839ad2c18a3e800fa6f666733fb4f63dad8bfaf2aa12b90cc1bbf5023",
+    "sat.oak": "ea7009a3d8ea84fbd9183e182255cff8446f396e0699319044daa716d5cac7d6",
+    "shell.oak": "afa06393810de61a3b4f06b7140b9c6f95b699acd7e370bae0fc1c6f45ad808b",
+    "syntax.oak": "26b3f389773219d52ead35e30dd51df55bf160f5c1e8d63cbe1889182639c8fc",
+    "tree.oak": "07740ca3879fd7d3ece2ec990603a4c36b3b3339bf4880b4372511ae3fd9d736",
+    "witness.oak": "0b0278d33612edc71ffc0c95d9f5f65a383df227d11c8d0a8c849a7f19a97490"
+  },
+  "support_sources": {
+    "stdlib/host.oak": "0f08f35dd85bfd2d8f4048d43f4a2bf56dec3d7a8dd845c6afe5a9b05c8a7629",
+    "stdlib/std.oak": "10bbc09408ba76fccbac59f06936411e29eff8b81777c788b2b77b8e57eaa0e7"
+  },
+  "go_build": {
+    "version": "go1.27.1",
+    "main": {
+      "Path": "github.com/SCKelemen/oak",
+      "Version": "(devel)"
+    },
+    "dependencies": [
+      {
+        "Path": "github.com/SCKelemen/unicode",
+        "Version": "v1.1.1",
+        "Sum": "h1:zfDNToPzJcuX8ayJhRipZZd09f+dJO/T4IvIk90d13k="
+      },
+      {
+        "Path": "golang.org/x/sys",
+        "Version": "v0.38.0",
+        "Sum": "h1:3yZWxaJjBmCWXqhN1qh02AkOnCQ1poK6oF+a7xWL6Gc="
+      },
+      {
+        "Path": "golang.org/x/term",
+        "Version": "v0.37.0",
+        "Sum": "h1:8EGAD0qCmHYZg6J17DvsMy9/wJ7/D/4pV/wfnld5lTU="
+      }
+    ],
+    "settings": {
+      "-buildmode": "exe",
+      "-compiler": "gc",
+      "-race": "true",
+      "CGO_CFLAGS": "",
+      "CGO_CPPFLAGS": "",
+      "CGO_CXXFLAGS": "",
+      "CGO_ENABLED": "1",
+      "CGO_LDFLAGS": "",
+      "GOARCH": "arm64",
+      "GOARM64": "v8.0",
+      "GOOS": "linux"
+    }
+  },
+  "candidate_names": [
+    "strength-reduce+fuse+schedule+reallocate+trim-callee-saves+elide-redundant-guards+late-cleanup",
+    "strength-reduce+schedule+reallocate+trim-callee-saves+elide-redundant-guards+late-cleanup",
+    "identity"
+  ]
+}
