@@ -384,6 +384,126 @@ class ScalarProfileOwnerTests(unittest.TestCase):
                          'confirmation': 'stat_zombie', 'rss_bytes': 0}
                         for pid, parent in ((101, 100), (102, 101))])
 
+    def test_owned_rss_retry_exit_window(self):
+        for outcome in ('rss', 'zombie', 'gone', 'persistent', 'status_only_zombie'):
+            with self.subTest(outcome=outcome):
+                root = self.root/outcome; root.mkdir()
+                for pid, parent in ((100, 1), (101, 100), (102, 101), (103, 1)):
+                    self.proc_fixture(pid, parent, root)
+                path = root/'101'
+                (path/'status').write_bytes(self.status_bytes(101, 100, 'R', None))
+                (path/'stat').write_bytes(self.stat_bytes(101, 100, state='R'))
+                (root/'103/status').write_bytes(self.status_bytes(103, 1, 'R', None))
+                sleeps = []
+                def advance(gap):
+                    sleeps.append(gap)
+                    if len(sleeps) != 2:
+                        return
+                    if outcome == 'rss':
+                        (path/'status').write_bytes(self.status_bytes(101, 100, 'R', '12 kB'))
+                    elif outcome in ('zombie', 'status_only_zombie'):
+                        (path/'status').write_bytes(self.status_bytes(101, 100, 'Z', None))
+                        if outcome == 'zombie':
+                            (path/'stat').write_bytes(self.stat_bytes(101, 100, state='Z'))
+                    elif outcome == 'gone':
+                        (path/'status').unlink(); (path/'stat').unlink(); path.rmdir()
+                with mock.patch.object(profile.resources, 'PROC', root), \
+                        mock.patch.object(profile.time, 'sleep', side_effect=advance):
+                    if outcome in ('persistent', 'status_only_zombie'):
+                        with self.assertRaisesRegex(profile.DiagnosticError, 'missing RSS.*retry_attempts=3'):
+                            profile.strict_process_rss(100, time.monotonic()+2)
+                        self.assertEqual(len(sleeps), 3)
+                    else:
+                        sample = profile.strict_process_rss(100, time.monotonic()+2)
+                        self.assertEqual(sample['tree_rss_sum_bytes'], 8192+(12288 if outcome == 'rss' else 0))
+                        self.assertEqual(sample['tree_processes'], 3)
+                        self.assertEqual(sample['process_owned_retry_attempts'], 2)
+                        self.assertEqual(sample['process_unowned_missing_rss'], 1)
+                        self.assertEqual(len(sleeps), 2)
+
+    def test_owned_rss_retry_refuses_changed_or_bad_process(self):
+        for failure in ('pid', 'parent', 'starttime', 'inode', 'malformed', 'permission',
+                        'status_parent', 'unconfirmed_absence', 'final_identity'):
+            with self.subTest(failure=failure):
+                root = self.root/failure; root.mkdir()
+                self.proc_fixture(100, 1, root)
+                path = self.proc_fixture(101, 100, root)
+                (path/'status').write_bytes(self.status_bytes(101, 100, 'R', None))
+                active = []
+                original = profile.process_status
+                def advance(gap):
+                    active.append(True)
+                    if failure == 'inode':
+                        path.rename(root/'old')
+                        self.proc_fixture(101, 100, root)
+                    elif failure == 'malformed':
+                        (path/'status').write_bytes(b'bad\n')
+                    elif failure == 'unconfirmed_absence':
+                        (path/'status').unlink()
+                    else:
+                        (path/'status').write_bytes(self.status_bytes(
+                            102 if failure == 'pid' else 101,
+                            99 if failure == 'status_parent' else 100))
+                        (path/'stat').write_bytes(self.stat_bytes(101,
+                            99 if failure == 'parent' else 100,
+                            43 if failure == 'starttime' else 42))
+                def reading(file, **kwargs):
+                    if active and failure == 'permission' and file == 'status':
+                        raise PermissionError(errno.EACCES, 'synthetic denied retry')
+                    raw = original(file, **kwargs)
+                    if active and failure == 'final_identity' and file == 'status':
+                        (path/'stat').write_bytes(self.stat_bytes(101, 100, 43))
+                    return raw
+                with mock.patch.object(profile.resources, 'PROC', root), \
+                        mock.patch.object(profile.time, 'sleep', side_effect=advance), \
+                        mock.patch.object(profile, 'process_status', side_effect=reading), \
+                        self.assertRaises(profile.DiagnosticError):
+                    profile.strict_process_rss(100, time.monotonic()+2)
+                self.assertEqual(len(active), 1)
+
+    def test_owned_rss_retry_obeys_shared_bounds(self):
+        path = self.proc_fixture()
+        (path/'status').write_bytes(self.status_bytes(rss=None))
+        row = profile.observe_process(path, 100, time.monotonic()+2, self.read_budget())
+        for bound in ('reads', 'bytes', 'deadline', 'retry_deadline', 'after_sleep', 'count',
+                      'delayed_confirmed_absence'):
+            with self.subTest(bound=bound):
+                budget = self.read_budget(); now = [100.0]
+                if bound == 'reads': budget['reads'] = 4*profile.PROCESS_LIMIT
+                if bound == 'bytes': budget['bytes'] = profile.PROCESS_SAMPLE_READ_LIMIT
+                def advance(gap):
+                    now[0] += 1 if bound == 'after_sleep' else gap
+                    if bound == 'delayed_confirmed_absence':
+                        (path/'status').unlink(); (path/'stat').unlink(); path.rmdir()
+                original = profile.observe_process
+                def observing(*args, **kwargs):
+                    result = original(*args, **kwargs)
+                    if bound == 'delayed_confirmed_absence':
+                        self.assertIsNone(result)
+                        now[0] += 1
+                    return result
+                with mock.patch.object(profile.resources, 'PROC', self.root), \
+                        mock.patch.object(profile.time, 'monotonic', side_effect=lambda: now[0]), \
+                        mock.patch.object(profile.time, 'sleep', side_effect=advance), \
+                        mock.patch.object(profile, 'observe_process', side_effect=observing), \
+                        mock.patch.object(profile, 'PROCESS_RSS_RETRY_SECONDS',
+                                          0 if bound == 'retry_deadline' else 0.05), \
+                        mock.patch.object(profile, 'PROCESS_CONFIRMATION_LIMIT',
+                                          0 if bound == 'count' else 16), \
+                        self.assertRaises(profile.DiagnosticError):
+                    profile.retry_owned_processes({100: dict(row)}, {100},
+                                                  100 if bound == 'deadline' else 102, budget)
+
+    def test_unowned_missing_rss_never_sleeps(self):
+        self.proc_fixture(100, 1)
+        path = self.proc_fixture(101, 1)
+        (path/'status').write_bytes(self.status_bytes(101, 1, rss=None))
+        with mock.patch.object(profile.resources, 'PROC', self.root), \
+                mock.patch.object(profile.time, 'sleep', side_effect=AssertionError('unowned retry')):
+            sample = profile.strict_process_rss(100, time.monotonic()+2)
+        self.assertEqual(sample['process_owned_retry_attempts'], 0)
+        self.assertEqual(sample['process_unowned_missing_rss'], 1)
+
     def test_log_cap_keeps_bounded_prefix_and_records_overflow(self):
         output = profile.CappedOutput(self.root / 'log', 4)
         try:

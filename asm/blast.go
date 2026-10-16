@@ -395,17 +395,32 @@ func (bl *blaster) selectVariable(slot, bit int) int {
 // (span, index) — sound for equality proofs: terms equal under independent
 // element values are equal under every memory.
 func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []int {
+	if bl.exceeded() {
+		return nil
+	}
 	// The index's linear form, once per read (a form per comparison over
 	// a large index term made the prover's tally crawl).
 	var form *linearForm
 	if index != nil {
 		form = index.linearAt(32)
 	}
+	knownSpan := false
 	for _, known := range bl.selects {
 		if bl.exceeded() {
 			return nil
 		}
-		if known.span != span || len(known.idx) != len(idx) {
+		if known.span != span {
+			continue
+		}
+		knownSpan = true
+		// A span has one element width. Reusing a narrower slot would
+		// zero-extend its value, and consistency would impose the same
+		// unjustified restriction even at different symbolic indices.
+		// Explicit width views preserve the underlying select's width.
+		if len(known.vars) != width {
+			return bl.refuseSelectWidth()
+		}
+		if len(known.idx) != len(idx) {
 			continue
 		}
 		same := true
@@ -428,6 +443,21 @@ func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []
 			return bl.varsBits(known.vars, width)
 		}
 	}
+	if !knownSpan {
+		// Constant elements are parameters, including record leaves
+		// (v[3].field belongs to v.field). Check their solver-domain widths,
+		// not a parameter term's possibly truncated or widened use width.
+		// Premise-narrowed domains may conservatively make this incomplete.
+		// Do this once per span, before admitting any slot or memo result.
+		for _, name := range bl.params {
+			if bl.exceeded() {
+				return nil
+			}
+			if memory, _, ok := elementParam(name); ok && memory == span && bl.widths[name] != width {
+				return bl.refuseSelectWidth()
+			}
+		}
+	}
 	slot := len(bl.selects)
 	if bl.components {
 		bl.placeSlot(span, index)
@@ -438,6 +468,18 @@ func (bl *blaster) selectBits(span string, idx []int, width int, index *term) []
 	}
 	bl.selects = append(bl.selects, selectAbstraction{span: span, idx: idx, vars: vars, index: index, form: form})
 	return bl.varsBits(vars, width)
+}
+
+// refuseSelectWidth fails closed through the existing incomplete-result path.
+// selectBits is shared by the diagram and clause engines; neither may publish
+// a proof or a counterexample after a conflicting memory width is encountered.
+func (bl *blaster) refuseSelectWidth() []int {
+	if bl.cnf != nil {
+		bl.cnf.exceeded = true
+	} else {
+		bl.bdd.exceeded = true
+	}
+	return nil
 }
 
 // linearFormsRelate is indexRelation over two forms already computed.

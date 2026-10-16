@@ -231,7 +231,39 @@ func TestStructuralCasesOrderPreservesNegativeControls(t *testing.T) {
 					}
 				}
 			}
-			structuralOrderEvaluate(t, f, f.left, wrong, false)
+			oracleWrong := wrong
+			if name == "element width" {
+				// Raw 2/4-bit reads of one memory are outside the fixed-element
+				// solver domain. Keep their structural refusal above, and
+				// require the blaster to fail closed in both encounter orders.
+				for _, pair := range [][2]*term{{f.left, wrong}, {wrong, f.left}} {
+					bl := newBlaster(f.names, f.widths).withBudget(32768)
+					if holds, decided := impliesEqualUnder(bl, constTerm(1, 1), pair[0], pair[1], 4); holds || decided || !bl.exceeded() {
+						t.Fatal("raw mixed-width control escaped the solver's Unknown boundary")
+					}
+				}
+				// Express the same reachable difference using one 4-bit
+				// memory and an explicit low-2-bit view. The only selected
+				// cell is words[read.index]; enumerate its entire domain and
+				// every scalar input before using this valid-domain oracle.
+				oracleWrong = changedOld(structuralControlBinary("or", 4, truncate(f.old, 2), structuralControlConst(0, 4)))
+				for kind := uint64(0); kind < 16; kind++ {
+					for index := uint64(0); index < 4; index++ {
+						for write := uint64(0); write < 4; write++ {
+							for value := uint64(0); value < 16; value++ {
+								env := map[string]uint64{f.kindName: kind, "read.index": index, "write.index": write, spanElemName("words", int64(index)): value}
+								if wrong.eval(env) != oracleWrong.eval(env) {
+									t.Fatal("explicit fixed-element view changed a raw control value")
+								}
+							}
+						}
+					}
+				}
+				if structuralControlBDDEqual(t, oracleWrong, f.left, f.names, f.widths) {
+					t.Fatal("reversed valid-domain BDD missed the element-view mismatch")
+				}
+			}
+			structuralOrderEvaluate(t, f, f.left, oracleWrong, false)
 		})
 	}
 }

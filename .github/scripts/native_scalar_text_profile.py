@@ -55,6 +55,8 @@ PROCESS_STATUS_LIMIT = 8192
 PROCESS_IDENTITY_LIMIT = 2048
 PROCESS_SAMPLE_READ_LIMIT = PROCESS_LIMIT * PROCESS_STATUS_LIMIT
 PROCESS_CONFIRMATION_LIMIT = 16
+PROCESS_RSS_RETRY_GAPS = (0.001, 0.002, 0.004)
+PROCESS_RSS_RETRY_SECONDS = 0.050
 WORK_NAME = 'native-scalar-text-profile-work'
 RESULT_NAME = 'native-scalar-text-profile-results'
 ARTIFACT_NAME = 'native-scalar-text-profile-artifact'
@@ -117,6 +119,10 @@ PYTHON_CONTROLS = (
     'test_process_confirmation_read_bounds',
     'test_process_unknown_rss_refusal_detail',
     'test_process_confirmation_detail_cap',
+    'test_owned_rss_retry_exit_window',
+    'test_owned_rss_retry_refuses_changed_or_bad_process',
+    'test_owned_rss_retry_obeys_shared_bounds',
+    'test_unowned_missing_rss_never_sleeps',
     'test_work_scan_exact_accounting',
     'test_work_scan_confirms_disappearing_members',
     'test_work_scan_never_suppresses_other_errors',
@@ -606,7 +612,7 @@ def parse_process_identity(raw, pid):
             'state': fields[0].decode('ascii')}
 
 
-def observe_process(path, pid, deadline, budget):
+def observe_process(path, pid, deadline, budget, *, expected=None):
     """At most one confirmation, anchored to one opened Linux proc PID inode.
 
     A missing status is never a zero-RSS live process. Confirmed disappearance
@@ -632,15 +638,21 @@ def observe_process(path, pid, deadline, budget):
         info = os.fstat(fd)
         require(stat.S_ISDIR(info.st_mode), 'non-directory process identity')
         cookie = (info.st_dev, info.st_ino)
+        require(expected is None or cookie == expected['directory_cookie'],
+                f'process retry PID directory replaced: pid={pid}')
         def read(name, limit):
             return process_status(name, dir_fd=fd, limit=limit, budget=budget, deadline=deadline)
         try:
             identity = parse_process_identity(read('stat', PROCESS_IDENTITY_LIMIT), pid)
+            require(expected is None or all(identity[k] == expected[k]
+                    for k in ('parent', 'starttime')),
+                    f'process retry identity changed: pid={pid}')
             row = parse_process_status(read('status', PROCESS_STATUS_LIMIT), pid, detail=True)
             require(row['parent'] == identity['parent'],
                     f'process parent changed: pid={pid} starttime={identity["starttime"]}')
             row.update(starttime=identity['starttime'], confirmation='none',
-                       identity_state=identity['state'], first_state=row['state'])
+                       identity_state=identity['state'], first_state=row['state'],
+                       directory_cookie=cookie)
             if not row['rss_present']:
                 budget['confirmations'] += 1
                 before = row
@@ -651,13 +663,22 @@ def observe_process(path, pid, deadline, budget):
                         and row['parent'] == identity['parent'],
                         f'process confirmation identity changed: pid={pid} starttime={identity["starttime"]}')
                 row.update(starttime=identity['starttime'], confirmation='reread',
-                           identity_state=after['state'])
+                           identity_state=after['state'], directory_cookie=cookie)
                 if row['rss'] is not None and row['rss_present']:
                     budget['recovered_rss'] += 1
                 elif after['state'] == 'Z':
                     row.update(rss=0, confirmation='stat_zombie')
                 else:
                     row['rss'] = None  # A status-only Z is not the final identity confirmation.
+            if expected is not None:
+                # Bracket even a numeric retry status with the original identity.
+                after = parse_process_identity(read('stat', PROCESS_IDENTITY_LIMIT), pid)
+                require(all(after[k] == identity[k] for k in ('pid', 'parent', 'starttime')),
+                        f'process retry final identity changed: pid={pid}')
+                row['identity_state'] = after['state']
+                row['first_state'] = expected.get('first_state', expected['state'])
+                if not row['rss_present'] and after['state'] != 'Z':
+                    row['rss'] = None
             if row['rss'] == 0 and not row['rss_present'] and (
                     row['state'] == 'Z' or row['identity_state'] == 'Z'):
                 budget['zombies'] += 1
@@ -681,6 +702,7 @@ def observe_process(path, pid, deadline, budget):
                     'first_state': 'unread' if row is None else row.get('first_state', row['state']),
                     'last_status_state': 'unread' if row is None else row['state'],
                     'identity_state': identity['state'],
+                    'directory_cookie': cookie,
                     'confirmation': 'anchored_enoent_or_esrch_and_named_directory_absent'}
     except (DiagnosticError, OSError) as error:
         raise DiagnosticError(
@@ -692,6 +714,41 @@ def observe_process(path, pid, deadline, budget):
             f'{str(error)[:512]}') from error
     finally:
         os.close(fd)
+
+
+
+def retry_owned_processes(processes, descendants, deadline, budget):
+    """Resolve only owned unknown RSS; never relax the original sample identity."""
+    unresolved = sorted(child for child in descendants if processes[child]['rss'] is None)
+    require(len(unresolved) <= PROCESS_CONFIRMATION_LIMIT, 'owned process retry detail cap exhausted')
+    started = time.monotonic()
+    retry_deadline = min(deadline, started + PROCESS_RSS_RETRY_SECONDS)
+    attempts = 0
+    for gap in PROCESS_RSS_RETRY_GAPS:
+        if not unresolved:
+            break
+        require(time.monotonic() + gap < retry_deadline, 'owned process retry deadline exhausted')
+        time.sleep(gap)
+        require(time.monotonic() < retry_deadline, 'owned process retry deadline exhausted')
+        for child in unresolved:
+            before = processes[child]
+            attempts += 1
+            row = observe_process(resources.PROC / str(child), child, retry_deadline,
+                                  budget, expected=before)
+            require(time.monotonic() < retry_deadline, 'owned process retry deadline exhausted')
+            # A retry open which sees ENOENT has independently confirmed absence
+            # with lstat. Preserve the original edge and explicitly report exit.
+            if row is None:
+                row = dict(before, rss=0, state='gone', rss_present=False,
+                           confirmation='retry_open_enoent_and_named_directory_absent')
+                budget['disappearances'] += 1
+            row['first_state'] = before.get('first_state', before['state'])
+            row['retry_attempts'] = before.get('retry_attempts', 0) + 1
+            if row['rss_present']:
+                row['confirmation'] = 'owned_retry_rss'
+            processes[child] = row
+        unresolved = [child for child in unresolved if processes[child]['rss'] is None]
+    return attempts, time.monotonic() - started
 
 
 def strict_process_rss(pid, deadline):
@@ -729,13 +786,14 @@ def strict_process_rss(pid, deadline):
             if child not in descendants:
                 descendants.add(child)
                 pending.append(child)
+    retry_attempts, retry_elapsed = retry_owned_processes(processes, descendants, deadline, budget)
     for child in sorted(descendants):
         row = processes[child]
         require(type(row['rss']) is int,
                 f'missing RSS in owned process sample: pid={child} parent={row["parent"]} '
                 f'starttime={row["starttime"]} state={row["state"]} '
                 f'first_state={row.get("first_state", row["state"])} confirmation={row["confirmation"]} '
-                f'identity_state={row["identity_state"]}')
+                f'identity_state={row["identity_state"]} retry_attempts={row.get("retry_attempts", 0)}')
     values = [processes[child]['rss'] for child in descendants]
     confirmations = []
     for child in sorted(descendants):
@@ -758,6 +816,8 @@ def strict_process_rss(pid, deadline):
             'process_identity_reads': budget['identity_reads'],
             'process_status_reads': budget['status_reads'],
             'process_status_confirmations': budget['confirmations'],
+            'process_owned_retry_attempts': retry_attempts,
+            'process_owned_retry_seconds': retry_elapsed,
             'process_recovered_rss': budget['recovered_rss'],
             'process_observed_zombies': budget['zombies'],
             'process_confirmed_disappearances': budget['disappearances'],
@@ -1193,7 +1253,7 @@ def run(repo, started):
         command([go, 'mod', 'verify'])
         command([sys.executable, str(repo / '.github/scripts/native_scalar_text_profile.py'), '--controls'],
                 deadline=min(setup_end, time.monotonic() + 60))
-        status['python_controls'] = {'methods': 46, 'subtest_contexts': 246, 'skips': 0}
+        status['python_controls'] = {'methods': 50, 'subtest_contexts': 267, 'skips': 0}
         identity = source_identity(repo, command, env, setup_end)
         status['source_identity'] = identity
         build_end = phase_deadline(started, 'build', time.monotonic())
@@ -1288,7 +1348,7 @@ def run_controls():
     import test_native_scalar_text_profile as controls
     case = controls.ScalarProfileOwnerTests
     actual = unittest.defaultTestLoader.getTestCaseNames(case)
-    require(len(PYTHON_CONTROLS) == 46 and len(set(PYTHON_CONTROLS)) == 46
+    require(len(PYTHON_CONTROLS) == 50 and len(set(PYTHON_CONTROLS)) == 50
             and sorted(PYTHON_CONTROLS) == actual, 'Python control method inventory changed')
     suite = unittest.TestSuite(case(name) for name in PYTHON_CONTROLS)
     class CountedResult(unittest.TextTestResult):
@@ -1297,8 +1357,8 @@ def run_controls():
             self.contexts += 1
             super().addSubTest(test, subtest, error)
     result = unittest.TextTestRunner(verbosity=2, resultclass=CountedResult).run(suite)
-    return 0 if (result.wasSuccessful() and result.testsRun == 46 and not result.skipped
-                 and result.contexts == 246
+    return 0 if (result.wasSuccessful() and result.testsRun == 50 and not result.skipped
+                 and result.contexts == 267
                  and not result.expectedFailures and not result.unexpectedSuccesses) else 1
 
 
