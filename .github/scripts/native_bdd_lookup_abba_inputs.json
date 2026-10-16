@@ -1,5 +1,5 @@
 {
-  "baseline_tree": "706574c8f69fefb43e60d0cab4004a3b1fa45103",
+  "baseline_tree": "45692f1c0de75e005723d13205fffea611a29344",
   "baseline_tree_members": {
     ".gitattributes": {
       "blob": "9d9918ca4608fae8f2a3974c3b575a95514b6a21",
@@ -74,11 +74,11 @@
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba.py": {
-      "blob": "495d7effbe6e36515f177d35b5630e14d6034051",
+      "blob": "6cde73ffe5b3ebb4032f411f4302c00fb7e64768",
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba_inputs.json": {
-      "blob": "ffc5f2bb4e0036e51faf318812ff940990c83521",
+      "blob": "4f725c556d8f1952664b3e784f55f7ca3d75b7f6",
       "mode": "100644"
     },
     ".github/scripts/native_prover_inventory.json": {
@@ -118,7 +118,7 @@
       "mode": "100644"
     },
     ".github/scripts/required_backend_tests.py": {
-      "blob": "cc4384c864b04f19b51168634103210d940aad45",
+      "blob": "d8d775ff1d45ff1fa90bcaa440a5ae15217b10e7",
       "mode": "100644"
     },
     ".github/scripts/required_c_regressions.py": {
@@ -146,7 +146,7 @@
       "mode": "100644"
     },
     ".github/scripts/test_required_backend_tests.py": {
-      "blob": "80b56eeb5e3d6a96ec28530029a40deefbf6a543",
+      "blob": "8877b17d9086e1410132fa22fe9919c5ea2701a0",
       "mode": "100644"
     },
     ".github/scripts/test_required_c_regressions.py": {
@@ -183,6 +183,10 @@
     },
     ".github/workflows/golden.yml": {
       "blob": "7da5e9af5fcab6a80cead317a91054e2f848918c",
+      "mode": "100644"
+    },
+    ".github/workflows/invariant-synthesis.yml": {
+      "blob": "f3370836222ec42415f54ddd6e0fe41955ee9204",
       "mode": "100644"
     },
     ".github/workflows/json-benchmark.yml": {
@@ -998,7 +1002,7 @@
       "mode": "100644"
     },
     "asm/loops.go": {
-      "blob": "a1453ac507be06170a0c49bc714e0fb4859ddb05",
+      "blob": "b31cf9ad380ca2943aad4fb9b3e27bdb189c0dbc",
       "mode": "100644"
     },
     "asm/loops_entry_test.go": {
@@ -1743,6 +1747,10 @@
     },
     "asm/zero_marker_guard_test.go": {
       "blob": "900843a35694eaa3f495ea2bf53c3271ad0ed3a7",
+      "mode": "100644"
+    },
+    "asm/zero_test_width_test.go": {
+      "blob": "4c4c13cf45e9edaa7d11f1ff7e6ac0828673a8f9",
       "mode": "100644"
     },
     "ast/ast.go": {
@@ -6742,7 +6750,7 @@
       "mode": "100644"
     },
     "docs/spec/125-verification.md": {
-      "blob": "b14fb05ea6d1b476c62f2a53f0ddbfdc6573c42f",
+      "blob": "09a4e8996ad9ea3351a87d22187cee4645b0f303",
       "mode": "100644"
     },
     "docs/spec/126-verification-chain.md": {
@@ -7383,6 +7391,10 @@
     },
     "examples/verification_quantum.oak": {
       "blob": "34fb3d20a5a14842931f523ad646eb61906c55d6",
+      "mode": "100644"
+    },
+    "examples/verification_synthesis.oak": {
+      "blob": "fdf55934dfe38bfee9b3e751f195091e95a9b8a3",
       "mode": "100644"
     },
     "experiments/verification-poc/.gitignore": {
@@ -10785,6 +10797,14 @@
       "blob": "acd49387cf3541dd18a8272da59f302a33868f4b",
       "mode": "100644"
     },
+    "prove/synthesis.go": {
+      "blob": "3988721a4e87a1070233b81e0984dc5668d79153",
+      "mode": "100644"
+    },
+    "prove/synthesis_test.go": {
+      "blob": "e2971a2c2b2b520a0265a21b5e8c60caf290d8f1",
+      "mode": "100644"
+    },
     "prove/testdata/inferred_primitive_source.oak": {
       "blob": "95934d387b589c669d5b9a1caac57736200f252b",
       "mode": "100644"
@@ -10802,7 +10822,7 @@
       "mode": "100644"
     },
     "prove_cmd.go": {
-      "blob": "a3f839f8e109ef758ebeb650b42e5053fdfe790e",
+      "blob": "cd1af142ae5bd653bf448f933d1988e5f761c158",
       "mode": "100644"
     },
     "prove_sat.go": {
@@ -10811,6 +10831,14 @@
     },
     "prove_sat_test.go": {
       "blob": "9052636b186746aa4839c32c63dfd3ca8785acbb",
+      "mode": "100644"
+    },
+    "prove_synthesis.go": {
+      "blob": "c661a61e77f225ad7426eb9c90b7a7615a011031",
+      "mode": "100644"
+    },
+    "prove_synthesis_test.go": {
+      "blob": "a11bcb2cd1250e87a6cca808ab37c6b3af42cf76",
       "mode": "100644"
     },
     "prove_validation_test.go": {
@@ -17105,7 +17133,7 @@
   "historical_local_commit": "820e955b6aa8d706f568c26437c107d381c3ce1f",
   "integration_members": {
     ".github/scripts/native_bdd_lookup_abba.py": {
-      "blob": "6cde73ffe5b3ebb4032f411f4302c00fb7e64768",
+      "blob": "6063631368464c83eee16f3de91bb05b5a280d84",
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba_inputs.json": null
