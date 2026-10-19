@@ -20,49 +20,14 @@ func lratRV64ByteContract(t *testing.T) string {
 
 func lratRV64ByteProfile(t *testing.T, compressed bool) string {
 	t.Helper()
-	literal := func(code []byte) string {
-		items := make([]string, len(code))
-		for i, b := range code {
-			items[i] = fmt.Sprintf("%d#8", b)
-		}
-		return "[" + strings.Join(items, ",") + "]"
-	}
-	encode := func(source string) map[string][]byte {
-		unit, errs := asm.ParseUnit("lrat.rv64.oakasm", source)
-		if len(errs) != 0 {
-			t.Fatal(errs)
-		}
-		result := map[string][]byte{}
-		for _, fn := range unit.Functions {
-			fn.Compressed = compressed
-			code, relocs, err := asm.EncodeFunction(fn)
-			if err != nil || len(relocs) != 0 {
-				t.Fatalf("guard encoding: %v, %v", err, relocs)
-			}
-			result[fn.Name] = code
-		}
-		return result
-	}
+	literal := lratByteLiteral
+	encode := func(source string) map[string][]byte { return lratEncodeGuards(t, "rv64", source, compressed) }
 	encoded := encode(oakLRATRV64Source)
-	comp := compiler.New().WithSource("lrat.oak", oakLRATSource+"\nmain: (): i32 { i32(0) }\n").
-		WithAsmUnit("lrat.rv64.oakasm", oakLRATRV64Source).
-		WithTarget(target.Target{OS: target.OSLinux, Arch: target.ArchRiscv64})
+	cpu := ""
 	if !compressed {
-		comp = comp.WithCPU("generic_rv64+m")
+		cpu = "generic_rv64+m"
 	}
-	object, err := comp.EmitAsmObject(asm.ELF).Get()
-	if err != nil {
-		t.Fatal(err)
-	}
-	f, err := elf.NewFile(bytes.NewReader(object))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	symbols, err := f.Symbols()
-	if err != nil {
-		t.Fatal(err)
-	}
+	lratCheckGuardELF(t, target.ArchRiscv64, "rv64", oakLRATRV64Source, cpu, encoded)
 	var contract strings.Builder
 	module := "Oak.LRATRV64Bytes"
 	returnSize := 4
@@ -72,34 +37,6 @@ func lratRV64ByteProfile(t *testing.T, compressed bool) string {
 	}
 	fmt.Fprintf(&contract, "\nsection\nopen %s Oak.RiscVCallExecution\n", module)
 	for name, code := range encoded {
-		found := false
-		for _, sym := range symbols {
-			if sym.Name != "oak_"+name {
-				continue
-			}
-			if found || int(sym.Section) >= len(f.Sections) || sym.Section == elf.SHN_UNDEF {
-				t.Fatal("invalid guard symbol")
-			}
-			found = true
-			section := f.Sections[sym.Section]
-			data, err := section.Data()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if sym.Value < section.Addr {
-				t.Fatal("invalid symbol address")
-			}
-			start := sym.Value - section.Addr
-			if start > uint64(len(data)) || sym.Size > uint64(len(data))-start {
-				t.Fatal("invalid symbol range")
-			}
-			if !bytes.Equal(data[start:start+sym.Size], code) {
-				t.Fatalf("ELF bytes differ for %s: got %x want %x", name, data[start:start+sym.Size], code)
-			}
-		}
-		if !found {
-			t.Fatalf("missing %s", name)
-		}
 		proof := "fitsBytes"
 		if name == "lrat_alloc_fits" {
 			proof = "allocBytes"
@@ -157,4 +94,88 @@ example (s : State) : (advance (0x02035313, 4) s).map State.pc = some (s.pc + 4)
 	contract.WriteString(extra)
 	contract.WriteString("\nend\n")
 	return contract.String()
+}
+
+// Common byte/ELF binding for both ISA proof contracts.
+func lratByteLiteral(code []byte) string {
+	items := make([]string, len(code))
+	for i, b := range code {
+		items[i] = fmt.Sprintf("%d#8", b)
+	}
+	return "[" + strings.Join(items, ",") + "]"
+}
+
+func lratEncodeGuards(t *testing.T, lane, source string, compressed bool) map[string][]byte {
+	t.Helper()
+	unit, errs := asm.ParseUnit("lrat."+lane+".oakasm", source)
+	if len(errs) != 0 {
+		t.Fatal(errs)
+	}
+	result := map[string][]byte{}
+	for _, fn := range unit.Functions {
+		fn.Compressed = compressed
+		code, relocs, err := asm.EncodeFunction(fn)
+		if err != nil || len(relocs) != 0 {
+			t.Fatalf("guard encoding: %v, %v", err, relocs)
+		}
+		result[fn.Name] = code
+	}
+	return result
+}
+
+func lratCheckGuardELF(t *testing.T, arch, lane, source, cpu string, encoded map[string][]byte) {
+	t.Helper()
+	comp := compiler.New().WithSource("lrat.oak", oakLRATSource+"\nmain: (): i32 { i32(0) }\n").
+		WithAsmUnit("lrat."+lane+".oakasm", source).
+		WithTarget(target.Target{OS: target.OSLinux, Arch: arch}).WithCPU(cpu)
+	object, err := comp.EmitAsmObject(asm.ELF).Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := elf.NewFile(bytes.NewReader(object))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	machine := elf.EM_RISCV
+	if arch == target.ArchArm64 {
+		machine = elf.EM_AARCH64
+	}
+	if f.Machine != machine {
+		t.Fatalf("unexpected ELF machine %v", f.Machine)
+	}
+	symbols, err := f.Symbols()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, code := range encoded {
+		found := false
+		for _, sym := range symbols {
+			if sym.Name != "oak_"+name {
+				continue
+			}
+			if found || int(sym.Section) >= len(f.Sections) || sym.Section == elf.SHN_UNDEF {
+				t.Fatal("invalid guard symbol")
+			}
+			found = true
+			section := f.Sections[sym.Section]
+			data, err := section.Data()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sym.Value < section.Addr {
+				t.Fatal("invalid symbol address")
+			}
+			start := sym.Value - section.Addr
+			if start > uint64(len(data)) || sym.Size > uint64(len(data))-start {
+				t.Fatal("invalid symbol range")
+			}
+			if !bytes.Equal(data[start:start+sym.Size], code) {
+				t.Fatalf("ELF bytes differ for %s", name)
+			}
+		}
+		if !found {
+			t.Fatalf("missing %s", name)
+		}
+	}
 }

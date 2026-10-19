@@ -264,6 +264,7 @@ import Oak.LRATLifecycleSoundness
 import Oak.LRATNativeGuards
 import Oak.LRATRV64Bytes
 import Oak.LRATRV64Compressed
+import Oak.LRATARM64Bytes
 import Oak.LRATRUP
 import Oak.LRATRUPSoundness
 import Oak.LRATCheckerState
