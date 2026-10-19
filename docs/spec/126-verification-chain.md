@@ -378,6 +378,21 @@ authority. The Go checkers are not universally refined to
 the Lean checkers; all other term operations, trap/claim provenance and source
 ordering, DIMACS correspondence, symbolic execution, and Oak lowering remain
 open.
+The Oak clause producer's literal serialization now has a separate
+implementation-linked theorem in `Oak.CNFLiteral`. `CNFLiteralExtracted`
+is regenerated from `cnf_lit` in the production solver package. For every
+nonconstant UInt32 edge, encoding and the existing production LRAT model's
+`decodeWord` preserve the zero-based variable index and complement polarity;
+`clause_semantics` lifts this to satisfaction of arbitrary lists of
+nonconstant edges, including empty and duplicate clauses. Constants 0 and 1
+are explicitly excluded: the producer must fold them before emission.
+The required `TestOakCNFLiteral*` gate checks extraction drift, fixed theorem
+contracts and foundational-only axiom closures, and compares 270 boundary and
+randomized encodings in compiled Oak and Lean kernel replay. This closes the
+scalar literal-format seam, not clause framing/capacity admission, gate
+production, source-to-term lowering, extraction correctness, or compiled
+checker soundness.
+
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
 the SAT solver from the audit, but it does not yet remove symbolic execution,
