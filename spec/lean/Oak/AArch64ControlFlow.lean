@@ -1,3 +1,4 @@
+import Oak.ControlFlowPlan
 import Oak.AArch64BranchExecution
 import Oak.AArch64DirectBranchEncoding
 
@@ -91,34 +92,15 @@ theorem localWord_step {kind : Kind} {rt : BitVec 5} {pc target : BitVec 64} {wo
     simp
   next => contradiction
 
-inductive Plan
-  | fall | jump (target : Nat) | zero (target : Nat) | nonzero (target : Nat)
-  | pair (yes no : Nat)
-  deriving DecidableEq, Repr
-
-def Plan.words : Plan → Nat
-  | .fall => 0
-  | .pair _ _ => 2
-  | _ => 1
-
-/-- The production selector's empty-edge-copy cases, in the same order. -/
-def selectPlan (yes no : Nat) (next : Option Nat) : Plan :=
-  if yes = no then
-    if next = some yes then .fall else .jump yes
-  else if next = some yes then .zero no
-  else if next = some no then .nonzero yes
-  else .pair yes no
+/-- Compatibility names for the shared fixed-width terminator plan. -/
+abbrev Plan := Oak.ControlFlowPlan.Plan
+abbrev Plan.words (p : Plan) : Nat := Oak.ControlFlowPlan.Plan.words p
+abbrev selectPlan := Oak.ControlFlowPlan.selectPlan
 
 def boolValue (regs : Registers) (rt : BitVec 5) : Bool :=
   !((readX regs rt).extractLsb' 0 32 == 0#32)
 
-def destination (p : Plan) (fall : BitVec 64) (addr : Nat → BitVec 64) (value : Bool) : BitVec 64 :=
-  match p with
-  | .fall => fall
-  | .jump t => addr t
-  | .zero t => if value then fall else addr t
-  | .nonzero t => if value then addr t else fall
-  | .pair yes no => if value then addr yes else addr no
+abbrev destination := Oak.ControlFlowPlan.destination
 
 def assemble (p : Plan) (pc : BitVec 64) (addr : Nat → BitVec 64) (rt : BitVec 5) :
     Option (List (BitVec 32)) :=
@@ -146,26 +128,26 @@ theorem assemble_sound (p : Plan) (pc : BitVec 64) (addr : Nat → BitVec 64) (r
     run words ⟨pc, flags, regs⟩ =
       some ⟨destination p (pc + BitVec.ofNat 64 (4 * p.words)) addr (boolValue regs rt), flags, regs⟩ := by
   cases p with
-  | fall => simp [assemble] at h; subst words; simp [run, destination, Plan.words]
+  | fall => simp [assemble] at h; subst words; simp [run, destination, Oak.ControlFlowPlan.destination, Plan.words, Oak.ControlFlowPlan.Plan.words]
   | jump t =>
     cases hw : jumpWord pc (addr t) <;> simp [assemble, hw] at h
     next word =>
       subst words
-      simp [run, jumpWord_step hw, destination]
+      simp [run, jumpWord_step hw, destination, Oak.ControlFlowPlan.destination]
   | zero t =>
     cases hw : localBranch .cbz32 rt pc.toNat (addr t).toNat <;> simp [assemble, hw] at h
     next word =>
       subst words
       rw [run, localWord_step hw]
       cases hc : ((readX regs rt).extractLsb' 0 32 == 0#32) <;>
-        simp [branchTo, taken, boolValue, hc, destination, Plan.words, run]
+        simp [branchTo, taken, boolValue, hc, destination, Oak.ControlFlowPlan.destination, Plan.words, Oak.ControlFlowPlan.Plan.words, run]
   | nonzero t =>
     cases hw : localBranch .cbnz32 rt pc.toNat (addr t).toNat <;> simp [assemble, hw] at h
     next word =>
       subst words
       rw [run, localWord_step hw]
       cases hc : ((readX regs rt).extractLsb' 0 32 == 0#32) <;>
-        simp [branchTo, taken, boolValue, hc, destination, Plan.words, run]
+        simp [branchTo, taken, boolValue, hc, destination, Oak.ControlFlowPlan.destination, Plan.words, Oak.ControlFlowPlan.Plan.words, run]
   | pair yes no =>
     cases hw : localBranch .cbnz32 rt pc.toNat (addr yes).toNat <;> simp [assemble, hw] at h
     next first =>
@@ -174,37 +156,17 @@ theorem assemble_sound (p : Plan) (pc : BitVec 64) (addr : Nat → BitVec 64) (r
         subst words
         rw [run, localWord_step hw]
         cases hc : ((readX regs rt).extractLsb' 0 32 == 0#32) <;>
-          simp [branchTo, taken, boolValue, hc, destination, run, jumpWord_step hj]
+          simp [branchTo, taken, boolValue, hc, destination, Oak.ControlFlowPlan.destination, run, jumpWord_step hj]
 
-def layoutAgrees (p : Plan) (pc : BitVec 64) (addr : Nat → BitVec 64) (next : Option Nat) : Bool :=
-  match next with
-  | none => true
-  | some id => pc + BitVec.ofNat 64 (4 * p.words) == addr id
+abbrev layoutAgrees := Oak.ControlFlowPlan.layoutAgrees
 
 theorem select_destination (yes no : Nat) (next : Option Nat) (pc : BitVec 64)
     (addr : Nat → BitVec 64) (value : Bool)
     (h : layoutAgrees (selectPlan yes no next) pc addr next = true) :
     destination (selectPlan yes no next)
       (pc + BitVec.ofNat 64 (4 * (selectPlan yes no next).words)) addr value =
-      if value then addr yes else addr no := by
-  by_cases he : yes = no
-  · subst no
-    by_cases hn : next = some yes
-    · subst next; simpa [selectPlan, destination, layoutAgrees, Plan.words] using h
-    · simp [selectPlan, hn, destination]
-  · by_cases hy : next = some yes
-    · subst next
-      have hp : pc + 4 = addr yes := by simpa [layoutAgrees, selectPlan, he, Plan.words] using h
-      simp only [selectPlan, if_neg he, destination, Plan.words]
-      change (if value then pc + 4 else addr no) = _
-      rw [hp]
-    · by_cases hn : next = some no
-      · subst next
-        have hp : pc + 4 = addr no := by simpa [layoutAgrees, selectPlan, he, hy, Plan.words] using h
-        simp only [selectPlan, if_neg he, if_neg hy, destination, Plan.words]
-        change (if value then addr yes else pc + 4) = _
-        rw [hp]
-      · simp [selectPlan, he, hy, hn, destination]
+      if value then addr yes else addr no :=
+  Oak.ControlFlowPlan.select_destination yes no next pc addr value h
 
 /-- A decidable certificate for one actual production terminator and layout. -/
 def check (yes no : Nat) (next : Option Nat) (pc : BitVec 64)
