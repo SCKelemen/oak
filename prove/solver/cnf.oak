@@ -49,12 +49,18 @@ cnf_node: (l: Layout, mem: [*]u32, key: u32, a: u32, b: u32): u32 {
 // complemented.
 cnf_lit: (edge: u32): u32 = u32(2) * ((edge >> u32(1)) - u32(1)) + (u32(1) - (edge & u32(1)))
 
+// Check the mathematical endpoint without allowing UInt32 addition to wrap.
+cnf_clause_fits: (used: u32, n: u32, capacity: u32): Bool =
+  n >= u32(1) && n <= u32(3) &&
+  lrat_fits(LRAT_HEADER_WORDS, used, capacity) &&
+  lrat_fits(LRAT_HEADER_WORDS + used, n + u32(1), capacity)
+
 // cnf_emit appends a clause of up to three edges (NONE for fewer).
 cnf_emit: (l: Layout, mem: [*]u32, a: u32, b: u32, c: u32): () {
   n: u32 = c == NONE ? { b == NONE ? { u32(1) } | { u32(2) } } | { u32(3) }
   used: u32 = mem[l.state_at + STATE_CLAUSES_USED]
-  at: u32 = l.clauses_at + LRAT_HEADER_WORDS + used
-  used + n + u32(1) + LRAT_HEADER_WORDS <= l.clauses_cap ? {
+  cnf_clause_fits(used, n, l.clauses_cap) ? {
+    at: u32 = l.clauses_at + LRAT_HEADER_WORDS + used
     mem[at] = n
     mem[at + u32(1)] = cnf_lit(a)
     n >= u32(2) ? { mem[at + u32(2)] = cnf_lit(b) } | { }
