@@ -57,8 +57,7 @@ func verifierEntryReadableGPR(arch string, reg int) bool {
 // semantics requires a separate ABI review and differential proof gate.
 func (isa *verifierISA) forgetCallerSaved(state *symbolicState) {
 	for _, reg := range isa.clobberedGPR {
-		delete(state.regs, reg)
-		delete(state.bounds, reg)
+		state.clobberGPR(reg)
 	}
 	if isa.preservedFPR != nil {
 		for reg := 0; reg < 32; reg++ {
