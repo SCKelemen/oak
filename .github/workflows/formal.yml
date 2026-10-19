@@ -68,7 +68,7 @@ jobs:
           go-version: '1.27.1'
 
       - name: Check bounded Go correspondence and native verifier regressions
-        run: go test ./asm -run '^(TestEntry(Register|Readable)|TestNativeVerifier(ISASelection|EntryReadable)|TestVerifyCallSummary)' -count=1 -timeout=10m -v
+        run: go test ./asm -run '^(TestEntry(Register|Readable)|TestNativeVerifier(ISASelection|EntryReadable|RegisterStateRefinement)|TestVerifyCallSummary)' -count=1 -timeout=10m -v
 
       - name: Install elan
         shell: bash

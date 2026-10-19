@@ -152,3 +152,26 @@ automatically extracted implementation; the bounded Go corpus tests
 the correspondence but does not universally prove it. Source-to-ISA
 refinement, complete call-result paths and whole `asm` tests remain
 required for full verified status.
+
+## A2: deterministic state-transition correspondence (October 2026)
+
+`asm/verify_entry_state_refinement_test.go` independently implements a
+two-bit reference state machine: whether a GPR has an actual materialized
+value, and whether it has lost authority to recreate its original entry
+value. The oracle has its own ARM64/RV64 entry masks and call-clobber masks
+and does not call the production target policy for expected outcomes.
+
+For each native GPR except architectural zero/SP registers, the test
+enumerates both sides of a two-transition fork, then applies production
+`mergeTwo` and another call. The return-address registers `x30` and
+`ra/x1` receive exhaustive three-transition traces. Reads are checked on
+clones to avoid observing state through a mutation that changes the next
+step. The test compares both the lazy-read result and the concrete
+`regs`/`invalidEntryGPR` representation at every step.
+
+This is an exhaustive bounded **implementation/model correspondence test**
+over the stated traces, not a universal refinement proof for unbounded
+instruction streams or the memory/vector state. The dedicated formal CI
+gate must execute it alongside the Lean module. A standalone Go 1.23
+harness checked the test's mechanics against a minimal API shim, but does
+not substitute for production `go test ./asm`.
