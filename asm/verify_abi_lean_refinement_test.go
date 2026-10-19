@@ -57,7 +57,9 @@ func TestAssemblerCallStateLeanCorrespondence(t *testing.T) {
 	for _, arch := range []string{ArchArm64, ArchRV64} {
 		t.Run(arch, func(t *testing.T) {
 			policy, ok := verifierISAFor(arch)
-			if !ok { t.Fatal("unregistered native verifier ISA") }
+			if !ok {
+				t.Fatal("unregistered native verifier ISA")
+			}
 			for reg := 0; reg < 32; reg++ {
 				// For AArch64 no Go FPR file is interpreted independently;
 				// only the register vector views represent FP state.
@@ -108,7 +110,7 @@ func TestAssemblerCallStateAcrossRegisterClasses(t *testing.T) {
 					}
 				} else {
 					_, actual := s.vregs[r]
-					if actual != assemblerCallVectorSaved(arch,r) {
+					if actual != assemblerCallVectorSaved(arch, r) {
 						t.Errorf("ARM64 v%d: actual bound=%v", r, actual)
 					}
 				}
