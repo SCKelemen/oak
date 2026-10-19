@@ -36,33 +36,25 @@ import (
 // ft0–ft11, fa0–fa7 (f0–f7, f10–f17, f28–f31) on RV64, where the vector
 // file and its configuration are forgotten as the arguments are read.
 func (x *pathExecutor) forgetCallerSaved(state *symbolicState) {
-	if x.arch == ArchRV64 {
-		for _, r := range []int{1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
-			delete(state.regs, r)
-			delete(state.bounds, r)
-		}
-		for r := 0; r <= 31; r++ {
-			if !rv64FloatCalleeSaved(r) {
-				delete(state.fregs, r)
-			}
-		}
+	isa, ok := verifierISAFor(x.arch)
+	if !ok {
+		// No assumptions about the clobber set are valid on an unknown ISA.
+		// Public seam checking/verification refuse this architecture first.
+		state.regs = nil
+		state.bounds = nil
+		state.fregs = nil
+		state.vregs = nil
+		state.rvcfg = nil
+		state.flags = nil
 		return
 	}
-	for r := 0; r <= 17; r++ {
-		delete(state.regs, r)
-		delete(state.bounds, r)
-	}
-	delete(state.regs, 30)
-	delete(state.bounds, 30)
-	state.flags = nil
-	for r := 0; r <= 31; r++ {
-		if !calleeSavedVector(r) {
-			delete(state.vregs, r)
-		}
-	}
+	isa.forgetCallerSaved(state)
 }
 
 func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (string, bool) {
+	if _, ok := verifierISAFor(x.arch); !ok {
+		return fmt.Sprintf("unsupported native verifier architecture %q", x.arch), false
+	}
 	opaque := "instruction " + instr.Mnemonic
 	if x.arch == ArchRV64 {
 		opaque = "a call"
