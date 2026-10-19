@@ -12,12 +12,12 @@ type verifierISA struct {
 	arch string
 	// Entry-readable differs from call-preserved: on RV64, ra (x1) is
 	// readable at function entry but is clobbered by an ordinary call.
-	entryReadableGPR func(int) bool
-	clobberedGPR     []int
-	preservedFPR     func(int) bool // nil: this policy does not model FPR clobbers
-	preservedVector    func(int) bool // nil: this policy does not model vector clobbers
+	entryReadableGPR    func(int) bool
+	clobberedGPR        []int
+	preservedFPR        func(int) bool // nil: this policy does not model FPR clobbers
+	preservedVector     func(int) bool // nil: this policy does not model vector clobbers
 	invalidateAllVector bool          // RV64 psABI: all vector regs and vl/vtype are caller-clobbered
-	invalidateFlags    bool
+	invalidateFlags     bool
 }
 
 var verifierArm64ISA = verifierISA{
@@ -29,10 +29,10 @@ var verifierArm64ISA = verifierISA{
 }
 
 var verifierRV64ISA = verifierISA{
-	arch:             ArchRV64,
-	entryReadableGPR: rv64Preserved,
-	clobberedGPR:     []int{1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31},
-	preservedFPR:      rv64FloatCalleeSaved,
+	arch:                 ArchRV64,
+	entryReadableGPR:     rv64Preserved,
+	clobberedGPR:         []int{1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31},
+	preservedFPR:         rv64FloatCalleeSaved,
 	invalidateAllVector: true,
 }
 
