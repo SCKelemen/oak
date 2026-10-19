@@ -164,6 +164,7 @@ func TestLRATNativeLean(t *testing.T) {
 	}
 	contract := `import Oak.LRATNativeGuards
 import Oak.LRATRV64Bytes
+import Oak.LRATRV64Compressed
 open Oak.LRATNativeGuards
 example (a c l : UInt32) (fuel : Nat) :
     Oak.LRATBounds.lrat_fits a c l fuel = some (armFits a.toBitVec c.toBitVec l.toBitVec) := arm_fits_extracted a c l fuel
@@ -189,7 +190,7 @@ example (a c l : BitVec 64) (h : rvFits a c l = true) :
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	for _, args := range [][]string{{"build", "Oak.LRATNativeGuards", "Oak.LRATRV64Bytes"}, {"env", "lean", path}} {
+	for _, args := range [][]string{{"build", "Oak.LRATNativeGuards", "Oak.LRATRV64Bytes", "Oak.LRATRV64Compressed"}, {"env", "lean", path}} {
 		cmd := exec.CommandContext(ctx, lake, args...)
 		cmd.Dir = filepath.Join("spec", "lean")
 		out, err := cmd.CombinedOutput()
