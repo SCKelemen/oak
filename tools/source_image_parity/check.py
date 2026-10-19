@@ -26,10 +26,26 @@ native = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(native)
 ALLOWED = {'propext', 'Quot.sound', 'Classical.choice'}
 PREFIX = 'Oak.BitwiseSourceImageParity.'
+PINNED_TOOLCHAIN = 'leanprover/lean4:v4.33.1'
 
 
 def sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def lean_environment(output):
+    try:
+        toolchain = (LEAN/'lean-toolchain').read_text().strip()
+    except OSError as error:
+        raise SystemExit('Cannot read pinned Lean toolchain: '+str(error)) from error
+    if toolchain != PINNED_TOOLCHAIN:
+        raise SystemExit('Requires pinned Lean toolchain '+PINNED_TOOLCHAIN)
+    env = dict(os.environ)
+    # Elan cannot discover spec/lean/lean-toolchain from an isolated evidence cwd.
+    # Override inherited selection; do not change cwd or rely on a global default.
+    env['ELAN_TOOLCHAIN'] = toolchain
+    env['LEAN_PATH'] = str(output) + os.pathsep + str(LEAN/'.lake/build/lib/lean')
+    return env
 
 
 def case_inventory():
@@ -172,8 +188,7 @@ def main():
     out = args.output.resolve(); out.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     library = LEAN / '.lake/build/lib/lean'
-    env = dict(os.environ)
-    env['LEAN_PATH'] = str(out) + os.pathsep + str(library)
+    env = lean_environment(out)
     version = run(['lean', '--version'], LEAN, out/'lean-version.log', env)
     if 'version 4.33.1,' not in version:
         raise SystemExit('Requires pinned Lean 4.33.1')

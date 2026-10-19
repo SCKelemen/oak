@@ -1,13 +1,88 @@
 #!/usr/bin/env python3
 """Lightweight fail-closed inventory/report controls; no Lean or fixture build."""
 import json
+import os
+import subprocess
 import tempfile
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 import check
 
 class GateControls(unittest.TestCase):
+    def test_pinned_lean_environment_overrides_inherited_selection(self):
+        with patch.dict(os.environ, {'ELAN_TOOLCHAIN':'unrelated-toolchain', 'LEAN_PATH':'unrelated-library'}):
+            env=check.lean_environment(Path('/isolated/evidence'))
+            self.assertEqual(env['ELAN_TOOLCHAIN'],check.PINNED_TOOLCHAIN)
+            self.assertEqual(env['LEAN_PATH'],os.pathsep.join([
+                '/isolated/evidence',str(check.LEAN/'.lake/build/lib/lean')]))
+            self.assertEqual(env['PATH'],os.environ['PATH'])
+            self.assertEqual(os.environ['ELAN_TOOLCHAIN'],'unrelated-toolchain')
+            self.assertEqual(os.environ['LEAN_PATH'],'unrelated-library')
+
+    def test_wrong_or_missing_toolchain_fails_before_launch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory=Path(temp)
+            with patch.object(check,'LEAN',directory), patch.object(check,'run') as launch, \
+                    patch.object(sys,'argv',['check.py',temp,'--output',str(directory/'evidence')]):
+                for pin in [None,'leanprover/lean4:v4.33.0','',check.PINNED_TOOLCHAIN+'\nother']:
+                    if pin is not None:(directory/'lean-toolchain').write_text(pin)
+                    with self.subTest(pin=pin), self.assertRaises(SystemExit):check.main()
+                launch.assert_not_called()
+
+    def test_main_passes_pinned_environment_to_launcher(self):
+        class StopAfterVersion(Exception):pass
+        with tempfile.TemporaryDirectory() as temp:
+            output=Path(temp).resolve()
+            with patch.dict(os.environ,{'ELAN_TOOLCHAIN':'unrelated-toolchain'}), \
+                    patch.object(sys,'argv',['check.py',temp,'--output',temp]), \
+                    patch.object(check,'run',side_effect=StopAfterVersion) as launch:
+                with self.assertRaises(StopAfterVersion):check.main()
+                args=launch.call_args.args
+                self.assertEqual(args[:3],(['lean','--version'],check.LEAN,output/'lean-version.log'))
+                self.assertEqual(args[3],check.lean_environment(output))
+
+    def test_no_default_shim_in_isolated_evidence_directory(self):
+        # Model elan's relevant selection rules without installing a toolchain in
+        # this lightweight suite. The mandatory hosted gate uses the real shim.
+        with tempfile.TemporaryDirectory() as temp:
+            directory=Path(temp).resolve()
+            evidence=directory/'evidence';evidence.mkdir()
+            home=directory/'empty-elan-home';home.mkdir()
+            project=directory/'project';project.mkdir()
+            (project/'lean-toolchain').write_text(check.PINNED_TOOLCHAIN+'\n')
+            shim=directory/'lean'
+            shim.write_text('#!'+sys.executable+'\n'+'''import json, os, sys
+from pathlib import Path
+selected=os.environ.get('ELAN_TOOLCHAIN')
+if not selected:
+    for parent in [Path.cwd(),*Path.cwd().parents]:
+        pin=parent/'lean-toolchain'
+        if pin.exists():
+            selected=pin.read_text().strip()
+            break
+if not selected:
+    print('error: no default toolchain configured')
+    sys.exit(1)
+print(json.dumps(dict(toolchain=selected,cwd=str(Path.cwd()),args=sys.argv[1:])))
+''')
+            shim.chmod(0o755)
+            with patch.dict(os.environ,{'ELAN_HOME':str(home)}), patch.object(check,'LEAN',project):
+                bare=dict(os.environ);bare.pop('ELAN_TOOLCHAIN',None)
+                failed=subprocess.run([str(shim),'--version'],cwd=evidence,env=bare,
+                                      text=True,capture_output=True,timeout=10)
+                self.assertNotEqual(failed.returncode,0)
+                self.assertIn('no default toolchain configured',failed.stdout)
+                env=check.lean_environment(evidence)
+                flags=['-j1','-M3000','--trust=0','Request.lean']
+                for cwd in [project,evidence]:
+                    output=check.run([str(shim),*flags],cwd,evidence/(cwd.name+'.log'),env)
+                    self.assertEqual(json.loads(output),dict(toolchain=check.PINNED_TOOLCHAIN,
+                                     cwd=str(cwd),args=flags))
+                self.assertFalse((evidence/'lean-toolchain').exists())
+                self.assertEqual(list(home.iterdir()),[])
+
     def report(self):
         p=check.case_inventory()
         roots=json.loads((check.ROOT/'tools/source_image_parity/expected-roots.json').read_text())
@@ -103,6 +178,6 @@ class GateControls(unittest.TestCase):
 
 if __name__=='__main__':
     suite=unittest.defaultTestLoader.loadTestsFromTestCase(GateControls)
-    if suite.countTestCases()!=12:raise SystemExit('Changed required harness-test inventory')
+    if suite.countTestCases()!=16:raise SystemExit('Changed required harness-test inventory')
     result=unittest.TextTestRunner(verbosity=2).run(suite)
-    if result.testsRun!=12 or result.skipped or not result.wasSuccessful():sys.exit(1)
+    if result.testsRun!=16 or result.skipped or not result.wasSuccessful():sys.exit(1)
