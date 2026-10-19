@@ -259,6 +259,9 @@ import Oak.IndexBounds
 import Oak.SolverScheduling
 import Oak.RupCheck
 import Oak.LRATBounds
+import Oak.LRATPreflight
+import Oak.LRATLifecycleSoundness
+import Oak.LRATNativeGuards
 import Oak.LRATRUP
 import Oak.LRATRUPSoundness
 import Oak.LRATCheckerState
@@ -326,3 +329,5 @@ import Oak.WasmCoreBitwiseProjection
 import Oak.WasmCoreSource
 
 import Oak.LRATBoundSoundness
+
+import Oak.LRATBindingModel

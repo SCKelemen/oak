@@ -5,8 +5,9 @@ import Oak.LRATRecordSoundness
 Concrete composition of formula identity and production record soundness.
 The caller supplies a successfully decoded expected CNF, not a solver verdict
 or an abstract RUP derivation. The natural-cursor decoder checks each length
-and exact consumption. Refinement of the production identity predicate to its
-list model, source-to-CNF lowering, and compilation remain separate obligations.
+and exact consumption. `Oak.LRATBindingModel` connects successful production
+identity checking to this list model. Source-to-CNF lowering and compilation
+remain separate obligations.
 -/
 set_option autoImplicit false
 namespace Oak.LRATFormulaBinding

@@ -25,12 +25,26 @@ import (
 var llvmEncodingLine = regexp.MustCompile(`encoding: \[(0x[0-9a-f]{2}),(0x[0-9a-f]{2}),(0x[0-9a-f]{2}),(0x[0-9a-f]{2})\]`)
 
 func findLLVMMC(t *testing.T) string {
-	for _, candidate := range llvmMCCandidates {
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
+	t.Helper()
+	if path := lookupLLVMMC(llvmMCCandidates); path != "" {
+		return path
+	}
+	requireOracle(t, "llvm-mc not present (PATH or Homebrew)")
+	return ""
+}
+
+// Respect the equipped lane's selected LLVM first, then keep the developer
+// Homebrew fallback. LookPath checks executability and rejects an implicit
+// current-directory match; merely existing is not enough to be an oracle.
+func lookupLLVMMC(fallbacks []string) string {
+	if path, err := exec.LookPath("llvm-mc"); err == nil {
+		return path
+	}
+	for _, candidate := range fallbacks {
+		if path, err := exec.LookPath(candidate); err == nil {
+			return path
 		}
 	}
-	t.Skip("llvm-mc not present")
 	return ""
 }
 
@@ -852,8 +866,8 @@ func randomSlice(rng *rand.Rand, enc *isaEncoding, fop *isaOperand, letters map[
 func TestEncodeFunctionAgainstLLVM(t *testing.T) {
 	llvmMC := findLLVMMC(t)
 	objdump := strings.TrimSuffix(llvmMC, "llvm-mc") + "llvm-objdump"
-	if _, err := os.Stat(objdump); err != nil {
-		t.Skip("llvm-objdump not present")
+	if _, err := exec.LookPath(objdump); err != nil {
+		requireOracle(t, "llvm-objdump not present: "+err.Error())
 	}
 	source, err := os.ReadFile("../examples/asm/kernels.arm64.oakasm")
 	if err != nil {

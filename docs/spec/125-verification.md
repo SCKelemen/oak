@@ -166,6 +166,77 @@ is `open` with the reason. Each side of an entry is projected as a Bool
 predicate (`name_liveK_from`, `name_liveK_to`) so the check evaluates
 the same expression the guards use.
 
+### 2c. Checked invariant synthesis
+
+`oak prove -solver go -synthesize NAME file.oak` searches for an inductive
+strengthening of an existing protocol invariant theorem. The source is read
+once and never rewritten. The report binds its exact bytes with SHA-256 and
+names the original property and protocol. This initial route accepts one
+self-contained file, scalar protocol data (fixed-width integers and Bool),
+and a pure scalar predicate as the target. Imports and resource `via`
+callables are refused. It proves properties of the generated protocol
+projection, not of arbitrary implementations of the protocol.
+
+The built-in candidate pool contains equalities and order relations between
+same-typed data fields and against literal initial values. An agent or user
+can supply a JSON array of predicate strings with `-candidates predicates.json`.
+A supplied empty array disables templates; `null`, trailing data, more than
+64 candidates, predicates over 4096 bytes, and input files over 1 MiB are
+refused. Predicates use the target theorem's parameter names. The allowed
+syntax is scalar literals, state variants, data-field reads, arithmetic,
+comparisons, Boolean operators, and built-in integer casts. Declarations,
+mutation, loops, user-function calls, and assumptions cannot be introduced.
+Candidate types and all generated obligations still pass the compiler gates.
+
+The search uses Houdini-style conjunct elimination. Its current invariant is
+the **unchanged original property conjoined with retained candidates**. For
+each candidate, it checks initialization and preservation under that whole
+conjunction. Refuted or unsupported candidates are removed. Removing a
+candidate weakens the induction hypothesis, so every remaining candidate is
+checked again in the next round. Success requires fresh checks of all three:
+
+1. The complete invariant holds initially.
+2. Every legal transition preserves the complete invariant.
+3. The complete invariant implies the original property.
+
+Only `decided` results from the existing Go interpreter/BDD ladder count.
+There is no reachable-state fallback, imported solver verdict, or new proof
+authority. A preservation counterexample can be unreachable, so failed
+synthesis is `open`, not a refutation of the original property. Candidate
+rejections retain their obligation and counterexample for the next proposal.
+
+Before searching, multiple lines of one step from one state require pairwise
+guard-exclusivity obligations to be decided. Unguarded alternatives, overlaps,
+and undecided exclusivity leave synthesis open. Thus this first scope avoids
+claiming that the executable first-match interpretation proves properties of
+a different nondeterministic transition relation. Fairness and liveness are
+not synthesized.
+
+`-synthesis-rounds N` bounds pruning rounds (zero selects candidate count plus
+one). Exhaustion is `open`; this is a search budget, not an execution horizon.
+An accepted inductive invariant covers arbitrary transition counts for the
+declared types and fixed configuration, not arbitrary system sizes.
+`-cases N` controls the existing exhaustive rung. `-synthesis-json` emits the
+structured source identity, retained/rejected predicates, final obligations,
+and status. Exit status is 0 only on acceptance, 1 for an open search, and 2
+for usage, input, or compilation errors. Other solver backends, Lean output,
+compiled witnesses, and CNF output are explicitly refused in this initial
+route. The ordinary `oak prove` path remains unchanged.
+
+Example:
+
+```sh
+oak prove -solver go -synthesize ordered examples/verification_synthesis.oak
+```
+
+The example increments two wrapping counters together. Its ordering property
+alone is not inductive over every possible counter pair; the inferred equality
+strengthens it. The source theorem remains unchanged. This Go orchestration
+is not a self-hosted search engine or a kernel proof of synthesis soundness;
+its acceptance relies on the existing decider and source-to-obligation trust
+boundary. Extending it to the Oak certificate rung must preserve fresh checks
+and bind each certificate to its exact generated obligation.
+
 ## 3. The discharge ladder
 
 Every theorem is placed on one rung, from the strongest evidence down:
@@ -325,6 +396,55 @@ a conclusion. CI pins both contracts and audits their transitive axioms.
 Regressions cover clause-count disagreement, empty clauses with unused payload,
 and initial clause bodies crossing into the proof section.
 
+`Oak.LRATPreflight` proves the production allocation admission checks. The
+allocating entry calls the shared `lrat_record_fits` helper, whose extraction
+is checked for drift. Accepted preflight establishes all header indices are
+in bounds, exact framing of the UInt32-sized record view, and positive,
+non-wrapping element and byte counts for all six scratch requests. The actual
+`lrat_header_fits` gate also establishes exact positive stream-buffer byte
+allocation. These results compose the existing arithmetic lemmas with the
+production guards; they do not assume those arithmetic preconditions from
+the caller. The required LRAT gate pins the contracts and audits their axioms.
+Compiled entry tests reject truncated or inconsistent raw framing before any
+allocation, and check that zero declared capacities still reserve sentinels.
+Allocator success, ownership conversion, cleanup and FFI execution remain
+separate from these arithmetic and admission proofs.
+
+`Oak.LRATLifecycleSoundness` proves the normally returning allocating entry's
+resource protocol for every subset of the six allocation failures. Replay
+rejects ownership of null, checker calls without all owners, freeing an owned
+block, and duplicate frees. Successful replay leaves each successful allocation
+freed and each failed allocation absent; output-capacity and preflight refusal
+have empty schedules. The proof uses kernel reduction over all 64 outcomes.
+
+This is a narrowly source-audited protocol, not general FFI extraction. A
+required Go audit compares the entire `lrat_check_allocated` function's tokens
+and parsed form with a complete schema; that same schema emits the committed
+allocation/own/check/disown/free schedule. Mutation controls reject missing or
+misdirected frees, disowns, guards and checker calls. The protocol assumes fresh,
+distinct non-null malloc blocks, identity-preserving own/disown, a normally
+returning borrowing checker, and `free(NULL)` as a no-op. It does not prove the
+foreign implementations, general source translation, or abnormal termination.
+Compiled regressions independently run all 64 failure masks against accepted
+and refused records (128 executions), tracking pointer identities and exact
+release order in addition to leak counts. Existing single-failure and raw-stream
+cleanup cases use the strengthened shim too. CI requires the source audit,
+complete Lean contract and axiom audit, and these compiled regressions.
+
+The scalar `lrat_fits` and `lrat_alloc_fits` guards now have ARM64 and RV64
+assembler units used by the solver package. The existing verifier must prove
+each unit equal to its actual production Oak definition; wrong endpoint and
+allocation-threshold mutations must yield counterexamples. RV64 explicitly
+normalizes the low 32 bits before unsigned comparisons, including the
+subtraction result. `Oak.LRATNativeGuards` proves these scalar expressions
+agree with the extracted guards and composes them with endpoint and allocation
+bounds, for arbitrary inputs (including arbitrary upper RV64 register bits).
+Required CI checks kernel contracts and axioms, both units' verification and
+encoding, target selection, and ARM64/RV64 ELF symbols. Other targets retain
+the Oak fallback. The solver cache includes both units. This closes a scalar
+realization step, not general instruction decoding, ABI/linker correctness,
+the Go verifier's implementation, or whole-checker compiled soundness.
+
 This establishes expected-formula soundness for the extracted binding gate
 and word checker. Extraction correctness, allocation/FFI semantics, and
 compiled ARM64/RV64 executables remain separate obligations.
@@ -477,10 +597,22 @@ stronger `Oak.LRATChecker.production_bound_record_sound` theorem described above
 uses the extracted production identity loop directly and derives initial-decoder
 locality from successful checking, without an expected-decoding hypothesis.
 `Oak.LRATChecker.production_bound_cnf_sound` additionally concludes successful
-bounded decoding of that expected CNF. Correspondence with the separate list
-predicate is still checked on the corpus;
-it is not a premise of that stronger theorem. Source-to-CNF correctness and
-native compilation of the checker remain separate proof obligations.
+bounded decoding of that expected CNF. The universal acceptance-refinement
+theorem `Oak.LRATFormulaBinding.production_binding_refines_model` (module
+`Oak.LRATBindingModel`) now connects the extracted identity gate to the complete
+list predicate: successful execution implies both framing checks, the formula-only
+input requirement, all identity fields, and exact ordered payload equality. It
+requires both array lengths to fit UInt32 view lengths; it does not assume a
+solver verdict or clause validity. The dedicated CI contract rejects proof holes
+and pins fuel exhaustion, empty payloads, and mismatch refusal. The reverse
+theorem `model_binding_accepted` proves completeness when fuel
+is greater than the formula payload length (`formula.size - 8`). Its loop
+lemma accounts for each payload word and the final guard without UInt32
+wraparound. `production_binding_iff_model` combines both directions under
+the same representable-array bounds; CI pins that contract and rejects
+transitive proof holes. The stronger direct checker theorem does not depend
+on this list model. Source-to-CNF correctness and native compilation of the checker remain
+separate proof obligations.
 `-cnf dir` writes every bit-level
 obligation's clauses as DIMACS (`name.cnf`) for any solver or checker to
 read; the clause engine agrees with the diagram engine input for input over
@@ -1217,3 +1349,4 @@ In order of payoff, each reusing a surface that exists:
   and stated for TLC through the TLA+ module (`112-protocols.md` §4).
   Next: the every-line reading inside the compiler, and liveness over
   infinite data domains through Lean.
+
