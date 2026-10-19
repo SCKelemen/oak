@@ -2032,7 +2032,7 @@ func (s *symbolicState) read(reg Register) (*term, bool) {
 		return value, bound
 	}
 	value, ok := s.regs[reg.Num]
-	if !ok && ((s.arch == ArchRV64 && rv64Preserved(reg.Num)) || (s.arch != ArchRV64 && calleeSavedRegister(reg.Num))) {
+	if !ok && verifierEntryReadableGPR(s.arch, reg.Num) {
 		// A callee-saved register carries the caller's value on entry: an
 		// opaque symbol, which a save/restore pair round-trips unchanged.
 		value = paramTerm(fmt.Sprintf("entry.x%d", reg.Num), 64)
@@ -10557,6 +10557,14 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 // verdict is proof only when both are proven, otherwise the first that
 // is not.
 func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
+	if fn == nil {
+		return Verdict{Kind: VerdictTrusted, Message: "unsupported native verifier function: nil"}
+	}
+	if _, ok := verifierISAFor(fn.Arch); !ok {
+		// Verification cannot silently interpret an unknown ISA as ARM64.
+		// Trusted is a refusal to prove, never a proof verdict.
+		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("unsupported native verifier architecture %q", fn.Arch)}
+	}
 	if only := os.Getenv("OAK_VERIFY_ONLY"); only != "" && !verifyOnlyNames(only, fn.Name) {
 		// A diagnostic switch: one function verified, every other unit
 		// trusted without a look (its verdict is never cached).
