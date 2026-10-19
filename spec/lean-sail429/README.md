@@ -123,3 +123,10 @@ invocation boundary; ELF startup and reset reachability are not inferred.
 AUIPC/JALR startup at checked `e_entry`, composing eleven callbacks and five
 ticks. Initial platform/ABI state remains explicit. The proof stops at the
 returned `e_entry+8`, before ADDI/ECALL, and makes no reset or full-loop claim.
+
+## Post-return ECALL readiness
+
+[EXIT.md](EXIT.md) extends the prefix through the actual ADDI as callback twelve,
+with six ticks, then proves exact ECALL fetch/decode and ABI register readiness.
+It retains the Machine/Bare initialization profile and does not execute ECALL,
+assert Linux delivery, or prove process/full-loop termination.
