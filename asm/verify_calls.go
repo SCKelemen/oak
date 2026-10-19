@@ -669,16 +669,13 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		// were). The result register receives the callee's lanes.
 		if x.arch == ArchRV64 {
 			for _, r := range []int{1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
-				delete(state.regs, r)
-				delete(state.bounds, r)
+				state.clobberGPR(r)
 			}
 		} else {
 			for r := 0; r <= 17; r++ {
-				delete(state.regs, r)
-				delete(state.bounds, r)
+				state.clobberGPR(r)
 			}
-			delete(state.regs, 30)
-			delete(state.bounds, 30)
+			state.clobberGPR(30)
 			state.flags = nil
 			for r := 0; r <= 31; r++ {
 				if r < 8 || r >= 16 {
@@ -757,19 +754,16 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		}
 		if x.arch == ArchRV64 {
 			for _, r := range []int{1, 5, 6, 7, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
-				delete(state.regs, r)
-				delete(state.bounds, r)
+				state.clobberGPR(r)
 			}
 			for k, chunk := range chunks {
 				state.write(Register{Class: ClassRV64X, Num: 10 + k}, chunk)
 			}
 		} else {
 			for r := 0; r <= 17; r++ {
-				delete(state.regs, r)
-				delete(state.bounds, r)
+				state.clobberGPR(r)
 			}
-			delete(state.regs, 30)
-			delete(state.bounds, 30)
+			state.clobberGPR(30)
 			state.flags = nil
 			for k, chunk := range chunks {
 				state.write(Register{Class: ClassX, Num: k}, chunk)
@@ -823,8 +817,7 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 	value = zeroExtend(value, 64)
 	if x.arch == ArchRV64 {
 		for _, r := range []int{1, 5, 6, 7, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31} {
-			delete(state.regs, r) // ra, t0–t6, a1–a7: dead after a call
-			delete(state.bounds, r)
+			state.clobberGPR(r) // ra, t0–t6, a1–a7: dead after a call
 		}
 		switch {
 		case resultSigned:
@@ -835,11 +828,9 @@ func (x *pathExecutor) summarizeCall(instr Instruction, state *symbolicState) (s
 		state.write(Register{Class: ClassRV64X, Num: 10}, value)
 	} else {
 		for r := 1; r <= 17; r++ {
-			delete(state.regs, r)
-			delete(state.bounds, r)
+			state.clobberGPR(r)
 		}
-		delete(state.regs, 30)
-		delete(state.bounds, 30)
+		state.clobberGPR(30)
 		state.flags = nil
 		defined := resultWidth
 		if typeText(callee.ReturnType) == "Bool" {
