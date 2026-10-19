@@ -268,6 +268,7 @@ import Oak.LRATRV64Compressed
 import Oak.LRATARM64Bytes
 import Oak.LRATNativeRefinement
 import Oak.LRATRV64GuardCalls
+import Oak.LRATARM64GuardCalls
 import Oak.LRATRUP
 import Oak.LRATRUPSoundness
 import Oak.LRATCheckerState
