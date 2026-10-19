@@ -506,12 +506,11 @@ last (claim) root, drops false constants, records true constants, and writes
 each remaining encoded literal. `production_trace` connects that reducer
 and finalizer to the full extracted function with sufficient fuel.
 The reducer's count and true-constant flag are proved, as are both constant
-outcomes and the decoded nonconstant clause's Boolean meaning. Its exact
-functional write model is not yet a theorem that reads the entire final
-clause back under derived layout bounds. Deriving the observed root sequence
-from original source terms still requires non-aliasing layouts, valid root
-indices, and the bitblasting/circuit correspondence; these are not assumed
-to follow from extraction.
+outcomes and the decoded nonconstant clause's Boolean meaning. Final-buffer
+readback is now supplied by `Oak.CNFObligationStore`, described below.
+Deriving the observed root sequence from original source terms still requires
+valid root indices and the bitblasting/circuit correspondence; these are not
+assumed to follow from extraction.
 
 `TestOakCNFObligation*` audits 19 foundational-only theorem closures and
 fixed contracts, including the old wrapping counterexample. Compiled tests
@@ -521,6 +520,28 @@ capacity, spare capacity, and refusal. They check 4,144 actual outcome/formula
 assignments, 1,331 mathematical guard boundaries, and four whole-function
 overflow refusals with no payload writes. These tests supplement the proofs;
 they do not establish compiler correctness or whole-source verdict soundness.
+
+`Oak.CNFObligationStore` proves that the reducer's actual memory equals
+consecutive writes of the encoded nonconstant literals. It derives payload
+readback and preservation of all cells outside that append interval. Root
+reads are therefore preserved when their computed cells lie outside the
+interval. Publication preserves payload cells under explicit separation from
+the two counters and writes the exact clause length. `production_record`
+composes this through the complete extracted `cnf_obligation` call: the
+returned buffer has the proved header and every payload word. `stored_semantics`
+reads that header to choose the payload length and proves that decoding the
+stored words preserves the observed obligation's Boolean meaning.
+
+`layout_bounds` derives physical address bounds from admission and a
+nonwrapping clause region. `state_separation` discharges counter separation
+when state ends before the clause region. These are local layout invariants,
+not a proof that the allocator constructs every valid layout. Valid source
+root addresses, generation of the complete root trace from the original
+bitblasting state, and whole-source verdict soundness remain open.
+`TestOakCNFObligationStoreLean` audits 13 foundational-only theorem closures,
+checks fixed readback contracts, and kernel-replays both mixed-constant
+payload writes and a counter/payload aliasing counterexample. The existing
+compiled obligation regression and solver integration remain required.
 
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
