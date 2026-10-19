@@ -1,0 +1,7 @@
+package main
+import("smartcard/apdu")
+
+// Qualified import anchor only; excluded from extraction.
+apdu_extraction_anchor: (src: []u8): Result[apdu.Command, apdu.Error] = apdu.decode(src)
+
+main: (): i32 = 0

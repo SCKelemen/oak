@@ -225,6 +225,4 @@ func flagsDeadFrom(items []asm.Item, succ [][]int, start int) bool {
 
 // ElidedRedundantGuards reports how many repeated guard pairs a candidate
 // removed. One site is one compare and conditional branch.
-func ElidedRedundantGuards(fn *asm.Function) int { return redundantGuards[fn] }
-
-var redundantGuards = map[*asm.Function]int{}
+func ElidedRedundantGuards(fn *asm.Function) int { return readLoweringMetadata(fn).redundantGuards }

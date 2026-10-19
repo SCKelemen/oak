@@ -83,6 +83,6 @@ func elideGlobalLoadMaskAt(fn *asm.Function, at int, store, mask asm.Instruction
 
 // ElidedGlobalLoadMasks reports masks replaced or removed by the stronger,
 // verifier-gated scalar-global forwarding candidate.
-func ElidedGlobalLoadMasks(fn *asm.Function) int { return elidedGlobalLoadMasks[fn] }
-
-var elidedGlobalLoadMasks = map[*asm.Function]int{}
+func ElidedGlobalLoadMasks(fn *asm.Function) int {
+	return readLoweringMetadata(fn).elidedGlobalLoadMasks
+}

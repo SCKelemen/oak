@@ -7639,6 +7639,14 @@ consumes stays a temporary. The rotated, fused, scheduled, reallocated
 form of `crc32c_update` proves (`i↔r25`, `state↔r0`) and is selected.
 Pinned: `compiler/e2e_native_call_result_carried_test.go`.
 
+**Guarded memory-marker equality.** The pointwise write-log shortcut requires
+both the marker name and equivalent one-bit guards under the original premise,
+including zero-fill markers. An absent guard means true. An unequal or
+undecided guard declines this shortcut and leaves the whole-memory comparison
+available. The regression tests cover synthetic internal verifier states and
+real memory-log producer/consumer helpers; they do not establish a complete
+source/assembly misproof or a performance benefit.
+
 **Span memories through loops (2026-09-14).** A store through a span
 inside a data-dependent loop body was the last shape the loop summary
 refused, and with the loops themselves recognized it was the largest
@@ -8163,6 +8171,39 @@ verifier paths preserve the union of summarized callees before the record is
 written. Cold and warm tests require identical dependency closure and rerun
 the verified-profile fixpoint over the cached result. The cache remains local
 proof-engine state rather than an independently checked proof certificate.
+**Fixed verification configuration.** Each `Compilation.check` captures the
+existing `OAK_VERIFY_OFF`, `OAK_VERIFY_BUDGET`, and `OAK_VERIFY_ONLY` settings once,
+before stitching supplied units or lowering native bodies. All candidates and
+independent value, effect, and trap obligations in that invocation use the same
+immutable `asm.VerificationOptions` value. `WithVerificationOptions` supplies an
+explicit override, including explicit zero/default options; an ordinary reusable
+compilation captures fresh settings at its next check, without retaining a prior
+ambient snapshot. Concurrent callers needing different settings use explicit
+values; reading several process environment variables is not an atomic capture
+with concurrent environment mutation.
+
+`asm.VerifyWithOptions` consumes explicit options; the existing `asm.Verify`
+entry captures the three settings per call. Thus a later standalone call observes
+a changed off-list, instead of the former process-first-use list. Off-list tokens
+remain untrimmed, unknown tokens ineffective, budget parsing unchanged, and the
+selection list retains its existing exact-name/whitespace semantics. Rule switches
+select algorithms, not monotone subsets of proof rules: disabling `bounded` still
+uses the parent's remaining allowance, and disabled `onesided` and `components`
+still perform their existing attempt/construction before rejecting its use. No
+proof predicate, allowance, debit, result classification, or callee obligation is
+relaxed by configuration.
+
+The cache namespace is `verdict-cache-6-fixed-verification-options`; keys include a
+versioned length-delimited identity of all three raw settings alongside the
+existing source/assembly/declaration/callee context. The same captured options and
+cache policy govern lookup and store. Selection, cache-off, and fresh-check modes
+bypass both directions; transient resource refusals remain nonpersistent. Earlier
+namespace entries are cold misses, with no deletion or migration. Options and key
+digests are not proof evidence. Diagnostic environment controls remain outside this
+snapshot (some may initiate extra work or output), and physical-memory admission
+remains process-shared. This boundary does not claim complete environment isolation,
+independent proof replay of cache entries, or stronger executable content identity.
+
 Second, a mask of every bit at a term's
 width is now the identity in the constructors (`x & 0xFFFFFFFF` at 32
 bits is `x`; a truncation of a zero-extension is the extended term), and
@@ -8569,6 +8610,18 @@ small-helper expansion (#486) now inlines thirty-two of the bodies the
 earlier count proved separately (`append_byte`, `bitset_set`,
 `buffer_reset`), so the counts are not comparable body for body.
 
+An exhausted shared allowance still admits the existing structural-equality
+and recorded-decision fast paths, which consume no ordinary node debit or
+new implication call. A fresh unequal, uncached implication keeps the call
+check but stops before walking and charging its DAG when the effective
+owner's remaining allowance is nonpositive. If recursive proof rules exhaust
+that owner, the parent skips construction of its main decision diagrams and
+retains the existing bounded final split: rewritten equal or recorded children
+can still decide. Positive-entry admissions may consume their final allowance
+or overdraw under the existing policy; those charges are neither clamped nor
+refunded. An optimistic child's actual debit and calls still transfer once to
+its parent. This is a resource-admission rule, not an additional proof rule.
+
 **Constant register indices into record arguments (2026-09-17).** A
 record-array load whose register index is a known constant reads that
 element directly, after checking the constant against the selected array
@@ -8879,9 +8932,12 @@ argument's length (`summarizeCall`); the lowering declares the local as a
 span with no aggregate local (`declareLocal`, `tableLens` its length,
 `localSpanWidths` outliving an inlined callee's scope) and binds
 `view(&chunk)` to it. A zero-filled array's log starts with the marker
-`zero` on both sides, which `memoryAt` reads as "zero from here", so every
-comparison, restore and witness evaluation sees the fill without knowing
-the span. A local span's final memory is left undecided in `decideSpans`
+`zero` on both sides, initially unguarded, which `memoryAt` reads as
+"zero from here". A path join can guard this marker: it then selects zero
+only where its guard holds and preserves the previous memory elsewhere.
+Only an unguarded memory marker can discard the earlier write history.
+Every comparison, restore and witness evaluation sees the fill through this
+same model without knowing the span. A local span's final memory is left undecided in `decideSpans`
 and after the loops (no caller observes it; its reads went through the
 one model). `TestE2ENativeLargeArrayLoopsProven` proves a 256-byte
 array filled in one loop and summed in another;
@@ -8891,8 +8947,9 @@ subsliced and handed through `host_write_all` to the extern — with both
 loops coupled through the chunk, while the flush itself, a 4192-byte
 frame, stays with the C backend by the native backend's own limit.
 Two corrections followed the first prover tally of the model: the fill's
-split zero stores are not logged while the array's log is still its
-marker (zero over zero changes nothing, and a 4096-byte chunk's fill had
+split zero stores are not logged while the array's log is still its lone
+unguarded zero marker; a guarded zero marker must retain the real stores
+(zero over unconditional zero changes nothing, and a 4096-byte chunk's fill had
 handed every later symbolic read a chain of thousands of constant-index
 writes — the tally passed twenty gigabytes), and the blaster gives two
 reads of one span whose indices are one linear form spelled two ways one

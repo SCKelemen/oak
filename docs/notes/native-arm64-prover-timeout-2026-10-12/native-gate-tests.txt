@@ -1,0 +1,196 @@
+.....RUN ./compiler: 1 roots, -race, timeout 90m
+RUN ./compiler: 1 roots, -race, timeout 90m
+.RUN .: 1 roots, -race, timeout 45m
+PASS .: 1 roots, 0 children; zero skips
+RUN .: 1 roots, -race, timeout 45m
+.RUN ./compiler: 1 roots, -race, timeout 90m
+PASS ./compiler: 1 roots, 1 children; zero skips
+..................SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+Reviewed native ARM64 roots: {'.': 2, './asm': 1, './compiler': 193, './testrunner': 1, './semir': 1}
+Reviewed native ARM64 shards: {'compiler-a': 64, 'compiler-b': 65, 'compiler-c': 64, 'support': 5}
+SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+Reviewed native ARM64 roots: {'.': 2, './asm': 1, './compiler': 193, './testrunner': 1, './semir': 1}
+Reviewed native ARM64 shards: {'compiler-a': 64, 'compiler-b': 65, 'compiler-c': 64, 'support': 5}
+SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+Reviewed native ARM64 roots: {'.': 2, './asm': 1, './compiler': 193, './testrunner': 1, './semir': 1}
+Reviewed native ARM64 shards: {'compiler-a': 64, 'compiler-b': 65, 'compiler-c': 64, 'support': 5}
+SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+Reviewed native ARM64 roots: {'.': 2, './asm': 1, './compiler': 193, './testrunner': 1, './semir': 1}
+Reviewed native ARM64 shards: {'compiler-a': 64, 'compiler-b': 65, 'compiler-c': 64, 'support': 5}
+.SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+Reviewed native ARM64 roots: {'.': 2, './asm': 1, './compiler': 193, './testrunner': 1, './semir': 1}
+Reviewed native ARM64 shards: {'compiler-a': 64, 'compiler-b': 65, 'compiler-c': 64, 'support': 5}
+FAIL ./semir: missing tool child
+.SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+Reviewed native ARM64 roots: {'.': 2, './asm': 1, './compiler': 193, './testrunner': 1, './semir': 1}
+Reviewed native ARM64 shards: {'compiler-a': 64, 'compiler-b': 65, 'compiler-c': 64, 'support': 5}
+.SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+Reviewed native ARM64 roots: {'.': 2, './asm': 1, './compiler': 193, './testrunner': 1, './semir': 1}
+Reviewed native ARM64 shards: {'compiler-a': 64, 'compiler-b': 65, 'compiler-c': 64, 'support': 5}
+FAIL native prerequisite: native prerequisite failed
+FAIL .: prerequisite failed; root runtime was not run
+..SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+Reviewed native ARM64 roots: {'.': 2, './asm': 1, './compiler': 193, './testrunner': 1, './semir': 1}
+Reviewed native ARM64 shards: {'compiler-a': 64, 'compiler-b': 65, 'compiler-c': 64, 'support': 5}
+SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+Reviewed native ARM64 roots: {'.': 2, './asm': 1, './compiler': 193, './testrunner': 1, './semir': 1}
+Reviewed native ARM64 shards: {'compiler-a': 64, 'compiler-b': 65, 'compiler-c': 64, 'support': 5}
+.SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+Reviewed native ARM64 roots: {'.': 2, './asm': 1, './compiler': 193, './testrunner': 1, './semir': 1}
+Reviewed native ARM64 shards: {'compiler-a': 64, 'compiler-b': 65, 'compiler-c': 64, 'support': 5}
+.SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+Reviewed native ARM64 roots: {'.': 2, './asm': 1, './compiler': 193, './testrunner': 1, './semir': 1}
+Reviewed native ARM64 shards: {'compiler-a': 64, 'compiler-b': 65, 'compiler-c': 64, 'support': 5}
+FAIL ./semir: failure
+.SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+Reviewed native ARM64 roots: {'.': 2, './asm': 1, './compiler': 193, './testrunner': 1, './semir': 1}
+Reviewed native ARM64 shards: {'compiler-a': 64, 'compiler-b': 65, 'compiler-c': 64, 'support': 5}
+..SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+.SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EExampleSMEPackage: requires macOS SME detection and SME-capable hardware (e2e_sme_test.go)
+SEPARATE PLATFORM: ./compiler TestE2EMessageSendFoundation: requires Darwin/ARM64 Objective-C Foundation (e2e_ffi_objc_test.go)
+..PREPARE root-harness-build: shared 90-minute prerequisite deadline
+PREPARE root-harness-list: shared 90-minute prerequisite deadline
+PREPARE native-prover-build: shared 90-minute prerequisite deadline
+...PREPARE root-harness-build: shared 90-minute prerequisite deadline
+PREPARE root-harness-list: shared 90-minute prerequisite deadline
+PREPARE root-harness-build: shared 90-minute prerequisite deadline
+PREPARE root-harness-list: shared 90-minute prerequisite deadline
+PREPARE root-harness-build: shared 90-minute prerequisite deadline
+PREPARE root-harness-list: shared 90-minute prerequisite deadline
+PREPARE root-harness-build: shared 90-minute prerequisite deadline
+PREPARE root-harness-list: shared 90-minute prerequisite deadline
+PREPARE native-prover-build: shared 90-minute prerequisite deadline
+..E./opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 11 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+..EE....Traceback (most recent call last):
+  File "<string>", line 6, in <module>
+.  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1027, in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/proc/15/stat'
+Traceback (most recent call last):
+  File "<string>", line 6, in <module>
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1027, in read_text
+.    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/proc/16/stat'
+..../opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 13 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/unittest/mock.py:2217: ResourceWarning: unclosed file <_io.FileIO name=3 mode='rb' closefd=True>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/subprocess.py:1127: ResourceWarning: subprocess 14 is still running
+  _warn("subprocess %s is still running" % self.pid,
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/unittest/mock.py:2217: ResourceWarning: unclosed file <_io.FileIO name=4 mode='rb' closefd=True>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.........................................
+======================================================================
+ERROR: test_successful_producer_cannot_leave_a_child_to_publish_late_evidence (test_native_arm64_prerequisite.PrerequisiteExecutionTests.test_successful_producer_cannot_leave_a_child_to_publish_late_evidence)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/e311734a0ab3/oak/.github/scripts/test_native_arm64_prerequisite.py", line 251, in test_successful_producer_cannot_leave_a_child_to_publish_late_evidence
+    status = prerequisite._bounded_command([sys.executable, '-c', source, str(late_receipt)],
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/e311734a0ab3/oak/.github/scripts/native_arm64_prerequisite.py", line 71, in _bounded_command
+    process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT,
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/unittest/mock.py", line 1139, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/unittest/mock.py", line 1143, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/unittest/mock.py", line 1204, in _execute_mock_call
+    result = effect(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/e311734a0ab3/oak/.github/scripts/test_native_arm64_prerequisite.py", line 77, in launch
+    self.leader_identity = _fixture_process_identity(self.leader.pid)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/e311734a0ab3/oak/.github/scripts/test_native_arm64_prerequisite.py", line 21, in _fixture_process_identity
+    raw = Path(f'/proc/{pid}/stat').read_text()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1027, in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/proc/11/stat'
+
+======================================================================
+ERROR: test_orphan_holding_stdout_is_killed_by_wall_deadline (test_native_arm64_prerequisite.RuntimeProcessGroupTests.test_orphan_holding_stdout_is_killed_by_wall_deadline)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/e311734a0ab3/oak/.github/scripts/test_native_arm64_prerequisite.py", line 275, in test_orphan_holding_stdout_is_killed_by_wall_deadline
+    self.check_orphan(hold_stdout=True)
+  File "/workspace/scratch/e311734a0ab3/oak/.github/scripts/test_native_arm64_prerequisite.py", line 286, in check_orphan
+    process = descendant.launch([sys.executable, '-c', source], stdout=subprocess.PIPE,
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/e311734a0ab3/oak/.github/scripts/test_native_arm64_prerequisite.py", line 77, in launch
+    self.leader_identity = _fixture_process_identity(self.leader.pid)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/e311734a0ab3/oak/.github/scripts/test_native_arm64_prerequisite.py", line 21, in _fixture_process_identity
+    raw = Path(f'/proc/{pid}/stat').read_text()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1027, in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/proc/13/stat'
+
+======================================================================
+ERROR: test_successful_leader_cannot_leave_a_running_descendant (test_native_arm64_prerequisite.RuntimeProcessGroupTests.test_successful_leader_cannot_leave_a_running_descendant)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/workspace/scratch/e311734a0ab3/oak/.github/scripts/test_native_arm64_prerequisite.py", line 279, in test_successful_leader_cannot_leave_a_running_descendant
+    self.check_orphan(hold_stdout=False)
+  File "/workspace/scratch/e311734a0ab3/oak/.github/scripts/test_native_arm64_prerequisite.py", line 286, in check_orphan
+    process = descendant.launch([sys.executable, '-c', source], stdout=subprocess.PIPE,
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/e311734a0ab3/oak/.github/scripts/test_native_arm64_prerequisite.py", line 77, in launch
+    self.leader_identity = _fixture_process_identity(self.leader.pid)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/workspace/scratch/e311734a0ab3/oak/.github/scripts/test_native_arm64_prerequisite.py", line 21, in _fixture_process_identity
+    raw = Path(f'/proc/{pid}/stat').read_text()
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1027, in read_text
+    with self.open(mode='r', encoding=encoding, errors=errors) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/proc/14/stat'
+
+----------------------------------------------------------------------
+Ran 100 tests in 36.205s
+
+FAILED (errors=3)

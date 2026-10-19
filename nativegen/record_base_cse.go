@@ -359,26 +359,22 @@ func recordBaseScratch(clobbers []asm.Register, items []asm.Item, from int, expr
 
 // SharedRecordBases reports how many repeated record-base materializations a
 // candidate removed.
-func SharedRecordBases(fn *asm.Function) int { return sharedRecordBases[fn] }
-
-var sharedRecordBases = map[*asm.Function]int{}
+func SharedRecordBases(fn *asm.Function) int { return readLoweringMetadata(fn).sharedRecordBases }
 
 // ReusedRecordBaseDestinations reports how many repeated materializations
 // used the first computed destination as their carried base.
-func ReusedRecordBaseDestinations(fn *asm.Function) int { return reusedRecordBaseDestinations[fn] }
-
-var reusedRecordBaseDestinations = map[*asm.Function]int{}
+func ReusedRecordBaseDestinations(fn *asm.Function) int {
+	return readLoweringMetadata(fn).reusedRecordBaseDestinations
+}
 
 // ReusedRemainingRecordBaseDestinations reports how many materializations a
 // separate fixed-point child removed after the first carrier group.
 func ReusedRemainingRecordBaseDestinations(fn *asm.Function) int {
-	return reusedRemainingRecordBaseDestinations[fn]
+	return readLoweringMetadata(fn).reusedRemainingRecordBaseDestinations
 }
-
-var reusedRemainingRecordBaseDestinations = map[*asm.Function]int{}
 
 // RescheduledRecordBaseCarriers reports how many instructions moved when the
 // final carrier-aware dependency graph was scheduled again.
-func RescheduledRecordBaseCarriers(fn *asm.Function) int { return rescheduledRecordBaseCarriers[fn] }
-
-var rescheduledRecordBaseCarriers = map[*asm.Function]int{}
+func RescheduledRecordBaseCarriers(fn *asm.Function) int {
+	return readLoweringMetadata(fn).rescheduledRecordBaseCarriers
+}

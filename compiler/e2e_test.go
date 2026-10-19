@@ -39,6 +39,9 @@ func buildAndRunFrom(t *testing.T, name string, comp Compilation, ccFlags ...str
 	t.Helper()
 	cc, err := exec.LookPath("cc")
 	if err != nil {
+		if os.Getenv("OAK_REQUIRE_CC") == "1" {
+			t.Fatal("OAK_REQUIRE_CC=1 requires a C compiler on PATH")
+		}
 		t.Skip("no C compiler on PATH")
 	}
 

@@ -381,11 +381,9 @@ func blockVectorBlock(block []asm.Item, live []uint32, stores bool) ([]asm.Item,
 
 // FusedVectorBlocks reports how many vector loads a lowering read at an
 // immediate offset off a shared element address under Lane.VectorBlocks.
-func FusedVectorBlocks(fn *asm.Function) int { return fusedVectorBlocks[fn] }
-
-var fusedVectorBlocks = map[*asm.Function]int{}
+func FusedVectorBlocks(fn *asm.Function) int { return readLoweringMetadata(fn).fusedVectorBlocks }
 
 // SharedVectorAddresses counts late, verifier-gated load/store rewrites.
-func SharedVectorAddresses(fn *asm.Function) int { return sharedVectorAddressCount[fn] }
-
-var sharedVectorAddressCount = map[*asm.Function]int{}
+func SharedVectorAddresses(fn *asm.Function) int {
+	return readLoweringMetadata(fn).sharedVectorAddressCount
+}

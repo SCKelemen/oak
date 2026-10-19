@@ -1,0 +1,34 @@
+File: profileprobe-candidate
+Build ID: 818804d0bde67c10bf13f339de7dee3d12ee8784
+Type: cpu
+Time: 2026-10-12 16:53:08 PDT
+Duration: 120s, Total samples = 573.20s (477.66%)
+Showing nodes accounting for 526.06s, 91.78% of 573.20s total
+Dropped 1310 nodes (cum <= 2.87s)
+Showing top 25 nodes out of 109
+      flat  flat%   sum%        cum   cum%
+   159.25s 27.78% 27.78%    162.75s 28.39%  github.com/SCKelemen/oak/asm.(*opTable).place (inline)
+    90.55s 15.80% 43.58%     92.78s 16.19%  github.com/SCKelemen/oak/asm.(*uniqueTable).place (inline)
+    74.71s 13.03% 56.61%     76.63s 13.37%  github.com/SCKelemen/oak/asm.(*opTable).lookup
+    68.32s 11.92% 68.53%     69.77s 12.17%  github.com/SCKelemen/oak/asm.(*uniqueTable).lookup
+    19.87s  3.47% 72.00%     19.87s  3.47%  runtime.memmove
+    14.32s  2.50% 74.50%     30.75s  5.36%  runtime.tryDeferToSpanScan
+    12.25s  2.14% 76.63%     12.25s  2.14%  runtime.spanClass.sizeclass (inline)
+    11.90s  2.08% 78.71%     12.21s  2.13%  internal/runtime/gc/scan.scanSpanPackedAVX512
+     9.92s  1.73% 80.44%     21.46s  3.74%  runtime.scanObjectsSmall
+     7.33s  1.28% 81.72%      7.33s  1.28%  runtime.memclrNoHeapPointers
+     6.68s  1.17% 82.89%     11.75s  2.05%  runtime.scanObjectSmall
+     6.37s  1.11% 84.00%    464.44s 81.03%  github.com/SCKelemen/oak/asm.(*bdd).apply
+     5.99s  1.05% 85.04%         6s  1.05%  runtime.asyncPreempt
+     5.25s  0.92% 85.96%      6.50s  1.13%  github.com/SCKelemen/oak/asm.(*bdd).interrupted (partial-inline)
+     4.78s  0.83% 86.79%      4.78s  0.83%  runtime.madvise
+     4.25s  0.74% 87.53%    201.09s 35.08%  github.com/SCKelemen/oak/asm.(*bdd).mk
+     4.20s  0.73% 88.27%     60.29s 10.52%  runtime.scanSpan
+     3.99s   0.7% 88.96%      4.09s  0.71%  github.com/SCKelemen/oak/asm.(*bdd).variableOf (inline)
+     3.52s  0.61% 89.58%      3.54s  0.62%  github.com/SCKelemen/oak/asm.hashMix (inline)
+        3s  0.52% 90.10%      4.27s  0.74%  runtime.findObject
+     2.59s  0.45% 90.55%     16.65s  2.90%  runtime.scanObject
+     1.95s  0.34% 90.89%    165.02s 28.79%  github.com/SCKelemen/oak/asm.(*opTable).grow
+     1.72s   0.3% 91.19%     93.61s 16.33%  github.com/SCKelemen/oak/asm.(*uniqueTable).grow
+     1.68s  0.29% 91.48%      6.41s  1.12%  runtime.sweepone
+     1.67s  0.29% 91.78%    175.38s 30.60%  github.com/SCKelemen/oak/asm.(*opTable).insert

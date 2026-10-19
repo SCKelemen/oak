@@ -608,6 +608,4 @@ func sameInstruction(a, b asm.Instruction) bool {
 
 // CleanedCopies reports how many instructions the late cleanup removed
 // from a lowering under Lane.Cleanup.
-func CleanedCopies(fn *asm.Function) int { return cleanedCopies[fn] }
-
-var cleanedCopies = map[*asm.Function]int{}
+func CleanedCopies(fn *asm.Function) int { return readLoweringMetadata(fn).cleanedCopies }

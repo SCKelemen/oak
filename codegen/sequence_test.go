@@ -3,6 +3,8 @@ package codegen
 import (
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/ast"
 )
 
 // The left-to-right sequencing lowering (docs/spec/90-backend.md §15,
@@ -65,5 +67,36 @@ func TestSequencingShapes(t *testing.T) {
 				t.Fatalf("a single effect was hoisted:\n%s", output)
 			}
 		})
+	}
+}
+
+// A parsed underscore is a BindingPattern, while unsupported pattern
+// shapes must terminate instead of recursively hoisting the same match.
+func TestSequenceMatchShapes(t *testing.T) {
+	cg := New("main", nil)
+	match := &ast.MatchExpression{
+		Scrutinee: &ast.Identifier{Value: "n"},
+		Arms: []*ast.MatchArm{{
+			Pattern: &ast.BindingPattern{Name: &ast.Identifier{Value: "_"}},
+			Body:    &ast.IntegerLiteral{Value: 42},
+		}},
+	}
+	if !cg.scalarMatch(match) || cg.unhoistable(match, nil) {
+		t.Fatal("the parser's underscore binding must use scalar statement lowering")
+	}
+	for _, pattern := range []ast.Pattern{
+		&ast.BindingPattern{Name: &ast.Identifier{Value: "bound"}},
+		&ast.BindingPattern{},
+	} {
+		match.Arms[0].Pattern = pattern
+		if cg.scalarMatch(match) || !cg.unhoistable(match, nil) {
+			t.Fatalf("pattern %T must retain its separate lowering", pattern)
+		}
+		cg.output.Reset()
+		cg.globalErrors = nil
+		cg.assignTo("result", match, nil)
+		if len(cg.globalErrors) != 1 || !strings.Contains(cg.globalErrors[0].Error(), "unsupported match shape in value sequencing") || cg.output.Len() != 0 {
+			t.Fatalf("unsupported statement match must terminate with an emission error and no C: errors=%v output=%q", cg.globalErrors, cg.output.String())
+		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SCKelemen/oak/diagnostic"
+	"github.com/SCKelemen/oak/typechecker"
 )
 
 // The derived binary codec (docs/spec/71-codecs.md section 22, dbs ask 9):
@@ -158,9 +159,10 @@ func TestBinaryCodecLowering(t *testing.T) {
 			t.Fatalf("unexpected lowering: %s", forbidden)
 		}
 	}
-	for _, name := range []string{"oak___oak_bin_encode_Header", "oak___oak_bin_decode_Header"} {
-		body := binaryDefinition(t, emitted, name)
-		for _, forbidden := range []string{"bytes_write_", "bytes_read_", "bytes_range_fits", "oak_assert(", "oak_span_store_u8(", "oak_span_index_u8(", "oak_view_index_u8(", "oak_index(", "oak_store(", "oak_lv_idx(", "oak_bounds_trap", "__oak_bin_write", "__oak_bin_read"} {
+	for _, operation := range []string{"encode", "decode"} {
+		name := typechecker.CFunctionSymbol("main", binaryCodecName(operation, "Header"))
+		body := cFunctionBody(t, emitted, name)
+		for _, forbidden := range []string{"bytes_write_", "bytes_read_", "bytes_range_fits", "oak_assert(", "oak_span_store_u8(", "oak_span_index_u8(", "oak_view_index_u8(", "oak_index(", "oak_store(", "oak_lv_idx(", "oak_bounds_trap", typechecker.CFunctionSymbol("main", binaryCodecName("write", "")), typechecker.CFunctionSymbol("main", binaryCodecName("read", ""))} {
 			if strings.Contains(body, forbidden) {
 				t.Fatalf("%s contains %q:\n%s", name, forbidden, body)
 			}
@@ -172,7 +174,7 @@ func TestBinaryCodecLowering(t *testing.T) {
 			t.Fatalf("%s accesses fewer than 28 byte positions directly (arrays loop):\n%s", name, body)
 		}
 	}
-	size := cFunctionBody(t, emitted, "oak___oak_bin_encoded_size_Header")
+	size := cFunctionBody(t, emitted, typechecker.CFunctionSymbol("main", binaryCodecName("encoded_size", "Header")))
 	if !strings.Contains(size, "36") {
 		t.Fatalf("the size is not the constant 36:\n%s", size)
 	}
@@ -199,32 +201,6 @@ func withoutCSourceMetadata(code string) string {
 		}
 	}
 	return strings.Join(kept, "\n")
-}
-
-// binaryDefinition cuts a derived function's definition out of the emitted
-// C: the line at column zero that opens its body (the derived functions
-// follow the program, so their call sites come first), to the closing brace.
-func binaryDefinition(t *testing.T, code, name string) string {
-	t.Helper()
-	marker := " " + name + "( "
-	for from := 0; ; {
-		i := strings.Index(code[from:], marker)
-		if i < 0 {
-			t.Fatalf("no definition of %s in the emitted C", name)
-		}
-		at := from + i
-		lineStart := strings.LastIndexByte(code[:at], '\n') + 1
-		lineEnd := at + strings.IndexByte(code[at:], '\n')
-		line := code[lineStart:lineEnd]
-		if !strings.HasPrefix(line, " ") && strings.HasSuffix(strings.TrimRight(line, " "), "{") {
-			end := strings.Index(code[lineStart:], "\n}\n")
-			if end < 0 {
-				t.Fatalf("unterminated definition of %s", name)
-			}
-			return code[lineStart : lineStart+end+3]
-		}
-		from = at + len(marker)
-	}
 }
 
 // A u128 field: sixteen bytes in either order, round-tripped.

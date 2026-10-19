@@ -202,6 +202,4 @@ func (g *generator) valueSelectForm(e *ast.MatchExpression, typ scalar) (int, bo
 
 // ValueSelects reports how many value-position select forms a lowering
 // emitted under Lane.ValueSelect.
-func ValueSelects(fn *asm.Function) int { return valueSelects[fn] }
-
-var valueSelects = map[*asm.Function]int{}
+func ValueSelects(fn *asm.Function) int { return readLoweringMetadata(fn).valueSelects }

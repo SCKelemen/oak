@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	verdictCacheNamespace     = "verdict-cache-5-truncated-parameter-extension"
+	verdictCacheNamespace     = "verdict-cache-6-fixed-verification-options"
 	verdictCacheFormatVersion = 2
 )
 
@@ -51,16 +51,8 @@ type decodedVerdict struct {
 // lives beside the solver caches under the temporary directory;
 // OAK_VERIFY_CACHE=0 turns it off.
 
-// verdictCacheDir is the directory of cached verdicts, "" when disabled.
-func verdictCacheDir() string {
-	if os.Getenv("OAK_VERIFY_CACHE") == "0" || os.Getenv("OAK_VERIFY_ONLY") != "" {
-		return ""
-	}
-	return filepath.Join(os.TempDir(), "oak-verify-cache")
-}
-
 // verdictCacheKey hashes everything a verdict depends on.
-func verdictCacheKey(asmFn *asm.Function, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, declarations string) string {
+func verdictCacheKey(asmFn *asm.Function, fn *ast.FunctionStatement, functions map[string]*ast.FunctionStatement, declarations string, options asm.VerificationOptions) string {
 	h := sha256.New()
 	write := func(parts ...string) {
 		for _, part := range parts {
@@ -76,9 +68,8 @@ func verdictCacheKey(asmFn *asm.Function, fn *ast.FunctionStatement, functions m
 		}
 	}
 	write(verdictCacheNamespace, asmFn.Arch, strconv.FormatBool(asmFn.PackedStackArgs), nativegen.Describe(asmFn), fn.String(), declarations)
-	// The decider's budget setting: a verdict under the escalated budget
-	// (OAK_VERIFY_BUDGET) is not a verdict under the base one.
-	write("verify-budget", os.Getenv("OAK_VERIFY_BUDGET"))
+	// Bind the key to the same immutable settings consumed by verification.
+	write("verification-options", options.CacheIdentity())
 	if asmFn.Body != nil {
 		write("lowered-body", asmFn.Body.String()) // a verified rewrite: the body the verdict judged
 	}
@@ -198,6 +189,9 @@ func programDeclarations(root *ast.Program) string {
 }
 
 // cachedVerdict reads a verdict for the key, if one is on disk.
+// This is trusted cache restoration, not a fresh proof: the checks below
+// validate the stored record and its dependencies, not a mathematical derivation.
+// Keep this boundary distinct from proof-result composition in asm.
 func cachedVerdict(dir, key string, functions map[string]*ast.FunctionStatement) (asm.Verdict, bool) {
 	if dir == "" || !validVerdictCacheKey(key) {
 		return asm.Verdict{}, false
@@ -231,6 +225,11 @@ func cachedVerdict(dir, key string, functions map[string]*ast.FunctionStatement)
 // storeVerdict writes a verdict under the key (a temporary file renamed
 // into place, so a concurrent build never reads a partial one).
 func storeVerdict(dir, key string, verdict asm.Verdict) {
+	// Host memory pressure is not part of the semantic cache key. Retry
+	// transient non-decisions on a later build instead of persisting them.
+	if verdict.TransientResourceExhausted {
+		return
+	}
 	if dir == "" || !validVerdictCacheKey(key) || !validVerdictKind(verdict.Kind) ||
 		!validVerdictCallees(verdict.Callees, nil, false) {
 		return

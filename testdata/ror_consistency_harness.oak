@@ -1,0 +1,282 @@
+// Test-only driver. Production declarations are copied unchanged by the Go
+// harness; no production API or proof admission is added.
+ror_word: (n: u32): () {
+  write_u32(n)
+  write_byte(u8(32))
+}
+ror_u64: (n: u64): () {
+  ror_word(u32_trunc_u64(n))
+  ror_word(u32_trunc_u64(n >> u64(32)))
+}
+
+ror_dump_nodes: (l: Layout, mem: [*]u32): () {
+  n: u32 = node_count(l, mem)
+  ror_word(n)
+  i: u32 = 1
+  while i < n {
+    ror_word(mem[l.var_at + i])
+    ror_word(mem[l.low_at + i])
+    ror_word(mem[l.high_at + i])
+    i = i + u32(1)
+  }
+}
+
+ror_dump_bits: (l: Layout, mem: [*]u32, p: []u32, t: u32): () {
+  i: u32 = 0
+  while i < term_width(p, t) {
+    ror_word(mem[l.bits_at + t * u32(64) + i])
+    i = i + u32(1)
+  }
+}
+
+ror_poison_bits: (l: Layout, mem: [*]u32, p: []u32): () {
+  i: u32 = 0
+  while i < problem_terms(p) * u32(64) {
+    mem[l.bits_at + i] = NONE
+    i = i + u32(1)
+  }
+}
+
+ror_unpublished: (l: Layout, mem: [*]u32, p: []u32, t: u32): Bool {
+  bit: u32 = 0
+  ok: Bool = true
+  while bit < term_width(p, t) {
+    ok = ok && mem[l.bits_at + t * u32(64) + bit] == NONE
+    bit = bit + u32(1)
+  }
+  ok
+}
+
+ror_replay: (l: Layout, original: [*]u32, mem: [*]u32, p: []u32, rotate: u32, expected: u32): () {
+  quantum: u32 = 1
+  total_pauses: u32 = 0
+  while quantum <= u32(7) {
+    ror_poison_bits(l, mem, p)
+    solve_begin(l, mem)
+    assert(solve_resume(l, mem, p, u32(0)) == STATUS_RUNNING)
+    assert(node_count(l, mem) == u32(1))
+    status: u32 = STATUS_RUNNING
+    turns: u32 = 0
+    while status == STATUS_RUNNING && turns < u32(100000) {
+      status = solve_resume(l, mem, p, quantum)
+      (status == STATUS_RUNNING && paused(l, mem)) ? {
+        pending: u32 = mem[l.state_at + STATE_TERM]
+        assert(ror_unpublished(l, mem, p, pending))
+        pending == rotate ? { total_pauses = total_pauses + u32(1) } | { }
+      } | { }
+      turns = turns + u32(1)
+    }
+    assert(status == expected)
+    assert(solve_resume(l, mem, p, quantum) == expected)
+    assert(node_count(l, mem) == node_count(l, original))
+    n: u32 = 0
+    while n < node_count(l, mem) {
+      assert(mem[l.var_at + n] == original[l.var_at + n])
+      assert(mem[l.low_at + n] == original[l.low_at + n])
+      assert(mem[l.high_at + n] == original[l.high_at + n])
+      n = n + u32(1)
+    }
+    t: u32 = 0
+    while t < problem_terms(p) {
+      bit: u32 = 0
+      while bit < term_width(p, t) {
+        assert(mem[l.bits_at + t * u32(64) + bit] == original[l.bits_at + t * u32(64) + bit])
+        bit = bit + u32(1)
+      }
+      t = t + u32(1)
+    }
+    quantum = quantum == u32(1) ? { u32(2) } | { quantum == u32(2) ? { u32(7) } | { u32(8) } }
+  }
+  ror_word(total_pauses)
+  // Cancellation before an attempt cannot publish a verdict.
+  stream_cancelled = true
+  assert(solve(l, mem, p) == STATUS_CANCELLED)
+  solve_begin(l, mem)
+  assert(solve_resume(l, mem, p, u32(1)) == STATUS_CANCELLED)
+  stream_cancelled = false
+  assert(solve_resume(l, mem, p, u32(1)) == STATUS_CANCELLED)
+  // The two-symbol fixture forces both interruption and exhaustion inside
+  // the rotate, rather than exhausting while registering parameter bits.
+  problem_leaves(p) == u32(2) ? {
+    ror_poison_bits(l, mem, p)
+    solve_begin(l, mem)
+    status: u32 = STATUS_RUNNING
+    turns: u32 = 0
+    while status == STATUS_RUNNING && mem[l.state_at + STATE_TERM] < rotate && turns < u32(100000) {
+      status = solve_resume(l, mem, p, u32(1))
+      turns = turns + u32(1)
+    }
+    assert(status == STATUS_RUNNING && mem[l.state_at + STATE_TERM] == rotate)
+    status = solve_resume(l, mem, p, u32(1))
+    assert(status == STATUS_RUNNING && paused(l, mem) && mem[l.state_at + STATE_TERM] == rotate)
+    assert(mem[l.state_at + STATE_SP] > u32(0) || mem[l.state_at + STATE_RECORDED] > u32(0))
+    assert(ror_unpublished(l, mem, p, rotate))
+    stream_cancelled = true
+    assert(solve_resume(l, mem, p, u32(1)) == STATUS_CANCELLED)
+    assert(ror_unpublished(l, mem, p, rotate))
+    stream_cancelled = false
+    assert(solve_resume(l, mem, p, u32(1)) == STATUS_CANCELLED)
+    solver_init(l, mem)
+    ror_poison_bits(l, mem, p)
+    t: u32 = 0
+    while t < rotate {
+      assert(blast_term(l, mem, p, t))
+      t = t + u32(1)
+    }
+    small: Layout = l
+    small.cap = node_count(l, mem)
+    assert(blast_term(small, mem, p, rotate))
+    assert(exceeded(small, mem))
+    assert(ror_unpublished(small, mem, p, rotate))
+  } | { }
+}
+
+ror_runtime: (lw: Lower, w: [*]u32, b: [*]u32, p: []u32, rotate: u32, values: []u32, count: u32): () {
+  i: u32 = 0
+  while i < len(p) {
+    b[i] = p[i]
+    i = i + u32(1)
+  }
+  set_state(lw, w, LS_TERMS_AT, terms_at(p))
+  set_state(lw, w, LS_FAILED, u32(0))
+  set_state(lw, w, LS_TERMS, problem_terms(p))
+  row: u32 = 0
+  while row < count {
+    leaf: u32 = 0
+    while leaf < problem_leaves(p) {
+      at: u32 = (row * problem_leaves(p) + leaf) * u32(2)
+      w[lw.snap_at + leaf * u32(2)] = values[at]
+      w[lw.snap_at + leaf * u32(2) + u32(1)] = values[at + u32(1)]
+      leaf = leaf + u32(1)
+    }
+    assert(eval_terms(lw, w, b, problem_terms(p)))
+    a: u32 = term_a(p, rotate)
+    bb: u32 = term_b(p, rotate)
+    x: u64 = term_value(lw, w, a)
+    y: u64 = term_value(lw, w, bb)
+    ror_u64(term_value(lw, w, rotate))
+    ror_u64(x)
+    ror_u64(y)
+    ror_u64(fold_binary(BOP_ROR, x & mask64(term_width(p, a)), y & mask64(term_width(p, bb)), term_width(p, rotate)))
+    root: u32 = 0
+    while root < problem_roots(p) {
+      ror_u64(term_value(lw, w, p[roots_at(p) + root]))
+      root = root + u32(1)
+    }
+    // Raw constants preserve payload bits here so the production
+    // constructor itself must mask each child before the operation.
+    set_state(lw, w, LS_TERMS, problem_terms(p))
+    xc: u32 = term_new(lw, w, b, KIND_CONST, u32(0), term_width(p, a), NONE, NONE, NONE, u32_trunc_u64(x), u32_trunc_u64(x >> u64(32)))
+    yc: u32 = term_new(lw, w, b, KIND_CONST, u32(0), term_width(p, bb), NONE, NONE, NONE, u32_trunc_u64(y), u32_trunc_u64(y >> u64(32)))
+    folded: u32 = t_binary(lw, w, b, BOP_ROR, xc, yc)
+    assert(is_const(lw, w, b, folded))
+    ror_u64(tvalue(lw, w, b, folded))
+    row = row + u32(1)
+  }
+}
+
+ror_case: (p: []u32, rotate: u32, values: []u32, count: u32): () {
+  l: Layout = layout_for_clauses(u32(4096), problem_terms(p), u32(65536))
+  lw: Lower = lower_layout(problem_terms(p) + u32(8), problem_leaves(p))
+  raw: c.Ptr = malloc(c.Size((l.total + REPLAY_WORDS) * u32(4)))
+  replay_raw: c.Ptr = malloc(c.Size((l.total + REPLAY_WORDS) * u32(4)))
+  work_raw: c.Ptr = malloc(c.Size(lw.total * u32(4)))
+  built_raw: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
+  unsafe {
+    mem: Buffer[u32] = c.own[u32](raw, l.total + REPLAY_WORDS)
+    replay: Buffer[u32] = c.own[u32](replay_raw, l.total + REPLAY_WORDS)
+    work: Buffer[u32] = c.own[u32](work_raw, lw.total)
+    built: Buffer[u32] = c.own[u32](built_raw, lw.built_total)
+    status: u32 = solve(l, span(&mem), p)
+    assert(status == STATUS_PROVEN || status == STATUS_REFUTED)
+    ror_word(status)
+    ror_dump_nodes(l, span(&mem))
+    ror_dump_bits(l, span(&mem), p, rotate)
+    witness: [256]u32
+    listed: u32 = status == STATUS_REFUTED ? { witness_vars(l, span(&mem), p, span(&witness)) } | { u32(0) }
+    ror_word(listed)
+    i: u32 = 0
+    while i < listed {
+      ror_word(witness[i])
+      i = i + u32(1)
+    }
+    ror_replay(l, span(&mem), span(&replay), p, rotate, status)
+    outcome: u32 = cnf_lower(l, span(&mem), p)
+    assert(outcome != NONE)
+    ror_word(outcome)
+    ror_dump_nodes(l, span(&mem))
+    ror_dump_bits(l, span(&mem), p, rotate)
+    {
+      clause_mem: []u32 = view(&mem)
+      clauses: u32 = clause_mem[l.state_at + STATE_CLAUSE_COUNT]
+      ror_word(clauses)
+      at: u32 = l.clauses_at + LRAT_HEADER_WORDS
+      i = u32(0)
+      while i < clauses {
+        n: u32 = clause_mem[at]
+        ror_word(n)
+        j: u32 = 0
+        while j < n {
+          ror_word(clause_mem[at + u32(1) + j])
+          j = j + u32(1)
+        }
+        at = at + u32(1) + n
+        i = i + u32(1)
+      }
+    }
+    ror_runtime(lw, span(&work), span(&built), p, rotate, values, count)
+    // Confirm the BDD witness through the real scalar evaluator and print
+    // it for the independent ROR check in the Go harness as well.
+    status == STATUS_REFUTED ? {
+      assigned: [128]u32
+      leaf: u32 = 0
+      while leaf < problem_leaves(p) {
+        bit: u32 = 0
+        while bit < leaf_width(p, leaf) {
+          j: u32 = 0
+          found: Bool = false
+          while j < listed {
+            found = found || witness[j] == leaf_variable(p, leaf, bit)
+            j = j + u32(1)
+          }
+          found ? { assigned[leaf * u32(2) + bit / u32(32)] = assigned[leaf * u32(2) + bit / u32(32)] | (u32(1) << (bit % u32(32))) } | { }
+          bit = bit + u32(1)
+        }
+        leaf = leaf + u32(1)
+      }
+      ror_runtime(lw, span(&work), span(&built), p, rotate, view(&assigned), u32(1))
+    } | { }
+    // Keep the evaluator's absent-right-operand guard live for unary ops.
+    one: u32 = t_const64(lw, span(&work), span(&built), u64(1), u32(64))
+    unary: u32 = term_new(lw, span(&work), span(&built), KIND_BINARY, BOP_CLZ, u32(64), one, NONE, NONE, u32(0), u32(0))
+    eval_count: u32 = state(lw, span(&work), LS_TERMS)
+    assert(eval_terms(lw, span(&work), span(&built), eval_count))
+    assert(term_value(lw, span(&work), unary) == u64(63))
+    free(c.disown(built))
+    free(c.disown(work))
+    free(c.disown(replay))
+    free(c.disown(mem))
+  }
+}
+
+main: (): i32 {
+  chunk_raw: c.Ptr = malloc(c.Size(CHUNK))
+  header_bytes: [16]u8
+  header: [4]u32
+  assert(read_fully(chunk_raw, span(&header_bytes), u32(16)))
+  words_of(view(&header_bytes), span(&header), u32(4))
+  n: u32 = header[u32(0)]
+  assert(n <= u32(8192))
+  bytes: [32768]u8
+  words: [8192]u32
+  assert(read_fully(chunk_raw, span(&bytes), n * u32(4)))
+  words_of(view(&bytes), span(&words), n)
+  all: []u32 = view(&words)
+  p: []u32 = subslice(all, u32(0), header[u32(1)])
+  vals: []u32 = subslice(all, header[u32(1)], n - header[u32(1)])
+  ror_case(p, header[u32(2)], vals, header[u32(3)])
+  write_byte(u8(10))
+  write_flush()
+  free(chunk_raw)
+  0
+}

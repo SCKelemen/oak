@@ -1,0 +1,69 @@
+{
+  "format": "oak-typed-cnf-provenance-v1",
+  "historical_capture": {
+    "context_sha256": "0f2ada284d3fb6bd649da2e82b1e58ccddae5822ffa6cfd8077e92838f7aff8d",
+    "dag_sha256": "ce31540d3262ebe9a1d102478e0b8fa511fdc22426bf39e75a1354ef5f32cbf1",
+    "manifest_sha256": "87439d21d0cfef12d1f773ae47d654c4d5b7fa8d91273187c37073180ce45e14",
+    "semantic_snapshot_sha256": "eed691e2941ab006b24bfc22e956c68195c73e52951a9cfbb3493dc345f601b5",
+    "source_files_sha256": {
+      "bdd.oak": "aa8339aacf4f1b712f0293185afb0c1869aefd06f667972884fff434a1d6a617",
+      "certify.oak": "e76fc69a334d55e748c7bd31c6117b8c5f2b5c2f4cabe8fdaba790abbc08d606",
+      "cnf.oak": "1d93fb52729540899458dfb77179957d579de9f65008bbe682331ebdc2e5d43b",
+      "driver.oak": "3dcad5e0a53c1a4942f20526303b086811a11e10ae9e4e229836bddf756fa788",
+      "explore.oak": "3f157442ceb63aaa48699bc1d0384c70c339663b510a75a3e50584b4cd59c03e",
+      "lean.oak": "c3edfb5d8fceb662dbd656851d7d0a732b61f35d1394a734673310288af7d38b",
+      "lower.oak": "3b6a179957323f7aaab26680a81286cbddf099a0db2a93c2bee18e15b1577c95",
+      "lrat.oak": "76439745bec799cf1e9a28a300d98f0e3b6a43c0f474f6436440ec70da708789",
+      "main.oak": "1532922d640259ebea95617e815f5604b28f551bfba3c05fbd9a631d830eb0f9",
+      "model.oak": "e2e0d0154640fafc1a6ba445f92241fff06ac2ca157e4adb345884d96c1355df",
+      "oak.mod": "461775d39cab67c620b8d8f4989cef8afa5ff6a70c526bc7081034f81074ae7b",
+      "protocol.oak": "db4ab32839ad2c18a3e800fa6f666733fb4f63dad8bfaf2aa12b90cc1bbf5023",
+      "sat.oak": "ea7009a3d8ea84fbd9183e182255cff8446f396e0699319044daa716d5cac7d6",
+      "shell.oak": "afa06393810de61a3b4f06b7140b9c6f95b699acd7e370bae0fc1c6f45ad808b",
+      "syntax.oak": "26b3f389773219d52ead35e30dd51df55bf160f5c1e8d63cbe1889182639c8fc",
+      "tree.oak": "07740ca3879fd7d3ece2ec990603a4c36b3b3339bf4880b4372511ae3fd9d736",
+      "witness.oak": "0b0278d33612edc71ffc0c95d9f5f65a383df227d11c8d0a8c849a7f19a97490"
+    },
+    "source_identity_sha256": "ba778a1ae0927cfb973a98bb134ce7d67ebc3ad228800b2eb3b2eb5cf4c29fc0"
+  },
+  "historical_closure": {
+    "allowed_axioms": [
+      "propext",
+      "Classical.choice",
+      "Quot.sound"
+    ],
+    "corrected_writer_sha256": "c6b844a58085ae10f71797f58fafe756b2f97390b4d0ba73a9ffab51d50ea03c",
+    "independent_review_sha256": "d2a3ae52f05851abc8da67ccb2c28a2913edf43b4871a6913176bcb3ac6cdab8",
+    "manifest_sha256": "4087dd2664c3276383033d170a90fecb46672119b53347e01a15e9ad61d118ca",
+    "statement": "For all scalars and total concrete memories, nonzero concrete evaluation of node104 implies equal concrete evaluations of node207 and node371.",
+    "theorem": "TypedCNFInstance.supplied_raw_implication"
+  },
+  "projection": {
+    "dropped_fields": [
+      "Record",
+      "EvaluatorIDObservation",
+      "SignificantBitsCacheObservation"
+    ],
+    "node_ids": {
+      "first": 0,
+      "last": 371
+    },
+    "roots": {
+      "left": 207,
+      "premise": 104,
+      "right": 371
+    },
+    "semantics": "All remaining node fields retain their values; field names are normalized to the fixture schema. Each record remains a distinct term pointer. Capture width callbacks, other roots and context are excluded."
+  },
+  "retained_self_hosted_certificate": {
+    "additions": 5409,
+    "cnf_sha256": "ca659ecd4ed22d4e5d461edb10999857acfb6a008572baee77d0bd35cacb962a",
+    "deleted_ids": 6163,
+    "final_empty_id": 15761,
+    "lrat_sha256": "3d189c4e459438315c2bef4485ae81dda1ad4c2e931a5ff6879c910fcbde66c4",
+    "ordered_clauses": 10352,
+    "variables": 2890
+  },
+  "runtime_dependency": false,
+  "trust_boundary": "Historical capture fidelity and Go/parser projection remain reviewed and hash-bound evidence. The supplied generated typed model is the formal theorem subject. This fixture is not universal Go runtime, compiler or target-code refinement and changes no admission or Proven behavior."
+}

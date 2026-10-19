@@ -80,11 +80,15 @@ theorem binaryValue_comm (op : Nat) (left right : Bool) :
           | zero => cases left <;> cases right <;> rfl
           | succ op => rfl
 
-/-- Every binary unique-table lookup has the Boolean meaning of its key. -/
-def MemoSound (assignment : Assignment) (memo : List MemoEntry) : Prop :=
-  ∀ op x y output, op < 3 →
+/-- Every unique-table lookup has the Boolean meaning of its exact key. -/
+structure MemoSound (assignment : Assignment) (memo : List MemoEntry) : Prop where
+  binary : ∀ op x y output, op < 3 →
     lookupMemo? memo (.binary op x y) = some output →
     assignment output = binaryValue op (evalEdge assignment x) (evalEdge assignment y)
+  ite : ∀ condition thenValue elseValue output,
+    lookupMemo? memo (.ite condition thenValue elseValue) = some output →
+    assignment output = if evalEdge assignment condition then
+      evalEdge assignment thenValue else evalEdge assignment elseValue
 
 /-- Inner switch, after operation admission and operand sorting. -/
 def applySorted (variables maxInt : Nat) (memo : List MemoEntry)
@@ -162,7 +166,7 @@ theorem applySorted_sound {assignment : Assignment} {variables maxInt : Nat}
                 simp only [Option.some.injEq] at accepted
                 subst result
                 rw [evalEdge_positive assignment output range.1]
-                exact sound op x y output admitted found
+                exact sound.binary op x y output admitted found
               · contradiction
 
 theorem replayApply_admitted {variables maxInt : Nat} {memo : List MemoEntry}
@@ -189,5 +193,94 @@ theorem replayApply_sound {assignment : Assignment} {variables maxInt : Nat}
   · rw [binaryValue_comm]
     exact applySorted_sound sound admitted accepted
   · exact applySorted_sound sound admitted accepted
+
+/-- Exact production mux fold precedence, including the four binary-gate
+reductions and the ordered (unsorted) three-operand memo key. -/
+def replayIte (variables maxInt : Nat) (memo : List MemoEntry)
+    (condition thenValue elseValue : Nat) : Option Nat :=
+  if condition = 1 then some thenValue
+  else if condition = 0 then some elseValue
+  else if thenValue = elseValue then some thenValue
+  else if thenValue = 1 ∧ elseValue = 0 then some condition
+  else if thenValue = 0 ∧ elseValue = 1 then some (flipEdge condition)
+  else if thenValue = 1 then replayApply variables maxInt memo 1 condition elseValue
+  else if thenValue = 0 then replayApply variables maxInt memo 0 (flipEdge condition) elseValue
+  else if elseValue = 1 then replayApply variables maxInt memo 1 (flipEdge condition) thenValue
+  else if elseValue = 0 then replayApply variables maxInt memo 0 condition thenValue
+  else
+    match lookupMemo? memo (.ite condition thenValue elseValue) with
+    | none => none
+    | some output =>
+        if 0 < output ∧ output ≤ variables ∧ output ≤ maxInt / 2 then
+          some (2 * output)
+        else none
+
+theorem replayIte_sound {assignment : Assignment} {variables maxInt : Nat}
+    {memo : List MemoEntry} {condition thenValue elseValue result : Nat}
+    (sound : MemoSound assignment memo)
+    (accepted : replayIte variables maxInt memo condition thenValue elseValue = some result) :
+    evalEdge assignment result = if evalEdge assignment condition then
+      evalEdge assignment thenValue else evalEdge assignment elseValue := by
+  unfold replayIte at accepted
+  split at accepted
+  · rename_i equal
+    subst condition
+    cases Option.some.inj accepted
+    simp
+  · split at accepted
+    · rename_i equal
+      subst condition
+      cases Option.some.inj accepted
+      simp
+    · split at accepted
+      · rename_i equal
+        subst elseValue
+        cases Option.some.inj accepted
+        simp
+      · split at accepted
+        · rename_i constants
+          obtain ⟨rfl, rfl⟩ := constants
+          cases Option.some.inj accepted
+          cases evalEdge assignment condition <;> rfl
+        · split at accepted
+          · rename_i constants
+            obtain ⟨rfl, rfl⟩ := constants
+            cases Option.some.inj accepted
+            rw [evalEdge_flip]
+            cases evalEdge assignment condition <;> rfl
+          · split at accepted
+            · rename_i equal
+              subst thenValue
+              rw [replayApply_sound sound accepted]
+              cases evalEdge assignment condition <;>
+                simp [binaryValue]
+            · split at accepted
+              · rename_i equal
+                subst thenValue
+                rw [replayApply_sound sound accepted, evalEdge_flip]
+                cases evalEdge assignment condition <;>
+                  simp [binaryValue]
+              · split at accepted
+                · rename_i equal
+                  subst elseValue
+                  rw [replayApply_sound sound accepted, evalEdge_flip]
+                  cases evalEdge assignment condition <;>
+                    simp [binaryValue]
+                · split at accepted
+                  · rename_i equal
+                    subst elseValue
+                    rw [replayApply_sound sound accepted]
+                    cases evalEdge assignment condition <;>
+                      simp [binaryValue]
+                  · cases found : lookupMemo? memo (.ite condition thenValue elseValue) with
+                    | none => simp [found] at accepted
+                    | some output =>
+                        simp only [found] at accepted
+                        split at accepted
+                        · rename_i range
+                          cases Option.some.inj accepted
+                          rw [evalEdge_positive assignment output range.1]
+                          exact sound.ite condition thenValue elseValue output found
+                        · contradiction
 
 end Oak.CNFReplayApply

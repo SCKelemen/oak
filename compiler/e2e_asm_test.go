@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"github.com/SCKelemen/oak/target"
+	"github.com/SCKelemen/oak/typechecker"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,9 +23,9 @@ func requireArm64Host(t *testing.T) {
 	}
 }
 
-func TestE2EAsmAdd(t *testing.T) {
-	requireArm64Host(t)
-	comp := New().WithSource("asmadd.oak", `
+func asmAddCompilation(t *testing.T, comp Compilation) Compilation {
+	t.Helper()
+	comp = comp.WithSource("asmadd.oak", `
 add_asm: (left, right: u32) -> u32
 
 main: (): i32 {
@@ -43,11 +44,30 @@ add_asm: (left, right: u32) -> u32 = {
 	if err != nil {
 		t.Fatalf("compilation failed: %v", err)
 	}
-	for _, want := range []string{"OAK_ASM_SYMBOL(oak_add_asm)", "add w0, w0, w1", "u32 oak_add_asm( u32 left, u32 right );"} {
+	symbol := typechecker.CFunctionSymbol("main", "add_asm")
+	for _, want := range []string{
+		`"  .globl " OAK_ASM_SYMBOL(` + symbol + `) "\n"`,
+		`OAK_ASM_SYMBOL(` + symbol + `) ":\n"`,
+		"add w0, w0, w1",
+		"u32 " + symbol + "( u32 left, u32 right );",
+		symbol + "( ((u32)( 40 )), ((u32)( 2 )) )",
+	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("emitted C lacks %q:\n%s", want, output)
 		}
 	}
+	return comp
+}
+
+// Symbol lowering is target-independent; keep it covered on hosts that cannot
+// execute the AArch64 assembly. The native execution test below remains gated.
+func TestAsmAddSymbolLowering(t *testing.T) {
+	asmAddCompilation(t, New().WithTarget(target.Target{OS: target.OSLinux, Arch: target.ArchArm64}))
+}
+
+func TestE2EAsmAdd(t *testing.T) {
+	requireArm64Host(t)
+	comp := asmAddCompilation(t, New())
 	_, code, abnormal := buildAndRunFrom(t, "asmadd", comp)
 	if abnormal || code != 42 {
 		t.Fatalf("exit = (%d, abnormal=%v), want 42", code, abnormal)

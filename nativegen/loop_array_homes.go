@@ -23,19 +23,16 @@ type loopArrayHomeSet struct {
 	homes map[int64]loopArrayHome
 }
 
-var loopArrayHomesOf = map[*asm.Function]int{}
-var loopResultHomesOf = map[*asm.Function]int{}
-
 // Result homes compete with frame-slot promotion for the same register file.
 // This is a profitability budget, not memory or verification authority.
 const loopResultHomeBudget = 2
 
 // LoopArrayHomes counts the element homes introduced by the candidate.
-func LoopArrayHomes(fn *asm.Function) int { return loopArrayHomesOf[fn] }
+func LoopArrayHomes(fn *asm.Function) int { return readLoweringMetadata(fn).loopArrayHomesOf }
 
 // LoopResultHomes counts homes for exact named-local indirect result arrays.
 // This is independent of the private-frame candidate and is verifier gated.
-func LoopResultHomes(fn *asm.Function) int { return loopResultHomesOf[fn] }
+func LoopResultHomes(fn *asm.Function) int { return readLoweringMetadata(fn).loopResultHomesOf }
 
 // homeNodes is deliberately closed over ordinary expressions and structured
 // control. Unsupported syntax cannot hide an alias or an exit past the flush.

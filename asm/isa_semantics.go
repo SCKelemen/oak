@@ -356,10 +356,10 @@ func evalBinaryExtra(op string, l, r uint64, width int) (uint64, bool) {
 		return rv64Divide(op, l, r, width), true
 	case "ror":
 		count := uint(r % uint64(width))
-		if width == 32 {
-			return uint64(bits.RotateLeft32(uint32(l), -int(count))), true
+		if count == 0 {
+			return l, true
 		}
-		return bits.RotateLeft64(l, -int(count)), true
+		return (l>>count | l<<(uint(width)-count)) & m, true
 	case "udiv":
 		if r == 0 {
 			return 0, true // the machine's total division

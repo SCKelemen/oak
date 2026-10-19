@@ -524,7 +524,10 @@ fold_binary: (op: u32, x: u64, y: u64, width: u32): u64 {
   op == BOP_SHL ? { (x << count) & m } | {
   op == BOP_SHR ? { (x & m) >> count } | {
   op == BOP_SAR ? { sar_of(x, y, width) } | {
-  op == BOP_ROR ? { (((x & m) >> count) | ((x & m) << (u64(width) - count))) & m } | {
+  op == BOP_ROR ? {
+    rotate_count: u64 = (y & m) % u64(width)
+    rotate_count == u64(0) ? { x & m } | { (((x & m) >> rotate_count) | ((x & m) << (u64(width) - rotate_count))) & m }
+  } | {
   op == BOP_CLZ ? { clz_of(x & m, width) } | {
   op == BOP_CNT ? { popcount_of(x & m) } | {
   op == BOP_RBIT ? { rbit_of(x & m, width) } | {
@@ -562,7 +565,13 @@ fold_cmp: (code: u32, x: u64, y: u64, width: u32): u64 {
 t_binary: (lw: Lower, w: [*]u32, b: [*]u32, op: u32, x: u32, y: u32): u32 {
   width: u32 = twidth(lw, w, b, x)
   (is_const(lw, w, b, x) && is_const(lw, w, b, y)) ? {
-    t_const64(lw, w, b, fold_binary(op, tvalue(lw, w, b, x), tvalue(lw, w, b, y), width), width)
+    xv: u64 = tvalue(lw, w, b, x)
+    yv: u64 = tvalue(lw, w, b, y)
+    op == BOP_ROR ? {
+      xv = xv & mask64(twidth(lw, w, b, x))
+      yv = yv & mask64(twidth(lw, w, b, y))
+    } | { }
+    t_const64(lw, w, b, fold_binary(op, xv, yv, width), width)
   } | {
     (is_const(lw, w, b, y) && tvalue(lw, w, b, y) == u64(0) && (op == BOP_ADD || op == BOP_SUB)) ? { x } | {
       (is_const(lw, w, b, x) && tvalue(lw, w, b, x) == u64(0) && op == BOP_ADD && twidth(lw, w, b, y) == width) ? { y } | {
@@ -2970,7 +2979,16 @@ eval_terms: (lw: Lower, w: [*]u32, b: [*]u32, nterms: u32): Bool {
     } | {
     kind == KIND_PARAM ? { value = leaf_value(lw, w, a) & m } | {
     kind == KIND_CONST ? { value = tvalue(lw, w, b, t) } | {
-    kind == KIND_BINARY ? { value = fold_binary(tword(lw, w, b, t, u32(1)), term_value(lw, w, a) & m, bb == NONE ? { u64(0) } | { term_value(lw, w, bb) & m }, width) } | {
+    kind == KIND_BINARY ? {
+      op: u32 = tword(lw, w, b, t, u32(1))
+      va: u64 = term_value(lw, w, a) & m
+      vb: u64 = bb == NONE ? { u64(0) } | { term_value(lw, w, bb) & m }
+      op == BOP_ROR ? {
+        va = va & mask64(twidth(lw, w, b, a))
+        bb == NONE ? { } | { vb = vb & mask64(twidth(lw, w, b, bb)) }
+      } | { }
+      value = fold_binary(op, va, vb, width)
+    } | {
     kind == KIND_CMP ? { value = fold_cmp(tword(lw, w, b, t, u32(1)), term_value(lw, w, a), term_value(lw, w, bb), twidth(lw, w, b, a)) } | {
     kind == KIND_ITE ? { value = (term_value(lw, w, tword(lw, w, b, t, u32(5))) & u64(1)) != u64(0) ? { term_value(lw, w, a) & m } | { term_value(lw, w, bb) & m } } | {
     kind == KIND_FLOAT ? {

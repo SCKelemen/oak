@@ -1,8 +1,11 @@
 package compiler
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/SCKelemen/oak/typechecker"
 )
 
 // One bounds check per record (docs/spec/71-codecs.md section 4a): a
@@ -16,23 +19,23 @@ func TestDerivedJsonOneBoundsCheckPerRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"Record", "Point"} {
-		unchecked := cFunctionBody(t, output, "oak___oak_json_write_unchecked_"+name)
-		for _, forbidden := range []string{"bytes_range_fits", "__oak_json_encoded_size_", "oak___oak_json_write_" + name + "(", "oak_assert("} {
+		unchecked := cFunctionBody(t, output, typechecker.CFunctionSymbol("main", codecName("write_unchecked", name)))
+		for _, forbidden := range []string{"bytes_range_fits", typechecker.CFunctionSymbol("main", codecName("encoded_size", "")), typechecker.CFunctionSymbol("main", codecName("write", name)) + "(", "oak_assert("} {
 			if strings.Contains(unchecked, forbidden) {
 				t.Fatalf("unchecked writer of %s contains %q:\n%s", name, forbidden, unchecked)
 			}
 		}
-		checked := cFunctionBody(t, output, "oak___oak_json_write_"+name)
+		checked := cFunctionBody(t, output, typechecker.CFunctionSymbol("main", codecName("write", name)))
 		if got := strings.Count(checked, "oak_bytes_range_fits("); got != 1 {
 			t.Fatalf("checked writer of %s has %d capacity checks, want 1:\n%s", name, got, checked)
 		}
-		if got := strings.Count(checked, "oak___oak_json_encoded_size_"+name+"("); got != 1 {
+		if got := strings.Count(checked, typechecker.CFunctionSymbol("main", codecName("encoded_size", name))+"("); got != 1 {
 			t.Fatalf("checked writer of %s measures %d times, want 1:\n%s", name, got, checked)
 		}
 	}
 	// The nested record's field write is the unchecked call.
-	outer := cFunctionBody(t, output, "oak___oak_json_write_unchecked_Record")
-	if !strings.Contains(outer, "oak___oak_json_write_unchecked_Point(") {
+	outer := cFunctionBody(t, output, typechecker.CFunctionSymbol("main", codecName("write_unchecked", "Record")))
+	if !strings.Contains(outer, typechecker.CFunctionSymbol("main", codecName("write_unchecked", "Point"))+"(") {
 		t.Fatalf("Record's writer does not call Point's unchecked writer:\n%s", outer)
 	}
 }
@@ -41,29 +44,54 @@ func TestDerivedJsonOneBoundsCheckPerRecord(t *testing.T) {
 // signature line to the closing brace at column 0).
 func cFunctionBody(t *testing.T, output, name string) string {
 	t.Helper()
+	body, err := cFunctionDefinition(output, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func cFunctionDefinition(output, name string) (string, error) {
 	marker := " " + name + "( "
-	start := -1
 	for from := 0; ; {
 		i := strings.Index(output[from:], marker)
 		if i < 0 {
-			break
+			return "", fmt.Errorf("no definition of %s in generated C", name)
 		}
 		at := from + i
+		lineStart := strings.LastIndexByte(output[:at], '\n') + 1
 		lineEnd := strings.IndexByte(output[at:], '\n')
-		if lineEnd >= 0 && strings.Contains(output[at:at+lineEnd], "{") {
-			start = at
-			break
+		if lineEnd < 0 {
+			return "", fmt.Errorf("unterminated definition of %s", name)
+		}
+		line := output[lineStart : at+lineEnd]
+		// A declaration or a call containing a compound literal is not a
+		// definition. Emitted definitions open at column zero and end in {.
+		if line == strings.TrimLeft(line, " \t") && strings.HasSuffix(strings.TrimRight(line, " \t"), "{") {
+			end := strings.Index(output[lineStart:], "\n}\n")
+			if end < 0 {
+				return "", fmt.Errorf("unterminated definition of %s", name)
+			}
+			return output[lineStart : lineStart+end+3], nil
 		}
 		from = at + len(marker)
 	}
-	if start < 0 {
-		t.Fatalf("no definition of %s in generated C:\n%s", name, output)
+}
+
+func TestCFunctionDefinitionLookup(t *testing.T) {
+	const definition = "static inline u32 oak_target( u32 x ) {\n  return x;\n}\n"
+	const before = "static inline u32 oak_target( u32 x );\n" +
+		"  return oak_target( (oak_View){ data, 1 } );\n" +
+		"  if ( oak_target( (oak_View){ data, 1 } ) ) {\n  }\n"
+	got, err := cFunctionDefinition(before+definition, "oak_target")
+	if err != nil || got != definition {
+		t.Fatalf("definition = %q, %v; want %q", got, err, definition)
 	}
-	end := strings.Index(output[start:], "\n}\n")
-	if end < 0 {
-		t.Fatalf("unterminated definition of %s", name)
+	for _, code := range []string{before, "", "static u32 oak_target( u32 x ) {", "static u32 oak_target( u32 x ) {\n"} {
+		if body, err := cFunctionDefinition(code, "oak_target"); err == nil || body != "" {
+			t.Fatalf("missing or malformed definition accepted: %q, %v", body, err)
+		}
 	}
-	return output[start : start+end+3]
 }
 
 // The fused measuring pass agrees with the pre-fusion oracle on every

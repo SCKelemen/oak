@@ -76,8 +76,9 @@ func floatTerm(op string, width int, args ...*term) *term {
 	}
 	values := make([]uint64, len(args))
 	widths := make([]int, len(args))
+	memo := knownBitsMemo{}
 	for i, arg := range args {
-		value, fixed := knownBits(arg)
+		value, fixed := memo.bits(arg)
 		if fixed != mask(arg.width) {
 			return t
 		}
@@ -99,25 +100,54 @@ func floatTerm(op string, width int, args ...*term) *term {
 // everything else (a parameter, a select, an operation, an adder) is
 // unknown. A bit it calls known is that constant under every assignment
 // (spec/lean/Oak/KnownBits.lean), so a fold over known operands is the
-// IEEE value the decider would find on every path. Memoized in the term:
-// terms are immutable once built.
+// IEEE value the decider would find on every path. The memo belongs to this
+// analysis, never to the immutable terms shared by parallel proof workers.
 func knownBits(t *term) (value, known uint64) {
-	if t.kbDone {
-		return t.kbValue, t.kbKnown
-	}
+	return knownBitsMemo{}.bits(t)
+}
+
+type knownBitsResult struct{ value, known uint64 }
+
+// knownBitsMemo is owned by one analysis. A float constructor shares it
+// across its operands; an index-bounds pass shares it across all its queries.
+// Keeping it off term also means rewrites cannot inherit stale known bits.
+type knownBitsMemo map[*term]knownBitsResult
+
+func (memo knownBitsMemo) bits(t *term) (value, known uint64) {
 	m := mask(t.width)
+	// Only recursive transfers need DAG memoization. Leaf results and
+	// unsupported operations are constant-time, and retaining them for
+	// every index would unnecessarily grow each worker's private cache.
 	switch t.kind {
 	case termConst:
-		value, known = t.value&m, m
+		return t.value & m, m
 	case termCmp:
-		known = m &^ 1
+		return 0, m &^ 1
+	case termIte:
+	case termBinary:
+		switch t.op {
+		case "and", "or", "xor":
+		case "shl", "shr", "sar":
+			if t.right.kind != termConst {
+				return 0, 0
+			}
+		default:
+			return 0, 0
+		}
+	default:
+		return 0, 0
+	}
+	if result, seen := memo[t]; seen {
+		return result.value, result.known
+	}
+	switch t.kind {
 	case termIte:
 		// A known selector bit picks its arm (a selector the constructor
 		// could not fold: a masked bit of a shifted parameter); otherwise
 		// the bits the arms agree on.
-		lv, lk := adaptKnown(t.left, t.width)
-		rv, rk := adaptKnown(t.right, t.width)
-		if cv, ck := knownBits(t.cond); ck&1 == 1 {
+		lv, lk := memo.adapt(t.left, t.width)
+		rv, rk := memo.adapt(t.right, t.width)
+		if cv, ck := memo.bits(t.cond); ck&1 == 1 {
 			if cv&1 == 1 {
 				value, known = lv, lk
 			} else {
@@ -128,24 +158,21 @@ func knownBits(t *term) (value, known uint64) {
 		known = lk & rk &^ (lv ^ rv)
 		value = lv & known
 	case termBinary:
-		lv, lk := adaptKnown(t.left, t.width)
+		lv, lk := memo.adapt(t.left, t.width)
 		switch t.op {
 		case "and":
-			rv, rk := adaptKnown(t.right, t.width)
+			rv, rk := memo.adapt(t.right, t.width)
 			known = (lk & rk) | (lk &^ lv) | (rk &^ rv)
 			value = lv & rv & known
 		case "or":
-			rv, rk := adaptKnown(t.right, t.width)
+			rv, rk := memo.adapt(t.right, t.width)
 			known = (lk & rk) | (lk & lv) | (rk & rv)
 			value = (lv | rv) & known
 		case "xor":
-			rv, rk := adaptKnown(t.right, t.width)
+			rv, rk := memo.adapt(t.right, t.width)
 			known = lk & rk
 			value = (lv ^ rv) & known
 		case "shl", "shr", "sar":
-			if t.right.kind != termConst {
-				break
-			}
 			n := uint(t.right.value % uint64(t.width))
 			switch t.op {
 			case "shl":
@@ -166,14 +193,14 @@ func knownBits(t *term) (value, known uint64) {
 			}
 		}
 	}
-	t.kbDone, t.kbValue, t.kbKnown = true, value, known
+	memo[t] = knownBitsResult{value, known}
 	return value, known
 }
 
-// adaptKnown is knownBits of an operand as the blaster reads it at the
+// adapt is knownBits of an operand as the blaster reads it at the
 // term's width: zero-extended (the upper bits known zero) or truncated.
-func adaptKnown(t *term, width int) (value, known uint64) {
-	value, known = knownBits(t)
+func (memo knownBitsMemo) adapt(t *term, width int) (value, known uint64) {
+	value, known = memo.bits(t)
 	if t.width < width {
 		known |= mask(width) &^ mask(t.width)
 	} else if t.width > width {

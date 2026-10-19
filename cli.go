@@ -624,6 +624,12 @@ func ccArgs() []string {
 // part of the cache identity, so a rebuilt library invalidates the cached
 // executable. It reports whether the output came from the cache.
 func compileC(tgt target.Target, drv toolchain.Driver, code string, object []byte, inputs []compiler.LinkInput, binary string) (bool, error) {
+	return compileCWithEvidence(tgt, drv, code, object, inputs, binary, nil)
+}
+
+// A non-nil command requests a cold build and observes its exact invocation.
+// All flags, emitted inputs and linking still follow the ordinary compile path.
+func compileCWithEvidence(tgt target.Target, drv toolchain.Driver, code string, object []byte, inputs []compiler.LinkInput, binary string, command *[]string) (bool, error) {
 	work, err := os.MkdirTemp("", "oak-build-")
 	if err != nil {
 		return false, err
@@ -641,7 +647,7 @@ func compileC(tgt target.Target, drv toolchain.Driver, code string, object []byt
 		flags = append(flags, "-c")
 	}
 	key := ""
-	if identity, err := buildcache.CompilerIdentity(drv.Path); err == nil {
+	if identity, err := buildcache.CompilerIdentity(drv.Path); err == nil && command == nil {
 		key = buildcache.Key("oak-exe-v2", tgt.String(), code, string(object), identity, strings.Join(flags, " "), linkIdentity)
 		if cached, ok := buildcache.Lookup(key); ok {
 			if err := buildcache.Copy(cached, binary); err == nil {
@@ -690,6 +696,13 @@ func compileC(tgt target.Target, drv toolchain.Driver, code string, object []byt
 		ccArgs = append(ccArgs, "-lm")
 	}
 	build := exec.Command(drv.Path, ccArgs...)
+	if command != nil {
+		resolved, err := filepath.EvalSymlinks(drv.Path)
+		if err != nil {
+			return false, err
+		}
+		*command = append([]string{resolved}, ccArgs...)
+	}
 	build.Stdout, build.Stderr = os.Stdout, os.Stderr
 	if err := build.Run(); err != nil {
 		return false, fmt.Errorf("C compilation for %s failed (%s): %v", tgt, drv.Command(), err)

@@ -30,7 +30,7 @@ main: (): i32 {
 // the reader.
 func TestEffectRowRejectsHostReadInStep(t *testing.T) {
 	src := `
-host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern("oak_host_read")
+host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern("fixture_host_read")
 peek: (x: u32): u32 = u32(host_read(c.UInt32(x)))
 launch: (step: (u32) -> u32 effects { }, x: u32): u32 = step(x)
 main: (): i32 = i32_bits_u32(launch(peek, u32(1)))
@@ -86,7 +86,7 @@ relaunch: (step: (u32) -> u32 effects { Host.Read }, x: u32): u32 = launch(step,
 main: (): i32 = 0
 `,
 		"declaration": `
-host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern("oak_host_read")
+host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern("fixture_host_read")
 peek: (x: u32): u32 = u32(host_read(c.UInt32(x)))
 main: (): i32 {
   s: (u32) -> u32 effects { } = peek
@@ -117,7 +117,7 @@ main: (): i32 {
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
 	bad := `
-host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern("oak_host_read")
+host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern("fixture_host_read")
 peek: (x: u32): u32 = u32(host_read(c.UInt32(x)))
 launch: (step: (u32) -> u32 effects { }, x: u32): u32 = step(x)
 main: (): i32 = i32_bits_u32(launch(fn(x: u32): u32 { peek(x) }, u32(1)))
@@ -147,7 +147,7 @@ main: (): i32 = i32_bits_u32(apply(inc, u32(41)))
 		t.Fatalf("exit=(%d,%v)", code, abnormal)
 	}
 	badGeneric := `
-host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern("oak_host_read")
+host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern("fixture_host_read")
 peek: (x: u32): u32 = u32(host_read(c.UInt32(x)))
 apply[T]: (f: (T) -> T effects { }, x: T): T = f(x)
 main: (): i32 = i32_bits_u32(apply(peek, u32(41)))

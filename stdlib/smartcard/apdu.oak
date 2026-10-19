@@ -1,0 +1,110 @@
+// Experimental complete-command APDU length decoder. This recognizes only
+// structural shapes: no command, credential, transport or authorization policy.
+// A successful Command is a description, never permission to execute it.
+package apdu
+
+import("encoding/reader")
+
+pub CommandCase: type = Case1 | Case2Short | Case3Short | Case4Short | Case2Extended | Case3Extended | Case4Extended
+pub Error: type = TooLong | TruncatedHeader | TruncatedLength | ZeroDataLength | TruncatedData | TrailingBytes
+
+pub Command: type = struct {
+  cla: u8
+  ins: u8
+  p1: u8
+  p2: u8
+  form: CommandCase
+  data_at: u32
+  data_length: u32
+  response_length: Option[u32]
+  consumed: u32
+}
+
+Header: type = struct { cla: u8, ins: u8, p1: u8, p2: u8 }
+
+command: (header: Header, form: CommandCase, at: u32, count: u32, response: Option[u32], consumed: u32): Command = Command {
+  cla: header.cla,
+  ins: header.ins,
+  p1: header.p1,
+  p2: header.p2,
+  form: form,
+  data_at: at,
+  data_length: count,
+  response_length: response,
+  consumed: consumed
+}
+
+short_response: (encoded: u8): u32 = encoded == u8(0) ? u32(256) | u32(encoded)
+extended_response: (encoded: u16): u32 = encoded == u16(0) ? u32(65536) | u32(encoded)
+
+short_data: (header: Header, state: reader.Window, src: []u8, count: u32): Result[Command, Error] {
+  reader.take(state, src, count) ?
+    | .Err(reason) => .Err(.TruncatedData)
+    | .Ok(data) => {
+      // data.rest is checked against src by take. Subtraction cannot wrap.
+      trailing: u32 = len(src) - data.rest.next
+      trailing == u32(0) ? {
+        .Ok(command(header, .Case3Short, data.offset, data.length, .None, len(src)))
+      } | trailing == u32(1) ? {
+        reader.read_u8(data.rest, src) ?
+          | .Err(reason) => .Err(.TruncatedLength)
+          | .Ok(response) => .Ok(command(header, .Case4Short, data.offset, data.length, .Some(short_response(response.value)), len(src)))
+      } | { .Err(.TrailingBytes) }
+    }
+}
+
+extended_data: (header: Header, state: reader.Window, src: []u8, count: u32): Result[Command, Error] {
+  reader.take(state, src, count) ?
+    | .Err(reason) => .Err(.TruncatedData)
+    | .Ok(data) => {
+      trailing: u32 = len(src) - data.rest.next
+      trailing == u32(0) ? {
+        .Ok(command(header, .Case3Extended, data.offset, data.length, .None, len(src)))
+      } | trailing == u32(1) ? { .Err(.TruncatedLength) } |
+      trailing == u32(2) ? {
+        reader.read_u16_be(data.rest, src) ?
+          | .Err(reason) => .Err(.TruncatedLength)
+          | .Ok(response) => .Ok(command(header, .Case4Extended, data.offset, data.length, .Some(extended_response(response.value)), len(src)))
+      } | { .Err(.TrailingBytes) }
+    }
+}
+
+extended: (header: Header, state: reader.Window, src: []u8): Result[Command, Error] {
+  reader.read_u16_be(state, src) ?
+    | .Err(reason) => .Err(.TruncatedLength)
+    | .Ok(length) => {
+      // Seven bytes mean extended Le, including 0000 -> 65536. Only a
+      // longer complete frame interprets this word as the positive Lc.
+      len(src) == u32(7) ? {
+        .Ok(command(header, .Case2Extended, u32(7), u32(0), .Some(extended_response(length.value)), len(src)))
+      } | length.value == u16(0) ? { .Err(.ZeroDataLength) } | {
+        extended_data(header, length.rest, src, u32(length.value))
+      }
+    }
+}
+
+// src must be exactly one frame already delimited by the caller. A shortened
+// sender-intended command may be a different valid shape; this decoder cannot
+// infer intent. Header meanings and payload bytes remain uninterpreted.
+pub decode: (src: []u8): Result[Command, Error] {
+  n: u32 = len(src)
+  n > u32(65544) ? { .Err(.TooLong) } |
+  n < u32(4) ? { .Err(.TruncatedHeader) } | {
+    header: Header = Header { cla: src[0], ins: src[1], p1: src[2], p2: src[3] }
+    n == u32(4) ? {
+      .Ok(command(header, .Case1, u32(4), u32(0), .None, n))
+    } | {
+      tail: reader.Window = reader.Window { next: u32(4), end: n }
+      reader.read_u8(tail, src) ?
+        | .Err(reason) => .Err(.TruncatedLength)
+        | .Ok(first) => {
+          // Every five-byte frame is short Le, not a zero/nonzero Lc.
+          n == u32(5) ? {
+            .Ok(command(header, .Case2Short, u32(5), u32(0), .Some(short_response(first.value)), n))
+          } | first.value == u8(0) ? {
+            extended(header, first.rest, src)
+          } | { short_data(header, first.rest, src, u32(first.value)) }
+        }
+    }
+  }
+}

@@ -202,6 +202,4 @@ func affineZeroBefore(items []asm.Item, before int, counter asm.Register) bool {
 }
 
 // CarriedLoopIndices reports the loops changed by the proof-gated pass.
-func CarriedLoopIndices(fn *asm.Function) int { return carriedLoopIndices[fn] }
-
-var carriedLoopIndices = map[*asm.Function]int{}
+func CarriedLoopIndices(fn *asm.Function) int { return readLoweringMetadata(fn).carriedLoopIndices }
