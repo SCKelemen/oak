@@ -12,8 +12,11 @@ import (
 	"strings"
 
 	"github.com/SCKelemen/oak/compiler"
+	"github.com/SCKelemen/oak/layout"
 	"github.com/SCKelemen/oak/modules"
 	"github.com/SCKelemen/oak/packageapi"
+	"github.com/SCKelemen/oak/scanner"
+	"github.com/SCKelemen/oak/token"
 )
 
 // docCommand prints the public declarations of a module's packages (or of
@@ -101,10 +104,9 @@ func docCommand(args []string) int {
 
 // fmtCommand canonicalizes whitespace: CRLF to LF, trailing whitespace
 // removed, runs of blank lines collapsed to one, exactly one final newline.
-// A file is rewritten only when the result parses to the same syntax tree,
-// so formatting can never change a program's meaning; a file that does not
-// parse is reported and left alone. Without -l or -w, the formatted text is
-// printed.
+// A rewrite is refused unless both versions parse and preserve syntax and
+// token contents, including metadata omitted by AST.String(). Without -l
+// or -w, the formatted text is printed.
 func fmtCommand(args []string) int {
 	list, write := false, false
 	fs := newFlagSet("fmt", "oak fmt [-l] [-w] [file.oak|dir|pattern]...")
@@ -226,8 +228,8 @@ func canonicalWhitespace(text []byte) []byte {
 	return []byte(strings.Join(out, "\n") + "\n")
 }
 
-// sameSyntax parses both texts through the front end and requires identical
-// trees (and a parseable original).
+// sameSyntax retains the parse/tree checks and also compares the normalized
+// parser tokens: AST.String() omits some declaration and field metadata.
 func sameSyntax(name string, original, formatted []byte) error {
 	before, err := compiler.New().WithSource(name, string(original)).Parse().Get()
 	if err != nil {
@@ -239,6 +241,28 @@ func sameSyntax(name string, original, formatted []byte) error {
 	}
 	if before.Root.String() != after.Root.String() {
 		return fmt.Errorf("formatting would change the syntax tree")
+	}
+	// Include layout's synthetic delimiters, but ignore source positions and
+	// trivia/comments, whose whitespace the formatter intentionally changes.
+	// STRING literals contain decoded bytes, including literal CR/LF and spaces.
+	next := func(src token.Source) token.Token {
+		for {
+			tok := src.NextToken()
+			if tok.TokenKind != token.TRIVIA && tok.TokenKind != token.COMMENT {
+				return tok
+			}
+		}
+	}
+	beforeTokens := layout.New(scanner.New(string(original)))
+	afterTokens := layout.New(scanner.New(string(formatted)))
+	for {
+		a, b := next(beforeTokens), next(afterTokens)
+		if a.TokenKind != b.TokenKind || a.Literal != b.Literal {
+			return fmt.Errorf("formatting would change the syntax tree")
+		}
+		if a.TokenKind == token.EOF {
+			break
+		}
 	}
 	return nil
 }

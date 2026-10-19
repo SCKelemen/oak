@@ -234,6 +234,23 @@ uses `&` as **constraint conjunction**: `T` must satisfy both predicates.
 
 Core Oak interfaces are compile-time constraints and are erased/specialized during executable lowering. Dynamic existential/interface values require a separate explicit feature and representation.
 
+The bootstrap currently checks non-generic method interfaces with an untyped
+`self` receiver and fixed-arity parameters. The parser retains generic
+interface binders, typed receivers, and variadic signatures for tooling, but
+type checking rejects these unsupported contracts rather than silently
+dropping their requirements. A fixed `[]T` parameter and a variadic `...T`
+parameter are different contracts and cannot satisfy one another merely
+because both use a view representation.
+
+Supporting the wider forms remains planned: generic interfaces need scoped
+binders, constraint validation, and substitution; typed receivers need
+receiver-contract checking; variadic interfaces need the `[]T` parameter
+representation and variadic identity preserved through conformance, calls,
+and public API snapshots. Acceptance must include source-level constrained
+calls and matching/mismatching implementation tests. Ordinary generic and
+variadic functions remain supported; this limitation concerns interface
+contracts and does not change the variadic semantics in `10-syntax.md` §3.
+
 Longer term, method/interface requirements and record-shape requirements should share the same constraint machinery where possible rather than creating separate runtime object models.
 
 ## 9. Phantom types
