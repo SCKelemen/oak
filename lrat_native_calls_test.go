@@ -16,56 +16,13 @@ import (
 // bodies. Inspect linked call instructions and destination symbol bytes.
 func lratRV64CallContract(t *testing.T) string {
 	t.Helper()
-	source, _, ok := strings.Cut(oakLRATSource, "// lrat_true_value")
-	if !ok {
-		t.Fatal("preflight extraction boundary lost")
-	}
 	var c strings.Builder
 	for _, compressed := range []bool{false, true} {
 		cpu, module, bodyModule := "generic_rv64+m", "RV64", "LRATRV64Bytes"
 		if compressed {
 			cpu, module, bodyModule = "", "RV64Compressed", "LRATRV64Compressed"
 		}
-		data, err := compiler.New().WithSource("lrat.oak", source+"\nmain: (): i32 = i32(0)\n").
-			WithAsmUnit("lrat.rv64.oakasm", oakLRATRV64Source).
-			WithTarget(target.Target{OS: target.OSLinux, Arch: target.ArchRiscv64}).WithCPU(cpu).EmitExecutable().Get()
-		if err != nil {
-			t.Fatal(err)
-		}
-		f, err := elf.NewFile(bytes.NewReader(data))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if f.Machine != elf.EM_RISCV || f.Type != elf.ET_EXEC {
-			t.Fatal("expected linked RV64 executable")
-		}
-		symbols, err := f.Symbols()
-		if err != nil {
-			t.Fatal(err)
-		}
-		byName := map[string]elf.Symbol{}
-		for _, sym := range symbols {
-			byName[sym.Name] = sym
-		}
-		symbolBytes := func(name string) (elf.Symbol, []byte) {
-			sym, ok := byName["oak_"+name]
-			if !ok || sym.Section == elf.SHN_UNDEF || int(sym.Section) >= len(f.Sections) {
-				t.Fatalf("missing/invalid %s", name)
-			}
-			sec := f.Sections[sym.Section]
-			code, e := sec.Data()
-			if e != nil {
-				t.Fatal(e)
-			}
-			if sym.Value < sec.Addr {
-				t.Fatal("invalid address")
-			}
-			at := sym.Value - sec.Addr
-			if at > uint64(len(code)) || sym.Size > uint64(len(code))-at {
-				t.Fatal("invalid range")
-			}
-			return sym, code[at : at+sym.Size]
-		}
+		symbolBytes := lratPreflightExecutable(t, target.ArchRiscv64, "rv64", oakLRATRV64Source, cpu)
 		destinations := map[uint64]string{}
 		for _, name := range []string{"lrat_fits", "lrat_alloc_fits"} {
 			sym, code := symbolBytes(name)
@@ -136,10 +93,65 @@ func lratRV64CallContract(t *testing.T) string {
 				t.Fatalf("%s guard calls: %v", caller, counts)
 			}
 		}
-		f.Close()
 		for _, name := range []string{"fits_result", "alloc_result", "fits_return", "alloc_return", "fits_refines", "alloc_refines"} {
 			fmt.Fprintf(&c, "#print axioms Oak.LRATRV64GuardCalls.%s.%s\n", module, name)
 		}
 	}
 	return c.String()
+}
+
+// Shared production prefix and linked symbol extraction for both ISA contracts.
+func lratPreflightExecutable(t *testing.T, arch, lane, unit, cpu string) func(string) (elf.Symbol, []byte) {
+	t.Helper()
+	source, _, ok := strings.Cut(oakLRATSource, "// lrat_true_value")
+	if !ok {
+		t.Fatal("preflight extraction boundary lost")
+	}
+	data, err := compiler.New().WithSource("lrat.oak", source+"\nmain: (): i32 = i32(0)\n").
+		WithAsmUnit("lrat."+lane+".oakasm", unit).
+		WithTarget(target.Target{OS: target.OSLinux, Arch: arch}).WithCPU(cpu).EmitExecutable().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := elf.NewFile(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	machine := elf.EM_RISCV
+	if arch == target.ArchArm64 {
+		machine = elf.EM_AARCH64
+	}
+	if f.Machine != machine || f.Type != elf.ET_EXEC {
+		t.Fatal("expected linked executable for requested target")
+	}
+	t.Cleanup(func() { f.Close() })
+	symbols, err := f.Symbols()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]elf.Symbol{}
+	for _, sym := range symbols {
+		byName[sym.Name] = sym
+	}
+	symbolBytes := func(name string) (elf.Symbol, []byte) {
+		sym, ok := byName["oak_"+name]
+		if !ok || sym.Section == elf.SHN_UNDEF || int(sym.Section) >= len(f.Sections) {
+			t.Fatalf("missing/invalid %s", name)
+		}
+		sec := f.Sections[sym.Section]
+		code, e := sec.Data()
+		if e != nil {
+			t.Fatal(e)
+		}
+		if sym.Value < sec.Addr {
+			t.Fatal("invalid address")
+		}
+		at := sym.Value - sec.Addr
+		if at > uint64(len(code)) || sym.Size > uint64(len(code))-at {
+			t.Fatal("invalid range")
+		}
+		return sym, code[at : at+sym.Size]
+	}
+
+	return symbolBytes
 }

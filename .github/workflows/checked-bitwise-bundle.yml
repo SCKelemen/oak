@@ -1,0 +1,65 @@
+name: Kernel-checked bitwise bundle
+
+on:
+  push:
+    branches: [main, specification]
+  pull_request:
+    branches: [main, specification]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
+
+jobs:
+  checked-bitwise-bundle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GOMAXPROCS: '2'
+      GOFLAGS: '-p=2'
+      OAK_REQUIRE_BITWISECHECK: '1'
+      OAK_BITWISECHECK_LEAN_ARCHIVE: ${{ runner.temp }}/lean-4.33.1-linux.tar.zst
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Check fail-closed required-test runner
+        run: python3 -m unittest discover -s .github/scripts -p test_required_backend_tests.py
+      - name: Install trusted host decompressor
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd
+          test -x /usr/bin/zstd
+      - name: Fetch the pinned official offline Lean archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            https://github.com/leanprover/lean4/releases/download/v4.33.1/lean-4.33.1-linux.tar.zst \
+            --output "$OAK_BITWISECHECK_LEAN_ARCHIVE"
+          echo "890afd185370f85666025b883914ab4f4b339136f8c96167b69cfb62aecaf235  $OAK_BITWISECHECK_LEAN_ARCHIVE" | sha256sum --check --strict
+      - name: Check exact live suite inventory
+        run: python3 .github/scripts/required_backend_tests.py --check
+      - name: Require embedded source closure custody controls
+        run: python3 .github/scripts/required_backend_tests.py checked-bitwise-sources
+      - name: Require runtime custody, process, protocol, and real-kernel controls
+        run: python3 .github/scripts/required_backend_tests.py checked-bitwise-runtime
+      - name: Require real production bundle admission and refusal controls
+        run: python3 .github/scripts/required_backend_tests.py checked-bitwise-bundle
+      # This separate adversarial harness deliberately changes proof drivers.
+      # Production admission never accepts these caller-supplied files/imports.
+      - name: Prepare pinned toolchain for development-only auditor regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar --zstd -xf "$OAK_BITWISECHECK_LEAN_ARCHIVE" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/lean-4.33.1-linux/bin" >> "$GITHUB_PATH"
+      - name: Build the targeted auditor and model closure
+        working-directory: spec/lean
+        run: lake build Oak.CheckedBundleAudit
+      - name: Require real wrong-type, axiom, kernel-policy, and late-error refusals
+        run: python3 tools/checked_bundle/test_request.py -v

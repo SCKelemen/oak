@@ -168,6 +168,7 @@ import Oak.LRATRV64Compressed
 import Oak.LRATARM64Bytes
 import Oak.LRATNativeRefinement
 import Oak.LRATRV64GuardCalls
+import Oak.LRATARM64GuardCalls
 set_option pp.fullNames true
 open Oak.LRATNativeGuards
 example (a c l : UInt32) (fuel : Nat) :
@@ -190,6 +191,7 @@ example (a c l : BitVec 64) (h : rvFits a c l = true) :
 	contract += lratRV64ByteContract(t)
 	contract += lratARM64ByteContract(t)
 	contract += lratRV64CallContract(t)
+	contract += lratARM64CallContract(t)
 	for _, lane := range []string{"ARM64", "RV64", "RV64Compressed"} {
 		for _, theorem := range []string{"fits_refines", "alloc_refines", "fits_accepted_iff", "alloc_accepted_iff", "fits_index", "allocation_safe"} {
 			contract += "\n#print axioms Oak.LRATNativeRefinement." + lane + "." + theorem + "\n"
@@ -201,7 +203,7 @@ example (a c l : BitVec 64) (h : rvFits a c l = true) :
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	for _, args := range [][]string{{"build", "Oak.LRATNativeGuards", "Oak.LRATRV64Bytes", "Oak.LRATRV64Compressed", "Oak.LRATARM64Bytes", "Oak.LRATNativeRefinement", "Oak.LRATRV64GuardCalls"}, {"env", "lean", path}} {
+	for _, args := range [][]string{{"build", "Oak.LRATNativeGuards", "Oak.LRATRV64Bytes", "Oak.LRATRV64Compressed", "Oak.LRATARM64Bytes", "Oak.LRATNativeRefinement", "Oak.LRATRV64GuardCalls", "Oak.LRATARM64GuardCalls"}, {"env", "lean", path}} {
 		cmd := exec.CommandContext(ctx, lake, args...)
 		cmd.Dir = filepath.Join("spec", "lean")
 		out, err := cmd.CombinedOutput()

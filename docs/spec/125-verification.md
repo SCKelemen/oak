@@ -498,6 +498,17 @@ each encoding: instruction shape, link register, target address, and exact
 destination body bytes. Argument-producing loads, caller control flow and
 memory/fetch/trap semantics remain separate obligations.
 
+`Oak.LRATARM64GuardCalls` supplies the corresponding ordinary BL composition:
+argument registers retain their low-word inputs, X30 receives PC+4, the guard
+returns the extracted Boolean result to that continuation, and SP is
+preserved. The required test binds all five ARM64 preflight guard calls to
+linked instruction words, target addresses, and exact guard body bytes. B,
+BR and BLR are refused by this direct-call decoder. Both ISA tests share the
+same production-prefix extraction and ELF symbol reader. This is a no-fault
+scalar call-transfer contract; argument-producing loads, whole-caller control
+flow, and full architectural execution remain open. No additional native
+axiom allowances are introduced.
+
 The native guard axiom audit now parses complete multiline reports. Lean's
 `bv_decide` in the pinned toolchain checks LRAT certificates through native
 evaluation; its generated axioms are explicitly enumerated alongside the

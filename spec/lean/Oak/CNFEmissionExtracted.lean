@@ -45,6 +45,10 @@ def LEAF_WORDS : UInt32 := (65 : UInt32)
 
 def TERM_WORDS : UInt32 := (8 : UInt32)
 
+def SELECT_SLOT_WORDS : UInt32 := (194 : UInt32)
+
+def FRAME_WORDS : UInt32 := (16 : UInt32)
+
 def STATE_COUNT : UInt32 := (0 : UInt32)
 
 def STATE_EXCEEDED : UInt32 := (1 : UInt32)
@@ -64,6 +68,40 @@ def CNF_PROVEN : UInt32 := (1 : UInt32)
 def CNF_REFUTED : UInt32 := (2 : UInt32)
 
 def LRAT_HEADER_WORDS : UInt32 := (8 : UInt32)
+
+def next_pow2.loop1 (n : UInt32) (p : UInt32) : Nat → Option (UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if (decide (p < n)) then do
+      let p := (p * (2 : UInt32))
+      next_pow2.loop1 n p fuel
+    else pure p
+
+def next_pow2 (n : UInt32) (fuel : Nat) : Option (UInt32) := do
+  let p : UInt32 := (1 : UInt32)
+  let p ← next_pow2.loop1 n p fuel
+  pure p
+
+def layout_for (cap : UInt32) (terms : UInt32) (fuel : Nat) : Option (Layout) := do
+  let r1 ← next_pow2 (cap * (2 : UInt32)) fuel
+  let ucap : UInt32 := r1
+  let ccap : UInt32 := ucap
+  let scap : UInt32 := (if (decide (cap < (32768 : UInt32))) then (if (cap == (0 : UInt32)) then (1 : UInt32) else cap) else (32768 : UInt32))
+  let var_at : UInt32 := (0 : UInt32)
+  let low_at : UInt32 := cap
+  let high_at : UInt32 := (cap * (2 : UInt32))
+  let unique_at : UInt32 := (cap * (3 : UInt32))
+  let cache_at : UInt32 := (unique_at + ucap)
+  let stack_at : UInt32 := (cache_at + (ccap * (4 : UInt32)))
+  let bits_at : UInt32 := (stack_at + (scap * FRAME_WORDS))
+  let selects_at : UInt32 := (bits_at + (terms * (64 : UInt32)))
+  let state_at : UInt32 := (selects_at + ((16 : UInt32) * SELECT_SLOT_WORDS))
+  pure ({ cap := cap, var_at := var_at, low_at := low_at, high_at := high_at, unique_at := unique_at, umask := (ucap - (1 : UInt32)), cache_at := cache_at, cmask := (ccap - (1 : UInt32)), stack_at := stack_at, stack_cap := scap, bits_at := bits_at, selects_at := selects_at, select_cap := (16 : UInt32), state_at := state_at, clauses_at := (state_at + (16 : UInt32)), clauses_cap := (0 : UInt32), total := (state_at + (16 : UInt32)) } : Layout)
+
+def layout_for_clauses (cap : UInt32) (terms : UInt32) (clause_words : UInt32) (fuel : Nat) : Option (Layout) := do
+  let r1 ← layout_for cap terms fuel
+  let base : Layout := r1
+  pure ({ cap := base.cap, var_at := base.var_at, low_at := base.low_at, high_at := base.high_at, unique_at := base.unique_at, umask := base.umask, cache_at := base.cache_at, cmask := base.cmask, stack_at := base.stack_at, stack_cap := base.stack_cap, bits_at := base.bits_at, selects_at := base.selects_at, select_cap := base.select_cap, state_at := base.state_at, clauses_at := base.total, clauses_cap := clause_words, total := (base.total + clause_words) } : Layout)
 
 def lrat_fits (at_ : UInt32) (count : UInt32) (limit : UInt32) (fuel : Nat) : Option (Bool) := do
   pure ((decide (at_ <= limit)) && (decide (count <= (limit - at_))))

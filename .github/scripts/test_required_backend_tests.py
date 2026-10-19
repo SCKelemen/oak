@@ -117,6 +117,23 @@ class RequiredBackendTests(unittest.TestCase):
 
     def test_audited_suite_manifest(self):
         expected_roots = {
+            "checked-bitwise-sources": {"TestEmbeddedClosureCustody"},
+            "checked-bitwise-runtime": {
+                "TestArchiveFIFORefusesWithoutBlocking", "TestArchiveDigestMismatch", "TestExtractionBoundaries",
+                "TestStrictProtocol", "TestProcessRefusal", "TestZeroAuthority",
+                "TestSnapshotsAndDriver", "TestInstallRefusesUntrustedArchive", "TestRealKernelAdmission",
+            },
+            "checked-bitwise-bundle": {
+                "TestEmitKernelCheckedBitwiseBundleRefusesInvalidInstallation",
+                "TestEmitKernelCheckedBitwiseBundleRefusesCanceledContext",
+                "TestKernelCheckedBitwiseBundleDoesNotPromoteLegacyAuthority",
+                "TestEmitKernelCheckedBitwiseBundleReal",
+                "TestVerifiedProfileClosesOverCallees",
+                "TestVerdictCacheRoundTripsDependencies",
+                "TestVerdictCacheRejectsMalformedDependencyRecords",
+                "TestVerdictCacheKeyIncludesMachineOnlyCalleeBodies",
+                "TestVerdictCacheMachineCalleesAgreeWithStrictResolver",
+            },
             "native-object": {"TestNativeBitwiseObjectLean"},
             "cross-compiler": {"TestE2EInferredValueNativeRV64UnderQEMU", "TestE2EDispatchSelectsSVEUnderQEMU", "TestE2EFreestandingPartialLink", "TestE2ENativeConstantTablesExecutable", "TestRingsCrossTargets"},
             "cross-testrunner": {"TestForeignTargetRunsUnderEmulator", "TestTargetFlagBuildsWithoutRunning"},
@@ -143,12 +160,34 @@ class RequiredBackendTests(unittest.TestCase):
         for name, children in expected_children.items():
             self.assertEqual({test for test in required.SUITES[name].tests if "/" in test}, children)
 
+    def test_checked_bundle_requires_all_six_production_bundles(self):
+        suite = required.SUITES["checked-bitwise-bundle"]
+        matrix = {
+            "TestEmitKernelCheckedBitwiseBundleReal/Canonical/" + family + "/" + op
+            for family in ("bitwise", "Mix9") for op in ("and", "or", "xor")
+        }
+        self.assertEqual({name for name in suite.tests if "/Canonical/" in name}, matrix)
+        for omitted in matrix:
+            results = required.RequiredResults(suite)
+            for name in suite.tests:
+                if name == omitted:
+                    continue
+                for action in ("run", "pass"):
+                    results.accept({"Action": action, "Package": suite.import_path, "Test": name})
+            results.accept({"Action": "pass", "Package": suite.import_path})
+            with self.assertRaisesRegex(ValueError, omitted):
+                results.finish(0)
+        children = {name.rsplit("/", 1)[-1] for name in suite.tests if "/" in name}
+        self.assertTrue({"CopyCustody", "RenamedParametersFreshAdmission", "Canceled", "Closed",
+                         "source_operation", "source_name", "wasm_trailing", "arm_body", "rv_abi"} <= children)
+
     def test_workflows_select_every_suite_in_equipped_lane(self):
         root = Path(__file__).resolve().parents[1]
         lanes = {
             "ci.yml": ("cross-compiler", "cross-testrunner"),
             "formal.yml": ("lean-compiler", "lean-cli", "native-object"),
             "formal-sail.yml": ("sail-source", "llvm"),
+            "checked-bitwise-bundle.yml": ("checked-bitwise-sources", "checked-bitwise-runtime", "checked-bitwise-bundle"),
         }
         for file, suites in lanes.items():
             source = (root / "workflows" / file).read_text()
