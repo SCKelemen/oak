@@ -196,3 +196,24 @@ clobber branches in the call summarizer.
 This closes a concrete production-model gap; it is not a completed machine-
 checked Go, psABI or emitted-byte refinement. Full `asm`, RV64/RVV,
 source-to-machine execution and formal gates remain required.
+
+## A2: cross-class native call-state proof contract (October 2026)
+
+`spec/lean/Oak/AssemblerCallState.lean` builds on the GPR entry-provenance
+state but explicitly adds RV64 FPR availability, AArch64/RV64 vector
+availability, and abstract rvv configuration and flag state. A single
+`call` transition applies each architecture's caller-saved masks before
+separate register-result writes. Theorems state preserved vs clobbered
+register behavior, link-register invalidation, and necessary availability
+conditions for control-flow joins.
+
+The FPR abstraction only covers RV64 `fregs`; AArch64 FP views belong to
+the vector file. This model tracks boundness, not register values or vector
+lane widths. A dependent `State arch` excludes cross-architecture joins.
+The corresponding Go tests sweep register masks and real call-state
+invalidations against independently specified ABI rules.
+
+This is **not** a universal proof that the Go executor implements the Lean
+model. The proof is verified only after `lake build Oak.AssemblerCallState`
+succeeds; Go correspondence is checked only after the dedicated package
+tests run. End-to-end ISA proofs and verified RVV variants remain open.

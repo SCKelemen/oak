@@ -68,7 +68,7 @@ jobs:
           go-version: '1.27.1'
 
       - name: Check bounded Go correspondence and native verifier regressions
-        run: go test ./asm -run '^(TestEntry(Register|Readable)|TestNativeVerifier(ISASelection|EntryReadable|RegisterStateRefinement)|TestVerifyCallSummary)' -count=1 -timeout=10m -v
+        run: go test ./asm -run '^(TestEntry(Register|Readable)|TestNativeVerifier(ISASelection|EntryReadable|RegisterStateRefinement)|TestVerifyCallSummary|TestAssemblerCallState)' -count=1 -timeout=10m -v
 
       - name: Install elan
         shell: bash
@@ -81,7 +81,7 @@ jobs:
 
       - name: Prove native call entry, clobber, write, fork, and join laws
         working-directory: spec/lean
-        run: lake build Oak.AssemblerEntryProvenance
+        run: lake build Oak.AssemblerEntryProvenance Oak.AssemblerCallState
 
   lrat-kernel:
     name: LRAT kernel soundness
