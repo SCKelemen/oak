@@ -109,4 +109,37 @@ theorem excluded_constructor_arm_is_unreachable [DecidableEq α]
   subst value
   exact hexcluded hreachable
 
+/-- Usefulness is always relative to the *reachable* cases. A syntactic
+    wildcard does not become useful merely by appearing after a complete match. -/
+def ReachableUseful [DecidableEq α]
+    (cases reachable covered arm : List α) : Prop :=
+  ∃ value, ReachableCase cases reachable value ∧
+    value ∈ arm ∧ value ∉ covered
+
+/-- After all reachable cases are covered, no following arm can be useful. -/
+theorem exhaustive_rules_out_later_useful_arms [DecidableEq α]
+    {cases reachable covered arm : List α}
+    (hcomplete : Exhaustive cases reachable covered) :
+    ¬ ReachableUseful cases reachable covered arm := by
+  intro huseful
+  rcases huseful with ⟨value, hreachable, _, hmissing⟩
+  exact hmissing (hcomplete value hreachable)
+
+/-- When no semantic value is reachable, even a wildcard has no useful case. -/
+theorem empty_reachable_universe_has_no_useful_arm [DecidableEq α]
+    (cases covered arm : List α) :
+    ¬ ReachableUseful cases [] covered arm := by
+  intro huseful
+  rcases huseful with ⟨value, hreachable, _, _⟩
+  have himpossible : value ∈ ([] : List α) := hreachable.2
+  simp at himpossible
+
+/-- Empty reachable universes are exhaustive with no arms at all. -/
+theorem empty_reachable_universe_is_exhaustive [DecidableEq α]
+    (cases covered : List α) :
+    Exhaustive cases [] covered := by
+  intro value hreachable
+  have himpossible : value ∈ ([] : List α) := hreachable.2
+  simp at himpossible
+
 end Oak.PatternAnalysis
