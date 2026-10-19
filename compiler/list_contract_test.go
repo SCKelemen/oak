@@ -20,6 +20,7 @@ func TestRequiredListAndRecordBoundaryRejectBeforeCompilation(t *testing.T) {
 		{"record_extra_before_comma", pair, "x: Pair = Pair {a: 1 2,b: 3}; x.a", "expected ',' or '}' after record field value"},
 		{"record_extra_before_close", pair, "x: Pair = Pair {a: 1,b: 3 4}; x.a", "expected ',' or '}' after record field value"},
 		{"record_extra_identifier", pair, "x := Pair {a: 1 extra,b: 3}; x.a", "expected ',' or '}' after record field value"},
+		{"record_numeric_suffix", pair, "x := Pair {a: 0u8,b: 3}; x.a", "expected ',' or '}' after record field value"},
 		{"record_missing_value", pair, "x := Pair {a: ,b: 3}; x.a", "expected record field value"},
 		{"nested_record_extra", pair, "xs := [Pair {a: 1 2,b: 3}]; 0", "expected ',' or '}' after record field value"},
 		{"inferred_missing_expression", "", "x := ); 0", "expected value expression after :="},
@@ -40,6 +41,69 @@ func TestRequiredListAndRecordBoundaryRejectBeforeCompilation(t *testing.T) {
 						t.Fatalf("must reject at parsing with %q: %v", tc.diagnostic, err)
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestRecordBoundaryRetainsNestedRegionFields(t *testing.T) {
+	const src = multipleRegionNestedRecordsSource
+	tree, err := New().WithSource("nested_regions.oak", src).Parse().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tag *ast.InvocationExpression
+	for _, statement := range tree.Root.Statements {
+		fn, ok := statement.(*ast.FunctionStatement)
+		if !ok || fn.Name.Value != "pack" {
+			continue
+		}
+		record, ok := fn.Body.(*ast.RecordLiteral)
+		if !ok || record.TypeName == nil || record.TypeName.Value != "Envelope" || len(record.OrderedFields()) != 2 {
+			t.Fatalf("lost outer record: %#v", fn.Body)
+		}
+		tag, ok = record.Fields["tag"].(*ast.InvocationExpression)
+		if !ok || tag.String() != "u8(0)" {
+			t.Fatalf("lost explicit tag type or value: %#v", record.Fields["tag"])
+		}
+		parts, ok := record.Fields["parts"].(*ast.RecordLiteral)
+		if !ok || parts.TypeName == nil || parts.TypeName.Value != "Pair" {
+			t.Fatalf("lost nested record: %#v", record.Fields["parts"])
+		}
+		fields := parts.OrderedFields()
+		if len(fields) != 2 || fields[0].Name != "left" || fields[0].Value.String() != "a" || fields[1].Name != "right" || fields[1].Value.String() != "b" {
+			t.Fatalf("lost nested fields: %#v", fields)
+		}
+	}
+	if tag == nil {
+		t.Fatal("pack function was lost")
+	}
+	model, err := New().WithSource("nested_regions.oak", src).Check().Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if typ, ok := model.TypeChecker.ExpressionTypeAt(tag.Token); !ok || typ.String() != "u8" {
+		t.Fatalf("checked tag type = %v, present=%v; want u8", typ, ok)
+	}
+	if _, err := New().WithSource("nested_regions.oak", src).EmitC().Get(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A suffix is a separate identifier, not a typed integer literal. The old
+	// record parser discarded it; retaining nested syntax must not restore that.
+	invalid := strings.Replace(src, "tag:u8(0)", "tag:0u8", 1)
+	for _, phase := range []struct {
+		name string
+		run  func(Compilation) error
+	}{
+		{"Parse", func(c Compilation) error { return c.Parse().Err() }},
+		{"Check", func(c Compilation) error { return c.Check().Err() }},
+		{"EmitC", func(c Compilation) error { return c.EmitC().Err() }},
+	} {
+		t.Run("invalid_suffix/"+phase.name, func(t *testing.T) {
+			err := phase.run(New().WithSource("nested_suffix.oak", invalid))
+			if err == nil || !strings.Contains(err.Error(), "parse failed: expected ',' or '}' after record field value") {
+				t.Fatalf("numeric suffix must be diagnosed before compilation: %v", err)
 			}
 		})
 	}

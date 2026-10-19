@@ -24,6 +24,8 @@ func TestRequiredListItemAndRecordBoundaryDiagnostics(t *testing.T) {
 		{"x := {a: 1 2}", "expected ',' or '}' after record field value", "2"},
 		{"x := {a: 1 2,b: 3}", "expected ',' or '}' after record field value", "2"},
 		{"x := {a: 1 extra,b: 3}", "expected ',' or '}' after record field value", "extra"},
+		{"x := {tag: 0u8,parts: Pair {left: 1,right: 2}}", "expected ',' or '}' after record field value", "u8"},
+		{"x := {parts: Pair {left: 1,right: 2},tag: 0u8}", "expected ',' or '}' after record field value", "u8"},
 		{"x := )", "expected value expression after :=", ":="},
 	} {
 		t.Run(tc.input, func(t *testing.T) {
@@ -49,6 +51,49 @@ func TestRequiredListItemAndRecordBoundaryDiagnostics(t *testing.T) {
 				last, ok := program.Statements[len(program.Statements)-1].(*ast.VariableDeclaration)
 				if !ok || last == nil || last.Name.Value != "sentinel" || last.Value == nil || last.Value.String() != "7" {
 					t.Fatalf("layout=%v: following declaration was lost: %#v", normalize, program.Statements)
+				}
+			}
+		})
+	}
+}
+
+func TestRecordBoundaryRetainsNestedValues(t *testing.T) {
+	for _, literal := range []string{
+		"Envelope {tag: u8(0),parts: Pair {left: 1,right: 2}}",
+		"Envelope {parts: Pair {left: 1,right: 2},tag: u8(0)}",
+		"Envelope {tag: u8(0),parts: Pair {left: 1,right: 2,},}",
+		"Envelope {\n tag: u8(0),\n parts: Pair {\n left: 1,\n right: 2\n },\n}",
+	} {
+		t.Run(literal, func(t *testing.T) {
+			for _, normalize := range []bool{false, true} {
+				var source token.Source = scanner.New("x := " + literal + "; sentinel := 7")
+				if normalize {
+					source = layout.New(source)
+				}
+				p := New(source)
+				program := p.ParseProgram()
+				if len(p.Errors()) != 0 || len(program.Statements) != 2 {
+					t.Fatalf("layout=%v: errors=%v, statements=%d", normalize, p.Errors(), len(program.Statements))
+				}
+				decl := program.Statements[0].(*ast.VariableDeclaration)
+				outer, ok := decl.Value.(*ast.RecordLiteral)
+				if !ok || outer.TypeName == nil || outer.TypeName.Value != "Envelope" || len(outer.OrderedFields()) != 2 || outer.EndToken.TokenKind != token.RBRACE {
+					t.Fatalf("lost outer record: %#v", decl.Value)
+				}
+				if tag, ok := outer.Fields["tag"].(*ast.InvocationExpression); !ok || tag.String() != "u8(0)" {
+					t.Fatalf("lost explicit tag constructor: %#v", outer.Fields["tag"])
+				}
+				inner, ok := outer.Fields["parts"].(*ast.RecordLiteral)
+				if !ok || inner.TypeName == nil || inner.TypeName.Value != "Pair" || inner.EndToken.TokenKind != token.RBRACE {
+					t.Fatalf("lost nested record: %#v", outer.Fields["parts"])
+				}
+				fields := inner.OrderedFields()
+				if len(fields) != 2 || fields[0].Name != "left" || fields[0].Value.String() != "1" || fields[1].Name != "right" || fields[1].Value.String() != "2" {
+					t.Fatalf("lost nested fields: %#v", fields)
+				}
+				last, ok := program.Statements[1].(*ast.VariableDeclaration)
+				if !ok || last.Name.Value != "sentinel" || last.Value == nil || last.Value.String() != "7" {
+					t.Fatalf("lost following declaration: %#v", program.Statements[1])
 				}
 			}
 		})
