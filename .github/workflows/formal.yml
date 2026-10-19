@@ -123,6 +123,48 @@ jobs:
           command -v cc
           go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean|TestOakLRATAllocatedEntry|TestOakLRATRawStreamEntry|TestLRATLifecycle.*|TestLRATNative.*|TestOakCNFLiteral.*|TestOakCNFEmission.*|TestOakCNFGates.*|TestOakCNFFolds.*|TestOakCNFNodes.*|TestOakCNFObligation.*|TestOakCNFObligationStore.*|TestOakCNFRoots.*|TestCNFAxiomAudit|TestOakLRATAgrees)$' -count=1 -timeout=10m -v
 
+  native-bitwise-images:
+    # Keep full-file fixed proofs and fresh compiler/writer correspondence
+    # independent of the already substantial aggregate Lean job. Both matrix
+    # entries are required; each checker fixes its complete theorem/case inventory.
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/codex/lrat-')
+    name: Native executable images (${{ matrix.gate }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        gate: [fixtures, production]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install elan
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Check complete native executable images and theorem trust
+        if: matrix.gate == 'fixtures'
+        run: |
+          python3 -m unittest discover -s tools/native_image_fixtures -p test_check.py
+          python3 tools/native_image_fixtures/check.py
+
+      - name: Require production native executable image correspondence
+        if: matrix.gate == 'production'
+        env:
+          OAK_REQUIRE_NATIVE_IMAGE_LEAN: '1'
+        run: python3 .github/scripts/required_backend_tests.py native-image
+
   lean:
     # Proof-branch iterations use the dedicated gates above. PR and
     # specification runs still check the complete formal specification.

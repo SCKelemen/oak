@@ -16,6 +16,7 @@ import Oak.AArch64BitwiseFunction
 import Oak.RiscVBitwiseFunction
 import Oak.MinimalELF
 import Oak.NativeBitwiseObject
+import Oak.NativeBitwiseImage
 import Oak.BitwiseSourceObjectParity
 import Oak.RiscVBitwiseELF
 import Oak.AArch64MinimalStartup

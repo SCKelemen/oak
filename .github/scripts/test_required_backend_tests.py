@@ -115,8 +115,49 @@ class RequiredBackendTests(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(required.main(["llvm"]), 1)
 
+    def test_image_runtime_only_uses_race_for_inventory_and_execution(self):
+        self.assertTrue(required.SUITES["checked-image-runtime"].race)
+        self.assertFalse(any(s.race for n,s in required.SUITES.items() if n != "checked-image-runtime"))
+        suite = required.Suite("./compiler", "10m", ("TestRequired",), race=True)
+        with patch.object(required.subprocess, "check_output", return_value="TestRequired\n") as call:
+            required.check_inventory(suite)
+            self.assertEqual(call.call_args.args[0], ["go", "test", "-race", "./compiler", "-list", "^(TestRequired)$"])
+        process = MagicMock()
+        process.stdout = iter([])
+        process.wait.return_value = 9
+        process.__enter__.return_value = process
+        with patch.object(required.subprocess, "Popen", return_value=process) as call:
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "exited 9"):
+                required.run_suite(suite)
+        self.assertEqual(call.call_args.args[0], ["go", "test", "-race", "-json", "-count=1", "-timeout=10m", "./compiler", "-run", "^(TestRequired)$"])
+
+    def test_exact_child_inventory_rejects_unlisted_image_cases(self):
+        suite = required.Suite("./compiler", "10m", ("TestRequired",), exact_children=True)
+        results = required.RequiredResults(suite)
+        with self.assertRaisesRegex(ValueError, "unexpected unlisted test"):
+            results.accept({"Action": "run", "Package": suite.import_path, "Test": "TestRequired/Unexpected"})
+
+    def test_image_suites_require_every_named_check(self):
+        for key in ("checked-image-sources", "checked-image-runtime", "checked-image-bundle"):
+            suite = required.SUITES[key]
+            self.assertTrue(suite.exact_children)
+            for omitted in suite.tests:
+                results = required.RequiredResults(suite)
+                for name in suite.tests:
+                    if name != omitted:
+                        for action in ("run", "pass"):
+                            results.accept({"Action": action, "Package": suite.import_path, "Test": name})
+                results.accept({"Action": "pass", "Package": suite.import_path})
+                with self.assertRaisesRegex(ValueError, omitted):
+                    results.finish(0)
+        required_runtime = {"MaximumNameAndSource", "DropContract/arm", "DropContract/rv", "ActualSuccessfulRefusalProof", "ValidRecordThenFailure", "CanceledGlobalQueue", "CloseActiveRequest"}
+        self.assertTrue({"TestImagePinnedRuntime/" + n for n in required_runtime} <= set(required.SUITES["checked-image-runtime"].tests))
+
     def test_audited_suite_manifest(self):
         expected_roots = {
+            'checked-image-sources': {'TestEmbeddedClosureCustody', 'TestImageEmbeddedClosureCustody'},
+            'checked-image-runtime': {'TestImageClosedInstallationProfile', 'TestImagePinnedRuntime', 'TestProcessRefusal', 'TestExtractionBoundaries', 'TestInstallRefusesUntrustedArchive', 'TestArchiveDigestMismatch', 'TestImageProtocolFieldLimits', 'TestImageMaximumProtocolSize', 'TestArchiveFIFORefusesWithoutBlocking', 'TestImageZeroAuthority', 'TestImageSnapshotAndRenderer', 'TestImageStrictProtocol'},
+            'checked-image-bundle': {'TestEmitKernelCheckedBitwiseImageBundleReal', 'TestEmitKernelCheckedBitwiseImageBundleRefusesInvalidInstallation', 'TestCheckedImageProposedSymbolBoundaries', 'TestCheckedImageProposalOwnsCopyWithoutClaimingBodyAuthority', 'TestCheckedImageProposalProduction', 'TestCheckedImageProposalRefusesMalformedObjects', 'TestEmitKernelCheckedBitwiseImageBundleRefusesCanceledContext', 'TestKernelCheckedBitwiseImageBundleDoesNotPromoteLegacyAuthority'},
             "checked-bitwise-sources": {"TestEmbeddedClosureCustody"},
             "checked-bitwise-runtime": {
                 "TestArchiveFIFORefusesWithoutBlocking", "TestArchiveDigestMismatch", "TestExtractionBoundaries",
@@ -135,6 +176,7 @@ class RequiredBackendTests(unittest.TestCase):
                 "TestVerdictCacheMachineCalleesAgreeWithStrictResolver",
             },
             "native-object": {"TestNativeBitwiseObjectLean"},
+            "native-image": {"TestNativeBitwiseImageLean"},
             "cross-compiler": {"TestE2EInferredValueNativeRV64UnderQEMU", "TestE2EDispatchSelectsSVEUnderQEMU", "TestE2EFreestandingPartialLink", "TestE2ENativeConstantTablesExecutable", "TestRingsCrossTargets"},
             "cross-testrunner": {"TestForeignTargetRunsUnderEmulator", "TestTargetFlagBuildsWithoutRunning"},
             "lean-compiler": {"TestLeanFloatBitsAgreeWithHost", "TestE2ELeanFunctionArguments", "TestE2ELeanReduceLanesFunctionArgument", "TestE2ELeanNestedAssignment"},
@@ -181,11 +223,34 @@ class RequiredBackendTests(unittest.TestCase):
         self.assertTrue({"CopyCustody", "RenamedParametersFreshAdmission", "Canceled", "Closed",
                          "source_operation", "source_name", "wasm_trailing", "arm_body", "rv_abi"} <= children)
 
+    def test_native_image_gates_run_in_complete_isolated_matrix(self):
+        source = (Path(__file__).resolve().parents[1] / "workflows" / "formal.yml").read_text()
+        job = source.split("  native-bitwise-images:\n", 1)[1].split("  lean:\n", 1)[0]
+        self.assertIn("gate: [fixtures, production]", job)
+        self.assertIn("fail-fast: false", job)
+        self.assertIn("if: matrix.gate == 'fixtures'", job)
+        self.assertIn("if: matrix.gate == 'production'", job)
+        self.assertEqual(job.count("python3 tools/native_image_fixtures/check.py"), 1)
+        self.assertEqual(job.count("python3 .github/scripts/required_backend_tests.py native-image"), 1)
+        self.assertIn("OAK_REQUIRE_NATIVE_IMAGE_LEAN: '1'", job)
+        self.assertEqual(required.SUITES["native-image"].timeout, "30m")
+
+    def test_image_workflow_preserves_protected_branches_and_reruns(self):
+        source = (Path(__file__).resolve().parents[1] / "workflows" / "checked-image-bundle.yml").read_text()
+        self.assertEqual(source.count("branches: [main, specification, consolidation]"), 2)
+        self.assertIn("permissions:\n  contents: read", source)
+        self.assertIn("format('run-{0}-{1}', github.run_id, github.run_attempt)", source)
+        self.assertIn("OAK_REQUIRE_BITWISE_IMAGECHECK: '1'", source)
+        self.assertIn("CGO_ENABLED: '1'", source)
+        self.assertNotIn("Oak.CheckedBundleAudit", source)
+        self.assertNotIn("tools/checked_bundle/test_request.py", source)
+
     def test_workflows_select_every_suite_in_equipped_lane(self):
         root = Path(__file__).resolve().parents[1]
         lanes = {
+            "checked-image-bundle.yml": ("checked-image-sources", "checked-image-runtime", "checked-image-bundle"),
             "ci.yml": ("cross-compiler", "cross-testrunner"),
-            "formal.yml": ("lean-compiler", "lean-cli", "native-object"),
+            "formal.yml": ("lean-compiler", "lean-cli", "native-object", "native-image"),
             "formal-sail.yml": ("sail-source", "llvm"),
             "checked-bitwise-bundle.yml": ("checked-bitwise-sources", "checked-bitwise-runtime", "checked-bitwise-bundle"),
         }

@@ -122,3 +122,5 @@ runtime tests without a skip, set `OAK_REQUIRE_BITWISECHECK=1` and
 `go test -timeout 40m ./bitwisecheck`. The equipped suite uses one installation
 for real admission, mutation/copy custody, malformed tuples, cancellation,
 concurrency, receipt replay, valid-record-then-process-failure and active Close.
+
+The separate complete executable-image capability is documented in [IMAGES.md](IMAGES.md).
