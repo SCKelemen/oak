@@ -331,3 +331,5 @@ import Oak.WasmCoreSource
 import Oak.LRATBoundSoundness
 
 import Oak.LRATBindingModel
+
+import Oak.CNFLiteral
