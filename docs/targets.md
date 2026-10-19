@@ -72,8 +72,10 @@ evidence of native lowering, proof coverage or competitive performance.
 This is **not yet a plug-in backend interface**. `machine/target.go` provides
 real lane callbacks, but currently selects only AArch64 and RV64. Native lowering
 and `asm/verify.go` still contain lane-specific branches, including RV64 versus
-AArch64-default behavior. `opt.CostsFor` likewise defaults unknown lanes to
-AArch64 costs. A new native ISA must not enter those defaults. Wasm instead
+AArch64-default behavior. `opt.CostsFor` now rejects unknown lanes with an error, and native compilation
+propagates this as a diagnostic. Other lane-specific paths (especially asm/verify.go)
+still need exhaustive fail-closed dispatch. A new native ISA must not enter
+AArch64-default branches. Wasm instead
 reuses checked structured OptIR bound to its canonical CFG through
 `compiler/wasm.go`; it does not
 yet consume the optimized native candidate pipeline or the native ISA verifier.
