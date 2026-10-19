@@ -121,6 +121,16 @@ reject: (used: u32, roots: u32): () {
   i = i+u32(1)
  }
 }
+layout_case: (cap: u32, terms: u32, capacity: u32, expected_bits: u32, expected_state: u32, expected_total: u32): () {
+ l: Layout = layout_for_clauses(cap,terms,capacity)
+ assert(l.bits_at == expected_bits)
+ assert(l.state_at == expected_state)
+ assert(l.clauses_at == expected_state+u32(16))
+ assert(l.clauses_cap == capacity)
+ assert(l.total == expected_total)
+ assert(l.bits_at+terms*u32(64) <= l.clauses_at)
+ assert(l.state_at+u32(5) < l.clauses_at)
+}
 main: (): i32 {
 `
 	var calls strings.Builder
@@ -184,6 +194,26 @@ main: (): i32 {
 	for _, pair := range [][2]uint32{{4294967295, 0}, {0, 4294967295}, {4294967287, 1}, {1, 4294967287}} {
 		fmt.Fprintf(&calls, "reject(u32(%d),u32(%d))\n", pair[0], pair[1])
 	}
+	for _, cap := range []uint32{0, 1, 2, 16, 32768} {
+		u := uint32(1)
+		for u < 2*cap {
+			u *= 2
+		}
+		stack := cap
+		if stack == 0 {
+			stack = 1
+		}
+		if stack > 32768 {
+			stack = 32768
+		}
+		bits := 3*cap + 5*u + 16*stack
+		for _, terms := range []uint32{0, 1, 3} {
+			state := bits + 64*terms + 16*194
+			for _, capacity := range []uint32{0, 16, 128} {
+				fmt.Fprintf(&calls, "layout_case(%d,%d,%d,%d,%d,%d)\n", cap, terms, capacity, bits, state, state+16+capacity)
+			}
+		}
+	}
 	source += calls.String() + "0\n}\n"
 
 	if err := os.WriteFile(filepath.Join(dir, "main.oak"), []byte(source), 0600); err != nil {
@@ -205,7 +235,7 @@ main: (): i32 {
 	if out, err := exec.CommandContext(ctx, bin).CombinedOutput(); err != nil {
 		t.Fatalf("compiled nodes: %v\n%s", err, out)
 	}
-	t.Log("checked 1554 obligation cases, 1331 mathematical guard cases, four whole-function overflow refusals, and 4144 actual outcome/formula assignments")
+	t.Log("checked 1554 obligation cases, 1331 mathematical guard cases, four whole-function overflow refusals, 4144 actual outcome/formula assignments, and 45 production layout cases")
 }
 
 func TestOakCNFObligationLean(t *testing.T) {

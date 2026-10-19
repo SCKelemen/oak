@@ -535,13 +535,41 @@ stored words preserves the observed obligation's Boolean meaning.
 `layout_bounds` derives physical address bounds from admission and a
 nonwrapping clause region. `state_separation` discharges counter separation
 when state ends before the clause region. These are local layout invariants,
-not a proof that the allocator constructs every valid layout. Valid source
-root addresses, generation of the complete root trace from the original
-bitblasting state, and whole-source verdict soundness remain open.
+not a proof that the allocator constructs every valid layout. The initial-root
+trace and the constructor's relevant region ordering are now supplied by
+`Oak.CNFRoots`; valid source root addresses and whole-source verdict soundness
+remain separate obligations.
 `TestOakCNFObligationStoreLean` audits 13 foundational-only theorem closures,
 checks fixed readback contracts, and kernel-replays both mixed-constant
 payload writes and a counter/payload aliasing counterexample. The existing
 compiled obligation regression and solver integration remain required.
+
+`Oak.CNFRoots` derives the obligation trace from the memory present before
+emission. `initialLiterals` reads that memory independently of the writer.
+`initial_trace` inducts over the remaining root count, proving loop-index
+progress and preservation of future reads as payload words are appended.
+`production_initial` therefore characterizes the complete extracted function
+without an assumed execution trace, given separated root cells and a bounded
+append interval.
+
+The production `layout_for_clauses` and its dependencies are now included in
+the extraction drift check. `layout_shape` proves its exact field equations;
+`constructed_regions` proves ordering and nonwrapping arithmetic for the
+bit-storage, selection, state, and clause suffix under an explicit natural
+budget. Valid root IDs within the term count place their bit cells before
+the clause region. `constructed_trace` and `constructed_production` combine
+these facts with admission, eliminating the former trace and read-separation
+premises. The initial memory's bits still need to be related to source-term
+semantics. The constructor's earlier node/hash/cache/stack region allocation,
+`next_pow2` termination, caller-enforced budgets, and valid serialized root
+indices are not proved by these suffix guarantees.
+
+`TestOakCNFRootsLean` audits nine foundational-only theorem closures, fixes
+contracts for trace derivation and constructor regions, and kernel-replays
+initial root polarity and a wrapped-layout counterexample showing why the
+budget is necessary. Compiled obligation tests additionally check 45 production
+layouts across terminal/small/stack-limit capacities, term counts, and clause
+capacities. Existing full-buffer and solver-integration checks remain required.
 
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
