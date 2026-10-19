@@ -6,9 +6,10 @@ functions in a strict subset, compiled by Oak to Metal and to C, so that
 the emitted kernel is code a proof can name rather than a string the
 runtime assembles.
 
-A kernel is a function. It is declared with the `kernel` marker, its first
-parameter is its position in the launch grid, its body lies in the **kernel
-subset** (section 2), and it has three realizations that agree:
+A kernel is a function. It is declared with the post-signature `(kernel)`
+clause, its first parameter is its position in the launch grid, its body
+lies in the **kernel subset** (section 2), and it has three realizations
+that agree:
 
 - the **C backend** compiles it as an ordinary function, so a host loop
   over grid positions computes the launch on the CPU (the `oak run` and
@@ -28,11 +29,11 @@ realizations accept.
 ```oak
 clamp_relu: (x: f32): f32 = x < 0.0 ? 0.0 | x
 
-kernel relu: (gid: u32, x: []f32, y: [*]f32): () = {
+relu: (gid: u32, x: []f32, y: [*]f32): () (kernel) = {
   gid < len(y) ? { y[gid] = clamp_relu(x[gid]) }
 }
 
-kernel axpy: (gid: u32, a: f32, x: []f32, y: [*]f32, tile: u32): () = {
+axpy: (gid: u32, a: f32, x: []f32, y: [*]f32, tile: u32): () (kernel) = {
   base: u32 = gid * tile
   k: u32 = 0
   while k < tile {
@@ -43,17 +44,18 @@ kernel axpy: (gid: u32, a: f32, x: []f32, y: [*]f32, tile: u32): () = {
 }
 ```
 
-`kernel` is contextual: `kernel := 1` and `kernel: u32 = 1` stay ordinary
-bindings. The marker applies to the function declaration that follows,
-which may be `pub`. Rules:
+`(kernel)` follows the function signature, before its body or effect
+clauses. The declaration is identifier-first and may be `pub`; the old
+`kernel name: ...` prefix is rejected. `kernel := 1` and `kernel: u32 = 1`
+stay ordinary bindings. Rules:
 
 - The **first parameter is the grid position**, a `u32`, by definition:
   the launch runs the body once per position in `0 .. grid`. The C
   realization is exactly `relu(g, view(&xs), span(&ys))` for each `g`.
 - Other parameters are **buffers** — views `[]T` (read) and spans `[*]T`
   (read and write) of a scalar `T` — **scalars**, or **records** of those
-  (a `Tensor2[R]`: its view and its shape scalars; `kernel relu[R, S]:
-  (gid: u32, x: Tensor2[R], out: MutTensor2[S])` with the region
+  (a `Tensor2[R]`: its view and its shape scalars; `relu[R, S]:
+  (gid: u32, x: Tensor2[R], out: MutTensor2[S]): () (kernel)` with the region
   parameters a record over borrows needs). Scalars are `u8` through `u64`,
   `i8` through `i64`, `f32`, and `Bool`. `f64` is outside the subset
   (Apple GPUs have no double precision); records inside records, fixed
@@ -143,7 +145,7 @@ did not — the thread's place in its group, and the staging tile the exact
 matmul keeps in threadgroup memory.
 
 ```oak
-kernel reverse_blocks: (gid: u32, x: []f32, out: [*]f32): () = {
+reverse_blocks: (gid: u32, x: []f32, out: [*]f32): () (kernel) = {
   tile: [4]f32 (threadgroup)                 // one array per group of four lanes
   i: u32 = gid * 4 + lane(4)                 // this lane's element: the tile shape at T = 4
   v: f32 = 0.0
@@ -229,9 +231,9 @@ fused epilogues its emitters build by string are one kernel calling
 another.
 
 ```oak
-kernel scale: (gid: u32, x: []f32, y: [*]f32): () = { gid < len(x) && gid < len(y) ? { y[gid] = x[gid] * 2.0 } }
-kernel shift: (gid: u32, y: [*]f32, out: [*]f32): () = { gid < len(y) && gid < len(out) ? { out[gid] = y[gid] + 1.0 } }
-kernel scale_shift: (gid: u32, x: []f32, y: [*]f32, out: [*]f32): () = {
+scale: (gid: u32, x: []f32, y: [*]f32): () (kernel) = { gid < len(x) && gid < len(y) ? { y[gid] = x[gid] * 2.0 } }
+shift: (gid: u32, y: [*]f32, out: [*]f32): () (kernel) = { gid < len(y) && gid < len(out) ? { out[gid] = y[gid] + 1.0 } }
+scale_shift: (gid: u32, x: []f32, y: [*]f32, out: [*]f32): () (kernel) = {
   scale(gid, x, y)          // both stages at this position: one launch
   shift(gid, y, out)
 }
@@ -361,7 +363,7 @@ The strided form accepts either operand order, parentheses, and immutable
 locals holding the lane or bounded offset. For example:
 
 ```oak
-kernel store_row: (gid: u32, out: [*]u32, cols: u32): () = {
+store_row: (gid: u32, out: [*]u32, cols: u32): () (kernel) = {
   s: u32 = 0
   while s < cols / 32 {
     out[gid * cols + s * 32 + lane(32)] = lane(32)
@@ -475,9 +477,9 @@ at: t.Tensor2 = t.tensor_transpose(a)               // strides swapped, same sto
   positions, D, 3 * D, 1, D)` — the scalar view of the record view
   (`50-borrowing.md` §8d) under an explicit layout, no copy and no stride
   arithmetic in an emitter (ml F6).
-- **Kernels take tensors.** `kernel relu[R, S]: (gid: u32, x: Tensor2[R],
-  out: MutTensor2[S])` takes the records themselves (§1): the Metal entry
-  flattens each into its buffers and rebuilds the struct, `tensor_at(x, i,
+- **Kernels take tensors.** `relu[R, S]: (gid: u32, x: Tensor2[R],
+  out: MutTensor2[S]): () (kernel)` takes the records themselves (§1): the Metal
+  entry flattens each into its buffers and rebuilds the struct, `tensor_at(x, i,
   j)` runs as a helper taking the record by value, and `out.data[gid]` is
   the store the independence rule judges. A helper that writes through a
   record's span (`tensor_set(out, …)`) is rejected inside a kernel because
@@ -486,7 +488,7 @@ at: t.Tensor2 = t.tensor_transpose(a)               // strides swapped, same sto
   guard:
 
   ```oak
-  kernel matmul[A, B, C]: (gid: u32, a: Tensor2[A], b: Tensor2[B], out: MutTensor2[C]): () = {
+  matmul[A, B, C]: (gid: u32, a: Tensor2[A], b: Tensor2[B], out: MutTensor2[C]): () (kernel) = {
     contiguous: Bool = out.row_stride == out.cols && out.col_stride == 1 && out.offset == 0
     contiguous && gid < out.rows * out.cols && gid < len(out.data) && a.cols == b.rows ? {
       i: u32 = gid / out.cols
@@ -568,9 +570,9 @@ s: t.Tensor2 = t.row_major_tensor(m)               // the strided form, for the 
   stride `cols`, column stride 1, offset 0; and row stride 1, column
   stride `rows`), so the general accessors and kernels over `Tensor2`
   see either.
-- **Kernels take them** as records like `Tensor2` (§1): `kernel matvec[R]:
-  (gid: u32, w: t.RowMajor2[R], x: []f32, out: [*]f32)` flattens `w` into
-  its buffer and two scalars.
+- **Kernels take them** as records like `Tensor2` (§1): `matvec[R]:
+  (gid: u32, w: t.RowMajor2[R], x: []f32, out: [*]f32): () (kernel)` flattens
+  `w` into its buffer and two scalars.
 - **Lean** (`Oak.Stdlib.Tensor`, over the extraction):
   `row_major_contiguous` and `col_major_contiguous` — the index of the
   next element along the contiguous axis is the index plus one;
