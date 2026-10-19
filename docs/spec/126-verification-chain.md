@@ -393,6 +393,24 @@ scalar literal-format seam, not clause framing/capacity admission, gate
 production, source-to-term lowering, extraction correctness, or compiled
 checker soundness.
 
+`Oak.CNFEmission` now connects the production `cnf_emit` writes to that
+literal theorem. Its extracted `cnf_clause_fits` guard accepts exactly arities
+1..3 whose mathematical header-plus-payload endpoint fits the clause capacity;
+subtraction-based checks replace the old potentially wrapping addition.
+`production_record` proves the length word and every encoded payload word;
+`production_clause` composes the actual stored payload with LRAT decoding and
+clause satisfaction. The frame theorem preserves cells outside the appended
+record and the two counters; refusal changes only the exceeded flag.
+Counter arithmetic is exact under the prior clause-count ≤ used-words invariant.
+The successful-write theorems explicitly require a nonwrapping clause region
+within the supplied array and state metadata before that region. They do not
+derive those premises from allocation/layout construction or prove gate
+construction, the final obligation, extraction, or compiled execution.
+The mandatory `TestOakCNFEmission*` gate checks source extraction, fixed theorem
+contracts and 12 foundational-only closures, 168 kernel-replayed guard cases,
+and all 96 buffer words after 378 compiled append cases, including exact fits,
+capacity failures, and wrapping counters.
+
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
 the SAT solver from the audit, but it does not yet remove symbolic execution,

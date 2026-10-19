@@ -334,3 +334,5 @@ import Oak.LRATBoundSoundness
 import Oak.LRATBindingModel
 
 import Oak.CNFLiteral
+
+import Oak.CNFEmission
