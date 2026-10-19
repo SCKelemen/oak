@@ -16,7 +16,7 @@ import (
 // Extract from the complete production solver package, not a copied helper.
 func TestOakCNFEmissionExtraction(t *testing.T) {
 	extracted, err := compiler.New().WithPackageDir(filepath.Join("prove", "solver")).
-		EmitLeanRoots("Oak.CNFEmission", []string{"cnf_emit", "cnf_emit_binary", "cnf_emit_mux"}).Get()
+		EmitLeanRoots("Oak.CNFEmission", []string{"cnf_emit", "cnf_emit_binary", "cnf_emit_mux", "cnf_apply", "cnf_ite"}).Get()
 	if err != nil {
 		t.Fatal(err)
 	}
