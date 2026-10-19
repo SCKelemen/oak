@@ -70,6 +70,36 @@ cnf_emit: (l: Layout, mem: [*]u32, a: u32, b: u32, c: u32): () {
   } | { mem[l.state_at + STATE_EXCEEDED] = u32(1) }
 }
 
+// The production Tseitin clause sequences, separated from allocation and folds.
+// These helpers are extracted with cnf_emit for Oak.CNFGates.
+cnf_emit_binary: (l: Layout, mem: [*]u32, op: u32, g: u32, x: u32, y: u32): () {
+  op == OP_AND ? {
+    cnf_emit(l, mem, g ^ u32(1), x, NONE)
+    cnf_emit(l, mem, g ^ u32(1), y, NONE)
+    cnf_emit(l, mem, g, x ^ u32(1), y ^ u32(1))
+  } | {
+    op == OP_OR ? {
+      cnf_emit(l, mem, g, x ^ u32(1), NONE)
+      cnf_emit(l, mem, g, y ^ u32(1), NONE)
+      cnf_emit(l, mem, g ^ u32(1), x, y)
+    } | {
+      cnf_emit(l, mem, g ^ u32(1), x, y)
+      cnf_emit(l, mem, g ^ u32(1), x ^ u32(1), y ^ u32(1))
+      cnf_emit(l, mem, g, x ^ u32(1), y)
+      cnf_emit(l, mem, g, x, y ^ u32(1))
+    }
+  }
+}
+
+cnf_emit_mux: (l: Layout, mem: [*]u32, g: u32, c: u32, t: u32, e: u32): () {
+  cnf_emit(l, mem, g ^ u32(1), c ^ u32(1), t)
+  cnf_emit(l, mem, g ^ u32(1), c, e)
+  cnf_emit(l, mem, g, c ^ u32(1), t ^ u32(1))
+  cnf_emit(l, mem, g, c, e ^ u32(1))
+  cnf_emit(l, mem, g ^ u32(1), t, e)
+  cnf_emit(l, mem, g, t ^ u32(1), e ^ u32(1))
+}
+
 // cnf_variable is the input node of a blaster variable.
 cnf_variable: (l: Layout, mem: [*]u32, v: u32): u32 {
   n: u32 = cnf_node(l, mem, CNF_VAR_KEY | v, u32(0), u32(0))
@@ -87,22 +117,7 @@ cnf_apply: (l: Layout, mem: [*]u32, op: u32, x: u32, y: u32): u32 {
     n == NONE ? { BDD_FALSE } | {
       g: u32 = n << u32(1)
       mem[l.state_at + STATE_CREATED] == u32(1) ? {
-        op == OP_AND ? {
-          cnf_emit(l, mem, g ^ u32(1), cx, NONE)
-          cnf_emit(l, mem, g ^ u32(1), cy, NONE)
-          cnf_emit(l, mem, g, cx ^ u32(1), cy ^ u32(1))
-        } | {
-          op == OP_OR ? {
-            cnf_emit(l, mem, g, cx ^ u32(1), NONE)
-            cnf_emit(l, mem, g, cy ^ u32(1), NONE)
-            cnf_emit(l, mem, g ^ u32(1), cx, cy)
-          } | {
-            cnf_emit(l, mem, g ^ u32(1), cx, cy)
-            cnf_emit(l, mem, g ^ u32(1), cx ^ u32(1), cy ^ u32(1))
-            cnf_emit(l, mem, g, cx ^ u32(1), cy)
-            cnf_emit(l, mem, g, cx, cy ^ u32(1))
-          }
-        }
+        cnf_emit_binary(l, mem, op, g, cx, cy)
       } | { }
       g
     }
@@ -124,12 +139,7 @@ cnf_ite: (l: Layout, mem: [*]u32, c: u32, t: u32, e: u32): u32 {
     n == NONE ? { BDD_FALSE } | {
       g: u32 = n << u32(1)
       mem[l.state_at + STATE_CREATED] == u32(1) ? {
-        cnf_emit(l, mem, g ^ u32(1), c ^ u32(1), t)
-        cnf_emit(l, mem, g ^ u32(1), c, e)
-        cnf_emit(l, mem, g, c ^ u32(1), t ^ u32(1))
-        cnf_emit(l, mem, g, c, e ^ u32(1))
-        cnf_emit(l, mem, g ^ u32(1), t, e)
-        cnf_emit(l, mem, g, t ^ u32(1), e ^ u32(1))
+        cnf_emit_mux(l, mem, g, c, t, e)
       } | { }
       g
     }

@@ -170,27 +170,8 @@ example : (Oak.LRATRUP.decodeWord (encode 1)).index ≠ 0 := by decide +kernel
 		if args[0] != "env" {
 			continue
 		}
-		audited := 0
-		for _, line := range strings.Split(string(out), "\n") {
-			if strings.Contains(line, "does not depend on any axioms") {
-				audited++
-				continue
-			}
-			_, axioms, found := strings.Cut(line, "depends on axioms: [")
-			if !found {
-				continue
-			}
-			audited++
-			for _, axiom := range strings.Split(strings.TrimSuffix(strings.TrimSpace(axioms), "]"), ",") {
-				switch strings.TrimSpace(axiom) {
-				case "", "propext", "Classical.choice", "Quot.sound":
-				default:
-					t.Fatalf("unexpected CNF literal axiom: %s", line)
-				}
-			}
-		}
-		if audited != len(names) {
-			t.Fatalf("audited %d/%d theorem closures\n%s", audited, len(names), out)
+		if err := cnfAxiomAudit(string(out), "Oak.CNFLiteral", names); err != nil {
+			t.Fatalf("%v\n%s", err, out)
 		}
 	}
 }

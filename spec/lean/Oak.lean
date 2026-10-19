@@ -337,3 +337,4 @@ import Oak.LRATBindingModel
 import Oak.CNFLiteral
 
 import Oak.CNFEmission
+import Oak.CNFGates

@@ -411,6 +411,38 @@ contracts and 12 foundational-only closures, 168 kernel-replayed guard cases,
 and all 96 buffer words after 378 compiled append cases, including exact fits,
 capacity failures, and wrapping counters.
 
+`Oak.CNFGates` connects the production binary and mux emission helpers to their
+final stored clauses. `cnf_apply` and `cnf_ite` now call these helpers with the
+same clauses and order as before. Both are extracted from the complete solver
+package alongside `cnf_emit`. `binary_execution` and `mux_execution` identify
+the exact sequence of emitter calls. For a trace in which every call passes
+capacity admission, `admitted_words` proves every length and literal word in
+the final buffer, including preservation across subsequent appends.
+`binary_production` and `mux_production` compose this with LRAT decoding: the
+stored definitions hold exactly when the gate equals AND, OR, XOR, or mux.
+The binary helper retains the production dispatch (AND, OR, otherwise XOR).
+The premises require a nonwrapping in-array clause region, metadata before
+that region, and nonconstant edges excluding both sentinel-node polarities.
+Admission is explicit; a normal helper return alone does not imply success.
+This does not establish allocation/freshness, folding, whole-circuit
+composition, the final obligation, extraction correctness, or compiled
+execution correctness. `readRecords` uses the proved record boundaries;
+`admitted_words` also proves the corresponding stored length headers, but
+this is not yet a refinement of the whole LRAT input parser.
+The required `TestOakCNFGates*` gate checks fixed contracts and 16 theorem
+closures, compares all 96 words in 1,280 compiled cases, and checks 4,096
+assignments against the actual decoded final buffers. Cases cover all input
+polarities, aliases, preexisting payload, and partial capacity failures.
+
+The shared CNF axiom audit parses complete multiline reports and requires one
+report per named theorem. Its regression tests reject native-evaluation and
+`sorryAx` dependencies even when they appear on continuation lines. This
+corrects the earlier line-based audit, which missed wrapped native-evaluation
+axioms from `bv_decide` in the literal proofs. Those two proof steps have been
+replaced with kernel-checked arithmetic proofs; the literal, emission, and
+gate theorem closures now contain only `propext`, `Classical.choice`, and
+`Quot.sound` (or no axioms).
+
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
 the SAT solver from the audit, but it does not yet remove symbolic execution,
