@@ -456,8 +456,18 @@ LUI and ADDIW, and requires a final RET with no trailing words.
 The required native Lean test binds both bodies to production encoder output
 and ELF symbol bytes for explicit `generic_rv64+m` (without C compression).
 It checks truncated/corrupt returns and semantic counterexamples for changed
-threshold, comparison, and normalization instructions. Default hosted RV64
-uses compressed instructions and is **not** covered by this exact-byte proof;
+threshold, comparison, and normalization instructions.
+
+`Oak.LRATRV64Compressed` extends the same guarantees to default hosted RV64.
+Its independent mixed-width decoder handles the emitted C.SLLI, C.SRLI,
+C.ADDIW and C.JR ra encodings alongside 32-bit words. Execution advances the
+PC by the actual two or four bytes and requires one final return without
+trailing instructions. Both guard bodies have exact zero/one result, bounds,
+return and register-preservation proofs for arbitrary register inputs. The
+required byte contract now checks both the explicit non-C configuration and
+the default hosted ELF symbols, including malformed/truncated returns,
+trailing instructions, reserved compressed encodings, and semantic mutations.
+
 ARM64 instruction execution, fetch/traps, the Sail execution bridge, and
 whole-checker machine soundness remain open. No runtime selection changes.
 
