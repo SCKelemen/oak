@@ -489,6 +489,39 @@ table, or prove termination of probing a full table. The finite probe trace
 and enough extraction fuel remain explicit premises; full circuit semantics
 and final-obligation correspondence remain open.
 
+`Oak.CNFObligation` now checks the extracted final-obligation producer.
+The old `used + roots + 1 + 8` admission expression could wrap. Production
+now admits the header/existing words, the clause-length word, and the roots
+with three subtraction-based bounds checks. `fits_iff` proves acceptance
+is exactly the mathematical bound `8 + used + 1 + roots <= capacity`;
+`append_no_wrap` gives the used-counter bound when emitted literals do not
+outnumber roots. Rejection now returns `NONE` and sets the exceeded flag,
+instead of returning `CNF_PROVEN` and relying on `cnf_lower` to discard it.
+The refusal theorem proves the complete function changes only that flag.
+
+The finalization helper is extracted from production, with exact proofs for
+refusal, constant true/refuted, constant false/proven, and clause publication.
+The loop proof consumes a finite trace of actual root reads, negates only the
+last (claim) root, drops false constants, records true constants, and writes
+each remaining encoded literal. `production_trace` connects that reducer
+and finalizer to the full extracted function with sufficient fuel.
+The reducer's count and true-constant flag are proved, as are both constant
+outcomes and the decoded nonconstant clause's Boolean meaning. Its exact
+functional write model is not yet a theorem that reads the entire final
+clause back under derived layout bounds. Deriving the observed root sequence
+from original source terms still requires non-aliasing layouts, valid root
+indices, and the bitblasting/circuit correspondence; these are not assumed
+to follow from extraction.
+
+`TestOakCNFObligation*` audits 19 foundational-only theorem closures and
+fixed contracts, including the old wrapping counterexample. Compiled tests
+compare all 320 words for 1,554 cases, covering zero through three roots,
+constants and both polarities of two variables, prior clause words, exact
+capacity, spare capacity, and refusal. They check 4,144 actual outcome/formula
+assignments, 1,331 mathematical guard boundaries, and four whole-function
+overflow refusals with no payload writes. These tests supplement the proofs;
+they do not establish compiler correctness or whole-source verdict soundness.
+
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
 the SAT solver from the audit, but it does not yet remove symbolic execution,

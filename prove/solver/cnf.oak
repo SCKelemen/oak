@@ -155,6 +155,30 @@ CNF_CLAUSE: u32 = 0
 CNF_PROVEN: u32 = 1
 CNF_REFUTED: u32 = 2
 
+// Admit the header, existing words, clause length, and worst-case roots
+// separately. No unchecked sum may wrap into an apparently small request.
+cnf_obligation_fits: (used: u32, roots: u32, capacity: u32): Bool =
+  lrat_fits(LRAT_HEADER_WORDS, used, capacity) &&
+  lrat_fits(LRAT_HEADER_WORDS + used, u32(1), capacity) &&
+  lrat_fits(LRAT_HEADER_WORDS + used + u32(1), roots, capacity)
+
+// A rejected append is not a proof, even when called without cnf_lower.
+cnf_obligation_finish: (l: Layout, mem: [*]u32, at: u32, used: u32, n: u32, always: Bool, fits: Bool): u32 {
+  fits ? {
+    always ? { CNF_REFUTED } | {
+      n == u32(0) ? { CNF_PROVEN } | {
+        mem[at] = n
+        mem[l.state_at + STATE_CLAUSES_USED] = used + n + u32(1)
+        mem[l.state_at + STATE_CLAUSE_COUNT] = mem[l.state_at + STATE_CLAUSE_COUNT] + u32(1)
+        CNF_CLAUSE
+      }
+    }
+  } | {
+    mem[l.state_at + STATE_EXCEEDED] = u32(1)
+    NONE
+  }
+}
+
 // cnf_obligation appends "some trap fires or the claim is false" from the
 // blasted roots (traps first, the claim last), one literal per root that
 // is not a constant.
@@ -164,7 +188,7 @@ cnf_obligation: (l: Layout, mem: [*]u32, p: []u32): u32 {
   at: u32 = l.clauses_at + LRAT_HEADER_WORDS + used
   n: u32 = 0
   always: Bool = false
-  fits: Bool = used + roots + u32(1) + LRAT_HEADER_WORDS <= l.clauses_cap
+  fits: Bool = cnf_obligation_fits(used, roots, l.clauses_cap)
   r: u32 = 0
   while r < roots && fits {
     root: u32 = p[roots_at(p) + r]
@@ -179,15 +203,7 @@ cnf_obligation: (l: Layout, mem: [*]u32, p: []u32): u32 {
     }
     r = r + u32(1)
   }
-  fits ? { } | { mem[l.state_at + STATE_EXCEEDED] = u32(1) }
-  always ? { CNF_REFUTED } | {
-    n == u32(0) ? { CNF_PROVEN } | {
-      mem[at] = n
-      mem[l.state_at + STATE_CLAUSES_USED] = used + n + u32(1)
-      mem[l.state_at + STATE_CLAUSE_COUNT] = mem[l.state_at + STATE_CLAUSE_COUNT] + u32(1)
-      CNF_CLAUSE
-    }
-  }
+  cnf_obligation_finish(l, mem, at, used, n, always, fits)
 }
 
 // cnf_set_capacities writes the solver's capacities into the clause
