@@ -1351,6 +1351,24 @@ func (p *Parser) noPrefixParseFn(t token.TokenKind) {
 	p.addErrorAtCurrentToken(msg)
 }
 
+// parseRequiredExpression gives required value positions a diagnostic when the
+// optional-expression parser returns nil silently. Existing expression errors
+// remain authoritative; callers choose the missing-value diagnostic's location.
+func (p *Parser) parseRequiredExpression(precedence Precedence, at token.Token, message string) ast.Expression {
+	errorsBefore := len(p.diagnostics.Errors())
+	value := p.parseExpression(precedence)
+	return p.requireExpression(value, at, message, errorsBefore)
+}
+
+// requireExpression preserves diagnostics emitted while entering or parsing a
+// required expression, including lexical errors encountered by nextToken.
+func (p *Parser) requireExpression(value ast.Expression, at token.Token, message string, errorsBefore int) ast.Expression {
+	if value == nil && len(p.diagnostics.Errors()) == errorsBefore {
+		p.addErrorAtToken(&at, message)
+	}
+	return value
+}
+
 // parseOperatorOperand advances past an operator and requires its operand.
 // Delimiters may denote absence in other productions (for example slice
 // bounds), but an operator must never turn that absence into a successful
@@ -1359,10 +1377,10 @@ func (p *Parser) parseOperatorOperand(operator token.Token, precedence Precedenc
 	errorsBefore := len(p.diagnostics.Errors())
 	p.nextToken()
 	operand := p.parseExpression(precedence)
-	if operand == nil && len(p.diagnostics.Errors()) == errorsBefore {
-		p.addErrorAtToken(&operator, fmt.Sprintf("expected operand after %q", operator.Literal))
+	if operand != nil {
+		return operand // Keep diagnostic formatting off the successful hot path.
 	}
-	return operand
+	return p.requireExpression(operand, operator, fmt.Sprintf("expected operand after %q", operator.Literal), errorsBefore)
 }
 
 func (p *Parser) parsePrefixExpression() ast.Expression {
@@ -3682,7 +3700,7 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 			// section 6.3): the group is a type, not a value.
 			fieldValue = p.parseTypeExpression()
 		} else {
-			fieldValue = p.parseExpression(LOWEST)
+			fieldValue = p.parseRequiredExpression(LOWEST, p.currentToken, "expected record field value")
 		}
 		if fieldValue == nil {
 			return nil
@@ -3711,22 +3729,11 @@ func (p *Parser) parseRecordLiteral() ast.Expression {
 			record.EndToken = p.currentToken
 			break
 		} else {
-			// Unexpected token - should be comma or closing brace
-			// This might happen if expression parser consumed more than expected
-			// Try to recover by checking peekToken
-			if p.peekTokenIs(token.COMMA) {
-				// We haven't advanced yet - do it now
-				p.nextToken()
-				p.nextToken()
-				// Continue loop
-			} else if p.peekTokenIs(token.RBRACE) {
-				p.nextToken()
-				record.EndToken = p.currentToken
-				break
-			} else {
-				p.peekError(token.RBRACE)
-				return nil
-			}
+			// The field parser left currentToken on its final token, and we
+			// advanced exactly once. A later separator cannot justify silently
+			// dropping the unexpected token now at the cursor.
+			p.addErrorAtCurrentToken("expected ',' or '}' after record field value")
+			return nil
 		}
 	}
 
@@ -5506,17 +5513,19 @@ func (p *Parser) parseVariableDeclaration() *ast.VariableDeclaration {
 	return stmt
 }
 
-// parseAssignedExpression requires a value after an explicit '='. The caller
-// owns any optional initializer or block-body syntax; currentToken is '='.
+// parseAssignedExpression requires a value after '=' or ':='. The caller
+// owns any optional initializer or block-body syntax; currentToken is the
+// assignment token, which anchors a missing-value diagnostic.
 func (p *Parser) parseAssignedExpression() ast.Expression {
 	assignToken := p.currentToken
 	errorsBefore := len(p.diagnostics.Errors())
 	p.nextToken()
 	value := p.parseExpression(LOWEST)
-	if value == nil && len(p.diagnostics.Errors()) == errorsBefore {
-		p.addErrorAtToken(&assignToken, "expected value expression after =")
+	message := "expected value expression after ="
+	if assignToken.TokenKind == token.COLON_ASSIGN {
+		message = "expected value expression after :="
 	}
-	return value
+	return p.requireExpression(value, assignToken, message, errorsBefore)
 }
 
 // parseDiscardStatement parses the explicit discard form `_ = expr`
@@ -5576,8 +5585,7 @@ func (p *Parser) parseShortVariableDeclaration() *ast.VariableDeclaration {
 		p.addErrorAtCurrentToken("expected value expression after :=; declare an ADT with Name: type = | Variant | ...")
 		return nil
 	}
-	p.nextToken() // first token of the value expression
-	stmt.Value = p.parseExpression(LOWEST)
+	stmt.Value = p.parseAssignedExpression()
 	stmt.Type = nil // Type inference
 
 	if p.peekTokenIs(token.SEMI) {
