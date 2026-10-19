@@ -489,6 +489,24 @@ The required native test builds and audits all eighteen refinement theorems.
 These contracts do not yet establish compiled call-site argument placement,
 linkage, memory operations, allocation success, or whole-checker soundness.
 
+`Oak.LRATRV64GuardCalls` composes decoded AUIPC/JALR calls with both RV64
+guard encodings. Calls preserve the incoming argument registers, return the
+extracted guard's Boolean result, and return to the call continuation (with
+JALR's low-bit clearing). The native test links the production preflight
+prefix and checks all five guard calls in its header/record functions for
+each encoding: instruction shape, link register, target address, and exact
+destination body bytes. Argument-producing loads, caller control flow and
+memory/fetch/trap semantics remain separate obligations.
+
+The native guard axiom audit now parses complete multiline reports. Lean's
+`bv_decide` in the pinned toolchain checks LRAT certificates through native
+evaluation; its generated axioms are explicitly enumerated alongside the
+three standard Lean axioms. This trusts Lean's native evaluation/compiler
+path and is not kernel-only certificate reduction. Previously the audit
+missed wrapped entries; regression tests now reject hidden `sorryAx`, unknown
+native dependencies, and truncated reports. No wildcard native-axiom allowance
+is used.
+
 Both ARM64 and RV64 guard byte execution are now covered in their internal
 models. Instruction fetch, alignment, translation, traps, the full Sail
 execution bridge, and whole-checker machine soundness remain open. No runtime
