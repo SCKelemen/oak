@@ -99,6 +99,59 @@ func (tc *TypeChecker) variantPayloadType(parent Type, variant *object.ADTVarian
 	return tc.instantiateStoredType(variant.Payload, bindings)
 }
 
+// typeHasInhabitant conservatively decides whether a type has at least one
+// reachable semantic value. Unknown/open types and recursive cycles are treated
+// as inhabited: we must never declare an arm impossible without proof.
+// The seen set follows only the current recursion path.
+func (tc *TypeChecker) typeHasInhabitant(typ Type, seen map[string]bool) bool {
+	if typ == nil {
+		return true
+	}
+	if _, bottom := typ.(*NeverType); bottom {
+		return false
+	}
+	adtName, onlyVariant, _, isADT := tc.adtNameForCoverageType(typ)
+	if !isADT {
+		return true
+	}
+	adt, known := tc.adtTypes[adtName]
+	if !known {
+		return true
+	}
+	key := typ.String()
+	if seen[key] {
+		// A recursive cycle is not evidence that a value is impossible.
+		return true
+	}
+	seen[key] = true
+	defer delete(seen, key)
+
+	for _, variant := range adt.Variants {
+		if onlyVariant != "" && variant.Name != onlyVariant {
+			continue
+		}
+		if !tc.variantReachable(typ, adtName, variant) {
+			continue
+		}
+		if variant.Payload == "" {
+			return true
+		}
+		payload := tc.variantPayloadType(typ, variant)
+		if tc.typeHasInhabitant(payload, seen) {
+			return true
+		}
+	}
+	return false
+}
+
+func (tc *TypeChecker) adtNameForCoverageType(typ Type) (string, string, []Type, bool) {
+	return adtInstantiation(typ)
+}
+
+func (tc *TypeChecker) coverageHasValues(typ Type) bool {
+	return tc.typeHasInhabitant(typ, make(map[string]bool))
+}
+
 func literalMatchesCoverageType(typ Type, expr ast.Expression) bool {
 	switch typ.(type) {
 	case *BoolType:
@@ -124,12 +177,15 @@ func (tc *TypeChecker) applyCoverage(node *coverageNode, pattern ast.Pattern) (c
 	if node == nil || pattern == nil {
 		return false, true, false
 	}
-	if node.full {
-		return false, true, true
-	}
 
 	switch p := pattern.(type) {
 	case *ast.WildcardPattern, *ast.BindingPattern:
+		if !tc.coverageHasValues(node.typ) {
+			return false, false, true
+		}
+		if tc.coverageComplete(node) {
+			return false, true, true
+		}
 		node.full = true
 		return true, true, true
 
@@ -144,7 +200,10 @@ func (tc *TypeChecker) applyCoverage(node *coverageNode, pattern ast.Pattern) (c
 		if !ok {
 			return false, true, false
 		}
-		if node.literals[key] {
+		if !tc.coverageHasValues(node.typ) {
+			return false, false, true
+		}
+		if tc.coverageComplete(node) || node.literals[key] {
 			return false, true, true
 		}
 		node.literals[key] = true
@@ -162,24 +221,31 @@ func (tc *TypeChecker) applyCoverage(node *coverageNode, pattern ast.Pattern) (c
 		if !exists {
 			return false, true, false
 		}
+		hasPayload := variant.Payload != ""
+		if hasPayload != (p.Payload != nil) {
+			return false, true, false
+		}
 		if onlyVariant != "" && variant.Name != onlyVariant {
 			return false, false, true
 		}
 		if !tc.variantReachable(node.typ, adtName, variant) {
 			return false, false, true
 		}
-
-		hasPayload := variant.Payload != ""
-		if hasPayload != (p.Payload != nil) {
-			return false, true, false
-		}
-
-		child, exists := node.constructors[variant.Name]
-		if !exists {
-			payloadType := tc.variantPayloadType(node.typ, variant)
+		var payloadType Type = &UnitType{}
+		if hasPayload {
+			payloadType = tc.variantPayloadType(node.typ, variant)
 			if payloadType == nil {
 				return false, true, false
 			}
+			if !tc.coverageHasValues(payloadType) {
+				return false, false, true
+			}
+		}
+		if tc.coverageComplete(node) {
+			return false, true, true
+		}
+		child, exists := node.constructors[variant.Name]
+		if !exists {
 			child = newCoverageNode(payloadType)
 			node.constructors[variant.Name] = child
 		}
@@ -216,7 +282,7 @@ func (tc *TypeChecker) coverageComplete(node *coverageNode) bool {
 	if node == nil {
 		return false
 	}
-	if node.full {
+	if node.full || !tc.coverageHasValues(node.typ) {
 		return true
 	}
 	if _, ok := node.typ.(*BoolType); ok {
@@ -237,6 +303,9 @@ func (tc *TypeChecker) coverageComplete(node *coverageNode) bool {
 			continue
 		}
 		if !tc.variantReachable(node.typ, adtName, variant) {
+			continue
+		}
+		if variant.Payload != "" && !tc.coverageHasValues(tc.variantPayloadType(node.typ, variant)) {
 			continue
 		}
 		child, covered := node.constructors[variant.Name]
@@ -282,6 +351,9 @@ func (tc *TypeChecker) coverageWitnesses(node *coverageNode, limit int) []string
 			continue
 		}
 		if !tc.variantReachable(node.typ, adtName, variant) {
+			continue
+		}
+		if variant.Payload != "" && !tc.coverageHasValues(tc.variantPayloadType(node.typ, variant)) {
 			continue
 		}
 		child, covered := node.constructors[variant.Name]
