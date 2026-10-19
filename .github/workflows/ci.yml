@@ -79,7 +79,7 @@ jobs:
         OAK_REQUIRE_RV64_GCC: ${{ matrix.shard == 'packages' && '1' || '' }}
       run: |
         case "${{ matrix.shard }}" in
-          packages) go test -v -race -timeout 45m $(go list ./... | grep -v '/compiler$') ;;
+          packages) python3 .github/scripts/noncompiler_race.py ;;
           *) python3 .github/scripts/compiler_shards.py "${{ matrix.shard }}" ;;
         esac
 

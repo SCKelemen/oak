@@ -31,15 +31,25 @@ instance : Inhabited Layout := ⟨{ cap := (0 : UInt32), var_at := (0 : UInt32),
 
 def NONE : UInt32 := (4294967295 : UInt32)
 
+def BDD_FALSE : UInt32 := (0 : UInt32)
+
+def BDD_TRUE : UInt32 := (1 : UInt32)
+
 def OP_AND : UInt32 := (0 : UInt32)
 
 def OP_OR : UInt32 := (1 : UInt32)
+
+def STATE_COUNT : UInt32 := (0 : UInt32)
 
 def STATE_EXCEEDED : UInt32 := (1 : UInt32)
 
 def STATE_CLAUSES_USED : UInt32 := (4 : UInt32)
 
 def STATE_CLAUSE_COUNT : UInt32 := (5 : UInt32)
+
+def STATE_CREATED : UInt32 := (6 : UInt32)
+
+def CNF_ITE_KEY : UInt32 := (2147483648 : UInt32)
 
 def LRAT_HEADER_WORDS : UInt32 := (8 : UInt32)
 
@@ -112,5 +122,146 @@ def cnf_emit_mux (l : Layout) (mem : Array UInt32) (g : UInt32) (c : UInt32) (t 
   let (r5, mem) ← cnf_emit l mem (g ^^^ (1 : UInt32)) t e fuel
   let (r6, mem) ← cnf_emit l mem g (t ^^^ (1 : UInt32)) (e ^^^ (1 : UInt32)) fuel
   pure ((), mem)
+
+def hash3 (a : UInt32) (b : UInt32) (c : UInt32) (fuel : Nat) : Option (UInt32) := do
+  let h : UInt32 := (a * (2654435761 : UInt32))
+  let h := (h ^^^ (b * (2246822519 : UInt32)))
+  let h := (h ^^^ (c * (3266489917 : UInt32)))
+  let h := (h ^^^ (h >>> (15 : UInt32)))
+  let h := (h * (668265263 : UInt32))
+  pure (h ^^^ (h >>> (13 : UInt32)))
+
+def cnf_node.loop1 (l : Layout) (mem : Array UInt32) (key : UInt32) (a : UInt32) (b : UInt32) (h : UInt32) (found : UInt32) : Nat → Option (Array UInt32 × UInt32 × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if ((found == NONE) && ((mem.getD (l.state_at + STATE_EXCEEDED).toNat (0 : UInt32)) == (0 : UInt32))) then do
+      let e : UInt32 := (mem.getD (l.unique_at + h).toNat (0 : UInt32))
+      let (mem, h, found) ← (if (e == (0 : UInt32)) then (do
+          let count : UInt32 := (mem.getD (l.state_at + STATE_COUNT).toNat (0 : UInt32))
+          let (mem, found) ← (if (decide (count >= l.cap)) then (do
+              let mem := mem.setIfInBounds (l.state_at + STATE_EXCEEDED).toNat (1 : UInt32)
+              pure (mem, found))
+            else (do
+              let mem := mem.setIfInBounds (l.var_at + count).toNat key
+              let mem := mem.setIfInBounds (l.low_at + count).toNat a
+              let mem := mem.setIfInBounds (l.high_at + count).toNat b
+              let mem := mem.setIfInBounds (l.unique_at + h).toNat (count + (1 : UInt32))
+              let mem := mem.setIfInBounds (l.state_at + STATE_COUNT).toNat (count + (1 : UInt32))
+              let mem := mem.setIfInBounds (l.state_at + STATE_CREATED).toNat (1 : UInt32)
+              let found := count
+              pure (mem, found)))
+          pure (mem, h, found))
+        else (do
+          let n : UInt32 := (e - (1 : UInt32))
+          let (h, found) ← (if ((((mem.getD (l.var_at + n).toNat (0 : UInt32)) == key) && ((mem.getD (l.low_at + n).toNat (0 : UInt32)) == a)) && ((mem.getD (l.high_at + n).toNat (0 : UInt32)) == b)) then (do
+              let found := n
+              pure (h, found))
+            else (do
+              let h := ((h + (1 : UInt32)) &&& l.umask)
+              pure (h, found)))
+          pure (mem, h, found)))
+      cnf_node.loop1 l mem key a b h found fuel
+    else pure (mem, h, found)
+
+def cnf_node (l : Layout) (mem : Array UInt32) (key : UInt32) (a : UInt32) (b : UInt32) (fuel : Nat) : Option (UInt32 × Array UInt32) := do
+  let r1 ← hash3 key a b fuel
+  let h : UInt32 := (r1 &&& l.umask)
+  let found : UInt32 := NONE
+  let mem := mem.setIfInBounds (l.state_at + STATE_CREATED).toNat (0 : UInt32)
+  let (mem, h, found) ← cnf_node.loop1 l mem key a b h found fuel
+  pure (found, mem)
+
+def terminal_case (op : UInt32) (x : UInt32) (y : UInt32) (fuel : Nat) : Option (UInt32) := do
+  pure (if (op == OP_AND) then (if ((x == BDD_FALSE) || (y == BDD_FALSE)) then BDD_FALSE else (if (x == BDD_TRUE) then y else (if (y == BDD_TRUE) then x else (if (x == y) then x else (if (x == (y ^^^ (1 : UInt32))) then BDD_FALSE else NONE))))) else (if (op == OP_OR) then (if ((x == BDD_TRUE) || (y == BDD_TRUE)) then BDD_TRUE else (if (x == BDD_FALSE) then y else (if (y == BDD_FALSE) then x else (if (x == y) then x else (if (x == (y ^^^ (1 : UInt32))) then BDD_TRUE else NONE))))) else (if (x == BDD_FALSE) then y else (if (y == BDD_FALSE) then x else (if (x == BDD_TRUE) then (y ^^^ (1 : UInt32)) else (if (y == BDD_TRUE) then (x ^^^ (1 : UInt32)) else (if (x == y) then BDD_FALSE else (if (x == (y ^^^ (1 : UInt32))) then BDD_TRUE else NONE))))))))
+
+def cnf_apply (l : Layout) (mem : Array UInt32) (op : UInt32) (x : UInt32) (y : UInt32) (fuel : Nat) : Option (UInt32 × Array UInt32) := do
+  let r1 ← terminal_case op x y fuel
+  let t : UInt32 := r1
+  let (r2, mem) ← (
+    if (t != NONE) then (do
+      pure (t, mem))
+    else (do
+      let cx : UInt32 := (if (decide (x > y)) then y else x)
+      let cy : UInt32 := (if (decide (x > y)) then x else y)
+      let (r3, mem) ← cnf_node l mem op cx cy fuel
+      let n : UInt32 := r3
+      let (r4, mem) ← (
+        if (n == NONE) then (do
+          pure (BDD_FALSE, mem))
+        else (do
+          let g : UInt32 := (n <<< (1 : UInt32))
+          let mem ← (if ((mem.getD (l.state_at + STATE_CREATED).toNat (0 : UInt32)) == (1 : UInt32)) then (do
+              let (r5, mem) ← cnf_emit_binary l mem op g cx cy fuel
+              pure mem)
+            else (do
+              pure mem))
+          pure (g, mem)))
+      pure (r4, mem)))
+  pure (r2, mem)
+
+def cnf_ite (l : Layout) (mem : Array UInt32) (c : UInt32) (t : UInt32) (e : UInt32) (fuel : Nat) : Option (UInt32 × Array UInt32) := do
+  let (r1, mem) ← (
+    if (c == BDD_TRUE) then (do
+      pure (t, mem))
+    else (do
+      let (r2, mem) ← (
+        if (c == BDD_FALSE) then (do
+          pure (e, mem))
+        else (do
+          let (r3, mem) ← (
+            if (t == e) then (do
+              pure (t, mem))
+            else (do
+              let (r4, mem) ← (
+                if ((t == BDD_TRUE) && (e == BDD_FALSE)) then (do
+                  pure (c, mem))
+                else (do
+                  let (r5, mem) ← (
+                    if ((t == BDD_FALSE) && (e == BDD_TRUE)) then (do
+                      pure ((c ^^^ (1 : UInt32)), mem))
+                    else (do
+                      let (r6, mem) ← (
+                        if (t == BDD_TRUE) then (do
+                          let (r7, mem) ← cnf_apply l mem OP_OR c e fuel
+                          pure (r7, mem))
+                        else (do
+                          let (r8, mem) ← (
+                            if (t == BDD_FALSE) then (do
+                              let (r9, mem) ← cnf_apply l mem OP_AND (c ^^^ (1 : UInt32)) e fuel
+                              pure (r9, mem))
+                            else (do
+                              let (r10, mem) ← (
+                                if (e == BDD_TRUE) then (do
+                                  let (r11, mem) ← cnf_apply l mem OP_OR (c ^^^ (1 : UInt32)) t fuel
+                                  pure (r11, mem))
+                                else (do
+                                  let (r12, mem) ← (
+                                    if (e == BDD_FALSE) then (do
+                                      let (r13, mem) ← cnf_apply l mem OP_AND c t fuel
+                                      pure (r13, mem))
+                                    else (do
+                                      let (r14, mem) ← cnf_node l mem (CNF_ITE_KEY ||| c) t e fuel
+                                      let n : UInt32 := r14
+                                      let (r15, mem) ← (
+                                        if (n == NONE) then (do
+                                          pure (BDD_FALSE, mem))
+                                        else (do
+                                          let g : UInt32 := (n <<< (1 : UInt32))
+                                          let mem ← (if ((mem.getD (l.state_at + STATE_CREATED).toNat (0 : UInt32)) == (1 : UInt32)) then (do
+                                              let (r16, mem) ← cnf_emit_mux l mem g c t e fuel
+                                              pure mem)
+                                            else (do
+                                              pure mem))
+                                          pure (g, mem)))
+                                      pure (r15, mem)))
+                                  pure (r12, mem)))
+                              pure (r10, mem)))
+                          pure (r8, mem)))
+                      pure (r6, mem)))
+                  pure (r5, mem)))
+              pure (r4, mem)))
+          pure (r3, mem)))
+      pure (r2, mem)))
+  pure (r1, mem)
 
 end Oak.CNFEmission

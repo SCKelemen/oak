@@ -48,7 +48,16 @@ func CheckWithFacts(fn *Function, decl *ast.FunctionStatement, symbols map[strin
 }
 
 func checkWithFacts(fn *Function, decl *ast.FunctionStatement, symbols map[string]bool, facts map[string]typechecker.IndexProof) []string {
-	if fn.Arch == ArchRV64 {
+	if fn == nil {
+		return []string{"asm: cannot check a nil native function"}
+	}
+	// Every native seam must have an explicit ISA policy. In particular,
+	// an unknown lane must not reach the historical AArch64 default.
+	isa, ok := verifierISAFor(fn.Arch)
+	if !ok {
+		return []string{fmt.Sprintf("asm: unsupported native verifier architecture %q", fn.Arch)}
+	}
+	if isa.arch == ArchRV64 {
 		return checkRV64(fn, decl, symbols)
 	}
 	// Guard facts across labels are a dataflow fixpoint: each pass assumes

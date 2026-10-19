@@ -1904,6 +1904,11 @@ type symbolicState struct {
 	arch  string        // the lane: ArchArm64 or ArchRV64 (callee-saved numbering)
 	regs  map[int]*term // physical register -> 64-bit term
 	flags *flagsFact    // NZCV as the operands that produced them; nil until set
+	// invalidEntryGPR records entry-readable physical registers whose
+	// incoming values were destroyed by a call. Merely deleting regs is
+	// insufficient: lazy reads would recreate entry.xN after that call.
+	// This fact is monotonic on one path and joins by set union.
+	invalidEntryGPR map[int]bool
 	// The frame: sp's displacement below its entry value (the seam checker
 	// tracks the same number exactly) and the slots written so far, keyed
 	// by entry-relative address. A load reads back exactly the term a store
@@ -2032,7 +2037,7 @@ func (s *symbolicState) read(reg Register) (*term, bool) {
 		return value, bound
 	}
 	value, ok := s.regs[reg.Num]
-	if !ok && ((s.arch == ArchRV64 && rv64Preserved(reg.Num)) || (s.arch != ArchRV64 && calleeSavedRegister(reg.Num))) {
+	if !ok && !s.invalidEntryGPR[reg.Num] && verifierEntryReadableGPR(s.arch, reg.Num) {
 		// A callee-saved register carries the caller's value on entry: an
 		// opaque symbol, which a save/restore pair round-trips unchanged.
 		value = paramTerm(fmt.Sprintf("entry.x%d", reg.Num), 64)
@@ -2053,6 +2058,21 @@ func (s *symbolicState) read(reg Register) (*term, bool) {
 		return truncate(value, 32), true
 	}
 	return value, true
+}
+
+// clobberGPR discards the register's current value and any path-bound fact.
+// If the ABI allowed this register's entry value to be read lazily, that
+// authority is now permanently invalid on this execution path. A later
+// actual write can bind a new value; it never reinstates the entry value.
+func (s *symbolicState) clobberGPR(num int) {
+	delete(s.regs, num)
+	delete(s.bounds, num)
+	if verifierEntryReadableGPR(s.arch, num) {
+		if s.invalidEntryGPR == nil {
+			s.invalidEntryGPR = make(map[int]bool)
+		}
+		s.invalidEntryGPR[num] = true
+	}
 }
 
 func (s *symbolicState) write(reg Register, value *term) {
@@ -2904,6 +2924,13 @@ func (s *symbolicState) clone() *symbolicState {
 	for reg, value := range s.regs {
 		regs[reg] = value
 	}
+	var invalidEntryGPR map[int]bool
+	if len(s.invalidEntryGPR) != 0 {
+		invalidEntryGPR = make(map[int]bool, len(s.invalidEntryGPR))
+		for reg := range s.invalidEntryGPR {
+			invalidEntryGPR[reg] = true
+		}
+	}
 	frame := make(map[int64]frameSlot, len(s.frame))
 	for addr, slot := range s.frame {
 		frame[addr] = slot
@@ -2948,7 +2975,7 @@ func (s *symbolicState) clone() *symbolicState {
 			termBounds[t] = bound
 		}
 	}
-	return &symbolicState{arch: s.arch, regs: regs, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom, bounds: bounds, notes: s.notes, termBounds: termBounds, path: s.path}
+	return &symbolicState{arch: s.arch, regs: regs, invalidEntryGPR: invalidEntryGPR, flags: s.flags, disp: s.disp, frame: frame, vregs: vregs, fregs: fregs, rvcfg: rvcfg, globals: globals, writes: cloneWrites(s.writes), unknownFrom: s.unknownFrom, bounds: bounds, notes: s.notes, termBounds: termBounds, path: s.path}
 }
 
 // pathNode is one fork on a path: the condition (1 bit) the path took
@@ -4396,6 +4423,18 @@ func (x *pathExecutor) mergeTwo(cond *term, a, b *symbolicState) (*symbolicState
 		return nil, false
 	}
 	out := &symbolicState{arch: a.arch, disp: a.disp, notes: a.notes, regs: map[int]*term{}, frame: frame}
+	// At a join, a register's original entry value is available only if
+	// every incoming path preserved it. The union also survives later
+	// actual writes, which must not reinstate entry provenance.
+	if len(a.invalidEntryGPR) != 0 || len(b.invalidEntryGPR) != 0 {
+		out.invalidEntryGPR = make(map[int]bool, len(a.invalidEntryGPR)+len(b.invalidEntryGPR))
+		for reg := range a.invalidEntryGPR {
+			out.invalidEntryGPR[reg] = true
+		}
+		for reg := range b.invalidEntryGPR {
+			out.invalidEntryGPR[reg] = true
+		}
+	}
 	for reg, l := range a.regs {
 		if r, has := b.regs[reg]; has {
 			out.regs[reg] = sel(l, r)
@@ -10557,6 +10596,14 @@ func witnessInputs(params []string, widths map[string]int) []map[string]uint64 {
 // verdict is proof only when both are proven, otherwise the first that
 // is not.
 func Verify(fn *Function, sig *ast.FunctionStatement, oakBody ast.Expression) Verdict {
+	if fn == nil {
+		return Verdict{Kind: VerdictTrusted, Message: "unsupported native verifier function: nil"}
+	}
+	if _, ok := verifierISAFor(fn.Arch); !ok {
+		// Verification cannot silently interpret an unknown ISA as ARM64.
+		// Trusted is a refusal to prove, never a proof verdict.
+		return Verdict{Kind: VerdictTrusted, Message: fmt.Sprintf("unsupported native verifier architecture %q", fn.Arch)}
+	}
 	if only := os.Getenv("OAK_VERIFY_ONLY"); only != "" && !verifyOnlyNames(only, fn.Name) {
 		// A diagnostic switch: one function verified, every other unit
 		// trusted without a look (its verdict is never cached).

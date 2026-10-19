@@ -43,6 +43,12 @@ func TestCompileSessionMatchesStandaloneAcrossLatePasses(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				// The machine checker must not infer an ISA from an absent
+				// architecture tag. Both standalone and cached compilation
+				// must stamp the exact requested native target.
+				if got.Arch != arch || want.Arch != arch {
+					t.Fatalf("lane %d lost its explicit target: got %q, want %q; requested %q", i, got.Arch, want.Arch, arch)
+				}
 				if !reflect.DeepEqual(got, want) || Reallocated(got) != Reallocated(want) || PromotedSlots(got) != PromotedSlots(want) || Scheduled(got) != Scheduled(want) || Fused(got) != Fused(want) {
 					t.Fatalf("lane %d changed body or lowering counters\nwant %s\ngot %s", i, Describe(want), Describe(got))
 				}

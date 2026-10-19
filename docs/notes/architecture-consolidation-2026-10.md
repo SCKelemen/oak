@@ -86,3 +86,46 @@ the current behavior as the reference**, and must explicitly fail closed for
 unsupported ISA profiles rather than inheriting AArch64 defaults. The entire
 `asm` package and its proof/integration gates must pass before semantic
 rewrites are merged.
+
+## A2: explicit verifier ISA dispatch (October 19, 2026)
+
+The native verifier now registers AArch64 and RV64 call-ABI policies explicitly
+in `asm/verify_native_policy.go`. The existing caller-saved register lists,
+entry-readable recognition (including RV64 ra/x1), RV64 FPR treatment, and AArch64 vector/flag clobber
+behavior are unchanged, but no other target can inherit ARM64 policy.
+
+- `Check`/`CheckWithFacts` reject an unknown or empty native architecture
+  before applying the AArch64 seam rules.
+- `Verify` returns a **trusted/refused**, never **proven**, verdict for an
+  unregistered architecture; this guard runs before diagnostic environment
+  switches and before inspecting a signature.
+- `summarizeCall` refuses an unregistered ISA and preserved-register inference
+  no longer treats `arch != RV64` as proof of AArch64 semantics.
+- Unknown-ISA call-state invalidation conservatively discards register facts.
+
+This does **not** make the remaining instruction executor into a plugin
+architecture. The separate RV64 vector/flags behavior is unchanged; any new
+policy is subject to review against the psABI, executable ISA semantics and
+proof/correspondence gates. The next stages are target-owned instruction
+semantics, verified result-register layout and full machine-byte closure.
+
+## A2: entry-register provenance after native calls (October 19, 2026)
+
+The verifier previously treated some *entry-readable* registers as perpetually
+recreatable. A call deleted the current symbolic value, but a later lazy read
+of RV64 `ra/x1` or AArch64 `x30` produced the original `entry.xN` again.
+This could introduce an unsupported value into an otherwise proved path.
+
+`symbolicState.invalidEntryGPR` now records the entry values invalidated by
+ABI call clobbers. All call-result shapes (unit, scalar, floating-point,
+vector, multiword aggregate and memory result) use `clobberGPR` to invalidate
+both the register value and its entry provenance. A *new, actual register
+write* remains readable. Forks clone the invalidation independently and joins
+combine invalidation by union; an untouched path cannot reinstate an entry
+value lost on another path.
+
+Tests pin RV64 ra and AArch64 link-register invalidation, post-call writes,
+preserved registers, fork isolation, and conservative joins. These are
+executable correspondence tests, not a new Lean proof of the full path
+executor. Full `asm` regressions and source-to-machine proof composition
+remain release gates.

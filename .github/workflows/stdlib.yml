@@ -76,7 +76,7 @@ jobs:
       # The whole compiler package runs under the race detector in ci.yml,
       # exhaustively sharded; this job covers every other package.
       - name: Test non-compiler packages under the race detector
-        run: go test -race -timeout 45m $(go list ./... | grep -v '/compiler$')
+        run: python3 .github/scripts/noncompiler_race.py
       - name: Check formatting
         if: always()
         run: |
