@@ -443,6 +443,33 @@ replaced with kernel-checked arithmetic proofs; the literal, emission, and
 gate theorem closures now contain only `propext`, `Classical.choice`, and
 `Quot.sound` (or no axioms).
 
+`Oak.CNFFolds` now checks the production folding paths themselves. The complete
+`cnf_apply` and `cnf_ite`, including their dependencies, are extracted in
+`CNFEmissionExtracted`; no runtime code is replaced by a proof-only folder.
+`terminal_sound` proves the binary folder's result has the operation's Boolean
+meaning, including constant edges. `apply_folded` proves that the production
+caller returns that result without changing memory, for every extraction fuel.
+The five direct-result mux folds likewise preserve meaning and memory. The
+four constant-arm reductions are proved to dispatch to the exact binary call
+and preserve the mux's Boolean meaning. Sorting operands for the unique-table
+key is also proved semantics-preserving.
+Given valid input edges (constants or non-sentinel nodes), direct folds retain
+that range. A binary no-fold result implies regular nonconstant, distinct,
+noncomplementary operands. Mux reductions supply regular binary operands, and
+a mux requiring clause emission has three regular inputs. These facts discharge
+the operand-validity side of the gate-emission seam; they do not prove that
+allocation returns a fresh regular gate, that layouts/capacities are valid, or
+that the complete circuit and final obligation correspond to the source.
+The binary operation dispatch matches production: AND, OR, otherwise XOR;
+choosing a supported operation is still a caller obligation.
+`TestOakCNFFolds*` checks 18 foundational-only theorem closures, fixed contracts,
+and 500 kernel-replayed fold results derived independently from truth tables.
+Compiled tests run those 500 folds and 832 full builder cases, evaluate 13,312
+resulting formulas, require direct folds to leave every memory word unchanged,
+and check repeated lookups do not append clauses or allocate another node.
+These finite executions supplement the proofs, not replace allocation or
+compiler-correctness proofs.
+
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
 the SAT solver from the audit, but it does not yet remove symbolic execution,
