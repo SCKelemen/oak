@@ -31,6 +31,7 @@ import Oak.OptIRMemoryAuthorityProjection
 import Oak.OptIRMachineCallIdentity
 import Oak.AssemblerCalleeIdentity
 import Oak.AssemblerEntryProvenance
+import Oak.AssemblerCallState
 import Oak.TrapDomainAdmission
 import Oak.ObjectLayout
 import Oak.LinkerLayout
