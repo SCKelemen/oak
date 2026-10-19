@@ -222,3 +222,25 @@ The implementation must preserve these properties:
 7. malformed patterns do not create derivative exhaustiveness noise;
 8. coverage and witness generation are deterministic;
 9. coverage never depends on runtime representation/layout choices.
+
+## 13. Usefulness requires a reachable inhabitant
+
+A catch-all pattern covers the **remaining reachable semantic case space**, not
+an abstract syntax category. Therefore a wildcard/binding arm appearing after
+complete coverage is redundant; it is not useful merely because no earlier arm
+used the wildcard spelling.
+
+A closed ADT with no reachable constructors has no inhabitants. A constructor
+whose mandatory payload is uninhabited likewise contributes no inhabitants.
+An arm matching such a space is **impossible**, rather than redundant. The
+compiler must not invent a missing witness for either space.
+
+Unknown, unresolved, or recursive cases must be handled conservatively: the
+absence of a termination proof is not permission to infer uninhabitability.
+This first implementation treats recursive cycles as potentially inhabited.
+Open scalar domains remain open and need a catch-all.
+
+These are properties of semantic values; storage layout and runtime tagging
+have no role in the usefulness decision. The Lean model proves that completed
+coverage precludes later reachable usefulness and that an empty reachable
+universe makes every arm impossible.
