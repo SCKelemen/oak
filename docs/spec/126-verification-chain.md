@@ -489,6 +489,88 @@ table, or prove termination of probing a full table. The finite probe trace
 and enough extraction fuel remain explicit premises; full circuit semantics
 and final-obligation correspondence remain open.
 
+`Oak.CNFObligation` now checks the extracted final-obligation producer.
+The old `used + roots + 1 + 8` admission expression could wrap. Production
+now admits the header/existing words, the clause-length word, and the roots
+with three subtraction-based bounds checks. `fits_iff` proves acceptance
+is exactly the mathematical bound `8 + used + 1 + roots <= capacity`;
+`append_no_wrap` gives the used-counter bound when emitted literals do not
+outnumber roots. Rejection now returns `NONE` and sets the exceeded flag,
+instead of returning `CNF_PROVEN` and relying on `cnf_lower` to discard it.
+The refusal theorem proves the complete function changes only that flag.
+
+The finalization helper is extracted from production, with exact proofs for
+refusal, constant true/refuted, constant false/proven, and clause publication.
+The loop proof consumes a finite trace of actual root reads, negates only the
+last (claim) root, drops false constants, records true constants, and writes
+each remaining encoded literal. `production_trace` connects that reducer
+and finalizer to the full extracted function with sufficient fuel.
+The reducer's count and true-constant flag are proved, as are both constant
+outcomes and the decoded nonconstant clause's Boolean meaning. Final-buffer
+readback is now supplied by `Oak.CNFObligationStore`, described below.
+Deriving the observed root sequence from original source terms still requires
+valid root indices and the bitblasting/circuit correspondence; these are not
+assumed to follow from extraction.
+
+`TestOakCNFObligation*` audits 19 foundational-only theorem closures and
+fixed contracts, including the old wrapping counterexample. Compiled tests
+compare all 320 words for 1,554 cases, covering zero through three roots,
+constants and both polarities of two variables, prior clause words, exact
+capacity, spare capacity, and refusal. They check 4,144 actual outcome/formula
+assignments, 1,331 mathematical guard boundaries, and four whole-function
+overflow refusals with no payload writes. These tests supplement the proofs;
+they do not establish compiler correctness or whole-source verdict soundness.
+
+`Oak.CNFObligationStore` proves that the reducer's actual memory equals
+consecutive writes of the encoded nonconstant literals. It derives payload
+readback and preservation of all cells outside that append interval. Root
+reads are therefore preserved when their computed cells lie outside the
+interval. Publication preserves payload cells under explicit separation from
+the two counters and writes the exact clause length. `production_record`
+composes this through the complete extracted `cnf_obligation` call: the
+returned buffer has the proved header and every payload word. `stored_semantics`
+reads that header to choose the payload length and proves that decoding the
+stored words preserves the observed obligation's Boolean meaning.
+
+`layout_bounds` derives physical address bounds from admission and a
+nonwrapping clause region. `state_separation` discharges counter separation
+when state ends before the clause region. These are local layout invariants,
+not a proof that the allocator constructs every valid layout. The initial-root
+trace and the constructor's relevant region ordering are now supplied by
+`Oak.CNFRoots`; valid source root addresses and whole-source verdict soundness
+remain separate obligations.
+`TestOakCNFObligationStoreLean` audits 13 foundational-only theorem closures,
+checks fixed readback contracts, and kernel-replays both mixed-constant
+payload writes and a counter/payload aliasing counterexample. The existing
+compiled obligation regression and solver integration remain required.
+
+`Oak.CNFRoots` derives the obligation trace from the memory present before
+emission. `initialLiterals` reads that memory independently of the writer.
+`initial_trace` inducts over the remaining root count, proving loop-index
+progress and preservation of future reads as payload words are appended.
+`production_initial` therefore characterizes the complete extracted function
+without an assumed execution trace, given separated root cells and a bounded
+append interval.
+
+The production `layout_for_clauses` and its dependencies are now included in
+the extraction drift check. `layout_shape` proves its exact field equations;
+`constructed_regions` proves ordering and nonwrapping arithmetic for the
+bit-storage, selection, state, and clause suffix under an explicit natural
+budget. Valid root IDs within the term count place their bit cells before
+the clause region. `constructed_trace` and `constructed_production` combine
+these facts with admission, eliminating the former trace and read-separation
+premises. The initial memory's bits still need to be related to source-term
+semantics. The constructor's earlier node/hash/cache/stack region allocation,
+`next_pow2` termination, caller-enforced budgets, and valid serialized root
+indices are not proved by these suffix guarantees.
+
+`TestOakCNFRootsLean` audits nine foundational-only theorem closures, fixes
+contracts for trace derivation and constructor regions, and kernel-replays
+initial root polarity and a wrapped-layout counterexample showing why the
+budget is necessary. Compiled obligation tests additionally check 45 production
+layouts across terminal/small/stack-limit capacities, term counts, and clause
+capacities. Existing full-buffer and solver-integration checks remain required.
+
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
 the SAT solver from the audit, but it does not yet remove symbolic execution,

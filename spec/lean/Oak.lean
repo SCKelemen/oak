@@ -30,6 +30,8 @@ import Oak.OptIRCallSummaryCertificate
 import Oak.OptIRMemoryAuthorityProjection
 import Oak.OptIRMachineCallIdentity
 import Oak.AssemblerCalleeIdentity
+import Oak.AssemblerEntryProvenance
+import Oak.AssemblerCallState
 import Oak.TrapDomainAdmission
 import Oak.ObjectLayout
 import Oak.LinkerLayout
@@ -265,6 +267,9 @@ import Oak.LRATNativeGuards
 import Oak.LRATRV64Bytes
 import Oak.LRATRV64Compressed
 import Oak.LRATARM64Bytes
+import Oak.LRATNativeRefinement
+import Oak.LRATRV64GuardCalls
+import Oak.LRATARM64GuardCalls
 import Oak.LRATRUP
 import Oak.LRATRUPSoundness
 import Oak.LRATCheckerState
@@ -341,3 +346,6 @@ import Oak.CNFEmission
 import Oak.CNFGates
 import Oak.CNFFolds
 import Oak.CNFNodes
+import Oak.CNFObligation
+import Oak.CNFObligationStore
+import Oak.CNFRoots

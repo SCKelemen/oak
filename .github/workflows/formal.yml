@@ -52,6 +52,37 @@ jobs:
           OAK_REQUIRE_SAT_MODEL_LEAN: '1'
         run: go test . -run '^TestOakSATModel' -count=1 -timeout=10m -v
 
+  assembler-entry-provenance:
+    name: Native verifier entry provenance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Run executable Go correspondence before downloading Lean. A transient
+      # Lean CDN failure must not hide a native verifier regression.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Check bounded Go correspondence and native verifier regressions
+        run: go test ./asm -run '^(TestEntry(Register|Readable)|TestNativeVerifier(ISASelection|EntryReadable|RegisterStateRefinement)|TestVerifyCallSummary|TestAssemblerCallState)' -count=1 -timeout=10m -v
+
+      - name: Install elan
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Prove native call entry, clobber, write, fork, and join laws
+        working-directory: spec/lean
+        run: lake build Oak.AssemblerEntryProvenance Oak.AssemblerCallState
+
   lrat-kernel:
     name: LRAT kernel soundness
     runs-on: ubuntu-24.04
@@ -72,7 +103,7 @@ jobs:
       # Track the complete LRAT proof independently of unrelated formal modules.
       - name: Build production LRAT bound-record proof
         working-directory: spec/lean
-        run: lake build Oak.LRATAdmission Oak.LRATPreflight Oak.LRATBindingModel Oak.LRATLifecycleSoundness Oak.LRATNativeGuards Oak.CNFLiteral Oak.LRATRV64Bytes Oak.LRATRV64Compressed Oak.LRATARM64Bytes Oak.CNFEmission Oak.CNFGates Oak.CNFFolds Oak.CNFNodes
+        run: lake build Oak.LRATAdmission Oak.LRATPreflight Oak.LRATBindingModel Oak.LRATLifecycleSoundness Oak.LRATNativeGuards Oak.CNFLiteral Oak.LRATRV64Bytes Oak.LRATRV64Compressed Oak.LRATARM64Bytes Oak.LRATNativeRefinement Oak.LRATRV64GuardCalls Oak.LRATARM64GuardCalls Oak.CNFEmission Oak.CNFGates Oak.CNFFolds Oak.CNFNodes Oak.CNFObligation Oak.CNFObligationStore Oak.CNFRoots
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -90,7 +121,7 @@ jobs:
           OAK_REQUIRE_LRAT_BINDING_LEAN: '1'
         run: |
           command -v cc
-          go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean|TestOakLRATAllocatedEntry|TestOakLRATRawStreamEntry|TestLRATLifecycle.*|TestLRATNative.*|TestOakCNFLiteral.*|TestOakCNFEmission.*|TestOakCNFGates.*|TestOakCNFFolds.*|TestOakCNFNodes.*|TestCNFAxiomAudit|TestOakLRATAgrees)$' -count=1 -timeout=10m -v
+          go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean|TestOakLRATAllocatedEntry|TestOakLRATRawStreamEntry|TestLRATLifecycle.*|TestLRATNative.*|TestOakCNFLiteral.*|TestOakCNFEmission.*|TestOakCNFGates.*|TestOakCNFFolds.*|TestOakCNFNodes.*|TestOakCNFObligation.*|TestOakCNFObligationStore.*|TestOakCNFRoots.*|TestCNFAxiomAudit|TestOakLRATAgrees)$' -count=1 -timeout=10m -v
 
   lean:
     # Proof-branch iterations use the dedicated gates above. PR and
