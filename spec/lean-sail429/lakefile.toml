@@ -1,5 +1,5 @@
 name = "oak-sail-fetch-429"
-defaultTargets = ["OakSailFetchedFrame", "OakSailSteppedFrame", "OakSailSteppedChecks", "OakSailClockedSource", "OakSailClockChecks", "OakSailImageLoad", "OakSailImageSource", "OakSailImageChecks"]
+defaultTargets = ["OakSailFetchedFrame", "OakSailSteppedFrame", "OakSailSteppedChecks", "OakSailClockedSource", "OakSailClockChecks", "OakSailImageLoad", "OakSailImageSource", "OakSailImageChecks", "OakSailEntryInstructions", "OakSailEntrySource", "OakSailEntryChecks"]
 
 # Compile the existing tracked source files directly into this project's cache.
 # No source copy or cross-version proof-object import is used.
@@ -71,3 +71,12 @@ name = "OakSailImageSource"
 
 [[lean_lib]]
 name = "OakSailImageChecks"
+
+[[lean_lib]]
+name = "OakSailEntryInstructions"
+
+[[lean_lib]]
+name = "OakSailEntrySource"
+
+[[lean_lib]]
+name = "OakSailEntryChecks"
