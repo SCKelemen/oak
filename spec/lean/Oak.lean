@@ -340,3 +340,4 @@ import Oak.CNFLiteral
 import Oak.CNFEmission
 import Oak.CNFGates
 import Oak.CNFFolds
+import Oak.CNFNodes
