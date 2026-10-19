@@ -439,13 +439,24 @@ func typedCNFReadRefusals(t *testing.T) {
 				want = "read block shape or index"
 			case "mixed-value-width":
 				first := typedCNFRead("memory", x)
-				read.width = 16
 				left = typedCNFBinary("add", 32, first, read)
 				want = "read requires exact span"
 			}
 			premise := typedCNFConst(1, 1)
 			producer, claim, clauses := typedCNFProduce(premise, left, z, names, widths)
 			switch kind {
+			case "mixed-value-width":
+				// Produce a valid snapshot first, then corrupt the term supplied
+				// to replay. The producer now independently refuses conflicting
+				// memory widths, so an invalid input cannot create this fixture.
+				read.width = 16
+				fresh := newCNFBlaster(names, widths)
+				if bits := fresh.blast(claim); bits != nil || !fresh.exceeded() {
+					t.Fatal("producer admitted conflicting memory widths")
+				}
+				// Keep the forged memo shape consistent so the independent
+				// replay reaches its own memory-domain check.
+				producer.memo[read] = producer.memo[read][:read.width]
 			case "index-root":
 				producer.selects[0].idx = append([]int(nil), producer.selects[0].idx...)
 				producer.selects[0].idx[0] ^= 1
