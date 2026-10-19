@@ -35,6 +35,22 @@ After this patch:
 This changes no verifier, ISA decoder, ABI, certificate, or proven semantics.
 A cost-model choice is an optimization heuristic, **not** proof authority.
 
+## LRAT acceptance dependency guard
+
+The `internal/lrat` Go acceptance kernel is a deliberate trust boundary.
+Its production sources currently require only `fmt`, `strconv` and
+`strings`. A source-level unit test now parses every non-test Go file in
+that package and refuses any import outside this reviewed set, including
+imports of the compiler, prover, Oak-generated packages, reflection or unsafe
+machinery. New imports require updating the reviewed allowlist, explicitly
+acknowledging an expansion of the trusted base.
+
+The guard was exercised in an isolated Go 1.23 harness: the approved import
+set passed, an injected otherwise-valid `errors` import failed, and removing
+it restored a pass. This establishes the guard's local mechanics, **not**
+production build success or a proof of LRAT acceptance soundness. A complete
+package test and Go/Oak/Lean correspondence remain release gates.
+
 ## Cleanup dependency plan
 
 | Stage | Ownership / design boundary | Gate before merge |
