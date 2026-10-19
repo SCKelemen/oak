@@ -129,3 +129,26 @@ preserved registers, fork isolation, and conservative joins. These are
 executable correspondence tests, not a new Lean proof of the full path
 executor. Full `asm` regressions and source-to-machine proof composition
 remain release gates.
+
+## A2: parametric Lean provenance theorem and Go correspondence gate
+
+`spec/lean/Oak/AssemblerEntryProvenance.lean` defines a pure,
+architecture-indexed register-provenance state for ARM64 and RV64, with
+separate materialized values and invalidated entry authority. Theorems
+establish no resurrection after a call, safe explicit rewrites, immutable
+fork isolation, conservative join behavior (either branch clobbered), and
+continued availability when both branches explicitly write.
+
+The architecture-indexed type excludes cross-ISA joins by construction,
+whereas the Go executor rejects mismatched `state.arch` dynamically.
+`asm/verify_entry_provenance_refinement_test.go` independently sweeps
+the current per-ISA entry-register masks and observed call clobbers and
+ensures the theorem/example obligations are present. A dedicated
+`assembler-entry-provenance` formal CI job builds the Lean module and
+executes those Go checks independently of the full compiler suite.
+
+**Trust boundary:** The Lean proof covers the formal model, not an
+automatically extracted implementation; the bounded Go corpus tests
+the correspondence but does not universally prove it. Source-to-ISA
+refinement, complete call-result paths and whole `asm` tests remain
+required for full verified status.

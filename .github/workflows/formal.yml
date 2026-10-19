@@ -52,6 +52,37 @@ jobs:
           OAK_REQUIRE_SAT_MODEL_LEAN: '1'
         run: go test . -run '^TestOakSATModel' -count=1 -timeout=10m -v
 
+  assembler-entry-provenance:
+    name: Native verifier entry provenance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Run executable Go correspondence before downloading Lean. A transient
+      # Lean CDN failure must not hide a native verifier regression.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Check bounded Go correspondence and native verifier regressions
+        run: go test ./asm -run '^(TestEntry(Register|Readable)|TestNativeVerifier(ISASelection|EntryReadable)|TestVerifyCallSummary)' -count=1 -timeout=10m -v
+
+      - name: Install elan
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Prove native call entry, clobber, write, fork, and join laws
+        working-directory: spec/lean
+        run: lake build Oak.AssemblerEntryProvenance
+
   lrat-kernel:
     name: LRAT kernel soundness
     runs-on: ubuntu-24.04

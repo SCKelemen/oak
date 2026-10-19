@@ -30,6 +30,7 @@ import Oak.OptIRCallSummaryCertificate
 import Oak.OptIRMemoryAuthorityProjection
 import Oak.OptIRMachineCallIdentity
 import Oak.AssemblerCalleeIdentity
+import Oak.AssemblerEntryProvenance
 import Oak.TrapDomainAdmission
 import Oak.ObjectLayout
 import Oak.LinkerLayout
