@@ -1,0 +1,53 @@
+# Architecture consolidation: native target boundary (October 2026)
+
+## Baseline and non-goals
+
+This audit is based on the `specification` branch as of October 19, 2026.
+The repository already contains shared parser/typechecking, SemIR, OptIR,
+machine algorithms, target descriptions, native bodies, certificate checking
+and ISA-specific proofs. Do not introduce a second universal target IR or
+weaken existing verifier obligations merely to reduce file lengths.
+
+Largest high-risk handoff files at this snapshot include `asm/verify.go`,
+`asm/loops.go`, `nativegen/nativegen.go`, and
+`typechecker/typechecker.go`. Size motivates auditing responsibilities;
+it is **not** evidence of semantic duplication by itself.
+
+## First concrete boundary
+
+`machine.targetFor` rejects unknown architecture lanes, while historically
+`opt.CostsFor` silently used ARM64 weights. This discrepancy made an
+unreviewed backend extension look partially implemented, even though a
+cost model cannot establish target correctness.
+
+After this patch:
+
+- `opt.CostsFor(arch)` returns `(TargetCosts, error)`; explicit
+  `arm64` and `rv64` are the only admitted lanes.
+- The compiler's `nativeSearch` resolves the model before registering
+  candidate transforms.
+- `lowerNativeBodies` carries failure as a native compilation diagnostic
+  rather than proceeding with ARM64 costs for an unrelated ISA.
+- `opt.Search.Run` retains its old nil-cost default for generic/in-memory
+  search users. This first patch closes the **production native** entry
+  and does not claim all cost dispatch or target profiles are fully sealed.
+
+This changes no verifier, ISA decoder, ABI, certificate, or proven semantics.
+A cost-model choice is an optimization heuristic, **not** proof authority.
+
+## Cleanup dependency plan
+
+| Stage | Ownership / design boundary | Gate before merge |
+| --- | --- | --- |
+| A1 | Native target selection and cost registration | Reject unknown/empty architecture; preserve ARM64/RV64 costs; native compiler diagnostic |
+| A2 | ISA semantics vs. generic `asm` verification | Map every current `asm/verify.go` lane-dispatch default; extract exact target adapter interfaces only where semantics match |
+| A3 | Trusted LRAT checker vs. prover and producer | Document complete inputs, allocation ownership, replay state and error semantics; prohibit compiler/prover imports into kernel |
+| A4 | Type identity, inference, and authority | Prove scoped substitution rollback and alias handling; reject same-name binder conflation |
+| A5 | Native generation and code shape | Separate machine algorithm, ISA encoder, ABI, and artifact/link concerns without widening admitted profiles |
+| A6 | Compiler bootstrap replacement | Stabilize Go/Oak interfaces; compare both implementations and self-build artifacts before replacing the Go seed |
+| A7 | Cross-target proof composition | Bind checked source, OptIR, exact decoded bytes, object layout, loader and machine execution with explicit environmental assumptions |
+
+For each stage, preserve a paired positive/negative regression corpus, exact
+proof or test evidence, and observed performance before/after. No PR counts
+toward roadmap completion until merged to `specification`; a green isolated
+model proof is not a universal production refinement.

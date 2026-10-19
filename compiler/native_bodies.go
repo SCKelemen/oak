@@ -87,7 +87,16 @@ func (comp Compilation) lowerNativeBodies(root *ast.Program, tc *typechecker.Typ
 		cacheDir = ""
 	}
 	report := &opt.Report{}
-	search := nativeSearch(comp.options.Target.AsmArch(), report)
+	search, searchErr := nativeSearch(comp.options.Target.AsmArch(), report)
+	if searchErr != nil {
+		// The native lane has no valid optimizer configuration. This is a
+		// compilation diagnostic, not permission to generate another ISA.
+		result.Report = report
+		result.Diagnostics = []*diagnostic.Diagnostic{
+			diagnostic.NewDiagnostic(lsp.Range{}, "native", "native backend: "+searchErr.Error()),
+		}
+		return result
+	}
 	var lowered []*asm.Function
 	tcFingerprint := tc.NativeLoweringFingerprint() // once for the pass (nativeDriver.tcFingerprint)
 	// The program's call graph (nativegen/callgraph.go), read at the end
