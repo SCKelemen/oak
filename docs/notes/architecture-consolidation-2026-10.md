@@ -67,3 +67,22 @@ For each stage, preserve a paired positive/negative regression corpus, exact
 proof or test evidence, and observed performance before/after. No PR counts
 toward roadmap completion until merged to `specification`; a green isolated
 model proof is not a universal production refinement.
+
+## A2: call-ABI responsibility extracted
+
+The first `asm/verify.go` split is deliberately behavior-preserving. The
+`Verdict`, `VerdictKind`, dependency-union logic and outcome labels now live
+in `asm/verify_verdict.go`. The two executor call-boundary methods,
+`forgetCallerSaved` and `summarizeCall`, now live unchanged in
+`asm/verify_calls.go`. This isolates the largest direct call/ABI decision
+from the main verifier without changing the certificate authority boundary.
+Tests pin AArch64 and RV64 register invalidation and the distinction between
+proved, witnessed, mismatch and trusted outcomes.
+
+**Important boundary:** A file move is not a universal Go implementation
+refinement, a target-independent ISA adapter, or a new Lean/Sail theorem.
+Next refactors must separate call ABI policy from symbolic execution **using
+the current behavior as the reference**, and must explicitly fail closed for
+unsupported ISA profiles rather than inheriting AArch64 defaults. The entire
+`asm` package and its proof/integration gates must pass before semantic
+rewrites are merged.
