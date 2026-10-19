@@ -468,8 +468,21 @@ required byte contract now checks both the explicit non-C configuration and
 the default hosted ELF symbols, including malformed/truncated returns,
 trailing instructions, reserved compressed encodings, and semantic mutations.
 
-ARM64 instruction execution, fetch/traps, the Sail execution bridge, and
-whole-checker machine soundness remain open. No runtime selection changes.
+`Oak.LRATARM64Bytes` covers both emitted ARM64 guard bodies in the no-fault
+scalar projection. The independent decoder admits the exact 32-bit CMP/SUB,
+CSET alias, AND, MOVN/MOVZ and terminal RET X30 forms. Existing W-register
+semantics establish zero-extension of writes and unrestricted upper input
+bits; existing subtraction flags supply the unsigned comparison semantics.
+The proofs establish exact zero/one results, mathematical bounds, return to
+X30, preservation of SP, and preservation of non-clobbered registers. Tests
+bind both bodies to production encoder and ELF symbol bytes, check endpoint
+and threshold mutations, and refuse truncated/trailing bytes, altered returns,
+64-bit comparisons and shifted subtraction outside the proved subset.
+
+Both ARM64 and RV64 guard byte execution are now covered in their internal
+models. Instruction fetch, alignment, translation, traps, the full Sail
+execution bridge, and whole-checker machine soundness remain open. No runtime
+selection changes.
 
 This establishes expected-formula soundness for the extracted binding gate
 and word checker. Extraction correctness, allocation/FFI semantics, and
