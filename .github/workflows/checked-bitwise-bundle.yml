@@ -21,7 +21,6 @@ jobs:
       GOMAXPROCS: '2'
       GOFLAGS: '-p=2'
       OAK_REQUIRE_BITWISECHECK: '1'
-      OAK_BITWISECHECK_LEAN_ARCHIVE: ${{ runner.temp }}/lean-4.33.1-linux.tar.zst
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -38,6 +37,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          OAK_BITWISECHECK_LEAN_ARCHIVE="$RUNNER_TEMP/lean-4.33.1-linux.tar.zst"
+          printf 'OAK_BITWISECHECK_LEAN_ARCHIVE=%s\n' "$OAK_BITWISECHECK_LEAN_ARCHIVE" >> "$GITHUB_ENV"
           curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
             https://github.com/leanprover/lean4/releases/download/v4.33.1/lean-4.33.1-linux.tar.zst \
             --output "$OAK_BITWISECHECK_LEAN_ARCHIVE"
