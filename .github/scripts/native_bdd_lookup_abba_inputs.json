@@ -1,5 +1,5 @@
 {
-  "baseline_tree": "9cd895d465286191bff200b8d9968aa75d6d7312",
+  "baseline_tree": "c93ec8af1f9e7e205a240f910c2d9b98ac5126a8",
   "baseline_tree_members": {
     ".gitattributes": {
       "blob": "9d9918ca4608fae8f2a3974c3b575a95514b6a21",
@@ -74,11 +74,11 @@
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba.py": {
-      "blob": "6063631368464c83eee16f3de91bb05b5a280d84",
+      "blob": "16b8ffba9de36b91f0874e8801bbe432e9af4c56",
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba_inputs.json": {
-      "blob": "8f60bfad9e161f40497a037a28ad6f94d588a2c1",
+      "blob": "c180cba7bc417f731038a64722dd404724ff1e6f",
       "mode": "100644"
     },
     ".github/scripts/native_prover_inventory.json": {
@@ -686,7 +686,7 @@
       "mode": "100644"
     },
     "asm/cnf_typed_replay_test.go": {
-      "blob": "9da2c394027ac832ae6cff63f3d8ebadb545580c",
+      "blob": "4713c3bcdd726f9bc0f8a66e329216b9513ce320",
       "mode": "100644"
     },
     "asm/component_atoms.go": {
@@ -6531,6 +6531,10 @@
     },
     "docs/notes/mojo-futhark-optimization-2026-09.md": {
       "blob": "b991b6393a9cefc71f69d64b690a5854c93f545a",
+      "mode": "100644"
+    },
+    "docs/notes/native-arm64-followup-2026-10-19.md": {
+      "blob": "57ca8c7ce29ef65aa532c27d764cadc83e62138b",
       "mode": "100644"
     },
     "docs/notes/native-arm64-prover-timeout-2026-10-12.md": {
@@ -17137,7 +17141,7 @@
   "historical_local_commit": "820e955b6aa8d706f568c26437c107d381c3ce1f",
   "integration_members": {
     ".github/scripts/native_bdd_lookup_abba.py": {
-      "blob": "16b8ffba9de36b91f0874e8801bbe432e9af4c56",
+      "blob": "e465123fa4475f41e931c4af993f718dfc2f0b5a",
       "mode": "100644"
     },
     ".github/scripts/native_bdd_lookup_abba_inputs.json": null
