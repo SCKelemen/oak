@@ -95,6 +95,8 @@ var loweringRenders = []struct {
 	// A float literal is rounded to its binary32 bits before it enters the
 	// term language.  1.5 is 0x3fc00000 (1069547520).
 	{"f: (a: f32) -> f32", "a + 1.5", "fadd32(a, 1069547520)"},
+	// Just above a binary32 midpoint: do not round through the parser's f64 cache.
+	{"f: (a: f32) -> f32", "a + 1.00000005960464477550", "fadd32(a, 1065353217)"},
 	{"f: (a: u32) -> u32", "-a", "(0 sub a)"},
 	{"f: (a: u32) -> u32", "^a", "(a xor 4294967295)"},
 	{"f: (a, b: u32) -> u32", "(a << 3) | (b >> 5)", "((a shl 3) or (b shr 5))"},

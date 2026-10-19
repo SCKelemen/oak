@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/typechecker"
@@ -500,8 +501,17 @@ func (w *syntaxWriter) expr(f *synFunction, e ast.Expression) (uint32, string, b
 		}
 		return w.node(synBoolLit, bit, 0, 0, 0, 0, 0, w.scalarType(1, false)), "", true
 	case *ast.FloatLiteral:
-		f64 := math.Float64bits(e.Value)
-		return w.node(synFloatLit, uint32(math.Float32bits(float32(e.Value))), 0, 0, 0, uint32(f64), uint32(f64>>32), -1), "", true
+		value64, ok := typechecker.FloatLiteralValue(e.Text, "f64")
+		if !ok {
+			return 0, fmt.Sprintf("floating-point literal %q does not fit f64", e.Text), false
+		}
+		// The context selects one of these independently rounded patterns.
+		// Valid f64 text can overflow f32: retain infinity in that unused
+		// slot instead of refusing a valid f64 literal. Syntax is checked
+		// above, so the only possible ParseFloat error here is ErrRange.
+		value32, _ := strconv.ParseFloat(e.Text, 32)
+		f64 := math.Float64bits(value64)
+		return w.node(synFloatLit, math.Float32bits(float32(value32)), 0, 0, 0, uint32(f64), uint32(f64>>32), -1), "", true
 	case *ast.Identifier:
 		sym, known := f.symbols[e.Value]
 		if !known {

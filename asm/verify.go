@@ -9802,10 +9802,17 @@ func (lo *oakLowering) lower(expr ast.Expression, width int) (*term, string, boo
 	case *ast.IntegerLiteral:
 		return constTerm(uint64(e.Value), width), "", true
 	case *ast.FloatLiteral:
-		if t, ok := floatLiteralBits(e.Value, width); ok {
-			return t, "", true
+		if width != 32 && width != 64 {
+			return nil, "a float literal outside a float context", false
 		}
-		return nil, "a float literal outside a float context", false
+		// Round the source text directly to the context's width. Narrowing
+		// the parser's f64 cache can double-round an f32 literal.
+		value, ok := typechecker.FloatLiteralValue(e.Text, fmt.Sprintf("f%d", width))
+		if !ok {
+			return nil, fmt.Sprintf("floating-point literal %q does not fit f%d", e.Text, width), false
+		}
+		t, _ := floatLiteralBits(value, width)
+		return t, "", true
 	case *ast.PrefixExpression:
 		switch e.Operator {
 		case "!":
