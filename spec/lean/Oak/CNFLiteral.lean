@@ -1,6 +1,6 @@
 import Oak.CNFLiteralExtracted
 import Oak.LRATRUPSoundness
-import Std.Tactic.BVDecide
+import Init.Data.UInt.Bitwise
 
 /-!
 Production CNF edge-to-word encoding, composed with the LRAT word decoder.
@@ -20,13 +20,19 @@ theorem extracted (edge : UInt32) (fuel : Nat) :
 
 theorem index_word (edge : UInt32) (h : 2 ≤ edge) :
     encode edge / (2 : UInt32) = (edge >>> 1) - 1 := by
-  unfold encode
-  bv_decide
+  have bound := edge.toNat_lt
+  rw [UInt32.le_iff_toNat_le] at h
+  change 2 ≤ edge.toNat at h
+  apply UInt32.toNat_inj.mp
+  simp [encode, UInt32.toNat_sub, Nat.shiftRight_eq_div_pow]
+  omega
 
 theorem polarity_word (edge : UInt32) :
     (encode edge % 2 == 1) = (edge &&& 1 == 0) := by
-  unfold encode
-  bv_decide
+  have bound := edge.toNat_lt
+  apply Bool.eq_iff_iff.mpr
+  simp [encode, ← UInt32.toNat_inj, UInt32.toNat_sub, Nat.shiftRight_eq_div_pow]
+  omega
 
 theorem decode_exact (edge : UInt32) (h : 2 ≤ edge) :
     Oak.LRATRUP.decodeWord (encode edge) =

@@ -16,7 +16,7 @@ import (
 // Extract from the complete production solver package, not a copied helper.
 func TestOakCNFEmissionExtraction(t *testing.T) {
 	extracted, err := compiler.New().WithPackageDir(filepath.Join("prove", "solver")).
-		EmitLeanRoots("Oak.CNFEmission", []string{"cnf_emit"}).Get()
+		EmitLeanRoots("Oak.CNFEmission", []string{"cnf_emit", "cnf_emit_binary", "cnf_emit_mux"}).Get()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,27 +223,8 @@ example : cnf_clause_fits 4294967290 1 16 0 = some false := by decide +kernel
 		if args[0] != "env" {
 			continue
 		}
-		audited := 0
-		for _, line := range strings.Split(string(out), "\n") {
-			if strings.Contains(line, "does not depend on any axioms") {
-				audited++
-				continue
-			}
-			_, axioms, found := strings.Cut(line, "depends on axioms: [")
-			if !found {
-				continue
-			}
-			audited++
-			for _, axiom := range strings.Split(strings.TrimSuffix(strings.TrimSpace(axioms), "]"), ",") {
-				switch strings.TrimSpace(axiom) {
-				case "", "propext", "Classical.choice", "Quot.sound":
-				default:
-					t.Fatalf("unexpected CNF emission axiom: %s", line)
-				}
-			}
-		}
-		if audited != len(names) {
-			t.Fatalf("audited %d/%d theorem closures\n%s", audited, len(names), out)
+		if err := cnfAxiomAudit(string(out), "Oak.CNFEmission", names); err != nil {
+			t.Fatalf("%v\n%s", err, out)
 		}
 	}
 }

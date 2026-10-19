@@ -31,6 +31,10 @@ instance : Inhabited Layout := ⟨{ cap := (0 : UInt32), var_at := (0 : UInt32),
 
 def NONE : UInt32 := (4294967295 : UInt32)
 
+def OP_AND : UInt32 := (0 : UInt32)
+
+def OP_OR : UInt32 := (1 : UInt32)
+
 def STATE_EXCEEDED : UInt32 := (1 : UInt32)
 
 def STATE_CLAUSES_USED : UInt32 := (4 : UInt32)
@@ -77,6 +81,36 @@ def cnf_emit (l : Layout) (mem : Array UInt32) (a : UInt32) (b : UInt32) (c : UI
     else (do
       let mem := mem.setIfInBounds (l.state_at + STATE_EXCEEDED).toNat (1 : UInt32)
       pure mem))
+  pure ((), mem)
+
+def cnf_emit_binary (l : Layout) (mem : Array UInt32) (op : UInt32) (g : UInt32) (x : UInt32) (y : UInt32) (fuel : Nat) : Option (Unit × Array UInt32) := do
+  let mem ← (if (op == OP_AND) then (do
+      let (r1, mem) ← cnf_emit l mem (g ^^^ (1 : UInt32)) x NONE fuel
+      let (r2, mem) ← cnf_emit l mem (g ^^^ (1 : UInt32)) y NONE fuel
+      let (r3, mem) ← cnf_emit l mem g (x ^^^ (1 : UInt32)) (y ^^^ (1 : UInt32)) fuel
+      pure mem)
+    else (do
+      let mem ← (if (op == OP_OR) then (do
+          let (r4, mem) ← cnf_emit l mem g (x ^^^ (1 : UInt32)) NONE fuel
+          let (r5, mem) ← cnf_emit l mem g (y ^^^ (1 : UInt32)) NONE fuel
+          let (r6, mem) ← cnf_emit l mem (g ^^^ (1 : UInt32)) x y fuel
+          pure mem)
+        else (do
+          let (r7, mem) ← cnf_emit l mem (g ^^^ (1 : UInt32)) x y fuel
+          let (r8, mem) ← cnf_emit l mem (g ^^^ (1 : UInt32)) (x ^^^ (1 : UInt32)) (y ^^^ (1 : UInt32)) fuel
+          let (r9, mem) ← cnf_emit l mem g (x ^^^ (1 : UInt32)) y fuel
+          let (r10, mem) ← cnf_emit l mem g x (y ^^^ (1 : UInt32)) fuel
+          pure mem))
+      pure mem))
+  pure ((), mem)
+
+def cnf_emit_mux (l : Layout) (mem : Array UInt32) (g : UInt32) (c : UInt32) (t : UInt32) (e : UInt32) (fuel : Nat) : Option (Unit × Array UInt32) := do
+  let (r1, mem) ← cnf_emit l mem (g ^^^ (1 : UInt32)) (c ^^^ (1 : UInt32)) t fuel
+  let (r2, mem) ← cnf_emit l mem (g ^^^ (1 : UInt32)) c e fuel
+  let (r3, mem) ← cnf_emit l mem g (c ^^^ (1 : UInt32)) (t ^^^ (1 : UInt32)) fuel
+  let (r4, mem) ← cnf_emit l mem g c (e ^^^ (1 : UInt32)) fuel
+  let (r5, mem) ← cnf_emit l mem (g ^^^ (1 : UInt32)) t e fuel
+  let (r6, mem) ← cnf_emit l mem g (t ^^^ (1 : UInt32)) (e ^^^ (1 : UInt32)) fuel
   pure ((), mem)
 
 end Oak.CNFEmission
