@@ -470,6 +470,25 @@ and check repeated lookups do not append clauses or allocate another node.
 These finite executions supplement the proofs, not replace allocation or
 compiler-correctness proofs.
 
+`Oak.CNFNodes` checks the extracted production allocator. Its loop theorems
+cover matching-entry reuse without writes, collision advancement, the exact
+six fresh-node writes, and capacity rejection with only the exceeded flag
+written. A finite nonmatching probe trace composes these results; the wrapper
+theorem connects the loop to `cnf_node`, including its created-flag reset.
+Readback requires six in-bounds, pairwise distinct locations, and the frame
+theorem preserves every other word. With count in [1, cap) and cap at most
+2^31-1, the allocated index differs from all earlier indices, its table
+encoding increments without wrapping, and its shifted edge satisfies the
+gate proofs' regular-edge premise.
+`TestOakCNFNodes*` audits 12 foundational-only theorem closures and checks
+224 compiled allocator cases against all 96 memory words: all eight starting
+slots, zero through six collisions, allocation, reuse even at full capacity,
+capacity rejection, and a preexisting exceeded flag.
+These results do not derive layout invariants, establish a globally unique
+table, or prove termination of probing a full table. The finite probe trace
+and enough extraction fuel remain explicit premises; full circuit semantics
+and final-obligation correspondence remain open.
+
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
 the SAT solver from the audit, but it does not yet remove symbolic execution,
