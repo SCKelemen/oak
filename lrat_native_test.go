@@ -166,6 +166,7 @@ func TestLRATNativeLean(t *testing.T) {
 import Oak.LRATRV64Bytes
 import Oak.LRATRV64Compressed
 import Oak.LRATARM64Bytes
+import Oak.LRATNativeRefinement
 open Oak.LRATNativeGuards
 example (a c l : UInt32) (fuel : Nat) :
     Oak.LRATBounds.lrat_fits a c l fuel = some (armFits a.toBitVec c.toBitVec l.toBitVec) := arm_fits_extracted a c l fuel
@@ -186,13 +187,18 @@ example (a c l : BitVec 64) (h : rvFits a c l = true) :
 `
 	contract += lratRV64ByteContract(t)
 	contract += lratARM64ByteContract(t)
+	for _, lane := range []string{"ARM64", "RV64", "RV64Compressed"} {
+		for _, theorem := range []string{"fits_refines", "alloc_refines", "fits_accepted_iff", "alloc_accepted_iff", "fits_index", "allocation_safe"} {
+			contract += "\n#print axioms Oak.LRATNativeRefinement." + lane + "." + theorem + "\n"
+		}
+	}
 	path := filepath.Join(t.TempDir(), "NativeContract.lean")
 	if err := os.WriteFile(path, []byte(contract), 0600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	for _, args := range [][]string{{"build", "Oak.LRATNativeGuards", "Oak.LRATRV64Bytes", "Oak.LRATRV64Compressed", "Oak.LRATARM64Bytes"}, {"env", "lean", path}} {
+	for _, args := range [][]string{{"build", "Oak.LRATNativeGuards", "Oak.LRATRV64Bytes", "Oak.LRATRV64Compressed", "Oak.LRATARM64Bytes", "Oak.LRATNativeRefinement"}, {"env", "lean", path}} {
 		cmd := exec.CommandContext(ctx, lake, args...)
 		cmd.Dir = filepath.Join("spec", "lean")
 		out, err := cmd.CombinedOutput()

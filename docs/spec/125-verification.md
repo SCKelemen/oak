@@ -479,6 +479,16 @@ bind both bodies to production encoder and ELF symbol bytes, check endpoint
 and threshold mutations, and refuse truncated/trailing bytes, altered returns,
 64-bit comparisons and shifted subtraction outside the proved subset.
 
+`Oak.LRATNativeRefinement` provides caller-facing contracts for ARM64 and both
+RV64 encodings. The returned register equals the extracted production guard's
+Boolean result encoded as zero or one, for every fuel and arbitrary upper
+input bits. Acceptance is equivalent in both directions, so rejection is
+preserved too. Native acceptance transfers the existing exact endpoint,
+interior-index, and positive, non-wrapping allocation arithmetic guarantees.
+The required native test builds and audits all eighteen refinement theorems.
+These contracts do not yet establish compiled call-site argument placement,
+linkage, memory operations, allocation success, or whole-checker soundness.
+
 Both ARM64 and RV64 guard byte execution are now covered in their internal
 models. Instruction fetch, alignment, translation, traps, the full Sail
 execution bridge, and whole-checker machine soundness remain open. No runtime
@@ -1388,4 +1398,3 @@ In order of payoff, each reusing a surface that exists:
   and stated for TLC through the TLA+ module (`112-protocols.md` §4).
   Next: the every-line reading inside the compiler, and liveness over
   infinite data domains through Lean.
-
