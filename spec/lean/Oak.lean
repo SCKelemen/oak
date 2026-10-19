@@ -262,6 +262,7 @@ import Oak.LRATBounds
 import Oak.LRATPreflight
 import Oak.LRATLifecycleSoundness
 import Oak.LRATNativeGuards
+import Oak.LRATRV64Bytes
 import Oak.LRATRUP
 import Oak.LRATRUPSoundness
 import Oak.LRATCheckerState
