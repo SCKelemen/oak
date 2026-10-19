@@ -445,6 +445,22 @@ the Oak fallback. The solver cache includes both units. This closes a scalar
 realization step, not general instruction decoding, ABI/linker correctness,
 the Go verifier's implementation, or whole-checker compiled soundness.
 
+`Oak.LRATRV64Bytes` additionally decodes and executes the exact uncompressed
+RV64 bodies for both guards. The result register is exactly zero or one for
+arbitrary initial registers, and acceptance implies the existing mathematical
+bounds. Return clears bit zero of `ra`; all nonzero registers outside the
+body's argument/scratch writes are preserved. The proof uses Oak's internal
+register, comparison and JALR semantics, with a fail-closed decoder for shifts,
+LUI and ADDIW, and requires a final RET with no trailing words.
+
+The required native Lean test binds both bodies to production encoder output
+and ELF symbol bytes for explicit `generic_rv64+m` (without C compression).
+It checks truncated/corrupt returns and semantic counterexamples for changed
+threshold, comparison, and normalization instructions. Default hosted RV64
+uses compressed instructions and is **not** covered by this exact-byte proof;
+ARM64 instruction execution, fetch/traps, the Sail execution bridge, and
+whole-checker machine soundness remain open. No runtime selection changes.
+
 This establishes expected-formula soundness for the extracted binding gate
 and word checker. Extraction correctness, allocation/FFI semantics, and
 compiled ARM64/RV64 executables remain separate obligations.
