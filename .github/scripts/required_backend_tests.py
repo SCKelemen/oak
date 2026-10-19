@@ -33,6 +33,9 @@ class Suite:
 
 
 SUITES = {
+    "native-object": Suite("./compiler", "15m", (
+        "TestNativeBitwiseObjectLean",
+    )),
     "cross-compiler": Suite("./compiler", "15m", (
         "TestE2EInferredValueNativeRV64UnderQEMU",
         "TestE2EDispatchSelectsSVEUnderQEMU",

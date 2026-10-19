@@ -186,6 +186,21 @@ jobs:
           OAK_REQUIRE_ARM64_LEAN: '1'
         run: go test ./asm -run '^TestAArch64BitwiseFunction' -count=1 -v
 
+      - name: Check complete native bitwise objects and theorem trust
+        run: |
+          python3 -m unittest discover -s tools/native_object_fixtures -p test_check.py
+          python3 tools/native_object_fixtures/check.py
+
+      - name: Require production native bitwise object correspondence
+        env:
+          OAK_REQUIRE_NATIVE_OBJECT_LEAN: '1'
+        run: python3 .github/scripts/required_backend_tests.py native-object
+
+      - name: Check original-source to complete-artifact parity and theorem trust
+        run: |
+          python3 -m unittest discover -s tools -p test_source_object_parity.py
+          python3 tools/source_object_parity.py
+
       - name: Check ARM64 compiler ELF startup against Lean
         env:
           OAK_REQUIRE_ARM64_LEAN: '1'

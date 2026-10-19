@@ -1403,6 +1403,37 @@ This is not symbol/layout authority, relocation-record or file-format
 correctness, loading, register execution, whole-resolver transactionality, or
 a whole-link theorem.
 
+### Narrow bitwise ET_REL object/name binding
+
+`Oak.NativeBitwiseObject.accepted_named_body` independently checks an entire
+canonical one-function Linux AArch64 or RV64 ELF64 relocatable object and proves
+that its uniquely decoded `oak_` GLOBAL/FUNC symbol owns the complete checked
+text body, with section-relative entry zero. The header's section pointer and
+symbol table's string-table link are read from the object. Exact architecture,
+ABI flags, seven section records, four symbols, empty data/relocations, padding
+and file exhaustion are checked; altered names, extents, aliases and extra
+content refuse. `named_load` and `named_fetch_byte` expose the explicit aligned,
+nonwrapping flat-section loading model. Target corollaries set PC to that entry
+and retain the existing ARM projection and RV 96-byte frame assumptions.
+
+The container theorem itself does not parse source. The separate
+`Oak.BitwiseSourceObjectParity.check` now derives name and operation from the
+original source bytes and checks both full native objects plus the complete
+Wasm module. Its all-input theorem retains exact grammar membership, the
+established typed source interpreter, actual symbol/whole-body identity and
+modeled named-entry results under explicit ABI/frame/code-base preconditions.
+The older `BitwiseSourceParity` theorem still takes native bodies. Neither
+theorem grants production proof authority, system linking/loading, executable
+startup, physical code/data coherence or full external-ISA/fetch/return-target
+execution.
+Actual full-object pins and malformed-object gates are kernel checked; a fresh
+production-emission regression and exported-theorem axiom audit run in the
+existing formal job. The source-composition gate additionally requires its
+exact seven theorem and nineteen fixture inventories plus all twenty-six clean
+axiom reports. See `docs/notes/source-bitwise-proof.md`,
+`docs/notes/source-native-object-parity.md` and
+`tools/native_object_fixtures/README.md` for exact scope and reproduction.
+
 ### 2.6 Object → binary
 
 The default link is the C compiler's driver (`compileC`), static for Linux

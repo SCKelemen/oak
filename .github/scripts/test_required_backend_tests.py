@@ -117,6 +117,7 @@ class RequiredBackendTests(unittest.TestCase):
 
     def test_audited_suite_manifest(self):
         expected_roots = {
+            "native-object": {"TestNativeBitwiseObjectLean"},
             "cross-compiler": {"TestE2EInferredValueNativeRV64UnderQEMU", "TestE2EDispatchSelectsSVEUnderQEMU", "TestE2EFreestandingPartialLink", "TestE2ENativeConstantTablesExecutable", "TestRingsCrossTargets"},
             "cross-testrunner": {"TestForeignTargetRunsUnderEmulator", "TestTargetFlagBuildsWithoutRunning"},
             "lean-compiler": {"TestLeanFloatBitsAgreeWithHost", "TestE2ELeanFunctionArguments", "TestE2ELeanReduceLanesFunctionArgument", "TestE2ELeanNestedAssignment"},
@@ -146,7 +147,7 @@ class RequiredBackendTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         lanes = {
             "ci.yml": ("cross-compiler", "cross-testrunner"),
-            "formal.yml": ("lean-compiler", "lean-cli"),
+            "formal.yml": ("lean-compiler", "lean-cli", "native-object"),
             "formal-sail.yml": ("sail-source", "llvm"),
         }
         for file, suites in lanes.items():
