@@ -1,0 +1,8 @@
+package main
+import("bytes")
+
+pub copy_checked: (dst: [*]u8, src: []u8): Bool {
+  n: u32 = len(src)
+  copied: Result[u32, bytes.CopyError] = bytes.copy_into(dst, src)
+  copied ? | .Ok(count) => count == n | .Err(error) => false
+}

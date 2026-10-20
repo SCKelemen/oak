@@ -111,8 +111,11 @@ validate canonical source identifiers, bind an opaque body to an operation, or
 prove the Go seed, extractor translation, C compiler, generic linker, source
 compiler, ISA execution, or Linux startup/exit behavior. The existing source
 checker remains responsible for canonical source grammar and body binding. The
-successful-domain theorem is not a total API refinement theorem: compiled-Oak
-refusal tests remain finite evidence, and universal refusal is not asserted.
+successful-domain theorem `image_exact` does not itself assert universal
+refusal. The separate [total-outcome refinement](native-envelope-total-outcome.md)
+now proves exact success or unchanged zero-return refusal for every representable
+destination/name/text array and arbitrary UInt32 architecture at fuel at least
+4929. The compiled-Oak refusal tests remain supplementary finite evidence.
 
 `TestLeanNativeBitwiseEnvelopeProof` first checks exact regeneration, then runs
 `tools/native_envelope_proof/check.py`. It rebuilds every local transitive import
