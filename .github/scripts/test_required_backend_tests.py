@@ -153,6 +153,33 @@ class RequiredBackendTests(unittest.TestCase):
         required_runtime = {"MaximumNameAndSource", "DropContract/arm", "DropContract/rv", "ActualSuccessfulRefusalProof", "ValidRecordThenFailure", "CanceledGlobalQueue", "CloseActiveRequest"}
         self.assertTrue({"TestImagePinnedRuntime/" + n for n in required_runtime} <= set(required.SUITES["checked-image-runtime"].tests))
 
+    def test_strict_entry_gate_is_fail_closed(self):
+        workflow = (Path(__file__).resolve().parents[1] / "workflows/formal-sail.yml").read_text()
+        self.assertEqual(workflow.count("          python3 .github/scripts/required_backend_tests.py strict-entry\n"), 1)
+        suite = required.SUITES["strict-entry"]
+        self.assertTrue(suite.exact_children)
+        for omitted in suite.tests:
+            results = required.RequiredResults(suite)
+            for name in suite.tests:
+                if name != omitted:
+                    for action in ("run", "pass"):
+                        results.accept({"Action": action, "Package": suite.import_path, "Test": name})
+            results.accept({"Action": "pass", "Package": suite.import_path})
+            with self.subTest(omitted=omitted), self.assertRaisesRegex(ValueError, omitted):
+                results.finish(0)
+        for skipped in suite.tests:
+            results = required.RequiredResults(suite)
+            for name in suite.tests:
+                results.accept({"Action": "run", "Package": suite.import_path, "Test": name})
+                results.accept({"Action": "skip" if name == skipped else "pass",
+                                "Package": suite.import_path, "Test": name})
+            results.accept({"Action": "pass", "Package": suite.import_path})
+            with self.subTest(skipped=skipped), self.assertRaisesRegex(ValueError, "skip"):
+                results.finish(0)
+        with patch.object(required.subprocess, "check_output", return_value="ok package [no tests to run]\n"):
+            with self.assertRaises(ValueError):
+                required.check_inventory(suite)
+
     def test_audited_suite_manifest(self):
         expected_roots = {
             'checked-image-sources': {'TestEmbeddedClosureCustody', 'TestImageEmbeddedClosureCustody'},
@@ -177,6 +204,7 @@ class RequiredBackendTests(unittest.TestCase):
             },
             "native-object": {"TestNativeBitwiseObjectLean"},
             "native-image": {"TestNativeBitwiseImageLean"},
+            "strict-entry": {"TestRV64StrictEntryBitwiseCompilerMatchesLean", "TestRV64StrictEntryToolchainSelection"},
             "cross-compiler": {"TestE2EInferredValueNativeRV64UnderQEMU", "TestE2EDispatchSelectsSVEUnderQEMU", "TestE2EFreestandingPartialLink", "TestE2ENativeConstantTablesExecutable", "TestRingsCrossTargets"},
             "cross-testrunner": {"TestForeignTargetRunsUnderEmulator", "TestTargetFlagBuildsWithoutRunning"},
             "lean-compiler": {"TestLeanFloatBitsAgreeWithHost", "TestE2ELeanFunctionArguments", "TestE2ELeanReduceLanesFunctionArgument", "TestE2ELeanNestedAssignment"},
@@ -193,6 +221,8 @@ class RequiredBackendTests(unittest.TestCase):
                 self.assertIsNone(re.search(suite.pattern, root + "Other"))
                 self.assertIsNone(re.search(suite.pattern, "Other" + root))
         expected_children = {
+            "strict-entry": {"TestRV64StrictEntryBitwiseCompilerMatchesLean/" + child
+                             for child in ("interfaces", "pins", "audit")},
             "cross-compiler": {"TestE2ENativeConstantTablesExecutable/freestanding/riscv64", "TestE2ENativeConstantTablesExecutable/freestanding/arm64", "TestRingsCrossTargets/linux/riscv64", "TestRingsCrossTargets/linux/arm64"},
             "lean-compiler": {"TestE2ELeanFunctionArguments/Lean", "TestE2ELeanReduceLanesFunctionArgument/Lean", "TestE2ELeanNestedAssignment/Lean"},
             "lean-cli": {"TestBuildLeanNamespace/LeanImports"},

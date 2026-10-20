@@ -402,6 +402,13 @@ SUITES = {
     "native-object": Suite("./compiler", "15m", (
         "TestNativeBitwiseObjectLean",
     )),
+    "strict-entry": Suite("./compiler", "30m", (
+        "TestRV64StrictEntryToolchainSelection",
+        "TestRV64StrictEntryBitwiseCompilerMatchesLean",
+        "TestRV64StrictEntryBitwiseCompilerMatchesLean/interfaces",
+        "TestRV64StrictEntryBitwiseCompilerMatchesLean/pins",
+        "TestRV64StrictEntryBitwiseCompilerMatchesLean/audit",
+    ), exact_children=True),
     "native-image": Suite("./compiler", "30m", (
         "TestNativeBitwiseImageLean",
     )),
