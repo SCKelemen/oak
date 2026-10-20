@@ -103,9 +103,35 @@ type ObjectOptions struct {
 
 // WriteObjectWith is WriteObject with the target facts.
 func WriteObjectWith(format ObjectFormat, functions []EncodedFunction, options ObjectOptions) ([]byte, error) {
+	return writeObjectFor("", format, functions, options)
+}
+
+// WriteObjectFor emits an object for an explicit native architecture, including
+// empty and data-only objects. Only arm64 and rv64 are admitted. Every function
+// must explicitly name the requested architecture; unlike WriteObjectWith,
+// this boundary does not interpret an empty architecture as ARM64.
+// The architecture selects metadata, not a proof that supplied bytes are valid.
+func WriteObjectFor(arch string, format ObjectFormat, functions []EncodedFunction, options ObjectOptions) ([]byte, error) {
+	switch arch {
+	case ArchArm64, ArchRV64:
+	default:
+		return nil, fmt.Errorf("object: unsupported explicit architecture %q", arch)
+	}
+	for _, fn := range functions {
+		if fn.Arch != arch {
+			return nil, fmt.Errorf("object: function %s architecture %q does not match %q", fn.Symbol, fn.Arch, arch)
+		}
+	}
+	return writeObjectFor(arch, format, functions, options)
+}
+
+func writeObjectFor(arch string, format ObjectFormat, functions []EncodedFunction, options ObjectOptions) ([]byte, error) {
 	layout, err := layOut(functions)
 	if err != nil {
 		return nil, err
+	}
+	if arch != "" {
+		layout.arch = arch
 	}
 	if err := layout.addData(options.Data); err != nil {
 		return nil, err

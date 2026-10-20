@@ -2,9 +2,9 @@
 
 `InstallImages` and `CheckedImageBundle` form a separate opt-in capability for
 original canonical source, a complete Wasm module, and complete one-function
-Linux ARM64/RV64 ET_EXEC images. The existing `Install`, `CheckedBundle`, 41-file
-object closure, object schema, legacy compiler verdicts and resource limits are
-unchanged. No object capability or diagnostic receipt licenses image admission.
+Linux ARM64/RV64 ET_EXEC images. The existing `Install`, `CheckedBundle`, object schema, legacy compiler verdicts
+and resource limits remain separate and unchanged. The object closure now has
+42 files, including the shared control-flow planning dependency. No object capability or diagnostic receipt licenses image admission.
 
 ```go
 installation, err := bitwisecheck.InstallImages(ctx, archivePath)
@@ -45,8 +45,8 @@ addresses 65548 (ARM) and 65552 (RV); file offsets are 4108/4112 and body extent
 The public host remains Linux amd64. Supply the same exact pinned official
 Lean 4.33.1 archive described in [README.md](README.md), with the trusted host
 `/usr/bin/zstd`. Shared private setup verifies and extracts a fresh private copy,
-then freshly builds the separate 42-file image closure directly from embedded
-sources. The old object build is not expanded. Both kinds share implementation,
+then freshly builds the separate 43-file image closure directly from embedded
+sources. The object build remains a distinct 42-file closure. Both kinds share implementation,
 not mutable installations or trusted build caches. Simultaneous object and image
 installations duplicate the roughly 2.9 GiB distribution and proof builds.
 The two fixed public constructors alone supply private source/identity/control
@@ -58,8 +58,11 @@ installation/checking is added to object requests. The source proposal regular
 expression is initialized lazily.
 
 Image proof package: `c9452b2c3772ccf9367be36735063855b0cef5d1`.
-Image closure SHA-256: `c8c958c509fc4f4cf97471a38a73819b3e88cff6ae56523afb23c8ea29323473`.
-Object identity remains `54d04d89ad7e7323e6aff70d88e952e1d1935093844189f8ab3eced09e416c30`.
+Image closure SHA-256: `9060359c9cdba07e6fa81bd1058b8453614861e01ad2b0eb33b3eb0916405208`.
+Object closure SHA-256: `ab2af11d0ae904b63fa3fba54cd2ade4d16f85c52649c851ddae6ac99c09f659`.
+Both identities intentionally roll over with the reviewed shared
+`Oak.ControlFlowPlan` dependency and compatible ARM64 plan aliases; the image
+roots and separate object/image admission contracts are unchanged.
 The image digest has distinct length-framed domain separation and includes the
 exact strengthened model and independent new-image auditor. No frozen proof
 source is rewritten by the runtime.

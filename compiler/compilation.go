@@ -827,7 +827,7 @@ func (comp Compilation) EmitNative(format asm.ObjectFormat) Stage[NativeOutput] 
 		if err != nil {
 			return NativeOutput{}, fmt.Errorf("asm: %w", err)
 		}
-		object, err := asm.WriteObjectWith(format, encoded, comp.objectOptions(nativeData(lowered.Model.NativeData, generator.CFunctionName)))
+		object, err := asm.WriteObjectFor(comp.options.Target.AsmArch(), format, encoded, comp.objectOptions(nativeData(lowered.Model.NativeData, generator.CFunctionName)))
 		if err != nil {
 			return NativeOutput{}, err
 		}
@@ -892,7 +892,7 @@ func (comp Compilation) EmitNativeObject(format asm.ObjectFormat) Stage[[]byte] 
 		if err != nil {
 			return nil, fmt.Errorf("asm: %w", err)
 		}
-		return asm.WriteObjectWith(format, encoded, comp.objectOptions(nativeData(lowered.Model.NativeData, generator.CFunctionName)))
+		return asm.WriteObjectFor(comp.options.Target.AsmArch(), format, encoded, comp.objectOptions(nativeData(lowered.Model.NativeData, generator.CFunctionName)))
 	})
 }
 
@@ -1087,7 +1087,7 @@ func (comp Compilation) EmitAsmObject(format asm.ObjectFormat) Stage[[]byte] {
 		if err != nil {
 			return nil, fmt.Errorf("asm: %w", err)
 		}
-		return asm.WriteObjectWith(format, encoded, comp.objectOptions(nativeData(lowered.Model.NativeData, generator.CFunctionName)))
+		return asm.WriteObjectFor(comp.options.Target.AsmArch(), format, encoded, comp.objectOptions(nativeData(lowered.Model.NativeData, generator.CFunctionName)))
 	})
 }
 
