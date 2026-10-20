@@ -7,14 +7,14 @@ import "fmt"
 // spelling; new callers should supply an explicit target. No other spelling
 // may inherit ARM64 encoding or container metadata.
 func encodingArchitecture(arch string) (string, error) {
-	switch arch {
-	case "", ArchArm64:
-		return ArchArm64, nil
-	case ArchRV64:
-		return ArchRV64, nil
-	default:
-		return "", fmt.Errorf("unsupported native encoding architecture %q", arch)
+	if arch == "" {
+		arch = ArchArm64
 	}
+	target, err := ResolveNativeTarget(arch)
+	if err != nil {
+		return "", err
+	}
+	return target.Arch(), nil
 }
 
 // EncodeFunction encodes a checked function for its admitted native target,
@@ -29,12 +29,11 @@ func EncodeFunction(fn *Function) ([]byte, []Relocation, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("encode %s: %w", fn.Name, err)
 	}
-	switch arch {
-	case ArchArm64:
-		return encodeARM64Function(fn)
-	case ArchRV64:
-		return encodeRV64Function(fn)
-	default:
-		return nil, nil, fmt.Errorf("encode %s: no encoder for architecture %q", fn.Name, arch)
+	target, err := ResolveNativeTarget(arch)
+	if err != nil {
+		return nil, nil, err
 	}
+	bound := *fn
+	bound.Arch = arch
+	return target.Encode(&bound)
 }

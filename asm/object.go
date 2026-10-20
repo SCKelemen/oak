@@ -263,6 +263,10 @@ func layOut(functions []EncodedFunction) (*textLayout, error) {
 		if err != nil {
 			return nil, fmt.Errorf("object: function %s: %w", fn.Symbol, err)
 		}
+		target, err := ResolveNativeTarget(arch)
+		if err != nil {
+			return nil, fmt.Errorf("object: %s: %w", fn.Symbol, err)
+		}
 		if i == 0 {
 			l.arch = arch
 		} else if arch != l.arch {
@@ -292,7 +296,7 @@ func layOut(functions []EncodedFunction) (*textLayout, error) {
 			if r.Symbol == "" {
 				return nil, fmt.Errorf("object: %s: relocation at %d has no symbol", fn.Symbol, r.Offset)
 			}
-			if _, known := relocationFootprint(r.Kind); !known {
+			if !target.AcceptsRelocation(r.Kind) {
 				return nil, fmt.Errorf("object: %s: relocation kind %q", fn.Symbol, r.Kind)
 			}
 			if !relocationFits(len(fn.Bytes), r.Offset, r.Kind) {
