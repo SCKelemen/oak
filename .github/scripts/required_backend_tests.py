@@ -35,6 +35,15 @@ class Suite:
 
 
 SUITES = {
+    'stateful-copy': Suite('./compiler', '10m', (
+        'TestLeanStatefulCopyProof',
+        'TestStatefulCopySourceClosure',
+        'TestStatefulCopyConcreteLayoutAndNativeCall',
+        'TestStatefulCopyConcreteLayoutAndNativeCall/arm64',
+        'TestStatefulCopyConcreteLayoutAndNativeCall/rv64',
+        'TestStatefulCopyCurrentOptIRAndWasmRefusals',
+        'TestStatefulCopyCallerMemoryFixtures',
+    ), exact_children=True),
     'selfhost-image-producers': Suite('./compiler', '30m', (
         'TestE2ESelfHostedBitwiseELF',
         'TestE2ESelfHostedBitwiseELF/arch1/bitwise/op1',
@@ -185,6 +194,7 @@ SUITES = {
         'TestE2ESelfHostedBitwiseELFExtract',
         'TestLeanNativeBitwiseEnvelopeExtract',
         'TestLeanNativeBitwiseEnvelopeProof',
+        'TestLeanNativeBitwiseEnvelopeTotalProof',
         'TestE2ESelfHostedWasmBitwiseModule',
         'TestE2ESelfHostedWasmBitwiseModule/and_bitwise',
         'TestE2ESelfHostedWasmBitwiseModule/and_Mix9',

@@ -115,3 +115,19 @@ Tests cover description parity/refusal, recipe identity, admission failure,
 stale reports, CFG snapshot ownership, old/new Wasm API byte equality, actual
 engine execution and browser compile-only/hash/cancellation behavior. They do
 not constitute universal implementation refinement or a throughput improvement.
+
+## Shared native control-flow planning (October 2026)
+
+`Oak.ControlFlowPlan` now owns the five empty-edge-copy terminator plans,
+selection policy, instruction count, destination interpretation, layout
+admission, and the universal selected-destination theorem. ARM64 and RV64
+control-flow modules use this definition through compatibility names, and
+retain their public `assemble_sound`, `select_destination`, and
+`checked_successor` contracts.
+
+Encoding, condition-register interpretation, state preservation, and execution
+remain target-specific. The shared layout law assumes four-byte instructions;
+it does not admit compressed RV64 layouts, edge-copy stubs, or Wasm structured
+control. This is the first proof-layer consolidation, not a universal backend
+interface or a new compiler-correctness claim. Existing production-selector
+certificate gates continue to exercise both adapters.

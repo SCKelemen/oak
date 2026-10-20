@@ -212,6 +212,7 @@ import Oak.Stdlib.GraphemeExtracted
 import Oak.Stdlib.NormalizeExtracted
 import Oak.Stdlib.VarintLaws
 import Oak.Stdlib.BytesLaws
+import Oak.StatefulCopy
 import Oak.Stdlib.BitsetLaws
 import Oak.Stdlib.EndianLaws
 import Oak.Stdlib.BufferLaws
@@ -359,3 +360,5 @@ import Oak.CNFRoots
 import Oak.CNFLayout
 import Oak.CNFAllocation
 import Oak.SolverAllocation
+
+import Oak.NativeTarget

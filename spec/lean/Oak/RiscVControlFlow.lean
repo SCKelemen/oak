@@ -1,3 +1,4 @@
+import Oak.ControlFlowPlan
 import Oak.RiscVDirectControl
 
 /-! Certificates for register-resident Bool terminators with empty edge copies,
@@ -75,31 +76,33 @@ theorem localWord_step {nonzero : Bool} {rt : Reg} {pc target : X} {word : BitVe
       split <;> simp_all
   next => contradiction
 
-inductive Plan
-  | fall | jump (target : Nat) | zero (target : Nat) | nonzero (target : Nat)
-  | pair (yes no : Nat)
-  deriving DecidableEq, Repr
+/-- Compatibility names for the shared fixed-width terminator plan. -/
+abbrev Plan := Oak.ControlFlowPlan.Plan
 
-def Plan.words : Plan → Nat
-  | .fall => 0
-  | .pair _ _ => 2
-  | _ => 1
+-- Preserve fully qualified constructor spellings, including in patterns.
+namespace Plan
+export Oak.ControlFlowPlan.Plan (fall jump zero nonzero pair)
+end Plan
 
-/-- The production selector's empty-edge-copy cases, in the same order. -/
-def selectPlan (yes no : Nat) (next : Option Nat) : Plan :=
-  if yes = no then
-    if next = some yes then .fall else .jump yes
-  else if next = some yes then .zero no
-  else if next = some no then .nonzero yes
-  else .pair yes no
+abbrev Plan.words (p : Plan) : Nat := Oak.ControlFlowPlan.Plan.words p
 
-def destination (p : Plan) (fall : BitVec 64) (addr : Nat → BitVec 64) (value : Bool) : BitVec 64 :=
-  match p with
-  | .fall => fall
-  | .jump t => addr t
-  | .zero t => if value then fall else addr t
-  | .nonzero t => if value then addr t else fall
-  | .pair yes no => if value then addr yes else addr no
+-- Public spelling and definitional-equality regression controls.
+example : Oak.RiscVControlFlow.Plan.fall = Oak.ControlFlowPlan.Plan.fall := rfl
+example (t : Nat) : Oak.RiscVControlFlow.Plan.jump t = Oak.ControlFlowPlan.Plan.jump t := rfl
+example (t : Nat) : Oak.RiscVControlFlow.Plan.zero t = Oak.ControlFlowPlan.Plan.zero t := rfl
+example (t : Nat) : Oak.RiscVControlFlow.Plan.nonzero t = Oak.ControlFlowPlan.Plan.nonzero t := rfl
+example (yes no : Nat) : Oak.RiscVControlFlow.Plan.pair yes no = Oak.ControlFlowPlan.Plan.pair yes no := rfl
+example (p : Plan) :
+  (match p with
+    | Oak.RiscVControlFlow.Plan.fall => Oak.RiscVControlFlow.Plan.fall
+    | Oak.RiscVControlFlow.Plan.jump t => Oak.RiscVControlFlow.Plan.jump t
+    | Oak.RiscVControlFlow.Plan.zero t => Oak.RiscVControlFlow.Plan.zero t
+    | Oak.RiscVControlFlow.Plan.nonzero t => Oak.RiscVControlFlow.Plan.nonzero t
+    | Oak.RiscVControlFlow.Plan.pair yes no => Oak.RiscVControlFlow.Plan.pair yes no
+  ) = p := by cases p <;> rfl
+abbrev selectPlan := Oak.ControlFlowPlan.selectPlan
+
+abbrev destination := Oak.ControlFlowPlan.destination
 
 def assemble (p : Plan) (pc : BitVec 64) (addr : Nat → BitVec 64) (rt : BitVec 5) :
     Option (List (BitVec 32)) :=
@@ -127,26 +130,26 @@ theorem assemble_sound (p : Plan) (pc : BitVec 64) (addr : Nat → BitVec 64) (r
     run words ⟨pc, regs⟩ =
       some ⟨destination p (pc + BitVec.ofNat 64 (4 * p.words)) addr (boolValue regs rt), regs⟩ := by
   cases p with
-  | fall => simp [assemble] at h; subst words; simp [run, destination, Plan.words]
+  | fall => simp [assemble] at h; subst words; simp [run, destination, Oak.ControlFlowPlan.destination, Plan.words, Oak.ControlFlowPlan.Plan.words]
   | jump t =>
     cases hw : jumpWord pc (addr t) <;> simp [assemble, hw] at h
     next word =>
       subst words
-      simp [run, jumpWord_step hw regs hz, destination]
+      simp [run, jumpWord_step hw regs hz, destination, Oak.ControlFlowPlan.destination]
   | zero t =>
     cases hw : localWord false rt pc (addr t) <;> simp [assemble, hw] at h
     next word =>
       subst words
       rw [run, localWord_step hw regs]
       cases hc : (boolValue regs rt) <;>
-        simp [branchTo, hc, destination, Plan.words, run]
+        simp [branchTo, hc, destination, Oak.ControlFlowPlan.destination, Plan.words, Oak.ControlFlowPlan.Plan.words, run]
   | nonzero t =>
     cases hw : localWord true rt pc (addr t) <;> simp [assemble, hw] at h
     next word =>
       subst words
       rw [run, localWord_step hw regs]
       cases hc : (boolValue regs rt) <;>
-        simp [branchTo, hc, destination, Plan.words, run]
+        simp [branchTo, hc, destination, Oak.ControlFlowPlan.destination, Plan.words, Oak.ControlFlowPlan.Plan.words, run]
   | pair yes no =>
     cases hw : localWord true rt pc (addr yes) <;> simp [assemble, hw] at h
     next first =>
@@ -155,37 +158,17 @@ theorem assemble_sound (p : Plan) (pc : BitVec 64) (addr : Nat → BitVec 64) (r
         subst words
         rw [run, localWord_step hw regs]
         cases hc : (boolValue regs rt) <;>
-          simp [branchTo, hc, destination, run, jumpWord_step hj regs hz]
+          simp [branchTo, hc, destination, Oak.ControlFlowPlan.destination, run, jumpWord_step hj regs hz]
 
-def layoutAgrees (p : Plan) (pc : BitVec 64) (addr : Nat → BitVec 64) (next : Option Nat) : Bool :=
-  match next with
-  | none => true
-  | some id => pc + BitVec.ofNat 64 (4 * p.words) == addr id
+abbrev layoutAgrees := Oak.ControlFlowPlan.layoutAgrees
 
 theorem select_destination (yes no : Nat) (next : Option Nat) (pc : BitVec 64)
     (addr : Nat → BitVec 64) (value : Bool)
     (h : layoutAgrees (selectPlan yes no next) pc addr next = true) :
     destination (selectPlan yes no next)
       (pc + BitVec.ofNat 64 (4 * (selectPlan yes no next).words)) addr value =
-      if value then addr yes else addr no := by
-  by_cases he : yes = no
-  · subst no
-    by_cases hn : next = some yes
-    · subst next; simpa [selectPlan, destination, layoutAgrees, Plan.words] using h
-    · simp [selectPlan, hn, destination]
-  · by_cases hy : next = some yes
-    · subst next
-      have hp : pc + 4 = addr yes := by simpa [layoutAgrees, selectPlan, he, Plan.words] using h
-      simp only [selectPlan, if_neg he, destination, Plan.words]
-      change (if value then pc + 4 else addr no) = _
-      rw [hp]
-    · by_cases hn : next = some no
-      · subst next
-        have hp : pc + 4 = addr no := by simpa [layoutAgrees, selectPlan, he, hy, Plan.words] using h
-        simp only [selectPlan, if_neg he, if_neg hy, destination, Plan.words]
-        change (if value then addr yes else pc + 4) = _
-        rw [hp]
-      · simp [selectPlan, he, hy, hn, destination]
+      if value then addr yes else addr no :=
+  Oak.ControlFlowPlan.select_destination yes no next pc addr value h
 
 /-- A decidable certificate for one actual production terminator and layout. -/
 def check (yes no : Nat) (next : Option Nat) (pc : BitVec 64)

@@ -115,8 +115,16 @@ type frameShape struct {
 
 // targetFor picks the lane's target.
 func targetFor(arch string) (*target, error) {
-	switch arch {
-	case "", asm.ArchArm64:
+	// Legacy machine callers may omit ARM64; the shared contract may not.
+	if arch == "" {
+		arch = asm.ArchArm64
+	}
+	native, err := asm.ResolveNativeTarget(arch)
+	if err != nil {
+		return nil, fmt.Errorf("machine: %w", err)
+	}
+	switch native.Arch() {
+	case asm.ArchArm64:
 		return arm64Target, nil
 	case asm.ArchRV64:
 		return rv64Target, nil

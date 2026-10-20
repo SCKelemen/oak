@@ -10,7 +10,7 @@ import (
 	"sort"
 )
 
-//go:embed Oak/WasmAssemblerExtracted.lean Oak/WasmAssemblerLaws.lean Oak/WasmLEB.lean Oak/WasmEncoding.lean Oak/WasmAssemblerBytes.lean Oak/WasmInstruction.lean Oak/WasmAssemblerInstruction.lean Oak/WasmAssemblerSequence.lean Oak/WasmAssemblerTotal.lean Oak/WasmNumeric.lean Oak/WasmExecution.lean Oak/BitwiseFunction.lean Oak/BitwiseModule.lean Oak/ByteFields.lean Oak/BitwiseSource.lean Oak/AssemblerSemantics.lean Oak/IntegerDivision.lean Oak/LoweringRefinement.lean Oak/BitwiseSourceLowering.lean Oak/MinimalELF.lean Oak/AArch64Encoding.lean Oak/AArch64ReturnEncoding.lean Oak/AArch64BitwiseFunction.lean Oak/RV64Relocation.lean Oak/RiscV.lean Oak/RiscVMaterialization.lean Oak/RiscVCallExecution.lean Oak/RiscVBranchEncoding.lean Oak/RiscVBitwiseFunction.lean Oak/AArch64CompareBranchEncoding.lean Oak/AArch64ConditionalBranch.lean Oak/ArmASL.lean Oak/AArch64BranchExecution.lean Oak/ObjectRelocation.lean Oak/AArch64DirectBranchEncoding.lean Oak/AArch64ControlFlow.lean Oak/AArch64SpillMemory.lean Oak/RiscVFramedBitwise.lean Oak/NativeBitwiseObject.lean Oak/BitwiseSourceObjectParity.lean Oak/CheckedBundleAudit.lean
+//go:embed Oak/WasmAssemblerExtracted.lean Oak/WasmAssemblerLaws.lean Oak/WasmLEB.lean Oak/WasmEncoding.lean Oak/WasmAssemblerBytes.lean Oak/WasmInstruction.lean Oak/WasmAssemblerInstruction.lean Oak/WasmAssemblerSequence.lean Oak/WasmAssemblerTotal.lean Oak/WasmNumeric.lean Oak/WasmExecution.lean Oak/BitwiseFunction.lean Oak/BitwiseModule.lean Oak/ByteFields.lean Oak/BitwiseSource.lean Oak/AssemblerSemantics.lean Oak/IntegerDivision.lean Oak/LoweringRefinement.lean Oak/BitwiseSourceLowering.lean Oak/MinimalELF.lean Oak/AArch64Encoding.lean Oak/AArch64ReturnEncoding.lean Oak/AArch64BitwiseFunction.lean Oak/RV64Relocation.lean Oak/RiscV.lean Oak/RiscVMaterialization.lean Oak/RiscVCallExecution.lean Oak/RiscVBranchEncoding.lean Oak/RiscVBitwiseFunction.lean Oak/AArch64CompareBranchEncoding.lean Oak/AArch64ConditionalBranch.lean Oak/ArmASL.lean Oak/AArch64BranchExecution.lean Oak/ObjectRelocation.lean Oak/AArch64DirectBranchEncoding.lean Oak/ControlFlowPlan.lean Oak/AArch64ControlFlow.lean Oak/AArch64SpillMemory.lean Oak/RiscVFramedBitwise.lean Oak/NativeBitwiseObject.lean Oak/BitwiseSourceObjectParity.lean Oak/CheckedBundleAudit.lean
 var sourceFiles embed.FS
 
 var buildOrder = [...]string{
@@ -49,6 +49,7 @@ var buildOrder = [...]string{
 	"Oak/AArch64BranchExecution.lean",
 	"Oak/ObjectRelocation.lean",
 	"Oak/AArch64DirectBranchEncoding.lean",
+	"Oak/ControlFlowPlan.lean",
 	"Oak/AArch64ControlFlow.lean",
 	"Oak/AArch64SpillMemory.lean",
 	"Oak/RiscVFramedBitwise.lean",

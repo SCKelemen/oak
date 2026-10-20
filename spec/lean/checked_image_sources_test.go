@@ -9,15 +9,14 @@ import (
 )
 
 func TestImageEmbeddedClosureCustody(t *testing.T) {
-	const expectedImageIdentity = "c8c958c509fc4f4cf97471a38a73819b3e88cff6ae56523afb23c8ea29323473"
 	if ImageIdentity() != expectedImageIdentity {
 		t.Fatal("frozen image proof identity changed")
 	}
-	if Identity() != "54d04d89ad7e7323e6aff70d88e952e1d1935093844189f8ab3eced09e416c30" {
-		t.Fatal("legacy object identity changed")
+	if Identity() != expectedObjectIdentity {
+		t.Fatal("frozen object proof identity changed")
 	}
 	sources := ImageSources()
-	if len(sources) != 42 {
+	if len(sources) != 43 {
 		t.Fatalf("image closure size %d", len(sources))
 	}
 	known := map[string]bool{}
@@ -51,6 +50,7 @@ func TestImageEmbeddedClosureCustody(t *testing.T) {
 			t.Fatalf("frozen image proof changed: %s", path)
 		}
 	}
+	checkClosureCustodyControls(t, sources, "oak.checked-image-bundle.proof-sources.v1\x00", expectedImageIdentity)
 	original := append([]byte{}, sources[0].Bytes...)
 	sources[0].Bytes[0] ^= 1
 	sources[0].Path = "untrusted.lean"

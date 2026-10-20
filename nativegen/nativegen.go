@@ -1950,8 +1950,18 @@ func (session *CompileSession) CompileFor(lane Lane, fn *ast.FunctionStatement, 
 	if lane.UnrollConstant && lane.UnrollSmall {
 		return nil, fmt.Errorf("native lane cannot combine full and small constant unrolling")
 	}
-	switch lane.Arch {
-	case "", asm.ArchArm64:
+	// CompileFor historically defaults to ARM64. Normalize at this API
+	// boundary; target resolution and proof consumers require explicit names.
+	arch := lane.Arch
+	if arch == "" {
+		arch = asm.ArchArm64
+	}
+	native, targetErr := asm.ResolveNativeTarget(arch)
+	if targetErr != nil {
+		return nil, unsupported("%v", targetErr)
+	}
+	switch native.Arch() {
+	case asm.ArchArm64:
 		var out *asm.Function
 		var err error
 		if lane.UseOptIR {

@@ -83,6 +83,11 @@ jobs:
         working-directory: spec/lean
         run: lake build Oak.AssemblerEntryProvenance Oak.AssemblerCallState
 
+      - name: Check shared native target selection and relocation ownership
+        env:
+          OAK_REQUIRE_NATIVE_TARGET_LEAN: '1'
+        run: go test ./asm -run '^TestNativeTarget' -count=1 -timeout=10m -v
+
   lrat-kernel:
     name: LRAT kernel soundness
     runs-on: ubuntu-24.04
@@ -326,6 +331,13 @@ jobs:
         env:
           OAK_REQUIRE_CLAUSE_AGREEMENT_LEAN: '1'
         run: go test . -run '^TestClauseAgreement' -count=1 -v
+
+      # Separate required inventory: source/layout fixtures are evidence, while
+      # the adapter theorem is freshly checked from source at trust zero.
+      - name: Require stateful-copy representation and source contract
+        env:
+          OAK_REQUIRE_STATEFUL_COPY_LEAN: '1'
+        run: python3 .github/scripts/required_backend_tests.py stateful-copy
 
       - name: Check extracted standard library against compiled and interpreted Oak
         env:
