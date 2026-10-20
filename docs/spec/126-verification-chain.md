@@ -604,7 +604,29 @@ with independent `uint64` arithmetic and exercise four refusals through
 `certify_over` itself. The guard and its dependencies participate in extraction
 drift checks. This closes the CNF arena's caller-side arithmetic premise;
 it does not establish malloc success, validate serialized problem indices,
-protect the separate BDD/SAT arenas, or prove source-term correspondence.
+prove source-term correspondence, or establish success of the allocator.
+The separate BDD/SAT arena checks are described below.
+
+BDD races and the SAT certificate arena now perform their own admission
+checks before construction/allocation. `bdd_allocation_fits` bounds the node
+budget before `next_pow2`, admits only one through three race variants, and
+includes replay storage in its widened per-arena word count. `race_bounded`
+stops with `STATUS_EXCEEDED` if admission fails, without retrying an unsafe
+size. SAT checks the clause/literal-derived header capacities before writing
+them, then checks the complete `sat_layout` footprint before allocating it;
+failures return `CERT_REFUSED`. Both arena checks cap words at 1,073,741,823
+so the existing four-byte allocation multiplication is exact.
+
+`Oak.SolverAllocation` proves exact widened BDD/SAT arithmetic, admission
+bounds, nonwrapping clause/store capacities and literal-header offsets, the SAT constructor's
+natural total, and byte-count safety for both constructors (including BDD
+replay storage). Eight fixed-contract theorem closures have foundational-only
+axiom audits. Compiled checks compare 1,694 boundary requests with independent
+`uint64` arithmetic, check admitted SAT constructor totals, exercise header
+capacity admission, and call the BDD race entry on three refused requests.
+These are arena-sizing guarantees, not whole-prover memory safety: malloc
+success, upstream parser/lowering buffers, other checker allocations, and
+valid serialized indices remain separate obligations.
 
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
