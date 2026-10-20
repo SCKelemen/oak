@@ -354,3 +354,4 @@ import Oak.CNFNodes
 import Oak.CNFObligation
 import Oak.CNFObligationStore
 import Oak.CNFRoots
+import Oak.CNFLayout

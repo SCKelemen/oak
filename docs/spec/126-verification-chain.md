@@ -560,16 +560,32 @@ budget. Valid root IDs within the term count place their bit cells before
 the clause region. `constructed_trace` and `constructed_production` combine
 these facts with admission, eliminating the former trace and read-separation
 premises. The initial memory's bits still need to be related to source-term
-semantics. The constructor's earlier node/hash/cache/stack region allocation,
-`next_pow2` termination, caller-enforced budgets, and valid serialized root
-indices are not proved by these suffix guarantees.
+semantics. Caller-enforced budgets and valid serialized root indices remain
+assumptions; the complete layout guarantees below address the earlier regions.
 
 `TestOakCNFRootsLean` audits nine foundational-only theorem closures, fixes
 contracts for trace derivation and constructor regions, and kernel-replays
 initial root polarity and a wrapped-layout counterexample showing why the
-budget is necessary. Compiled obligation tests additionally check 45 production
+budget is necessary. Compiled obligation tests additionally check 81 production
 layouts across terminal/small/stack-limit capacities, term counts, and clause
 capacities. Existing full-buffer and solver-integration checks remain required.
+
+`Oak.CNFLayout` proves termination of the extracted `next_pow2` for inputs
+at most 2^31 with 32 fuel, including positivity and upper/lower bounds on the
+result. `constructor_terminates` derives constructor existence for node
+capacities at most 2^30. This is separate from allocation safety: under the
+natural-number footprint bound `3*cap + 5*u + 16*stack + 64*terms + 3120 +
+capacity < 2^32`, `complete_regions` proves exact adjoining boundaries for
+all node, unique-table, cache, stack, bit, selection, state, and clause
+regions, and equality of the final total to that footprint. `suffix_budget`
+discharges the earlier root-trace bridge's suffix budget from this bound.
+`TestOakCNFLayoutLean` fixes these contracts, audits seven theorem closures,
+and kernel-replays the doubling boundary and a terminating-but-wrapped
+constructor. The compiled layout cases now check the prefix fields too.
+These theorems do not enforce budgets in callers, prove successful physical
+allocation, establish unique-table probe termination, or relate initial
+bit cells to source-term semantics. No unrestricted constructor safety or
+whole-source verdict theorem is claimed.
 
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
