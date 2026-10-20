@@ -75,6 +75,10 @@ func lratRV64CallContract(t *testing.T) string {
 				kind := "fits"
 				if name == "lrat_alloc_fits" {
 					kind = "alloc"
+					if at < 8 {
+						t.Fatal("missing allocation argument load")
+					}
+					c.WriteString(lratRV64HeaderLoadContract(t, binary.LittleEndian.Uint32(code[at-8:]), binary.LittleEndian.Uint32(code[at-4:]), upper, lower, module))
 				}
 				fmt.Fprintf(&c, "example : Oak.RV64Relocation.pairMatches true %d#32 %d#32 = true := by decide\n", upper, lower)
 				fmt.Fprintf(&c, "example (regs : Oak.RiscVCallExecution.Reg → Oak.RiscVCallExecution.X) : (Oak.RiscVCallExecution.executePatched true 1 %s ⟨%d,regs⟩).pc = %d := by rw [Oak.RiscVCallExecution.executePatched, Oak.RiscVCallExecution.pair_target_sum _ _ (by decide)]; dsimp only; decide\n", pair, place, destination)
@@ -97,6 +101,12 @@ func lratRV64CallContract(t *testing.T) string {
 			fmt.Fprintf(&c, "#print axioms Oak.LRATRV64GuardCalls.%s.%s\n", module, name)
 		}
 	}
+	for _, profile := range []string{"RV64", "RV64Compressed"} {
+		for _, theorem := range []string{"allocation_refines", "allocation_return"} {
+			fmt.Fprintf(&c, "#print axioms Oak.LRATRV64HeaderLoads.%s.%s\n", profile, theorem)
+		}
+	}
+	c.WriteString("#print axioms Oak.LRATRV64HeaderLoads.prepare_header\n#print axioms Oak.LRATRV64HeaderLoads.prepared_argument\n")
 	return c.String()
 }
 
