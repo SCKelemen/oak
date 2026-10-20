@@ -12,10 +12,72 @@ import unittest
 from unittest.mock import patch
 
 import package_shards as shards
+import compiler_shards as compiler
 
 
 NAMES = ["TestOakCNFEmission", "TestOakCNFNodes", "TestOakSolverAgrees", "TestRest", "Example", "FuzzSeed"]
 PACKAGES = [shards.ROOT_PACKAGE, shards.ROOT_PACKAGE + "/compiler", shards.ROOT_PACKAGE + "/parser"]
+
+
+class CompilerShardsTests(unittest.TestCase):
+    def test_e2e_replacements_preserve_old_set_and_boundaries(self):
+        replacements = compiler.REPLACEMENTS[r"^TestE2E[A-R]"]
+        self.assertEqual(replacements, ("e2e-a-j", "e2e-k-r"))
+        self.assertNotIn("e2e-a-r", compiler.SHARDS)
+        # Both patterns partition the same next-character range, independently
+        # of the rest of a present or future test name.
+        names = [prefix + chr(initial) + suffix
+                 for prefix in ("TestE2E", "OtherTestE2E")
+                 for initial in range(128)
+                 for suffix in ("", "FutureCase", "_7", "/nested")]
+        names += ["TestE2E", "TestE2EéFuture", "TestE2EKFuture"]
+        compiler.check_replacements(names)
+        old = {name for name in names if re.search(r"^TestE2E[A-R]", name)}
+        groups = [{name for name in names if re.search(compiler.SHARDS[key][0], name)}
+                  for key in replacements]
+        self.assertEqual(groups[0] | groups[1], old)
+        self.assertFalse(groups[0] & groups[1])
+        for initial, expected in (("A", "e2e-a-j"), ("J", "e2e-a-j"),
+                                  ("K", "e2e-k-r"), ("R", "e2e-k-r")):
+            self.assertEqual(compiler.check_partition(["TestE2E" + initial])[expected], 1)
+        for key in replacements:
+            self.assertEqual(compiler.SHARDS[key][1], "90m")
+
+    def test_e2e_replacement_omissions_overlaps_and_additions_fail_closed(self):
+        for key, pattern, name in (
+            ("e2e-a-j", r"^TestE2E[A-I]", "TestE2EJ"),
+            ("e2e-k-r", r"^TestE2E[L-R]", "TestE2EK"),
+            ("e2e-a-j", r"^TestE2E[A-K]", "TestE2EK"),
+            ("e2e-k-r", r"^TestE2E[J-R]", "TestE2EJ"),
+            ("e2e-k-r", r"^TestE2E[K-S]", "TestE2ESFuture"),
+        ):
+            with self.subTest(pattern=pattern), patch.dict(compiler.SHARDS, {key: (pattern, "90m")}):
+                with self.assertRaises(ValueError):
+                    compiler.check_replacements([name])
+                with self.assertRaises(ValueError):
+                    compiler.check_partition([name])
+
+    def test_e2e_commands_keep_race_inventory_deadline_and_descendants(self):
+        inventory = subprocess.CompletedProcess([], 0, "TestE2EJ\nTestE2EK\nok compiler\n")
+        for key in ("e2e-a-j", "e2e-k-r", "--check"):
+            with self.subTest(key=key), patch.object(compiler.sys, "argv", ["compiler_shards.py", key]), patch.object(compiler.subprocess, "run", return_value=inventory) as run, contextlib.redirect_stdout(io.StringIO()):
+                compiler.main()
+                self.assertEqual(run.call_args_list[0].args[0], ["go", "test", "-race", "./compiler", "-list", "^Test"])
+                self.assertTrue(run.call_args_list[0].kwargs["check"])
+                if key == "--check":
+                    self.assertEqual(run.call_count, 1)
+                else:
+                    self.assertEqual(run.call_count, 2)
+                    self.assertEqual(run.call_args.args[0], ["go", "test", "-v", "-race", "-timeout", "90m", "./compiler", "-run", compiler.SHARDS[key][0]])
+                    self.assertTrue(run.call_args.kwargs["check"])
+
+    def test_ci_matrix_covers_every_compiler_and_package_shard_once(self):
+        ci = (Path(__file__).resolve().parents[1] / "workflows" / "ci.yml").read_text()
+        matrices = re.findall(r"shard: \[([^\]]+)\]", ci)
+        self.assertEqual(len(matrices), 1)
+        actual = [name.strip() for name in matrices[0].split(",")]
+        self.assertCountEqual(actual, [*compiler.SHARDS, *shards.SHARDS])
+        self.assertIn("name: Run Tests (1.27.1, e2e-a-r)\n", ci)
 
 
 class PackageShardsTests(unittest.TestCase):
@@ -132,11 +194,16 @@ class PackageShardsTests(unittest.TestCase):
     def test_compatibility_aggregates_reject_skips_failures_and_cancellations(self):
         workflows = Path(__file__).resolve().parents[1] / "workflows"
         cases = (("ci.yml", "packages", ["test"], ["TEST_RESULT"]),
+                 ("ci.yml", "e2e-a-r", ["test"], ["TEST_RESULT"]),
+                 ("ci.yml", "compiler-rest", ["test"], ["TEST_RESULT"]),
+                 ("ci.yml", "stdlib-rest", ["test"], ["TEST_RESULT"]),
                  ("stdlib.yml", "stdlib", ["stdlib-content", "race-tests"], ["CONTENT_RESULT", "RACE_RESULT"]))
         for filename, job, needs, variables in cases:
             text = (workflows / filename).read_text()
             block = re.search(r"(?ms)^  " + job + r":\n(.*?)(?=^  [a-z][\w-]*:|\Z)", text).group(1)
             self.assertIn("if: always()", block)
+            self.assertNotIn("continue-on-error:", block)
+            self.assertNotIn("concurrency:", block)
             self.assertRegex(block, r"needs: " + re.escape(needs[0] if len(needs) == 1 else "[" + ", ".join(needs) + "]"))
             command = re.search(r"run: (test .*)", block).group(1)
             env = {**os.environ, **dict.fromkeys(variables, "success")}
@@ -146,6 +213,8 @@ class PackageShardsTests(unittest.TestCase):
                 for outcome in ("failure", "cancelled", "skipped", ""):
                     with self.subTest(filename=filename, variable=variable, outcome=outcome):
                         self.assertNotEqual(subprocess.run(["sh", "-c", command], env={**env, variable: outcome}).returncode, 0)
+                missing = {key: value for key, value in env.items() if key != variable}
+                self.assertNotEqual(subprocess.run(["sh", "-c", command], env=missing).returncode, 0)
 
 
 @unittest.skipUnless(shutil.which("go"), "Go is required for the race-build fixture")

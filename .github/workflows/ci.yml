@@ -26,9 +26,10 @@ jobs:
         # cumulatively, retaining the same tests and 45-minute deadlines.
         # Split stdlib-rest after F: measured root-test loads were 40 / 37
         # minutes; both halves retain the former 90-minute deadline.
+        # Split e2e A-R after J, retaining every test and 90-minute deadlines.
         # Split the root package before its cumulative 45-minute race deadline.
         # package_shards.py checks exact Test/Example/Fuzz coverage.
-        shard: [e2e-a-r, e2e-stdlib-text, e2e-stdlib-rest-a-f, e2e-stdlib-rest-g-z, e2e-s-z, compiler-rest-a-m, compiler-rest-n-z, root-cnf-a-g, root-cnf-h-z, root-solver, root-rest, packages-rest]
+        shard: [e2e-a-j, e2e-k-r, e2e-stdlib-text, e2e-stdlib-rest-a-f, e2e-stdlib-rest-g-z, e2e-s-z, compiler-rest-a-m, compiler-rest-n-z, root-cnf-a-g, root-cnf-h-z, root-solver, root-rest, packages-rest]
 
     steps:
     - name: Checkout code
@@ -84,6 +85,19 @@ jobs:
           root-*|packages-rest) python3 .github/scripts/package_shards.py "${{ matrix.shard }}" ;;
           *) python3 .github/scripts/compiler_shards.py "${{ matrix.shard }}" ;;
         esac
+
+  # Preserve the old e2e A-R check name for branch protection. Like the other
+  # compatibility gates, require success from the entire replacement matrix.
+  e2e-a-r:
+    name: Run Tests (1.27.1, e2e-a-r)
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+    steps:
+    - name: Require every test shard
+      env:
+        TEST_RESULT: ${{ needs.test.result }}
+      run: test "$TEST_RESULT" = success
 
   # Preserve the old packages check: success requires all replacement root
   # shards and remaining packages, including cancellation/skip/failure cases.
