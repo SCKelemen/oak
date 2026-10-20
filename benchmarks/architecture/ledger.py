@@ -12,7 +12,8 @@ LEDGER = ROOT / 'docs/spec/proof-obligations.json'
 
 def inventory(root):
     workflows = []
-    for path in sorted((root / '.github/workflows').glob('*.yml')):
+    workflow_dir = root / '.github/workflows'
+    for path in sorted([*workflow_dir.glob('*.yml'), *workflow_dir.glob('*.yaml')]):
         # BaseLoader preserves YAML's `on` key and scalar spelling.
         data = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
         workflows.append({'path': str(path.relative_to(root)),
