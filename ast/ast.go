@@ -357,6 +357,9 @@ type IndexExpression struct {
 	// never confused with element indexing (a[i]) downstream: lowering
 	// rewrites only bracket indexing to bounds-checked core_index.
 	Dot bool
+	// TypeForm preserves source syntax where type applications and array types
+	// share this node with value indexing. It does not affect type semantics.
+	TypeForm IndexTypeForm
 	// Align is the alignment fact a span or view type declares
 	// (`[* align 4096]u8`, `[align 64]f32`; docs/spec/50-borrowing.md
 	// section 2a): the base address is a multiple of Align. Zero when the
@@ -364,27 +367,55 @@ type IndexExpression struct {
 	Align uint32
 }
 
+// IndexTypeForm distinguishes type constructors from value/member indexing.
+type IndexTypeForm uint8
+
+const (
+	IndexValue IndexTypeForm = iota
+	IndexGenericType
+	IndexArrayType
+)
+
 func (ie *IndexExpression) expressionNode()      {}
 func (ie *IndexExpression) TokenLiteral() string { return ie.Token.Literal }
 func (ie *IndexExpression) String() string {
-	var out bytes.Buffer
-	out.WriteRune('(')
-	out.WriteString(ie.Left.String())
-	if ident, ok := ie.Index.(*Identifier); ok {
-		// Record field access
-		out.WriteRune('.')
-		out.WriteString(ident.Value)
-		if ie.Align != 0 {
-			out.WriteString(fmt.Sprintf(" align %d", ie.Align))
+	if ie.TypeForm == IndexArrayType {
+		index := ie.Index.String()
+		// Brackets already group the outer const expression. Nested grouping
+		// is preserved and accepted by the ordinary length expression parser.
+		if _, infix := ie.Index.(*InfixExpression); infix {
+			index = strings.TrimSuffix(strings.TrimPrefix(index, "("), ")")
 		}
-	} else {
-		// Array indexing
-		out.WriteRune('[')
-		out.WriteString(ie.Index.String())
-		out.WriteRune(']')
+		// Synthesized integer nodes may reuse a locating token whose literal
+		// is not a number; their checked value is the array's actual length.
+		if length, integer := ie.Index.(*IntegerLiteral); integer {
+			index = fmt.Sprintf("%d", length.Magnitude())
+		}
+		if ie.Align != 0 {
+			if index != "" {
+				index += " "
+			}
+			index += fmt.Sprintf("align %d", ie.Align)
+		}
+		return "[" + index + "]" + ie.Left.String()
 	}
-	out.WriteRune(')')
-	return out.String()
+	if ie.TypeForm == IndexGenericType {
+		args := []string{ie.Index.String()}
+		base := ie.Left
+		for {
+			inner, ok := base.(*IndexExpression)
+			if !ok || inner.TypeForm != IndexGenericType {
+				break
+			}
+			args = append([]string{inner.Index.String()}, args...)
+			base = inner.Left
+		}
+		return base.String() + "[" + strings.Join(args, ", ") + "]"
+	}
+	if ie.Dot {
+		return "(" + ie.Left.String() + "." + ie.Index.String() + ")"
+	}
+	return "(" + ie.Left.String() + "[" + ie.Index.String() + "])"
 }
 
 // SliceExpression: array[low:high] or array[low:] or array[:high] or array[:]
@@ -535,6 +566,21 @@ type FunctionTypeExpression struct {
 	EffectsDeclared bool
 }
 
+// exposedFunctionRow reports a callable tail whose effect row could capture
+// the enclosing callable's row without parentheses. Array/view prefixes do
+// not close their element type; generic brackets and record braces do.
+func exposedFunctionRow(expr Expression) bool {
+	switch e := expr.(type) {
+	case *FunctionTypeExpression:
+		return true
+	case *IndexExpression:
+		return e.TypeForm == IndexArrayType && exposedFunctionRow(e.Left)
+	case *InfixExpression:
+		return e.Operator == "&" && exposedFunctionRow(e.Right)
+	}
+	return false
+}
+
 func (ft *FunctionTypeExpression) expressionNode()      {}
 func (ft *FunctionTypeExpression) TokenLiteral() string { return ft.Token.Literal }
 func (ft *FunctionTypeExpression) String() string {
@@ -548,7 +594,13 @@ func (ft *FunctionTypeExpression) String() string {
 	}
 	out.WriteString(") -> ")
 	if ft.Return != nil {
+		if exposedFunctionRow(ft.Return) {
+			out.WriteRune('(')
+		}
 		out.WriteString(ft.Return.String())
+		if exposedFunctionRow(ft.Return) {
+			out.WriteRune(')')
+		}
 	} else {
 		out.WriteString("()")
 	}
@@ -983,8 +1035,9 @@ func (im *InterfaceMethod) statementNode()       {}
 func (im *InterfaceMethod) TokenLiteral() string { return im.Token.Literal }
 func (im *InterfaceMethod) String() string {
 	var out bytes.Buffer
-	out.WriteString("fn(")
+	out.WriteString("fn (self")
 	if im.ReceiverType != nil {
+		out.WriteString(": ")
 		out.WriteString(im.ReceiverType.String())
 	}
 	out.WriteString(") ")
@@ -1005,6 +1058,9 @@ func (it *InterfaceType) statementNode()       {}
 func (it *InterfaceType) TokenLiteral() string { return it.Token.Literal }
 func (it *InterfaceType) String() string {
 	var out bytes.Buffer
+	if it.Exported {
+		out.WriteString("pub ")
+	}
 	out.WriteString(it.Name.String())
 	if len(it.TypeParams) > 0 {
 		out.WriteString("[")
@@ -1296,7 +1352,7 @@ type FunctionStatement struct {
 	// `pub(opaque)`: the name is exported, the definition is not.
 	Exported bool
 	Opaque   bool
-	// Kernel marks a `kernel name: (gid: u32, ...): () = ...` declaration
+	// Kernel marks a `name: (gid: u32, ...): () (kernel) = ...` declaration
 	// (docs/spec/56-kernels.md): a function in the kernel subset that the
 	// Metal emitter compiles to a compute kernel and the C backend to an
 	// ordinary function whose first parameter is the grid position.
@@ -1390,12 +1446,31 @@ func (fs *FunctionStatement) statementNode()       {}
 func (fs *FunctionStatement) TokenLiteral() string { return fs.Token.Literal }
 func (fs *FunctionStatement) String() string {
 	var out bytes.Buffer
-	if fs.Theorem {
-		out.WriteString("theorem ")
-	} else if fs.Kernel {
-		out.WriteString("kernel ")
-	} else {
+	if fs.Operator != "" {
+		out.WriteString("operator(" + fs.Operator + ") ")
+	}
+	if fs.ExportSymbol != "" {
+		out.WriteString(fmt.Sprintf("export(%q) ", fs.ExportSymbol))
+	}
+	if fs.Exported {
+		if fs.Opaque {
+			out.WriteString("pub(opaque) ")
+		} else {
+			out.WriteString("pub ")
+		}
+	}
+	if !fs.Theorem && !fs.Kernel {
 		out.WriteString("fn ")
+		if len(fs.TypeParams) > 0 {
+			out.WriteRune('[')
+			for i, param := range fs.TypeParams {
+				if i > 0 {
+					out.WriteString(", ")
+				}
+				out.WriteString(param.String())
+			}
+			out.WriteString("] ")
+		}
 	}
 	if fs.Receiver != nil {
 		out.WriteRune('(')
@@ -1404,6 +1479,22 @@ func (fs *FunctionStatement) String() string {
 		out.WriteRune(' ')
 	}
 	out.WriteString(fs.Name.String())
+	if fs.Kernel || fs.Theorem {
+		if len(fs.TypeParams) > 0 {
+			out.WriteRune('[')
+			for i, param := range fs.TypeParams {
+				if i > 0 {
+					out.WriteString(", ")
+				}
+				out.WriteString(param.String())
+			}
+			out.WriteRune(']')
+		}
+		out.WriteString(": ")
+		if fs.Theorem {
+			out.WriteString("theorem ")
+		}
+	}
 	out.WriteRune('(')
 	for i, param := range fs.Parameters {
 		if i > 0 {
@@ -1412,9 +1503,22 @@ func (fs *FunctionStatement) String() string {
 		out.WriteString(param.String())
 	}
 	out.WriteRune(')')
-	if fs.ReturnType != nil {
-		out.WriteString(" -> ")
+	if fs.ReturnType != nil && !fs.Theorem {
+		if fs.Kernel {
+			out.WriteString(": ")
+		} else {
+			out.WriteString(" -> ")
+		}
+		if exposedFunctionRow(fs.ReturnType) {
+			out.WriteRune('(')
+		}
 		out.WriteString(fs.ReturnType.String())
+		if exposedFunctionRow(fs.ReturnType) {
+			out.WriteRune(')')
+		}
+	}
+	if fs.Kernel {
+		out.WriteString(" (kernel)")
 	}
 	writeEffects := func(keyword string, names []*EffectName) {
 		out.WriteString(" " + keyword + " {")
@@ -1429,7 +1533,7 @@ func (fs *FunctionStatement) String() string {
 	if fs.EffectsDeclared {
 		writeEffects("effects", fs.Effects)
 	}
-	if len(fs.Forbids) > 0 {
+	if fs.Forbids != nil {
 		writeEffects("forbids", fs.Forbids)
 	}
 	if len(fs.Laws) > 0 {
@@ -1454,6 +1558,9 @@ func (fs *FunctionStatement) String() string {
 	// slots, or one paired with an assembly unit, docs/spec/94-assembler.md
 	// §7) prints its signature alone.
 	if fs.Body != nil {
+		if fs.Kernel || fs.Theorem {
+			out.WriteString(" =")
+		}
 		out.WriteRune(' ')
 		out.WriteString(fs.Body.String())
 	}

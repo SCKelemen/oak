@@ -199,12 +199,19 @@ var AArch64Costs = TargetCosts{Arch: "arm64", Arithmetic: 1, Multiply: 3, Divide
 // modes so loads carry their address arithmetic separately).
 var RV64Costs = TargetCosts{Arch: "rv64", Arithmetic: 1, Multiply: 4, Divide: 20, Load: 4, Store: 2, Branch: 1.5, Guard: 2, Call: 8, Stall: 1, LoopWeight: 256}
 
-// CostsFor returns the lane's weights; an unknown lane gets AArch64's.
-func CostsFor(arch string) TargetCosts {
-	if arch == "rv64" {
-		return RV64Costs
+// CostsFor returns the native lane's cost weights. The requested lane must
+// already have an explicit native backend; silently applying AArch64 weights
+// to an unknown architecture would make target addition appear successful
+// without a reviewed cost model. Cost selection is not proof authority.
+func CostsFor(arch string) (TargetCosts, error) {
+	switch arch {
+	case "arm64":
+		return AArch64Costs, nil
+	case "rv64":
+		return RV64Costs, nil
+	default:
+		return TargetCosts{}, fmt.Errorf("opt: no native cost model for architecture %q", arch)
 	}
-	return AArch64Costs
 }
 
 // Name identifies the model in remarks.

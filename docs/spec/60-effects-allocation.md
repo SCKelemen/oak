@@ -317,7 +317,10 @@ The compiler may choose stack placement for non-escaping values as an optimizati
 ### 10a. Static storage initializers
 
 A top-level binding is static storage, initialized before any code runs.
-Its initializer is a compile-time constant or absent (zero initialization):
+Its initializer is a compile-time constant or absent (zero initialization,
+when the type admits it). Function-containing storage requires an explicit
+initializer; a zero or null code pointer is not a function value
+(`20-types.md`, `OAK-T0801`). The constant initializers include:
 
 - literals, arithmetic over literals, and primitive casts of constants,
   which the C backend emits as C constant expressions;

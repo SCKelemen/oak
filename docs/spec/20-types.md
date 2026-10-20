@@ -234,6 +234,23 @@ uses `&` as **constraint conjunction**: `T` must satisfy both predicates.
 
 Core Oak interfaces are compile-time constraints and are erased/specialized during executable lowering. Dynamic existential/interface values require a separate explicit feature and representation.
 
+The bootstrap currently checks non-generic method interfaces with an untyped
+`self` receiver and fixed-arity parameters. The parser retains generic
+interface binders, typed receivers, and variadic signatures for tooling, but
+type checking rejects these unsupported contracts rather than silently
+dropping their requirements. A fixed `[]T` parameter and a variadic `...T`
+parameter are different contracts and cannot satisfy one another merely
+because both use a view representation.
+
+Supporting the wider forms remains planned: generic interfaces need scoped
+binders, constraint validation, and substitution; typed receivers need
+receiver-contract checking; variadic interfaces need the `[]T` parameter
+representation and variadic identity preserved through conformance, calls,
+and public API snapshots. Acceptance must include source-level constrained
+calls and matching/mismatching implementation tests. Ordinary generic and
+variadic functions remain supported; this limitation concerns interface
+contracts and does not change the variadic semantics in `10-syntax.md` §3.
+
 Longer term, method/interface requirements and record-shape requirements should share the same constraint machinery where possible rather than creating separate runtime object models.
 
 ## 9. Phantom types
@@ -934,6 +951,18 @@ A refined return type is a postcondition: `low: (x: u16): Slot =
 Slot(x & u16(7))` must construct (returning the bare `u16` is refused), and
 a caller may index through the call directly — `TABLE[low(x)]` is proven,
 because any expression of a refined type is below the bound.
+
+Function values have no zero value. A binding whose storage contains a
+function, directly or through owned record fields, nonempty owned arrays,
+or sum payloads, requires an explicit initializer (`OAK-T0801`). This rule
+also applies after alias resolution and generic specialization. Sum storage
+is checked conservatively across all payload alternatives; use an explicit
+constructor to choose an empty alternative. An empty owned array or a
+borrowed view/span constructs no element values. Declaring a callable field
+in a type does not construct storage and is permitted; constructing the
+record must supply the field. Function definitions and forward references
+are unaffected. Assigning a function later does not excuse a missing
+initializer: the checker does not implement definite-assignment analysis.
 
 A binding declared without an initializer (`state: Sha256State`) is
 zero-initialized, so it is admitted only when zero satisfies every

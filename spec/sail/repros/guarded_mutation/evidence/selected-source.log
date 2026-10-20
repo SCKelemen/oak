@@ -1,0 +1,224 @@
+[93mWarning[0m: Deprecated [96mselected.sail[0m:139.34-49:
+139[96m |[0m  (bits('M), int('N)) -> bits('N) effect {escape}
+   [91m |[0m                                  [91m^-------------^[0m
+   [91m |[0m 
+Explicit effect annotations are deprecated. They are no longer used and can be removed.
+
+[93mWarning[0m: Incomplete pattern match statement at [96mselected.sail[0m:350.4-9:
+350[96m |[0m    match branch_type {
+   [91m |[0m    [91m^---^[0m
+   [91m |[0m 
+The following expression is unmatched: [93mBranchType_DBGEXIT[0m
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:443.4-6:
+443[96m |[0m    sf : bits(1) = [op_code[31]];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:442.4-7:
+442[96m |[0m    opc : bits(2) = op_code[30 .. 29];
+   [91m |[0m    [91m^-^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:441.4-9:
+441[96m |[0m    shift : bits(2) = op_code[23 .. 22];
+   [91m |[0m    [91m^---^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:440.4-5:
+440[96m |[0m    N : bits(1) = [op_code[21]];
+   [91m |[0m    [91m^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:439.4-6:
+439[96m |[0m    Rm : bits(5) = op_code[20 .. 16];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:438.4-8:
+438[96m |[0m    imm6 : bits(6) = op_code[15 .. 10];
+   [91m |[0m    [91m^--^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:437.4-6:
+437[96m |[0m    Rn : bits(5) = op_code[9 .. 5];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:436.4-6:
+436[96m |[0m    Rd : bits(5) = op_code[4 .. 0];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:457.4-6:
+457[96m |[0m    sf : bits(1) = [op_code[31]];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:456.4-7:
+456[96m |[0m    opc : bits(2) = op_code[30 .. 29];
+   [91m |[0m    [91m^-^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:455.4-9:
+455[96m |[0m    shift : bits(2) = op_code[23 .. 22];
+   [91m |[0m    [91m^---^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:454.4-5:
+454[96m |[0m    N : bits(1) = [op_code[21]];
+   [91m |[0m    [91m^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:453.4-6:
+453[96m |[0m    Rm : bits(5) = op_code[20 .. 16];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:452.4-8:
+452[96m |[0m    imm6 : bits(6) = op_code[15 .. 10];
+   [91m |[0m    [91m^--^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:451.4-6:
+451[96m |[0m    Rn : bits(5) = op_code[9 .. 5];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:450.4-6:
+450[96m |[0m    Rd : bits(5) = op_code[4 .. 0];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:471.4-6:
+471[96m |[0m    sf : bits(1) = [op_code[31]];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:470.4-7:
+470[96m |[0m    opc : bits(2) = op_code[30 .. 29];
+   [91m |[0m    [91m^-^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:469.4-9:
+469[96m |[0m    shift : bits(2) = op_code[23 .. 22];
+   [91m |[0m    [91m^---^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:468.4-5:
+468[96m |[0m    N : bits(1) = [op_code[21]];
+   [91m |[0m    [91m^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:467.4-6:
+467[96m |[0m    Rm : bits(5) = op_code[20 .. 16];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:466.4-8:
+466[96m |[0m    imm6 : bits(6) = op_code[15 .. 10];
+   [91m |[0m    [91m^--^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:465.4-6:
+465[96m |[0m    Rn : bits(5) = op_code[9 .. 5];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:464.4-6:
+464[96m |[0m    Rd : bits(5) = op_code[4 .. 0];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:484.4-5:
+484[96m |[0m    Z : bits(1) = [op_code[24]];
+   [91m |[0m    [91m^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:483.4-6:
+483[96m |[0m    op : bits(2) = op_code[22 .. 21];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:482.4-7:
+482[96m |[0m    op2 : bits(5) = op_code[20 .. 16];
+   [91m |[0m    [91m^-^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:481.4-5:
+481[96m |[0m    A : bits(1) = [op_code[11]];
+   [91m |[0m    [91m^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:480.4-5:
+480[96m |[0m    M : bits(1) = [op_code[10]];
+   [91m |[0m    [91m^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:479.4-6:
+479[96m |[0m    Rn : bits(5) = op_code[9 .. 5];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unnecessary mutability [96mselected.sail[0m:478.4-6:
+478[96m |[0m    Rm : bits(5) = op_code[4 .. 0];
+   [91m |[0m    [91m^^[0m
+   [91m |[0m 
+This variable is mutable, but it is never modified. It could be declared as immutable using 'let'.
+
+[93mWarning[0m: Unused variable [96mselected.sail[0m:385.61-64:
+385[96m |[0mfunction branch_unconditional_register_decode (Rm, Rn, M, A, op2, op, Z) = {
+   [91m |[0m                                                             [91m^-^[0m
+   [91m |[0m 
+This variable is defined but never used.
+
+[93mWarning[0m: 21 warnings have been suppressed. Use --all-warnings to display them.
+initialize_registers()
+Result = ()
+main()
+case0-and -> 0
+case0-or -> 0
+case0-xor -> 0
+case1-and -> 0
+case1-or -> 4294967295
+case1-xor -> 4294967295
+case2-and -> 4294967295
+case2-or -> 4294967295
+case2-xor -> 0
+case3-and -> 0
+case3-or -> 4294967295
+case3-xor -> 4294967295
+case4-and -> 2233811456
+case4-or -> 2816826235
+case4-xor -> 583014779
+Result = ()

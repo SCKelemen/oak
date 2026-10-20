@@ -1,0 +1,23 @@
+Failed to load plugin /workspace/shared/lean-toolchain/sources/sail-0.20.2-local/_build/default/src/sail_lean_backend/sail_plugin_lean.cmxs: error loading shared library: Failure("/workspace/shared/lean-toolchain/sources/sail-0.20.2-local/_build/default/src/sail_lean_backend/sail_plugin_lean.cmxs: undefined symbol: camlLibsail__Type_check.replace_typ_4297")
+[93mWarning[0m: [96m/workspace/shared/lean-toolchain/sources/sail-0.20.2-local/lib/arith.sail[0m:196.0-20:
+196[96m |[0m$c_reserved fdiv_int
+   [91m |[0m[91m^------------------^[0m
+   [91m |[0m 
+Unrecognised directive: c_reserved
+
+[93mWarning[0m: [96m/workspace/shared/lean-toolchain/sources/sail-0.20.2-local/lib/arith.sail[0m:208.0-20:
+208[96m |[0m$c_reserved fmod_int
+   [91m |[0m[91m^------------------^[0m
+   [91m |[0m 
+Unrecognised directive: c_reserved
+
+initialize_registers()
+Result = ()
+main()
+nested false1=1113
+nested false2=1907
+nested false0=323
+nested true1=31
+shadow_case false1=10
+shadow_case false0=5
+Result = ()

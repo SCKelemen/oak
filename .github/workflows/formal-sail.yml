@@ -58,7 +58,60 @@ on:
       - 'spec/lean/Oak/AArch64SysReg.lean'
       - 'spec/lean/Oak/AArch64ColdEntry.lean'
       - 'spec/lean-sail/**'
+      - 'spec/lean-sail433/**'
+      - 'spec/lean-sail429/**'
+      # Complete shared strict source/image dependency closure.
+      - 'spec/lean/Oak/AArch64BitwiseFunction.lean'
+      - 'spec/lean/Oak/AArch64BranchExecution.lean'
+      - 'spec/lean/Oak/AArch64CompareBranchEncoding.lean'
+      - 'spec/lean/Oak/AArch64ConditionalBranch.lean'
+      - 'spec/lean/Oak/AArch64ControlFlow.lean'
+      - 'spec/lean/Oak/AArch64SpillMemory.lean'
+      - 'spec/lean/Oak/BitwiseFunction.lean'
+      - 'spec/lean/Oak/BitwiseModule.lean'
+      - 'spec/lean/Oak/BitwiseSourceImageParity.lean'
+      - 'spec/lean/Oak/BitwiseSourceLowering.lean'
+      - 'spec/lean/Oak/IntegerDivision.lean'
+      - 'spec/lean/Oak/LoweringRefinement.lean'
+      - 'spec/lean/Oak/MinimalELF.lean'
+      - 'spec/lean/Oak/NativeBitwiseImage.lean'
+      - 'spec/lean/Oak/NativeBitwiseObject.lean'
+      - 'spec/lean/Oak/ObjectRelocation.lean'
+      - 'spec/lean/Oak/RV64Relocation.lean'
+      - 'spec/lean/Oak/RiscVBitwiseFunction.lean'
+      - 'spec/lean/Oak/RiscVBranchEncoding.lean'
+      - 'spec/lean/Oak/RiscVCallExecution.lean'
+      - 'spec/lean/Oak/RiscVMaterialization.lean'
+      - 'spec/lean/Oak/StrictImageEntryContract.lean'
+      - 'spec/lean/Oak/WasmAssemblerBytes.lean'
+      - 'spec/lean/Oak/WasmAssemblerExtracted.lean'
+      - 'spec/lean/Oak/WasmAssemblerInstruction.lean'
+      - 'spec/lean/Oak/WasmAssemblerLaws.lean'
+      - 'spec/lean/Oak/WasmAssemblerSequence.lean'
+      - 'spec/lean/Oak/WasmAssemblerTotal.lean'
+      - 'spec/lean/Oak/WasmEncoding.lean'
+      - 'spec/lean/Oak/WasmExecution.lean'
+      - 'spec/lean/Oak/WasmInstruction.lean'
+      - 'spec/lean/Oak/WasmLEB.lean'
+      - 'spec/lean/Oak/WasmNumeric.lean'
+      - 'spec/lean/check-strict-image-entry-contract.py'
+      - 'spec/lean/lean-toolchain'
+      - 'compiler/rv64_strict_entry_bitwise_lean_test.go'
+      - 'compiler/checked_bitwise_image_bundle.go'
+      - 'compiler/checked_bitwise_image_proposal_test.go'
+      - 'compiler/rv64_image_bitwise_lean_test.go'
+      - 'spec/lean/Oak/ByteFields.lean'
+      - 'spec/lean/Oak/BitwiseSource.lean'
+      - 'spec/lean/Oak/ArmDecoderClassification/**'
+      - 'spec/lean/Oak/ArmDecoderPartition/**'
+      - 'compiler/arm_decoder_partition_test.go'
+      - 'compiler/arm_decoder_classification_test.go'
+      - 'compiler/arm_bti_execution_test.go'
+      - 'spec/lean/Oak/RiscVFramedBitwise.lean'
+      - 'compiler/rv64_framed_bitwise_lean_test.go'
       - '.github/workflows/formal-sail.yml'
+      - '.github/scripts/required_backend_tests.py'
+      - '.github/scripts/test_required_backend_tests.py'
   pull_request:
     branches:
       - specification
@@ -84,10 +137,17 @@ env:
   # Status): later models export vmem_types.sail with unbound `k_v`.
   SAIL_RISCV_COMMIT: 497209b9298bf11b040e000095fe24c51a598a1d
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
+
+
 jobs:
   sail:
     name: Sail bridges and oracles
     runs-on: ubuntu-24.04
+    # Includes serial, bounded validation of 917 source-classification certificates.
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -96,8 +156,14 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf qemu-system-misc llvm
-          llvm-mc --version | head -1
+          sudo apt-get install -y --no-install-recommends gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf qemu-system-misc llvm-19 build-essential libgmp-dev pkg-config
+          # The differential corpus uses apple-m4 (including SME2), which
+          # requires LLVM 19; Ubuntu 24.04's unversioned llvm selects 18.
+          echo "/usr/lib/llvm-19/bin" >> "$GITHUB_PATH"
+          /usr/lib/llvm-19/bin/llvm-mc --version | head -1
+          printf 'smstart\nfmopa za0.s, p0/m, p1/m, z0.s, z1.s\n' | /usr/lib/llvm-19/bin/llvm-mc --triple=arm64 -mcpu=apple-m4 --show-encoding
+          /usr/lib/llvm-19/bin/llvm-objdump --version | head -1
+          /usr/lib/llvm-19/bin/llvm-nm --version | head -1
           riscv64-unknown-elf-gcc --version | head -1
 
       - name: Install the pinned Sail release
@@ -154,6 +220,16 @@ jobs:
         with:
           go-version: '1.27.1'
 
+      - name: Require BRK, CBZ32, and scalar ADDP source contracts
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: python3 .github/scripts/required_backend_tests.py sail-source
+
+      - name: Require LLVM encoder and object differential checks
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: python3 .github/scripts/required_backend_tests.py llvm
+
       - name: Run the oracle tests, every oracle required
         env:
           OAK_REQUIRE_ORACLES: "1"
@@ -173,6 +249,104 @@ jobs:
         env:
           OAK_REQUIRE_ORACLES: "1"
         run: go test ./asm -run '^TestSailArmSTR64Execution|^TestSailSTRExecution' -count=1 -v -timeout=10m
+
+      - name: Regenerate and check pinned ARM scalar execution
+        env:
+          OAK_REQUIRE_ORACLES: "1"
+        run: |
+          go test ./asm -run '^TestSailScalarExecution(RawPins|Regeneration|Lean|GuardedMutationAudit|ReturnFraming)$' -count=1 -v -timeout=15m
+          python3 spec/sail/audit_scalar.py
+          python3 spec/sail/return_execution_regen.py --check-source
+          python3 spec/sail/audit_return.py
+          go test ./compiler -run '^TestArmBTIEnabledCompilerBytes$' -count=1 -v -timeout=5m
+
+      - name: Check complete Arm decoder source classification and negative controls
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          python3 spec/sail/test_decoder_classification.py
+          python3 spec/sail/check_decoder_classification.py \
+            --build-dir "$RUNNER_TEMP/oak-arm-decoder-classification"
+          python3 spec/sail/check_decoder_byte_binding.py \
+            --build-dir "$RUNNER_TEMP/oak-arm-decoder-classification"
+          OAK_REQUIRE_ARM_CLASSIFICATION=1 \
+            OAK_ARM_CLASSIFICATION_LIB="$RUNNER_TEMP/oak-arm-decoder-classification" \
+            go test ./compiler -run '^TestArmDecoderClassificationCompilerBytes$' -count=1 -v -timeout=5m
+
+      - name: Check complete original Arm source byte partition
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          python3 spec/sail/test_decoder_partition.py
+          python3 spec/sail/check_decoder_partition.py \
+            --source external/sail-arm/arm-v8.5-a/model/aarch_decode.sail \
+            --classification-dir "$RUNNER_TEMP/oak-arm-decoder-classification" \
+            --build-dir "$RUNNER_TEMP/oak-arm-decoder-partition" --jobs 2
+          OAK_REQUIRE_ARM_PARTITION=1 \
+            OAK_ARM_PARTITION_LIB="$RUNNER_TEMP/oak-arm-decoder-partition" \
+            go test ./compiler -run '^TestArmDecoderPartitionCompilerBytes$' -count=1 -v -timeout=5m
+
+      - name: Preserve original-source partition kernel checks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-decoder-partition
+          path: |
+            ${{ runner.temp }}/oak-arm-decoder-partition/*.json
+            ${{ runner.temp }}/oak-arm-decoder-partition/*.log
+          if-no-files-found: warn
+
+      - name: Preserve decoder classification kernel checks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm-decoder-classification
+          path: |
+            ${{ runner.temp }}/oak-arm-decoder-classification/*.json
+            ${{ runner.temp }}/oak-arm-decoder-classification/*.log
+          if-no-files-found: ignore
+
+      - name: Cache checksummed guarded-generator dependency downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/oak-arm-return-downloads
+          key: arm-return-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('spec/sail/repros/guarded_mutation/guarded_profile/toolchain-lock.json') }}
+
+      - name: Rebuild the separate guarded generator from pinned source and patch
+        run: |
+          set -euo pipefail
+          python3 spec/sail/repros/guarded_mutation/guarded_profile/build.py \
+            --workdir "$RUNNER_TEMP/oak-guarded-return-build" \
+            --download-cache "$RUNNER_TEMP/oak-arm-return-downloads" \
+            2>&1 | tee "$RUNNER_TEMP/oak-guarded-return-build.log"
+
+      - name: Regenerate and regress the bounded guarded return profile
+        run: |
+          set -euo pipefail
+          # Scoped to this step: the official Sail installation is unchanged.
+          source "$RUNNER_TEMP/oak-guarded-return-build/env.sh"
+          export OAK_LEAN_SAIL_SUPPORT="$(realpath ../external/lean-sail)"
+          python3 spec/sail/repros/guarded_mutation/guarded_profile/check_build.py \
+            2>&1 | tee "$RUNNER_TEMP/oak-guarded-return-provenance-tests.log"
+          python3 spec/sail/return_execution_regen.py --regenerate \
+            2>&1 | tee "$RUNNER_TEMP/oak-guarded-return-regeneration.log"
+          python3 spec/sail/repros/guarded_mutation/guarded_profile/check.py \
+            --output-dir "$RUNNER_TEMP/oak-guarded-return-regressions" \
+            2>&1 | tee "$RUNNER_TEMP/oak-guarded-return-regressions.log"
+          python3 spec/sail/audit_return.py
+          go test ./compiler -run '^TestArmBTIEnabledCompilerBytes$' -count=1 -v -timeout=5m
+
+      - name: Preserve guarded-build provenance and regression logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guarded-arm-return-provenance
+          path: |
+            ${{ runner.temp }}/oak-guarded-return-build/build-receipt.json
+            ${{ runner.temp }}/oak-guarded-return-*.log
+            ${{ runner.temp }}/oak-guarded-return-regressions/*.log
+          if-no-files-found: ignore
+          retention-days: 14
 
   lem-ram-traces:
     name: Arm Lem RAM request traces
@@ -325,3 +499,107 @@ jobs:
         env:
           OAK_REQUIRE_ORACLES: "1"
         run: go test ./asm -run 'TestRV64SailBridge' -count=1 -v
+
+      - name: Verify and prepare pinned RV64 sources for Lean 4.33
+        run: |
+          python3 spec/lean-sail433/prepare.py --generated external/sail-riscv/build/model/Lean_RV64D
+          python3 spec/lean-sail433/test_verify_export.py --generated external/sail-riscv/build/model/Lean_RV64D
+
+      - name: Check original-source, actual fetch and stepping in Lean 4.29
+        working-directory: spec/lean-sail429
+        env:
+          LEAN_NUM_THREADS: '2'
+        run: |
+          lake update
+          lake build OakSailFetchedFrame OakSailSteppedFrame OakSailSteppedChecks OakSailClockedSource OakSailClockChecks OakSailImageLoad OakSailImageSource OakSailImageChecks OakSailEntryInstructions OakSailEntrySource OakSailEntryChecks OakSailBoundedAppend OakSailExitInstructions OakSailExitSource OakSailExitChecks
+          python3 audit.py
+          python3 step-audit.py
+          python3 clock-audit.py
+          python3 image-audit.py
+          python3 entry-audit.py
+          python3 exit-audit.py
+          lake build OakSailStrictImageEntry OakSailStrictImageEntryExecution OakSailStrictImageEntryChecks
+          python3 -m unittest discover -p test_strict_entry_audit.py
+          python3 strict-entry-audit.py
+
+      - name: Pin actual compiler source and bytes to fetched/stepped theorems
+        env:
+          OAK_REQUIRE_RV64_LEAN: '1'
+          LEAN_NUM_THREADS: '2'
+        run: go test ./compiler -run '^TestRV64((Fetched|Stepped|Clocked|Image|Entry)Bitwise|ExitReady)CompilerMatchesLean$' -count=1 -timeout=30m -v
+
+      - name: Require strict original bundles at actual RV64 entry
+        env:
+          OAK_REQUIRE_RV64_LEAN: '1'
+          LEAN_NUM_THREADS: '2'
+        run: |
+          python3 -m unittest discover -s .github/scripts -p test_required_backend_tests.py
+          python3 .github/scripts/required_backend_tests.py strict-entry
+
+      - name: Build bounded RV64 source and external execution composition
+        working-directory: spec/lean-sail433
+        env:
+          LEAN_NUM_THREADS: '2'
+        run: |
+          lake update
+          lake build OakSailComposition OakSailFullDispatch OakSailBridge.BitwiseDispatchAgreement OakSailFramedComposition OakSailFramedFullDispatch OakSourceSplitCompatibility OakSailFetchedCode
+
+      - name: Audit bounded RV64 external theorem closures
+        run: python3 spec/lean-sail433/audit.py
+
+      # Publish only generated source and locked build inputs after all checks pass.
+      # Never upload .lake caches, .git metadata, home directories, or credentials.
+      - name: Package checked RV64 Lean export sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEXPORT'
+          import hashlib, json, os, pathlib, tarfile
+          root = pathlib.Path("external/sail-riscv/build/model/Lean_RV64D")
+          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "rv64-sail-export"
+          out.mkdir()
+          required = {"lakefile.toml", "lake-manifest.json", "lean-toolchain"}
+          for name in required:
+              assert (root / name).is_file(), f"Missing export input: {name}"
+          toolchain = (root / "lean-toolchain").read_text().strip()
+          assert toolchain == "leanprover/lean4:v4.29.0", toolchain
+          lock = json.loads((root / "lake-manifest.json").read_text())
+          sail = next(p for p in lock["packages"] if p["name"] == "Sail")
+          assert sail["rev"] == "079463134b9c50450b8393e1566a09fc492a34d9", sail
+          assert sail["url"].rstrip("/").removesuffix(".git") == "https://github.com/rems-project/lean-sail", sail
+          files = sorted(p for p in root.rglob("*") if p.is_file()
+                         and not p.is_symlink()
+                         and not any(x.startswith(".") for x in p.relative_to(root).parts)
+                         and (p.suffix == ".lean" or p.relative_to(root).as_posix() in required))
+          assert any(p.suffix == ".lean" for p in files), "No generated Lean sources"
+          hashes = []
+          archive = out / "Lean_RV64D.sources.tar.gz"
+          with tarfile.open(archive, "w:gz") as tar:
+              for path in files:
+                  name = "Lean_RV64D/" + path.relative_to(root).as_posix()
+                  hashes.append(hashlib.sha256(path.read_bytes()).hexdigest() + "  " + name)
+                  tar.add(path, arcname=name, recursive=False)
+          (out / "FILES.sha256").write_text("\n".join(hashes) + "\n")
+          provenance = {
+              "oak_commit": os.environ["GITHUB_SHA"],
+              "workflow_run_id": os.environ["GITHUB_RUN_ID"],
+              "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "sail_commit": os.environ["SAIL_GIT_COMMIT"],
+              "sail_riscv_commit": os.environ["SAIL_RISCV_COMMIT"],
+              "lean_sail_commit": sail["rev"],
+              "lean_toolchain": toolchain,
+              "contents": "Generated Lean sources and locked Lake build inputs; no caches",
+          }
+          (out / "PROVENANCE.json").write_text(json.dumps(provenance, indent=2) + "\n")
+          (out / "SHA256SUMS").write_text("".join(
+              hashlib.sha256(p.read_bytes()).hexdigest() + "  " + p.name + "\n"
+              for p in sorted(out.iterdir()) if p.is_file()))
+          PYEXPORT
+
+      - name: Upload checked RV64 Lean export sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: rv64-sail-export-${{ github.sha }}
+          path: ${{ runner.temp }}/rv64-sail-export/
+          if-no-files-found: error
+          retention-days: 14

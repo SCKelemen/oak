@@ -1,0 +1,5 @@
+inferred: theorem (a: u32, b: u32) {
+  x := a | b
+  x == (a | b)
+}
+main: (): i32 = 0

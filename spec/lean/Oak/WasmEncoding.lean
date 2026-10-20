@@ -54,7 +54,8 @@ private theorem small_terminal {w s v} (hp : 0 < w) (hw : w ≤ 7)
   rcases hw' with rfl | rfl | rfl | rfl | rfl | rfl | rfl <;>
     cases s <;> simp_all [terminal, inRange] <;> omega
 
-private theorem quotient_range {w s v} (hw : 7 < w)
+/-- Removing a continuation group preserves the remaining signed/unsigned range. -/
+theorem quotient_range {w s v} (hw : 7 < w)
     (h : inRange w s v) : inRange (w - 7) s (v / 128) := by
   have splitPow (n : Nat) (hn : 7 ≤ n) : (2 ^ n : Int) = 128 * 2 ^ (n - 7) := by
     calc (2 ^ n : Int) = 2 ^ (7 + (n - 7)) := by congr 1; omega
@@ -72,6 +73,24 @@ private theorem quotient_range {w s v} (hw : 7 < w)
     have he : w - 1 - 7 = w - 7 - 1 := by omega
     rw [he] at h
     omega
+
+/-- An in-range value that needs another group has at least eight bits left. -/
+theorem continuation_width {w s v} (hp : 0 < w) (hr : inRange w s v)
+    (hn : ¬ terminal s v) : 7 < w := by
+  by_cases hw : w ≤ 7
+  · exact False.elim (hn (small_terminal hp hw hr))
+  · omega
+
+/-- On in-range values, the encoder stops exactly at the canonical terminal
+range; the width bound cannot force an early terminal byte. -/
+theorem encode_step {w s v} (hp : 0 < w) (hr : inRange w s v) :
+    encode w s v = if terminal s v then [UInt8.ofNat (v % 128).toNat]
+      else UInt8.ofNat ((v % 128).toNat + 128) :: encode (w - 7) s (v / 128) := by
+  rw [encode]
+  by_cases ht : terminal s v
+  · simp [ht]
+  · have hw := continuation_width hp hr ht
+    simp [ht, show ¬w ≤ 7 by omega]
 
 theorem encode_grammar {width signed value} (hp : 0 < width)
     (hr : inRange width signed value) :

@@ -345,7 +345,7 @@
         "parameters": [
           {
             "name": "v",
-            "type": "(u8.)"
+            "type": "[]u8"
           },
           {
             "name": "needle",
@@ -375,7 +375,7 @@
                     "type": "VariableDeclaration",
                     "data": {
                       "name": "out",
-                      "type": "(u8[16])"
+                      "type": "[16]u8"
                     },
                     "position": {
                       "line": 9,
@@ -388,7 +388,7 @@
                     "type": "VariableDeclaration",
                     "data": {
                       "name": "s",
-                      "type": "(u8.*)",
+                      "type": "[*]u8",
                       "value": {
                         "type": "InvocationExpression",
                         "data": {

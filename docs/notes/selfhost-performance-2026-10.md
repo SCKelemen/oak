@@ -150,8 +150,8 @@ on Unix; all failures now produce exit status one and print their mask.
 ## Remaining performance work
 
 Fine-grained resumable BDD scheduling and cancellation of individual
-losing jobs in the Go-hosted process batch remain separate work. So do
-verified facts about arena-region bounds/disjointness and classification
+losing jobs are implemented in the [scheduling follow-up](selfhost-scheduling-2026-10.md).
+Remaining work includes verified facts about arena-region bounds/disjointness and classification
 of ARM64/RV64 optimization refusals against hardware benchmarks. The
 changes here do not relax any proof acceptance requirement or claim to
 complete those larger workstreams.

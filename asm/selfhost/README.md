@@ -142,9 +142,24 @@ universal Lean encoding laws, production correspondence and independent engine
 tests. `Oak.WasmAssemblerExtracted` is generated from the complete Oak source;
 its laws prove buffer admission, preflight capacity, failure preservation,
 LEB writer frames, and the signed floor step. Formal CI checks extraction drift
-and Go/Oak/Lean agreement on shared corpora. The Oak implementation is a
-bootstrap kernel; exact-byte loop refinement, module writing, linking and
-source-to-module verification remain open.
+and Go/Oak/Lean agreement on shared corpora. `Oak.WasmAssemblerBytes` proves
+bounded termination, canonical sizes and exact bytes for both full-width LEB
+writers, plus independent decoder recovery from their actual output buffers.
+`Oak.WasmAssemblerInstruction` proves complete scalar instruction sizing and
+exact-byte writing, including refusal and decoder recovery. `Oak.WasmAssemblerSequence`
+proves both extracted passes terminate on valid fitting plans with `plan.size + 11`
+fuel and produce the independent sequence bytes, preserving all other storage.
+`Oak.WasmAssemblerTotal` extends the same bound to every invalid or non-fitting
+plan, proves exact success/refusal admission, and equates every result to the
+independent byte model with no returning-run assumption. The Oak implementation
+is a bootstrap kernel. The [decoded execution model](../../docs/spec/91-wasm-execution.md)
+now composes these byte proofs with 49 straight-line scalar forms and explicit
+traps, plus structured blocks, loops, conditionals, branches and single-function
+returns in `Oak.WasmControl`, and isolated direct calls in `Oak.WasmCalls`.
+`Oak.WasmModule` adds binary decoding and closed-table linking. `Oak.WasmTyping`
+proves type safety for accepted scalar sequences and their assembled bytes.
+Full validator correspondence, control/call type safety, module-writer refinement
+and source-to-module verification remain open.
 
 ## Remaining M7/M8 work
 

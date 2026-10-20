@@ -1,0 +1,94 @@
+package main
+
+import (
+	"encoding/binary"
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/SCKelemen/oak/target"
+)
+
+func lratARM64CallContract(t *testing.T) string {
+	t.Helper()
+	symbolBytes := lratPreflightExecutable(t, target.ArchArm64, "arm64", oakLRATArm64Source, "")
+	var c strings.Builder
+	destinations := map[uint64]string{}
+	for _, name := range []string{"lrat_fits", "lrat_alloc_fits"} {
+		sym, code := symbolBytes(name)
+		destinations[sym.Value] = name
+		proof := "fitsBytes"
+		if name == "lrat_alloc_fits" {
+			proof = "allocBytes"
+		}
+		fmt.Fprintf(&c, "example : %s = Oak.LRATARM64Bytes.%s := by decide\n", lratByteLiteral(code), proof)
+	}
+	for _, caller := range []string{"lrat_header_fits", "lrat_record_fits"} {
+		sym, code := symbolBytes(caller)
+		if len(code)%4 != 0 {
+			t.Fatal("truncated ARM64 instruction")
+		}
+		counts := map[string]int{}
+		for at := 0; at < len(code); at += 4 {
+			word := binary.LittleEndian.Uint32(code[at:])
+			if word&0xfc000000 != 0x94000000 {
+				continue
+			}
+			place := sym.Value + uint64(at)
+			destination := uint64(int64(place) + int64(int32(word<<6)>>4))
+			name, guard := destinations[destination]
+			if !guard {
+				continue
+			}
+			counts[name]++
+			kind := "fits"
+			if name == "lrat_alloc_fits" {
+				kind = "alloc"
+				if at < 16 || counts[name] > 3 {
+					t.Fatal("missing argument preparation")
+				}
+				load := binary.LittleEndian.Uint32(code[at-4:])
+				indexRegister := (load >> 16) & 31
+				index := []uint32{1, 5, 6}[counts[name]-1]
+				if binary.LittleEndian.Uint32(code[at-16:]) != 0x52800000|index<<5|indexRegister {
+					t.Fatal("header index materialization changed")
+				}
+				c.WriteString(lratARM64HeaderLoadContract(t, load, word))
+			}
+			if caller == "lrat_record_fits" && name == "lrat_fits" {
+				if at < 12 {
+					t.Fatal("missing record argument preparation")
+				}
+				c.WriteString(lratARM64RecordLoadContract(t,
+					binary.LittleEndian.Uint32(code[at-12:]),
+					binary.LittleEndian.Uint32(code[at-8:]),
+					binary.LittleEndian.Uint32(code[at-4:]), word))
+			}
+			fmt.Fprintf(&c, "example : %d#32 &&& 0xfc000000#32 = 0x94000000#32 := by decide\n", word)
+			fmt.Fprintf(&c, "example (s : Oak.LRATARM64Bytes.State) : (Oak.LRATARM64GuardCalls.transfer %d#32 {s with pc := %d}).pc = %d := by unfold Oak.LRATARM64GuardCalls.transfer; dsimp only; decide\n", word, place, destination)
+			fmt.Fprintf(&c, "example (s : Oak.LRATARM64Bytes.State) : (Oak.LRATARM64GuardCalls.%sCall %d#32 s).map Oak.LRATARM64Bytes.State.pc = some (s.pc + 4) := Oak.LRATARM64GuardCalls.%s_return %d#32 s (by decide)\n", kind, word, kind, word)
+			// B has the same displacement but does not write X30; BR/BLR are
+			// outside this direct-call contract as well.
+			for _, bad := range []uint32{word &^ 0x80000000, 0xd61f0000, 0xd63f0000} {
+				fmt.Fprintf(&c, "example (s : Oak.LRATARM64Bytes.State) : Oak.LRATARM64GuardCalls.enter %d#32 s = none := by simp [Oak.LRATARM64GuardCalls.enter]\n", bad)
+			}
+		}
+		want := 0
+		if caller == "lrat_header_fits" {
+			want = 3
+		}
+		if counts["lrat_fits"] != 1 || counts["lrat_alloc_fits"] != want {
+			t.Fatalf("%s guard calls: %v", caller, counts)
+		}
+	}
+	for _, name := range []string{"enter_eq", "transfer_arguments", "fits_result", "alloc_result", "fits_return", "alloc_return", "fits_sp", "alloc_sp", "fits_refines", "alloc_refines"} {
+		fmt.Fprintf(&c, "#print axioms Oak.LRATARM64GuardCalls.%s\n", name)
+	}
+	for _, name := range []string{"load_header", "allocation_refines", "allocation_return", "allocation_sp"} {
+		fmt.Fprintf(&c, "#print axioms Oak.LRATARM64HeaderLoads.%s\n", name)
+	}
+	for _, name := range []string{"prepare_record", "prepared_arguments", "record_refines", "record_return", "record_sp"} {
+		fmt.Fprintf(&c, "#print axioms Oak.LRATARM64RecordLoads.%s\n", name)
+	}
+	return c.String()
+}

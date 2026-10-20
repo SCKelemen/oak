@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/WebAssembly/spec",
+  "commit": "970c4116e644e2bf7acb39aab8b733db14ccdf28",
+  "status": "Byte provenance only; semantic correspondence requires independent Lean source checking.",
+  "sources": [
+    {
+      "file": "0.1-aux.vars.spectec",
+      "path": "specification/wasm-3.0/0.1-aux.vars.spectec",
+      "bytes": 185,
+      "sha256": "5c86799aff8748a2f4d45502fbc0896b533a1ffe25d76977d7776241b2c78fbe",
+      "git_blob_sha1": "6dccabab905790471f3ccf31707996023a7f80b2",
+      "url": "https://github.com/WebAssembly/spec/blob/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/0.1-aux.vars.spectec",
+      "raw_url": "https://raw.githubusercontent.com/WebAssembly/spec/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/0.1-aux.vars.spectec"
+    },
+    {
+      "file": "1.1-syntax.values.spectec",
+      "path": "specification/wasm-3.0/1.1-syntax.values.spectec",
+      "bytes": 5883,
+      "sha256": "cc55bf69755666d4f83ccd8e83a1a0ad35648c2e9f939a07a4134e1b236e3c61",
+      "git_blob_sha1": "670a329c909e8f90e9e7f1fa204f6789e207144b",
+      "url": "https://github.com/WebAssembly/spec/blob/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/1.1-syntax.values.spectec",
+      "raw_url": "https://raw.githubusercontent.com/WebAssembly/spec/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/1.1-syntax.values.spectec"
+    },
+    {
+      "file": "1.2-syntax.types.spectec",
+      "path": "specification/wasm-3.0/1.2-syntax.types.spectec",
+      "bytes": 21568,
+      "sha256": "d0e7e98c90e6d093233a617b0e0bec7ad127f460a487455becfa177bc08e75c5",
+      "git_blob_sha1": "1769880a6dc964eeace8d0b6dff3d021e57c8e1c",
+      "url": "https://github.com/WebAssembly/spec/blob/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/1.2-syntax.types.spectec",
+      "raw_url": "https://raw.githubusercontent.com/WebAssembly/spec/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/1.2-syntax.types.spectec"
+    },
+    {
+      "file": "1.3-syntax.instructions.spectec",
+      "path": "specification/wasm-3.0/1.3-syntax.instructions.spectec",
+      "bytes": 22767,
+      "sha256": "03a7c3aacd0f6dd5ea68e609227707ddd451bb1bc0e57dfbb1dc42d19a312f4c",
+      "git_blob_sha1": "8571df71d653156a92784590281e4e643e060d2a",
+      "url": "https://github.com/WebAssembly/spec/blob/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/1.3-syntax.instructions.spectec",
+      "raw_url": "https://raw.githubusercontent.com/WebAssembly/spec/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/1.3-syntax.instructions.spectec"
+    },
+    {
+      "file": "3.1-numerics.scalar.spectec",
+      "path": "specification/wasm-3.0/3.1-numerics.scalar.spectec",
+      "bytes": 17414,
+      "sha256": "daf9177f35111e3acc50d2e76c7563c02aab0511440470ef12402c9c8425809b",
+      "git_blob_sha1": "7ac9dad59339b2229992c0500b3f749c1d4ff310",
+      "url": "https://github.com/WebAssembly/spec/blob/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/3.1-numerics.scalar.spectec",
+      "raw_url": "https://raw.githubusercontent.com/WebAssembly/spec/970c4116e644e2bf7acb39aab8b733db14ccdf28/specification/wasm-3.0/3.1-numerics.scalar.spectec"
+    }
+  ]
+}

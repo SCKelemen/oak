@@ -1026,9 +1026,13 @@ collections, `strings`, `json`, `hash`, `math`, `mx`, `url`, `path`,
 implementation tests against sequence models, Go's standard library,
 conformance files, or reference implementations; those are not refinement
 proofs. The temporal calendar adds exhaustive native Lean conversion checks,
-checked-arithmetic laws, universal canonical date round trips, valid-result
+checked-arithmetic laws, universal canonical date/time/local-datetime/RFC3339
+round trips with fractional seconds and offset-kind preservation, valid-result
 contracts for date/time/local-datetime parsers, and kernel-checked buffer frame
-contracts for all six ISO/RFC formatters. Separate calendar and codec corpora
+contracts for all six ISO/RFC formatters. Period/duration component guards
+are proved equivalent to unbounded arithmetic under their loop preconditions;
+signed-magnitude reconstruction includes signed minima. Universal period/duration
+text round trips remain open. Separate calendar and codec corpora
 compare compiled Oak, interpreted Oak, and Lean on identical cases. The proofs'
 native-evaluator and bit-vector-checker trust boundaries are documented in
 [the temporal specification](../docs/spec/114-temporal.md).
@@ -1339,7 +1343,12 @@ component (`P1D` is distinct from `PT24H`). `parse_iso_duration` admits only the
 `PT` units that have an exact elapsed length. Their formatters use integer-only
 nanosecond precision, including the minimum signed duration. Month addition
 requires an explicit reject-or-clamp policy. Period addition applies months,
-then days, then the time component.
+then days, then the time component. Extracted-parser proofs establish bounded
+component accumulation, integer/fraction scanner arithmetic invariants, and
+sign coherence of successful period parses. The UInt64 decimal writer/scanner
+bridge is proved for every value, including termination, 1–20 output digits,
+buffer preservation, and stopping at unit delimiters. Full period/duration text
+round-trip proofs remain open.
 
 `parse_rfc3339_datetime` and `format_rfc3339_datetime` preserve `Z`, `+00:00`, and
 `-00:00` as distinct offset kinds, including RFC 9557's update to their meaning.

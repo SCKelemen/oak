@@ -1,0 +1,23 @@
+import Oak.WasmCoreSource
+#print axioms Oak.WasmCoreBitwiseProjection.numeric_bits
+#print axioms Oak.WasmCoreBitwiseProjection.numeric_unique
+#print axioms Oak.WasmCoreBitwiseProjection.signed_unsigned_bits
+#print axioms Oak.WasmCoreBitwiseProjection.body_typed
+#print axioms Oak.WasmCoreBitwiseProjection.entered_returns
+#print axioms Oak.WasmCoreBitwiseProjection.admitted_bridge
+#print axioms Oak.WasmCoreBitwiseProjection.accepted_source_bridge
+#print axioms Oak.WasmCoreBinary.leb_to_unsigned
+#print axioms Oak.WasmCoreBinary.loaded_binary
+#print axioms Oak.WasmCoreBinary.admitted_binary
+#print axioms Oak.WasmCoreModule.module_ok
+#print axioms Oak.WasmCoreModule.instantiate
+#print axioms Oak.WasmCoreModule.invocation_success
+#print axioms Oak.WasmCoreSource.source_to_core
+#print axioms Oak.WasmNumericSource.accepts_parse
+#print axioms Oak.WasmNumericSource.checked_dispatches
+#print axioms Oak.WasmNumericSource.checked_width
+#print axioms Oak.WasmNumericSource.checked_call
+#print axioms Oak.WasmNumericSource.checked_denote
+#print axioms Oak.WasmNumericSource.checked_numeric_agrees
+#print axioms Oak.WasmNumericSource.checked_numeric_bits
+#print axioms Oak.WasmCoreSource.source_to_core_checked_numeric

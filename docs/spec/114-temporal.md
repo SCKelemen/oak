@@ -168,8 +168,8 @@ covers that conversion path.
 its callees. `TestLeanStdlibExtract/time` checks drift. The legacy
 `offset_datetime_to_instant` bridge is excluded because checked-i64 intrinsics
 are outside the current extractor subset; it is covered by runtime tests.
-The temporal proof entry point, `TimeCodecLaws.lean`, imports the calendar,
-decimal, and buffer layers:
+The temporal proof entry point, `TimePeriodLaws.lean`, imports the calendar,
+decimal, fractional-clock, offset, component-arithmetic, and buffer layers:
 
 - Constructor acceptance/rejection, civil structural roundtrip, invalid-input
   rejection, and formatter error atomicity are kernel-checked over the extraction.
@@ -203,6 +203,94 @@ decimal, and buffer layers:
   is kernel checked; date/local-datetime validity inherits the Gregorian native
   certificates through ordinal/week parsing. These are valid-result contracts,
   not proofs of grammar soundness or completeness.
+- `TimeFractionLaws.lean` and `TimeFractionTrimLaws.lean` prove decimal
+  reconstruction and trailing-zero trimming for every valid nanosecond value.
+  These arithmetic arguments are kernel checked. `TimeCopyLaws.lean` proves
+  exact prefix copying and sufficient-fuel completion.
+- `TimeRoundtripLaws.lean`, `TimeTimestampLaws.lean`, and
+  `TimeRFC3339RoundtripLaws.lean` prove universal canonical round trips for
+  valid clocks, local datetimes, and RFC3339 offset datetimes. Destinations
+  must have at least 18, 29, or 35 bytes respectively, and fewer than 2^32 bytes
+  so the extracted UInt32 length is exact. Forty units of extraction fuel
+  suffice. Successful lengths are respectively 8–18, 19–29, and 20–35 bytes;
+  the entire unused suffix and destination size are preserved. RFC3339 returns
+  the original offset kind, keeping `Z`, `+00:00`, and `-00:00` distinct.
+  These composition proofs inherit the decimal/calendar native trust noted
+  above; clock field bounds and numeric offset reconstruction also use
+  `bv_decide` with the pinned native LRAT checker.
+- `TimeComponentLaws.lean` proves the private guards called by the extracted
+  period/duration parser equivalent to unbounded arithmetic. Decimal extension
+  rejects exactly values beyond UInt64's maximum. Component accumulation rejects
+  exactly sums `current + value * factor + fraction` above the selected limit,
+  assuming `current <= limit` and a positive factor. Accepted operations cannot
+  wrap and preserve the accumulator bound. These proofs are kernel checked,
+  without native decision certificates.
+- `TimeMagnitudeLaws.lean`, `TimePeriodArithmeticLaws.lean`, and
+  `TimePeriodSignLaws.lean` prove signed-magnitude reconstruction for every
+  Int32/Int64, including signed minima; exact hour/minute/second/nanosecond
+  decomposition; acceptance of canonical duration prefixes by the component
+  guards; and reconstruction of every field of a sign-coherent period.
+  The sign precondition is connected to the actual formatter's rejection guard.
+  Unit decomposition and prefix bounds are kernel checked; signed bit-vector
+  conversion facts use the pinned native LRAT checker. These are component
+  contracts, not yet complete period/duration text round-trip proofs. The
+  fractional-second writer/reader composition and whole-record grammar
+  contracts remain open.
+- `TimeParserBoundsLaws.lean` proves the actual extracted main loop preserves
+  separate month/day and nanosecond limits, for arbitrary input and any fuel
+  that returns a state. Unit selection supplies positive factors; accepted
+  updates invoke the exact overflow contract, while rejected updates preserve
+  the accumulators. `TimeParserResultLaws.lean` connects this invariant to every
+  successful shared component parse and its sign-dependent magnitude limits.
+  Both modules are kernel checked without native certificates.
+- `TimeParserNumericLaws.lean` proves the actual integer scanner's accumulator
+  never decreases and its overflow flag is sticky. Its accepted decimal steps
+  use exact arithmetic. The fraction scanner maintains a weighted scale bound,
+  with exact multiply/add steps, at most nine digits, and a result strictly
+  below one second from its initial state. All these facts are kernel checked,
+  including the input digit range. They do not yet prove decimal text-value
+  correspondence, input-position bounds, or sufficient-fuel termination.
+- `TimeParserSignLaws.lean` proves every successful period parse satisfies the
+  formatter's uniform-sign precondition, including signed minima. The loop and
+  result composition use the bounds above; the final signed machine-conversion
+  fact uses the pinned native LRAT checker. This does not establish formatter
+  success, parser grammar completeness, or a serialized-text round trip.
+- The `TimeUnsigned*Laws.lean` modules prove the complete UInt64 integer
+  writer/scanner bridge over the extracted implementation. For every UInt64,
+  `put_u64` terminates with fuel at least 21, writes 1–20 ASCII digits, and
+  preserves the destination size and every byte outside the written interval.
+  It needs a twenty-byte window and `start + 20 < 2^32`. The scanner recovers
+  the exact original value when its explicit limit ends at that interval.
+  The proof follows both writer loops through an unbounded decimal-value model;
+  it does not infer correctness from sampled values.
+- `write_iso_unit_integer_roundtrip` additionally connects the actual unit
+  writer to the scanner on a full buffer: the scanner recovers the number and
+  stops before the nondigit unit, even with later text present. This requires
+  a twenty-one-byte window, buffer size below `2^32`, and fuel at least 21.
+  All new decimal, termination, buffer, and composition proofs are kernel
+  checked without native decision certificates.
+- `TimeFixedDecimalLaws.lean`, `TimeFixedWriterLaws.lean`, and the
+  `TimePeriodFraction*Laws.lean` modules establish fractional-second numeric
+  correspondence over the extracted implementation. The fixed-width writer
+  emits exact ASCII decimal values, including leading zeroes, while preserving
+  bytes outside its field. Trailing-zero removal preserves the scaled value
+  and terminates without exhausting a positive fraction's width. For every
+  nanosecond fraction from 1 through 999,999,999 and every UInt64 whole part,
+  `put_frac` emits one to nine fractional digits with no trailing zero; the
+  actual integer and fractional scanners recover both values. This composition
+  is also proved with a following nondigit unit and the full buffer as the
+  scanner limit: `TimePeriodFractionUnitLaws.lean` connects the exact
+  `put_frac` plus unit-store sequence to both scanners. They recover the
+  integer and nanosecond values and stop before the unit, even with arbitrary
+  later bytes present. The zero-fraction case emits only the integer field and
+  stops at the unit too. These delimiter contracts require a 31-byte window
+  for nonzero fractions (21 bytes for zero), buffer size below `2^32`, and fuel
+  at least 21; they preserve every byte outside the number and unit.
+  The writer and roundtrip contracts preserve buffer size and every byte outside the result,
+  with sufficient fuel and explicit capacity and pointer bounds. All these
+  proofs are kernel checked without native decision certificates. The outer
+  period/duration grammar and complete period/duration text round trips remain
+  separate obligations.
 - `TimeBufferLaws.lean` proves error atomicity and success frame properties for
   **all six new formatters**, for arbitrary destinations and extraction fuel.
   Every returned `Err` preserves the entire destination. Every returned `Ok n`
@@ -219,15 +307,21 @@ extrema. The day-addition oracle uses unbounded integers to avoid reproducing
 an overflow bug. This corpus checks executable correspondence on these inputs;
 it is not a proof of extraction or compiler correctness.
 
-`TestLeanTimeCodecFaithful` runs **1,320 shared checks** across the same three
+`TestLeanTimeCodecFaithful` runs **2,262 shared checks** across the same three
 execution paths. It compares every parsed field, exact error constructors,
 canonical text, returned lengths, and entire destination arrays. Go supplies
 independent civil/calendar spellings; a separate unsigned-magnitude oracle
-supplies period/duration spellings, including signed minima. Explicit cases
+supplies period/duration spellings, including signed minima. Decimal width
+transitions add powers-of-ten neighbors in both signs, padded input, and
+nondigit delimiters followed by later fields. Unit-scaled
+limit cases use Go `math/big` totals independently of the parser division guards. Explicit cases
 cover the declared profile's restrictions instead of assuming Go accepts the
 same grammar. Coverage includes basic/ordinal/week dates, every supported
-fractional width, comma ISO fractions, trailing-zero removal, all three RFC
-zero-offset kinds, malformed/non-ASCII/NUL input, signed limits, and every
+fractional width, leading zeros down to one nanosecond, comma ISO fractions,
+every trailing-zero trim boundary, all three RFC
+zero-offset kinds, malformed/non-ASCII/NUL input, signed limits, unit-scaled
+boundaries, mixed-unit totals at and one past each signed limit, the UInt64
+lexical boundary, and every
 capacity from zero through two bytes beyond each documented maximum. The
 capacity sweep uses maximum-width values; other cases exercise shorter text
 and suffix preservation. This is finite executable evidence, not a universal
@@ -244,11 +338,14 @@ Open release gates, explicitly not implied by successful tests or extraction:
    proofs if the native-evaluator trust boundary is unacceptable. Prove
    ordinal/week conversion, the remaining calendar success laws, and duration
    carry arithmetic.
-2. Prove parser grammar soundness/completeness and checked-component overflow
-   equivalence. Extend canonical round-trip proofs beyond dates to clocks,
-   local/RFC datetimes, periods, and durations. Establish successful prefix
-   contents, all output bounds, and sufficient-fuel termination for the remaining
-   formatters, including date round trips through larger destinations. Extend
+2. Prove outer parser grammar soundness/completeness, input-position bounds,
+   sufficient-fuel termination, and composition of numeric units through the
+   outer parser state transitions.
+   The UInt64 integer and fractional-second writer/scanner bridges, numeric
+   scanner safety, and main accumulator bounds are established. Extend canonical text round-trip proofs to periods and durations. Establish
+   successful prefix contents, output bounds, and sufficient-fuel termination
+   for those remaining formatters, and date round trips through larger
+   destinations. Extend
    shared executable correspondence to civil-duration arithmetic.
 3. Extend extraction/refinement through checked instant conversion. Preserve
    proofs through compilation, ABI, instruction encoding, and linking on both

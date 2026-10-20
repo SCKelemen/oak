@@ -14,7 +14,7 @@
                     "type": "VariableDeclaration",
                     "data": {
                       "name": "v",
-                      "type": "(u8.)",
+                      "type": "[]u8",
                       "value": {
                         "type": "SliceExpression",
                         "data": {
@@ -561,7 +561,7 @@
         "parameters": [
           {
             "name": "buf",
-            "type": "(u8[8])"
+            "type": "[8]u8"
           }
         ],
         "return_type": "u32"

@@ -3,9 +3,8 @@ import Oak.SATModel
 /-!
 # Soundness of the extracted production SAT-model checker
 
-Validation status at introduction: this proof awaits its first successful
-Lean kernel build. `TestOakSATModelSoundnessLean` is mandatory in formal CI;
-the loop-refinement obligation stays open until that gate passes.
+`TestOakSATModelSoundnessLean` kernel-checks the public theorem contracts
+and rejects proof holes in the dedicated, mandatory SAT-model CI job.
 
 The hypotheses are execution of `sat_check_model` and representable Oak view
 lengths. The proof derives the assignment invariant, exact clause decoding,
@@ -21,6 +20,10 @@ parts of the end-to-end verification chain.
 set_option autoImplicit false
 
 namespace Oak.SATModel
+
+private theorem two_nat : (2 : UInt32).toNat = 2 := by decide
+
+private theorem header_nat : LRAT_HEADER_WORDS.toNat = 8 := by decide
 
 private theorem counter_succ (i limit : UInt32) (h : i < limit) :
     (i + 1).toNat = i.toNat + 1 := by
@@ -213,9 +216,9 @@ theorem clause_loop_sound (fuel : Nat) (formula values : Array UInt32)
           cases scan : sat_check_model.loop3 formula values
               (decide (count ≤ formula.size.toUInt32 - body)) body count false 0 fuel with
           | none =>
-              simp only [sat_check_model.loop2, UInt32.reduceToNat, Bool.true_and, step, decide_true,
-                ite_true, header, ← countEq, ← bodyEq, scan, bind, Option.bind] at run
-              contradiction
+              simp only [sat_check_model.loop2, two_nat, Bool.true_and, step, decide_true,
+                ite_true, header, ← countEq, ← bodyEq, scan,
+                bind, Option.bind, Option.pure_def, reduceCtorEq] at run
           | some result =>
               rcases result with ⟨scanValid, satisfied, endLiteral⟩
               by_cases accepted : (scanValid && satisfied) = true
@@ -236,7 +239,7 @@ theorem clause_loop_sound (fuel : Nat) (formula values : Array UInt32)
                     ((rawClause formula body.toNat count.toNat).map literal) := by
                   apply witness_satisfies formula values body count room size
                   exact witness.resolve_left (by decide)
-                simp only [sat_check_model.loop2, UInt32.reduceToNat, Bool.true_and, step, decide_true,
+                simp only [sat_check_model.loop2, two_nat, Bool.true_and, step, decide_true,
                   ite_true, header, ← countEq, ← bodyEq, scan, Bool.and_self,
                   bind, Option.bind, Option.pure_def] at run
                 obtain ⟨_, endCount, clauses, decoded, holds⟩ :=
@@ -253,12 +256,12 @@ theorem clause_loop_sound (fuel : Nat) (formula values : Array UInt32)
                   · simpa [same] using current
                   · exact holds target tail
               · have refused : (scanValid && satisfied) = false := Bool.eq_false_iff.mpr accepted
-                simp only [sat_check_model.loop2, UInt32.reduceToNat, Bool.true_and, step, decide_true,
+                simp only [sat_check_model.loop2, two_nat, Bool.true_and, step, decide_true,
                   ite_true, header, ← countEq, ← bodyEq, scan, refused,
                   Bool.false_eq_true, ite_false, bind, Option.bind, Option.pure_def] at run
                 have impossible := (ih false body (clause + 1) finish finalClause nextBound run).1
                 contradiction
-        · simp only [sat_check_model.loop2, UInt32.reduceToNat, Bool.true_and, step, decide_true,
+        · simp only [sat_check_model.loop2, two_nat, Bool.true_and, step, decide_true,
             ite_true, header, decide_false, Bool.false_eq_true, ite_false,
             bind, Option.bind, Option.pure_def] at run
           have impossible := (ih false at_ (clause + 1) finish finalClause nextBound run).1
@@ -269,9 +272,9 @@ theorem clause_loop_sound (fuel : Nat) (formula values : Array UInt32)
           rw [UInt32.lt_iff_toNat_lt] at step
           omega
         have returned : at_ = finish ∧ clause = finalClause := by
-          simpa only [sat_check_model.loop2, UInt32.reduceToNat, Bool.true_and, step, decide_false,
-            Bool.false_eq_true, ite_false, Option.pure_def, Option.some.injEq, Prod.mk.injEq,
-            true_and] using run
+          simpa only [sat_check_model.loop2, two_nat, Bool.true_and, step,
+            decide_false, Bool.false_eq_true, ite_false, Option.pure_def,
+            Option.some.injEq, Prod.mk.injEq, true_and] using run
         rcases returned with ⟨rfl, rfl⟩
         exact ⟨rfl, same, [], by simp [same, decodeClauses], by simp [ClausesHold]⟩
 
@@ -300,11 +303,11 @@ private theorem header_sound (formula values : Array UInt32)
   obtain ⟨⟨⟨⟨length, magic⟩, proof⟩, body⟩, variables⟩ := accepted
   have lengthNat : 8 ≤ formula.size := by
     simpa only [ge_iff_le, UInt32.le_iff_toNat_le, size_exact _ size,
-      LRAT_HEADER_WORDS, UInt32.reduceToNat] using length
+      header_nat] using length
   have bodyNat := congrArg UInt32.toNat body
   rw [UInt32.toNat_sub_of_le _ _ length, size_exact _ size] at bodyNat
   refine ⟨⟨lengthNat, magic, proof, ?_⟩, ?_⟩
-  · simpa only [LRAT_HEADER_WORDS, UInt32.reduceToNat] using bodyNat
+  · simpa only [header_nat] using bodyNat
   · rw [variables, size_exact _ valueSize]
 
 /-- Exact independent formula decoding, including its header and endpoint. -/
@@ -365,7 +368,7 @@ theorem production_model_sound (formula values : Array UInt32) (fuel : Nat)
         exact validValues k (by simp) (by simpa only [size_exact _ valueSize] using bound)
       · have exactDecode : decodeClauses formula 8 (formula.getD 2 0).toNat =
             some (clauses, formula.size) := by
-          simpa only [LRAT_HEADER_WORDS, UInt32.reduceToNat, Nat.sub_zero, endpoint, size_exact _ formulaSize] using decoded
+          simpa only [header_nat, UInt32.toNat_zero, Nat.sub_zero, endpoint, size_exact _ formulaSize] using decoded
         simp only [decodeFormula, if_pos framed, exactDecode, bind, Option.bind,
           Option.pure_def, ite_true]
 

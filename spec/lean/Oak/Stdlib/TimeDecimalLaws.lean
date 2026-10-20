@@ -13,17 +13,17 @@ set_option maxHeartbeats 4000000
 /-- One ASCII decimal digit, as written by put_digits. -/
 def decimal_byte (n : UInt32) : UInt8 := 48 + (n % 10).toUInt8
 
-private theorem decimal_byte_bounds (n : UInt32) :
+theorem decimal_byte_bounds (n : UInt32) :
     48 ≤ decimal_byte n ∧ decimal_byte n ≤ 57 := by
   unfold decimal_byte
   bv_decide
 
-private theorem decimal_byte_value (n : UInt32) :
+theorem decimal_byte_value (n : UInt32) :
     ((decimal_byte n).toUInt32 - 48) % 256 = n % 10 := by
   unfold decimal_byte
   bv_decide
 
-private theorem decimal_byte_digit (n : UInt32) (fuel : Nat) :
+theorem decimal_byte_digit (n : UInt32) (fuel : Nat) :
     is_digit (decimal_byte n) fuel = some true := by
   obtain ⟨hl, hh⟩ := decimal_byte_bounds n
   simp [is_digit, hl, hh]
@@ -35,7 +35,7 @@ def calendar_text (y m d : UInt32) : Array UInt8 :=
     decimal_byte (m / 10), decimal_byte m, 45,
     decimal_byte (d / 10), decimal_byte d]
 
-private theorem decimal_two (v : UInt32) (h : v < 100) :
+theorem decimal_two (v : UInt32) (h : v < 100) :
     (v / 10 % 10) * 10 + v % 10 = v := by bv_decide
 private theorem decimal_four (v : UInt32) (h : v < 10000) :
     (((v / 10 / 10 / 10 % 10) * 10 + v / 10 / 10 % 10) * 10 +

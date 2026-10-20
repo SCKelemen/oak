@@ -14,8 +14,6 @@ decoded database. `Oak.SATModelSoundness` derives exact decoding and a model
 from successful execution of the generated framing/scan loops, for UInt32
 view lengths. Extraction, compilation, and source-to-CNF lowering remain
 separate obligations. Bounded replay is additional implementation evidence.
-The new loop proof awaits its first successful mandatory formal-CI kernel
-build; its refinement obligation is not yet recorded as closed.
 -/
 
 set_option autoImplicit false
@@ -54,14 +52,18 @@ theorem accepted_literal {values : List UInt32} {word : UInt32}
     (accepted : acceptsLiteral values word = true) :
     Oak.RupCheck.Holds (assignment values) (literal word) := by
   unfold acceptsLiteral at accepted
-  -- Match the Nat index produced by the UInt32 division simp rules.
-  cases found : values[word.toNat / 2]? with
-  | none => simp [found] at accepted
+  cases found : values[(word / 2).toNat]? with
+  | none => simp only [found, Bool.false_eq_true] at accepted
   | some value =>
+      -- Apply the lookup equation before general simplification rewrites
+      -- `(word / 2).toNat` to `word.toNat / 2`.
+      have matched : (sat_model_literal word value 0).getD false = true := by
+        simpa only [found] using accepted
       have checked : sat_model_literal word value 0 = some true := by
-        simpa [found, sat_model_literal] using accepted
+        simpa [sat_model_literal] using matched
       have sound := literal_value_sound word value 0 checked
-      simpa [Oak.RupCheck.Holds, assignment, literal, found] using sound
+      simpa only [Oak.RupCheck.Holds, assignment, literal, found,
+        Option.getD_some] using sound
 
 def acceptsClauses (values : List UInt32) (clauses : List (List UInt32)) : Bool :=
   clauses.all (fun clause => clause.any (acceptsLiteral values))

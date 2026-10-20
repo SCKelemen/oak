@@ -307,6 +307,16 @@ pub format_rfc3339_datetime: (dst: [*]u8, z: OffsetDateTime): Result[u32, TimeEr
   }
 }
 
+// The callers supply decimal digits and positive unit factors. Component
+// accumulation maintains current <= limit; these helpers preserve the exact
+// unsigned guards without evaluating a product before it is known to fit.
+iso_decimal_overflows: (value: u64, digit: u64): Bool = value > (u64(18446744073709551615) - digit) / u64(10)
+iso_component_overflows: (current: u64, value: u64, factor: u64, fraction: u64, limit: u64): Bool {
+  overflow: Bool = fraction > limit - current
+  !overflow ? { overflow = value > (limit - current - fraction) / factor }
+  overflow
+}
+
 // ISO designator profile: [sign]P[nY][nM][nD][T[nH][nM][n[.f]S]] or
 // [sign]PnW. A leading sign is Oak's explicit extension. Fractions are exact,
 // seconds-only, 1..9 digits; weeks cannot mix with other units. No floats.
@@ -340,7 +350,7 @@ parse_iso_components: (src: []u8, fixed_only: Bool): Result[Period, TimeError] {
         value: u64 = 0
         while at < n && is_digit(src[at]) && !overflow {
           digit: u64 = u64(src[at] - u8(48))
-          overflow = value > (u64(18446744073709551615) - digit) / u64(10)
+          overflow = iso_decimal_overflows(value, digit)
           !overflow ? { value = value * u64(10) + digit }
           at = at + u32(1)
         }
@@ -382,8 +392,7 @@ parse_iso_components: (src: []u8, fixed_only: Bool): Result[Period, TimeError] {
             current: u64 = bucket == u32(0) ? months | bucket == u32(1) ? days | nanos
             limit: u64 = bucket == u32(2) ? time_limit | cal_limit
             // fraction < 1e9 <= limit; current <= limit is a loop invariant.
-            overflow = fraction > limit - current
-            !overflow ? { overflow = value > (limit - current - fraction) / factor }
+            overflow = iso_component_overflows(current, value, factor, fraction, limit)
             !overflow ? {
               total: u64 = current + value * factor + fraction
               bucket == u32(0) ? { months = total } | bucket == u32(1) ? { days = total } | { nanos = total }

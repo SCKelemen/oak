@@ -1,0 +1,22 @@
+diff --git a/src/lib/rewrites.ml b/src/lib/rewrites.ml
+index ca362cd3a..fbb601acf 100644
+--- a/src/lib/rewrites.ml
++++ b/src/lib/rewrites.ml
+@@ -2896,6 +2896,17 @@ let rec rewrite_var_updates (E_aux (expaux, ((l, _) as annot)) as exp) =
+         let funcl = Id_aux (Id fname, gen_loc el) in
+         let v = E_aux (E_app (funcl, [cond; tuple_exp vars; body] @ measure), (gen_loc el, bannot)) in
+         Added_vars (v, tuple_pat (if overwrite then varpats else pat :: varpats))
++    | E_let _ ->
++        (* A guarded pattern can introduce a let-wrapped conditional here.
++           Thread updates used by the enclosing continuation through that
++           wrapper, just as for a direct conditional or match. *)
++        let vars, varpats =
++          find_updated_vars full_exp |> IdSet.inter used_vars |> mk_var_exps_pats pl env
++        in
++        if vars = [] then Same_vars (rewrite_var_updates full_exp)
++        else
++          let exp = rewrite_var_updates (add_vars overwrite full_exp vars) in
++          Added_vars (exp, tuple_pat (if overwrite then varpats else pat :: varpats))
+     | E_if (c, e1, e2) ->
+         let vars, varpats =
+           IdSet.union (find_updated_vars e1) (find_updated_vars e2) |> IdSet.inter used_vars |> mk_var_exps_pats pl env

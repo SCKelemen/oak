@@ -30,7 +30,12 @@ theorem udiv_pow_two_16 (x k : BitVec 16) : x / (1#16 <<< k) = x >>> k := by bv_
 theorem umod_pow_two_16 (x k : BitVec 16) : x % (1#16 <<< k) = x &&& ((1#16 <<< k) - 1) := by bv_decide
 
 theorem mul_pow_two_32 (x k : BitVec 32) : x * (1#32 <<< k) = x <<< k := by bv_decide
-theorem udiv_pow_two_32 (x k : BitVec 32) : x / (1#32 <<< k) = x >>> k := by bv_decide
+theorem udiv_pow_two_32 (x k : BitVec 32) : x / (1#32 <<< k) = x >>> k := by
+  rw [BitVec.shiftLeft_eq', BitVec.ushiftRight_eq']
+  by_cases hk : k.toNat < 32
+  · exact BitVec.udiv_twoPow_eq_of_lt hk
+  · have hk' : 32 ≤ k.toNat := Nat.le_of_not_lt hk
+    rw [BitVec.shiftLeft_eq_zero hk', BitVec.udiv_zero, BitVec.ushiftRight_eq_zero hk']
 theorem umod_pow_two_32 (x k : BitVec 32) : x % (1#32 <<< k) = x &&& ((1#32 <<< k) - 1) := by bv_decide
 
 /-- A nonzero constant divisor never meets the zero-divisor trap: the

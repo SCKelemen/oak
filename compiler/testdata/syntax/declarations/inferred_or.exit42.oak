@@ -1,0 +1,19 @@
+pub or_mask: (a: u32, b: u32): u32 {
+  mask := a | b
+  mask
+}
+
+main: (): i32 {
+  Red := u32(40)
+  Blue := u32(2)
+  Color := Red | Blue
+  assert(Color == u32(42))
+  assert(or_mask(Red, Blue) == Color)
+  assert(or_mask(u32(1), u32(4)) == u32(5))
+  nested := Red > Blue ? (Red | Blue) | {
+    mask := Red | Blue
+    mask
+  }
+  assert(nested == Color)
+  i32_bits_u32(Color)
+}

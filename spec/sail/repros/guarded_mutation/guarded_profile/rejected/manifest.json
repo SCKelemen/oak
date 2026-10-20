@@ -1,0 +1,17 @@
+{
+  "base_revision": "3b7af38d66466ecadad563158b07ce2f82fe05da",
+  "rejected_source_commit": "35cbfc388208f4a2cea9a90121eafad2c484e527",
+  "claim": "source shadow_case(false,0)=5; rejected unguarded generated model=99",
+  "files": {
+    "liveness.sail": "1ce355d2cf6ac30b348cd1dea560dacdf7296b58cbe8d14c83397ee9bfd2538d",
+    "compiler-sha256.txt": "ea176c27ab768762d8fc5042cc5f3115ecd87a21b4e93515666fc4639dab8193",
+    "kernel.log": "d8bba1c25e5b61771b18313b2555e41d2a7d9c86b234994cd44b48dccf70caa8",
+    "Out.lean": "11b92f6cc040a90cc7459d7802839498a3f8578ef8a3e458e6095cb87abb48e7",
+    "Evidence.lean": "f7aadb5dda1a64aecee573a97aa78db847d2787f8cbc4050ac459c1977e96556",
+    "unguarded.patch": "a2af66aa323460f231e5806288b845780e4e1263c90fefc0de9294cbda2ec51d",
+    "source.log": "be9de740b9ec13fd4c730e934e35dc6659b5bbf70c18a18f998fe5e2208d2720",
+    "Out/FakeReal.lean": "25eb133bf5ccddf2e87f8f48d5a01016e26fcbc63383cdb74addce87346a5c6b",
+    "Out/Defs.lean": "99c054c157ee9e63582ef38809664d302b3eea7582f67f143a99ba8a566aea3c",
+    "Out/Specialization.lean": "25c883ac7ad09dd1c1f2a923970061d2190f926f90871360bc56c03a0f540f0b"
+  }
+}

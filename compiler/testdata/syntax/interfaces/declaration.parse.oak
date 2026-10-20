@@ -1,0 +1,1 @@
+Reader: interface = fn (self) read(buf: [*]Byte) -> Result[u32, Error]

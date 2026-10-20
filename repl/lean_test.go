@@ -10,7 +10,8 @@ import (
 
 // sessionObligationsFile is the checked-in rendering of exampleSession's
 // obligations; the Lean CI job elaborates it (and Oak/SessionObligationsProved
-// discharges its statements), so the REPL's emitter is checked by Lean.
+// proves two and SessionObligationsRefuted refutes three universal claims),
+// so the REPL's emitter is checked without admitting the open obligations.
 const sessionObligationsFile = "../spec/lean/Oak/SessionObligations.lean"
 
 // exampleSession records one obligation of each stated kind: an unbounded
@@ -107,7 +108,7 @@ func TestLeanObligationsReportUntranslatableLoops(t *testing.T) {
 	}
 	// The inner loop is itself an obligation and is translatable; only it
 	// gets a definition — the outer loop is reported, never approximated.
-	if strings.Count(text, "def loop_spin") != 1 {
+	if strings.Count(text, " : Oak.Loops.Loop :=") != 1 {
 		t.Fatalf("exactly the inner loop must be translated:\n%s", text)
 	}
 	empty := NewSession(t.TempDir())
@@ -136,9 +137,6 @@ func TestLeanCheckReportsVerdicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A deliberately false statement joins the file so the error path is
-	// exercised.
-	text = strings.Replace(text, "end Oak.Session", "theorem broken_disjoint : Oak.Regions.Disjoint ⟨0, 4⟩ ⟨2, 6⟩ := by decide\n\nend Oak.Session", 1)
 	report, err := session.LeanCheck(text, filepath.Join(t.TempDir(), "check.lean"))
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +149,6 @@ func TestLeanCheckReportsVerdicts(t *testing.T) {
 		"loop_loop_1_terminates": Open,
 		"cycle_1_ranked":         Proved,
 		"unsafe_1_overlaps":      Proved,
-		"broken_disjoint":        Failed,
 	} {
 		if verdicts[name] != want {
 			t.Fatalf("%s = %s, want %s\n%s", name, verdicts[name], want, report)
@@ -159,12 +156,12 @@ func TestLeanCheckReportsVerdicts(t *testing.T) {
 	}
 }
 
-// classify attributes messages by line range without running Lean.
+// Diagnostics alone never certify a proof, and any error invalidates the file.
 func TestClassifyAttributesMessages(t *testing.T) {
 	text := "theorem a : True := trivial\n\n/-- doc -/\ntheorem b : True := by\n  sorry\n\ntheorem c : False := by\n  decide\n"
 	output := "{\"severity\":\"warning\",\"pos\":{\"line\":4},\"data\":\"declaration uses sorry\"}\n{\"severity\":\"error\",\"pos\":{\"line\":8},\"data\":\"failed to synthesize Decidable False\"}\n"
 	report := classify(text, []byte(output))
-	if len(report.Theorems) != 3 || report.Theorems[0].Verdict != Proved || report.Theorems[1].Verdict != Open || report.Theorems[2].Verdict != Failed {
+	if len(report.Theorems) != 3 || report.Theorems[0].Verdict != Failed || report.Theorems[1].Verdict != Failed || report.Theorems[2].Verdict != Failed {
 		t.Fatalf("report = %+v", report.Theorems)
 	}
 }
@@ -188,8 +185,8 @@ func TestLeanObligationsStateOperatorLaws(t *testing.T) {
 	for _, want := range []string{
 		"namespace Defs",
 		"def add (a : Vec) (b : Vec) (fuel : Nat) : Option (Vec)",
-		"theorem law_add_associative (a b c : Defs.Vec) (fuel : Nat) :\n    (Defs.add a b fuel >>= fun ab => Defs.add ab c fuel) = (Defs.add b c fuel >>= fun bc => Defs.add a bc fuel) := by\n  sorry",
-		"theorem law_add_commutative (a b : Defs.Vec) (fuel : Nat) :\n    Defs.add a b fuel = Defs.add b a fuel := by\n  sorry",
+		"-- OAK-OBLIGATION law_add_associative: open\ndef law_add_associative : Prop :=\n  ∀ (a b c : _) (fuel : Nat),\n    (Defs.add a b fuel >>= fun ab => Defs.add ab c fuel) = (Defs.add b c fuel >>= fun bc => Defs.add a bc fuel)",
+		"-- OAK-OBLIGATION law_add_commutative: open\ndef law_add_commutative : Prop :=\n  ∀ (a b : _) (fuel : Nat),\n    Defs.add a b fuel = Defs.add b a fuel",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
@@ -220,9 +217,9 @@ func TestLeanStatesIdentityAndIdempotent(t *testing.T) {
 	}
 	for _, want := range []string{
 		"declares `identity(hist_zero())`",
-		"theorem law_merge_identity_left (a : Defs.Hist) (fuel : Nat) :\n    (Defs.hist_zero fuel >>= fun e => Defs.merge e a fuel) = some a := by\n  sorry",
-		"theorem law_merge_identity_right (a : Defs.Hist) (fuel : Nat) :\n    (Defs.hist_zero fuel >>= fun e => Defs.merge a e fuel) = some a := by\n  sorry",
-		"theorem law_merge_idempotent (a : Defs.Hist) (fuel : Nat) :\n    Defs.merge a a fuel = some a := by\n  sorry",
+		"-- OAK-OBLIGATION law_merge_identity_left: open\ndef law_merge_identity_left : Prop :=\n  ∀ (a : _) (fuel : Nat),\n    (Defs.hist_zero fuel >>= fun e => Defs.merge e a fuel) = some a",
+		"-- OAK-OBLIGATION law_merge_identity_right: open\ndef law_merge_identity_right : Prop :=\n  ∀ (a : _) (fuel : Nat),\n    (Defs.hist_zero fuel >>= fun e => Defs.merge a e fuel) = some a",
+		"-- OAK-OBLIGATION law_merge_idempotent: open\ndef law_merge_idempotent : Prop :=\n  ∀ (a : _) (fuel : Nat),\n    Defs.merge a a fuel = some a",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)
@@ -244,8 +241,8 @@ func TestLeanStatesLawsOnPlainFunctions(t *testing.T) {
 	}
 	for _, want := range []string{
 		"`join` on `u32` declares `associative`",
-		"theorem law_join_associative (a b c : Defs.u32) (fuel : Nat) :\n    (Defs.join a b fuel >>= fun ab => Defs.join ab c fuel) = (Defs.join b c fuel >>= fun bc => Defs.join a bc fuel) := by\n  sorry",
-		"theorem law_join_commutative (a b : Defs.u32) (fuel : Nat) :\n    Defs.join a b fuel = Defs.join b a fuel := by\n  sorry",
+		"-- OAK-OBLIGATION law_join_associative: open\ndef law_join_associative : Prop :=\n  ∀ (a b c : _) (fuel : Nat),\n    (Defs.join a b fuel >>= fun ab => Defs.join ab c fuel) = (Defs.join b c fuel >>= fun bc => Defs.join a bc fuel)",
+		"-- OAK-OBLIGATION law_join_commutative: open\ndef law_join_commutative : Prop :=\n  ∀ (a b : _) (fuel : Nat),\n    Defs.join a b fuel = Defs.join b a fuel",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in:\n%s", want, text)

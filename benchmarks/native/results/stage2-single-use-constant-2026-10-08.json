@@ -1,0 +1,90 @@
+{
+  "date_local": "2026-10-08",
+  "recorded_at_utc": "2026-10-08T09:35:11Z",
+  "host": "Apple M4 Max",
+  "baseline_revision": "b5f149efa692ea201d715b05c86efba27358f6d8",
+  "candidate": "baseline plus verifier-gated retargeting of a uniquely defined and uniquely read one-instruction AArch64 constant carrier",
+  "baseline_configuration": "pushed specification compiler with its default optimizer search",
+  "os_revision": "31aeec182517d74f27ff9769e78a43a9b39ca4d3",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "differential_harness": "SCKelemen/os core/src/stage2_native_conformance.zig",
+  "differential_harness_sha256": "c7d53456d2b54f36342d2ee94575538369d9bbce83393dab1d7b1ccc8e438b01",
+  "native_shim_sha256": "0a1a8bcba5b776e55e5968e95175d2103b35b5be7dd140c1700a473989b8d8fb",
+  "toolchain": {"go": "go1.26.0 darwin/arm64", "zig": "0.16.0"},
+  "compiler_binary_sha256": {
+    "baseline": "adc73d38fdef3f6927b57936016094ca4e912e53cef85133f4ce143ffd0ec604",
+    "candidate": "c9e5e040fd032103dfad1efaf8bb73f0b2e026d4997160dd6f52f401a1a06b1f"
+  },
+  "object_sha256": {
+    "baseline": "d2dd288ab44851898db60faee31e211c66d2870ce37a77f2e18feb7bdf5d2296",
+    "candidate": "03ad6021671f682f31dcc37d9eb56c52c6d05e846025e64b365b3fd0b270de97"
+  },
+  "object_bytes": {"baseline": 4864, "candidate": 4856, "delta": -8},
+  "text_bytes": {"baseline": 3340, "candidate": 3336, "delta": -4},
+  "relocation_entries": {"baseline": 27, "candidate": 27, "delta": 0},
+  "build": {
+    "target": "darwin/arm64 host object for the OS differential harness",
+    "verify_fresh": true,
+    "baseline_verdict_cache_hits": 0,
+    "candidate_verdict_cache_hits": 0,
+    "verdicts": 22
+  },
+  "changed_selected_bodies": {
+    "translate": {
+      "instructions_before": 51,
+      "instructions_after": 50,
+      "branches_before": 10,
+      "branches_after": 10,
+      "estimated_stalls_before": 15,
+      "estimated_stalls_after": 15,
+      "static_cost_before": 79.0,
+      "static_cost_after": 78.0,
+      "cleanup_sites_before": 2,
+      "cleanup_sites_after": 3,
+      "verdict": "proven"
+    }
+  },
+  "summary": {
+    "selected_instructions_removed": 1,
+    "selected_branches_removed": 0,
+    "estimated_stalls_removed": 0,
+    "static_cost_removed": 1.0,
+    "text_bytes_removed": 4,
+    "object_bytes_removed": 8,
+    "interpretation": "The success constant is materialized directly in w0 at its only use. Whole-body single-write/single-read admission, dominance, all-path stability, and the unchanged verifier gate avoid reconstructing general live ranges from colored assembly."
+  },
+  "differential_tests": {
+    "passed": 8,
+    "cases": [
+      "PRNG operation streams against Zig",
+      "independent isolated regimes",
+      "map/translate/unmap round trip",
+      "unaligned and out-of-range rejection",
+      "pool exhaustion",
+      "shadow-model translation property",
+      "fuzz map/unmap operation stream",
+      "atomic 16 KiB granule map/unmap"
+    ]
+  },
+  "runtime": {
+    "reported": true,
+    "benchmark": "pilots/oak bench-stage2-native, ReleaseFast, 20000000 translate calls and 2000000 decoder cycles per run",
+    "method": "three sequential interleaved baseline/candidate samples after warmup",
+    "translate_ns_per_op": {
+      "baseline_samples": [4.24, 4.30, 4.24],
+      "candidate_samples": [4.23, 4.26, 4.23],
+      "baseline_mean": 4.26,
+      "candidate_mean": 4.24,
+      "candidate_delta_percent": -0.47
+    },
+    "decoder_ns_per_cycle": {
+      "baseline_samples": [504.8, 485.7, 490.1],
+      "candidate_samples": [483.8, 487.4, 484.4],
+      "baseline_mean": 493.5,
+      "candidate_mean": 485.2,
+      "candidate_delta_percent": -1.69
+    },
+    "interpretation": "the one-instruction translate change is below the host benchmark's resolution; runtime is not claimed beyond the static reduction"
+  }
+}

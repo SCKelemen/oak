@@ -1,0 +1,215 @@
+{
+  "format": 1,
+  "platform": "Linux x86_64, glibc >= 2.38",
+  "debian_snapshot": "20260925T181338Z",
+  "packages": [
+    {
+      "file": "lem_2022-12-10+dfsg2-4+b2_amd64.deb",
+      "package": "lem",
+      "version": "2022-12-10+dfsg2-4+b2",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/l/lem/lem_2022-12-10+dfsg2-4+b2_amd64.deb",
+      "sha256": "b2997f5bff1b087fba4bc43ea98ee9333d80f6f6c343eded996172a6f6dbb0c4"
+    },
+    {
+      "file": "libcompiler-libs-ocaml-dev_5.3.0-3_amd64.deb",
+      "package": "libcompiler-libs-ocaml-dev",
+      "version": "5.3.0-3",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml/libcompiler-libs-ocaml-dev_5.3.0-3_amd64.deb",
+      "sha256": "9b7906c3035dbb3b3e6d6e881413b8d8ccf239409c5677a0382864f0a84f4fe3"
+    },
+    {
+      "file": "libdune-ocaml-dev_3.17.2-1+b1_amd64.deb",
+      "package": "libdune-ocaml-dev",
+      "version": "3.17.2-1+b1",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml-dune/libdune-ocaml-dev_3.17.2-1+b1_amd64.deb",
+      "sha256": "19088d163e0ff31b2f54d8ff10c322541c264ba7035023c0cf047bd79a3eca97"
+    },
+    {
+      "file": "libfindlib-ocaml-dev_1.9.8-1+b1_amd64.deb",
+      "package": "libfindlib-ocaml-dev",
+      "version": "1.9.8-1+b1",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/f/findlib/libfindlib-ocaml-dev_1.9.8-1+b1_amd64.deb",
+      "sha256": "4cd991eddffd16d6cfbd42c82d2fd56fca3cd210049e558916b32d05da643477"
+    },
+    {
+      "file": "libfindlib-ocaml_1.9.8-1+b1_amd64.deb",
+      "package": "libfindlib-ocaml",
+      "version": "1.9.8-1+b1",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/f/findlib/libfindlib-ocaml_1.9.8-1+b1_amd64.deb",
+      "sha256": "e85f1626744414d024d1163a88b2a3722a20ede16b845e4aef46e79fe556500c"
+    },
+    {
+      "file": "liblem-ocaml-dev_2022-12-10+dfsg2-4+b2_amd64.deb",
+      "package": "liblem-ocaml-dev",
+      "version": "2022-12-10+dfsg2-4+b2",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/l/lem/liblem-ocaml-dev_2022-12-10+dfsg2-4+b2_amd64.deb",
+      "sha256": "1f013a8452b5507e00272e8ac7cc712beae23648356924a22d120bd9e81da239"
+    },
+    {
+      "file": "liblinenoise-ocaml-dev_1.5.1-2+b3_amd64.deb",
+      "package": "liblinenoise-ocaml-dev",
+      "version": "1.5.1-2+b3",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml-linenoise/liblinenoise-ocaml-dev_1.5.1-2+b3_amd64.deb",
+      "sha256": "94d7c0e4e6a10c08994eb67d790e48f2038c0aa935b6c7067186e9020aefadfb"
+    },
+    {
+      "file": "liblinenoise-ocaml_1.5.1-2+b3_amd64.deb",
+      "package": "liblinenoise-ocaml",
+      "version": "1.5.1-2+b3",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml-linenoise/liblinenoise-ocaml_1.5.1-2+b3_amd64.deb",
+      "sha256": "26f109ef89f48243774c65ab01df3129772dbc94db5fefdab4c4286bca6aabab"
+    },
+    {
+      "file": "liblinksem-ocaml-dev_0.8+dfsg3-1+b3_amd64.deb",
+      "package": "liblinksem-ocaml-dev",
+      "version": "0.8+dfsg3-1+b3",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/l/linksem/liblinksem-ocaml-dev_0.8+dfsg3-1+b3_amd64.deb",
+      "sha256": "c1d553a8dcccd3b17993bc8752123ed99396afe3d1d4868eecec46260263ba34"
+    },
+    {
+      "file": "libmenhir-ocaml-dev_20240715+ds-1+b2_amd64.deb",
+      "package": "libmenhir-ocaml-dev",
+      "version": "20240715+ds-1+b2",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/m/menhir/libmenhir-ocaml-dev_20240715+ds-1+b2_amd64.deb",
+      "sha256": "5289b5236ff083273ffe566715decb94bfd1b367fae507f7f47d7c203271e70e"
+    },
+    {
+      "file": "libnum-ocaml-dev_1.5-1+b3_amd64.deb",
+      "package": "libnum-ocaml-dev",
+      "version": "1.5-1+b3",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml-num/libnum-ocaml-dev_1.5-1+b3_amd64.deb",
+      "sha256": "e5e589e7cff5d32a690130181795fafd7eedda8153107df81c1055d93a79841f"
+    },
+    {
+      "file": "libnum-ocaml_1.5-1+b3_amd64.deb",
+      "package": "libnum-ocaml",
+      "version": "1.5-1+b3",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml-num/libnum-ocaml_1.5-1+b3_amd64.deb",
+      "sha256": "5a770440f2596f013553618521768f552cf0130302ffc5e19d83d4d9011ffb8b"
+    },
+    {
+      "file": "libocamlgraph-ocaml-dev_2.1.0-3+b3_amd64.deb",
+      "package": "libocamlgraph-ocaml-dev",
+      "version": "2.1.0-3+b3",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocamlgraph/libocamlgraph-ocaml-dev_2.1.0-3+b3_amd64.deb",
+      "sha256": "b10ba9b5d79b0e05ce933269a9355d677dae0f9c8e7ebc0256c16ac7756aec5c"
+    },
+    {
+      "file": "libpprint-ocaml-dev_20230830-1+b4_amd64.deb",
+      "package": "libpprint-ocaml-dev",
+      "version": "20230830-1+b4",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml-pprint/libpprint-ocaml-dev_20230830-1+b4_amd64.deb",
+      "sha256": "1dc96c568fed5f20c499f34fb2f3f616282d505657b1368c706cac239b915651"
+    },
+    {
+      "file": "libpprint-ocaml_20230830-1+b4_amd64.deb",
+      "package": "libpprint-ocaml",
+      "version": "20230830-1+b4",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml-pprint/libpprint-ocaml_20230830-1+b4_amd64.deb",
+      "sha256": "8646aecbd7f294bdebbc2c5d0db8e69874594dbbc6f59e0ab68a5835d99ac94b"
+    },
+    {
+      "file": "libstdlib-ocaml-dev_5.3.0-3_amd64.deb",
+      "package": "libstdlib-ocaml-dev",
+      "version": "5.3.0-3",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml/libstdlib-ocaml-dev_5.3.0-3_amd64.deb",
+      "sha256": "dc30c05739633cf8313fd685b635db6eb50d41b2d42f1e83208c269964c8d322"
+    },
+    {
+      "file": "libstdlib-ocaml_5.3.0-3_amd64.deb",
+      "package": "libstdlib-ocaml",
+      "version": "5.3.0-3",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml/libstdlib-ocaml_5.3.0-3_amd64.deb",
+      "sha256": "5334efd10830ee37210e87a7ade0f74009192e6e77446f062dc3ca15f95c1043"
+    },
+    {
+      "file": "libyojson-ocaml-dev_2.2.2-1+b2_amd64.deb",
+      "package": "libyojson-ocaml-dev",
+      "version": "2.2.2-1+b2",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/y/yojson/libyojson-ocaml-dev_2.2.2-1+b2_amd64.deb",
+      "sha256": "1da9055dc9941a88d8f2a8a9db93289bc3ff924d260ba285589e513d880cf6e4"
+    },
+    {
+      "file": "libyojson-ocaml_2.2.2-1+b2_amd64.deb",
+      "package": "libyojson-ocaml",
+      "version": "2.2.2-1+b2",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/y/yojson/libyojson-ocaml_2.2.2-1+b2_amd64.deb",
+      "sha256": "df8cb0986d7236f304c5b3417e6a0e421a5e9688c475d0f877a1c96bd7d07a9b"
+    },
+    {
+      "file": "libzarith-ocaml-dev_1.14-1+b2_amd64.deb",
+      "package": "libzarith-ocaml-dev",
+      "version": "1.14-1+b2",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml-zarith/libzarith-ocaml-dev_1.14-1+b2_amd64.deb",
+      "sha256": "94b66071a5c53f3b4c1bf127b9dff8379489a6f73642d2395d13aaed1c00621e"
+    },
+    {
+      "file": "libzarith-ocaml_1.14-1+b2_amd64.deb",
+      "package": "libzarith-ocaml",
+      "version": "1.14-1+b2",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml-zarith/libzarith-ocaml_1.14-1+b2_amd64.deb",
+      "sha256": "39455680431972e6cb661ab6885609cc3694f0c57df2d1ddb73678bcd6e97893"
+    },
+    {
+      "file": "menhir_20240715+ds-1+b2_amd64.deb",
+      "package": "menhir",
+      "version": "20240715+ds-1+b2",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/m/menhir/menhir_20240715+ds-1+b2_amd64.deb",
+      "sha256": "5872a5707d06954e25aa340796f9ecab6444c0dedb8a742dd7bf7f8e578b047b"
+    },
+    {
+      "file": "ocaml-base_5.3.0-3_amd64.deb",
+      "package": "ocaml-base",
+      "version": "5.3.0-3",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml/ocaml-base_5.3.0-3_amd64.deb",
+      "sha256": "039652a52bce7fd48abc2d905225d1811bd65e139ee6b8a28650c957a235a013"
+    },
+    {
+      "file": "ocaml-compiler-libs_5.3.0-3_all.deb",
+      "package": "ocaml-compiler-libs",
+      "version": "5.3.0-3",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml/ocaml-compiler-libs_5.3.0-3_all.deb",
+      "sha256": "169fb4eea6c11207c64f7ab43111e5828833beae6278cc6d9ab9b36df66d5a5c"
+    },
+    {
+      "file": "ocaml-findlib_1.9.8-1+b1_amd64.deb",
+      "package": "ocaml-findlib",
+      "version": "1.9.8-1+b1",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/f/findlib/ocaml-findlib_1.9.8-1+b1_amd64.deb",
+      "sha256": "e2b01155de7bfe233d29eeff2b14527b0798399c19a40fdb8931ffe0e15a4925"
+    },
+    {
+      "file": "ocaml-interp_5.3.0-3_amd64.deb",
+      "package": "ocaml-interp",
+      "version": "5.3.0-3",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml/ocaml-interp_5.3.0-3_amd64.deb",
+      "sha256": "fe4595e7bf353c6b81a4e46ffc552f1c82cc5a33cd0c724251cbad010dddf1b0"
+    },
+    {
+      "file": "ocaml_5.3.0-3_amd64.deb",
+      "package": "ocaml",
+      "version": "5.3.0-3",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocaml/ocaml_5.3.0-3_amd64.deb",
+      "sha256": "226e71a9cbb59148280298a74a3930a6d01b052cf4c17cd09675f80fe323cdd1"
+    },
+    {
+      "file": "ocamlbuild_0.16.1-1+b1_amd64.deb",
+      "package": "ocamlbuild",
+      "version": "0.16.1-1+b1",
+      "url": "https://snapshot.debian.org/archive/debian/20260925T181338Z/pool/main/o/ocamlbuild/ocamlbuild_0.16.1-1+b1_amd64.deb",
+      "sha256": "0c95ac1e4e294e2995d45e82cd7e9044609dbdd90df78a0d94846f61b70985e7"
+    }
+  ],
+  "archives": [
+    {
+      "file": "dune-3.21.1.tbz",
+      "url": "https://github.com/ocaml/dune/releases/download/3.21.1/dune-3.21.1.tbz",
+      "sha256": "84f7a82c6d80a7124f3847e9a489e80cfbeafb7bed3573ac01286ef56fd08d94"
+    },
+    {
+      "file": "ott-0.34.tar.gz",
+      "url": "https://github.com/ott-lang/ott/archive/0.34.tar.gz",
+      "sha256": "c14899fb9f9627f96fcde784829b53c014f4cd2e7633a697ac485ecb9ab8abd6"
+    }
+  ]
+}

@@ -15,12 +15,12 @@ const kernelProgram = `
 clamp_relu: (x: f32): f32 = x < 0.0 ? 0.0 | x
 
 // Elementwise ReLU: one thread per element.
-kernel relu: (gid: u32, x: []f32, y: [*]f32): () = {
+relu: (gid: u32, x: []f32, y: [*]f32): () (kernel) = {
   gid < len(y) ? { y[gid] = clamp_relu(x[gid]) }
 }
 
 // y = a * x + y over a tile of elements per thread.
-kernel axpy: (gid: u32, a: f32, x: []f32, y: [*]f32, tile: u32): () = {
+axpy: (gid: u32, a: f32, x: []f32, y: [*]f32, tile: u32): () (kernel) = {
   base: u32 = gid * tile
   k: u32 = 0
   while k < tile {
@@ -103,7 +103,7 @@ func TestKernelsEmitMetal(t *testing.T) {
 // helpers, conversions are casts, Bool conditionals become ternaries.
 func TestKernelsEmitMetalIntegerForms(t *testing.T) {
 	src := `
-kernel ints: (gid: u32, a: []u8, b: [*]i32, c: [*]u64): () = {
+ints: (gid: u32, a: []u8, b: [*]i32, c: [*]u64): () (kernel) = {
   v: u8 = a[gid] + 200
   q: i32 = b[gid] / 3
   s: u64 = c[gid] << 3
@@ -134,18 +134,18 @@ main: (): i32 = 0
 // Kernels are held to the subset in every build, Metal requested or not.
 func TestKernelsRejectedOutsideTheSubset(t *testing.T) {
 	cases := map[string][2]string{
-		"first parameter": {`kernel k: (n: i32, y: [*]f32): () = { y[0] = 1.0 }
+		"first parameter": {`k: (n: i32, y: [*]f32): () (kernel) = { y[0] = 1.0 }
 main: (): i32 = 0`, CodeKernelSubset},
-		"f64": {`kernel k: (gid: u32, y: [*]f64): () = { y[gid] = 1.0 }
+		"f64": {`k: (gid: u32, y: [*]f64): () (kernel) = { y[gid] = 1.0 }
 main: (): i32 = 0`, CodeKernelSubset},
-		"fixed array": {`kernel k: (gid: u32, y: [4]f32): () = {}
+		"fixed array": {`k: (gid: u32, y: [4]f32): () (kernel) = {}
 main: (): i32 = 0`, CodeKernelSubset},
-		"result": {`kernel k: (gid: u32, x: []f32): f32 = x[gid]
+		"result": {`k: (gid: u32, x: []f32): f32 (kernel) = x[gid]
 main: (): i32 = 0`, CodeKernelSubset},
-		"kernel calls kernel elsewhere": {`kernel a: (gid: u32, y: [*]f32): () = { y[gid] = 1.0 }
-kernel b: (gid: u32, y: [*]f32): () = { a(gid + 1, y) }
+		"kernel calls kernel elsewhere": {`a: (gid: u32, y: [*]f32): () (kernel) = { y[gid] = 1.0 }
+b: (gid: u32, y: [*]f32): () (kernel) = { a(gid + 1, y) }
 main: (): i32 = 0`, CodeKernelSubset},
-		"unbounded loop": {`kernel k: (gid: u32, y: [*]f32): () = {
+		"unbounded loop": {`k: (gid: u32, y: [*]f32): () (kernel) = {
   i: u32 = 0
   while i != gid { i = i + 1 }
   y[0] = 1.0
@@ -153,11 +153,11 @@ main: (): i32 = 0`, CodeKernelSubset},
 main: (): i32 = 0`, CodeKernelLoop},
 		"effect": {`host_read: (x: c.UInt32): c.UInt32 effects { Host.Read } = c.extern("oak_host_read")
 peek: (x: u32): u32 = u32(host_read(c.UInt32(x)))
-kernel k: (gid: u32, y: [*]u32): () = { y[gid] = peek(gid) }
+k: (gid: u32, y: [*]u32): () (kernel) = { y[gid] = peek(gid) }
 main: (): i32 = 0`, CodeKernelEffect},
 		"unknown effect": {`mystery: (x: c.UInt32): c.UInt32 = c.extern("mystery")
 peek: (x: u32): u32 = u32(mystery(c.UInt32(x)))
-kernel k: (gid: u32, y: [*]u32): () = { y[gid] = peek(gid) }
+k: (gid: u32, y: [*]u32): () (kernel) = { y[gid] = peek(gid) }
 main: (): i32 = 0`, CodeKernelEffect},
 	}
 	for name, c := range cases {
@@ -178,7 +178,7 @@ func TestKernelsSyntaxAndExtraction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if printed := tree.Root.String(); !strings.Contains(printed, "kernel relu(gid: u32") {
+	if printed := tree.Root.String(); !strings.Contains(printed, "relu: (gid: u32") {
 		t.Fatalf("kernel must print back: %s", printed)
 	}
 	extracted, err := New().WithSource("kernels.oak", kernelProgram).EmitLean("Oak.KernelsTest").Get()
@@ -200,11 +200,11 @@ func TestKernelsSyntaxAndExtraction(t *testing.T) {
 // proves every access in its body.
 func TestKernelsElideProvenChecks(t *testing.T) {
 	src := `
-kernel saxpy: (gid: u32, a: f32, x: []f32, y: [*]f32): () = {
+saxpy: (gid: u32, a: f32, x: []f32, y: [*]f32): () (kernel) = {
   len(x) == len(y) && gid < len(y) ? { y[gid] = a * x[gid] + y[gid] }
 }
 
-kernel prefix: (gid: u32, x: []f32, out: [*]f32): () = {
+prefix: (gid: u32, x: []f32, out: [*]f32): () (kernel) = {
   n: u32 = len(x)
   acc: f32 = 0.0
   i: u32 = 0
@@ -241,17 +241,17 @@ main: (): i32 = 0
 // the tile shape through a literal width is admitted.
 func TestKernelsIndependence(t *testing.T) {
 	cases := map[string]string{
-		"neighbour": `kernel k: (gid: u32, y: [*]f32): () = { gid + 1 < len(y) ? { y[gid + 1] = 1.0 } }
+		"neighbour": `k: (gid: u32, y: [*]f32): () (kernel) = { gid + 1 < len(y) ? { y[gid + 1] = 1.0 } }
 main: (): i32 = 0`,
 		"span to helper": `store: (s: [*]f32, i: u32): () = { i < len(s) ? { s[i] = 1.0 } }
-kernel k: (gid: u32, y: [*]f32): () = { store(y, gid) }
+k: (gid: u32, y: [*]f32): () (kernel) = { store(y, gid) }
 main: (): i32 = 0`,
-		"gid reassigned": `kernel k: (gid: u32, y: [*]f32): () = {
+		"gid reassigned": `k: (gid: u32, y: [*]f32): () (kernel) = {
   gid = gid / 2
   gid < len(y) ? { y[gid] = 1.0 }
 }
 main: (): i32 = 0`,
-		"counter not last": `kernel kern: (gid: u32, y: [*]f32, tile: u32): () = {
+		"counter not last": `kern: (gid: u32, y: [*]f32, tile: u32): () (kernel) = {
   k: u32 = 0
   while k < tile {
     k = k + 1
@@ -260,7 +260,7 @@ main: (): i32 = 0`,
   }
 }
 main: (): i32 = 0`,
-		"read across tiles": `kernel kern: (gid: u32, y: [*]f32, tile: u32): () = {
+		"read across tiles": `kern: (gid: u32, y: [*]f32, tile: u32): () (kernel) = {
   k: u32 = 0
   while k < tile {
     i: u32 = gid * tile + k
@@ -280,7 +280,7 @@ main: (): i32 = 0`,
 		}
 	}
 	admitted := `
-kernel quad: (gid: u32, x: []f32, y: [*]f32): () = {
+quad: (gid: u32, x: []f32, y: [*]f32): () (kernel) = {
   k: u32 = 0
   while k < 4 {
     i: u32 = 4 * gid + k
@@ -310,7 +310,7 @@ r := import("reduce")
 
 add: (a: f32, b: f32): f32 = a + b
 
-kernel tile_sum: (gid: u32, x: []f32, partials: [*]f32, tile: u32): () = {
+tile_sum: (gid: u32, x: []f32, partials: [*]f32, tile: u32): () (kernel) = {
   start: u32 = gid * tile
   start + tile <= len(x) && gid < len(partials) ? {
     part: []f32 = subslice(x, start, tile)
@@ -371,16 +371,16 @@ func TestE2EKernelsReduceTree(t *testing.T) {
 func TestKernelsReduceTreeRejections(t *testing.T) {
 	cases := map[string][2]string{
 		"span window to helper": {`fill: (s: [*]f32): () = { s[0] = 1.0 }
-kernel k: (gid: u32, y: [*]f32, tile: u32): () = {
+k: (gid: u32, y: [*]f32, tile: u32): () (kernel) = {
   gid * tile + tile <= len(y) ? {
     w: [*]f32 = subslice(y, gid * tile, tile)
     fill(w)
   }
 }
 main: (): i32 = 0`, CodeKernelIndependence},
-		"fixed array parameter": {`kernel k: (gid: u32, t: [4]f32, y: [*]f32): () = { y[gid] = t[0] }
+		"fixed array parameter": {`k: (gid: u32, t: [4]f32, y: [*]f32): () (kernel) = { y[gid] = t[0] }
 main: (): i32 = 0`, CodeKernelSubset},
-		"function parameter on a kernel": {`kernel k: (gid: u32, f: (f32) -> f32 effects { }, y: [*]f32): () = { y[gid] = f(1.0) }
+		"function parameter on a kernel": {`k: (gid: u32, f: (f32) -> f32 effects { }, y: [*]f32): () (kernel) = { y[gid] = f(1.0) }
 main: (): i32 = 0`, CodeKernelSubset},
 	}
 	for name, c := range cases {
@@ -402,7 +402,7 @@ const kernelRecordProgram = `package main
 
 t := import("tensor")
 
-kernel relu_t[R, S]: (gid: u32, x: t.Tensor2[R], out: t.MutTensor2[S]): () = {
+relu_t[R, S]: (gid: u32, x: t.Tensor2[R], out: t.MutTensor2[S]): () (kernel) = {
   gid < len(out.data) && gid < x.rows * x.cols ? {
     i: u32 = gid / x.cols
     j: u32 = gid % x.cols
@@ -464,11 +464,11 @@ func TestE2EKernelsRecordParameters(t *testing.T) {
 func TestKernelsRecordRejections(t *testing.T) {
 	prelude := "t := import(\"tensor\")\n\n"
 	cases := map[string][2]string{
-		"span record to helper": {prelude + `kernel k[R, S]: (gid: u32, x: t.Tensor2[R], out: t.MutTensor2[S]): () = {
+		"span record to helper": {prelude + `k[R, S]: (gid: u32, x: t.Tensor2[R], out: t.MutTensor2[S]): () (kernel) = {
   gid < out.rows && gid < x.rows ? { t.tensor_set(out, gid, 0, t.tensor_at(x, gid, 0)) }
 }
 main: (): i32 = 0`, CodeKernelIndependence},
-		"span field windowed": {prelude + `kernel k[S]: (gid: u32, out: t.MutTensor2[S]): () = {
+		"span field windowed": {prelude + `k[S]: (gid: u32, out: t.MutTensor2[S]): () (kernel) = {
   gid + 1 <= len(out.data) ? {
     w: [*]f32 = subslice(out.data, gid, 1)
     w[0] = 1.0
@@ -477,7 +477,7 @@ main: (): i32 = 0`, CodeKernelIndependence},
 main: (): i32 = 0`, CodeKernelIndependence},
 		"nested record": {`Inner: type = struct { a: u32 }
 Outer: type = struct { in: Inner, k: u32 }
-kernel k: (gid: u32, o: Outer, y: [*]u32): () = { y[gid] = o.k }
+k: (gid: u32, o: Outer, y: [*]u32): () (kernel) = { y[gid] = o.k }
 main: (): i32 = 0`, CodeKernelSubset},
 	}
 	for name, c := range cases {
@@ -503,7 +503,7 @@ r := import("reduce")
 
 add: (a: f32, b: f32): f32 = a + b
 
-kernel group_sums: (gid: u32, x: []f32, partials: [*]f32): () = {
+group_sums: (gid: u32, x: []f32, partials: [*]f32): () (kernel) = {
   n: u32 = len(x)
   lo: u32 = gid * 4
   gid < len(partials) && lo <= n ? {
@@ -571,7 +571,7 @@ r := import("reduce")
 
 add: (a: f32, b: f32): f32 = a + b
 
-kernel lane_sums: (gid: u32, x: []f32, partials: [*]f32, window: u32): () = {
+lane_sums: (gid: u32, x: []f32, partials: [*]f32, window: u32): () (kernel) = {
   n: u32 = len(x)
   lo: u32 = gid * window
   gid < len(partials) && lo <= n ? {
@@ -647,17 +647,17 @@ func TestE2EKernelsGroupLanes(t *testing.T) {
 func TestKernelsGroupTreeRejections(t *testing.T) {
 	prelude := "r := import(\"reduce\")\n\nadd: (a: f32, b: f32): f32 = a + b\n\n"
 	cases := map[string]string{
-		"variable group": prelude + `kernel k: (gid: u32, x: []f32, p: [*]f32, g: u32): () = {
+		"variable group": prelude + `k: (gid: u32, x: []f32, p: [*]f32, g: u32): () (kernel) = {
   zero: f32 = 0.0
   gid < len(p) ? { p[gid] = r.group_tree(g, x, 0, 1, zero, add) }
 }
 main: (): i32 = 0`,
-		"not a power of two": prelude + `kernel k: (gid: u32, x: []f32, p: [*]f32): () = {
+		"not a power of two": prelude + `k: (gid: u32, x: []f32, p: [*]f32): () (kernel) = {
   zero: f32 = 0.0
   gid < len(p) ? { p[gid] = r.group_tree(6, x, 0, 1, zero, add) }
 }
 main: (): i32 = 0`,
-		"two sizes": prelude + `kernel k: (gid: u32, x: []f32, p: [*]f32): () = {
+		"two sizes": prelude + `k: (gid: u32, x: []f32, p: [*]f32): () (kernel) = {
   zero: f32 = 0.0
   gid < len(p) ? { p[gid] = r.group_tree(4, x, 0, 1, zero, add) + r.group_tree(8, x, 0, 1, zero, add) }
 }
@@ -666,7 +666,7 @@ main: (): i32 = 0`,
   zero: f32 = 0.0
   r.group_tree(4, x, 0, 1, zero, add)
 }
-kernel k: (gid: u32, x: []f32, p: [*]f32): () = { gid < len(p) ? { p[gid] = part(x) } }
+k: (gid: u32, x: []f32, p: [*]f32): () (kernel) = { gid < len(p) ? { p[gid] = part(x) } }
 main: (): i32 = 0`,
 	}
 	for name, src := range cases {
@@ -689,7 +689,7 @@ const kernelMatmulProgram = `package main
 
 t := import("tensor")
 
-kernel matmul_t[A, B, C]: (gid: u32, a: t.Tensor2[A], b: t.Tensor2[B], out: t.MutTensor2[C]): () = {
+matmul_t[A, B, C]: (gid: u32, a: t.Tensor2[A], b: t.Tensor2[B], out: t.MutTensor2[C]): () (kernel) = {
   contiguous: Bool = out.row_stride == out.cols && out.col_stride == 1 && out.offset == 0
   contiguous && gid < out.rows * out.cols && gid < len(out.data) && a.cols == b.rows && out.rows == a.rows && out.cols == b.cols ? {
     i: u32 = gid / out.cols

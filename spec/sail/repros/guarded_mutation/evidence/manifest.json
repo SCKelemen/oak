@@ -1,0 +1,39 @@
+{
+  "sail_version": "Sail 0.20.2 (sail2 @ 3b7af38d66466ecadad563158b07ce2f82fe05da)",
+  "proof_toolchain": "leanprover/lean4:v4.33.1",
+  "support_revision": "79b4d08505af29d88b3918f32d29840fae1fa191",
+  "support_patch": "spec/sail/lean-sail-4.33.patch",
+  "files": {
+    "minimal_total.sail": "98e8a06ecd793b498a4a8a1340a3619a9aafc03feacff4dfcb51c0b9ed3a8799",
+    "generated-total/out/Out.lean": "3ed5ee3f0e81a1f1ef8010bf24405f231a4284c4f36a93ae3f3a5939eda914e8",
+    "generated-total/out/Out/Defs.lean": "99c054c157ee9e63582ef38809664d302b3eea7582f67f143a99ba8a566aea3c",
+    "minimal_incomplete.sail": "ab0b9ef97448d9fe6cea427fcea6b0d4bc78ebc0880ca571d1eefd5391d36cfb",
+    "generated-incomplete/out/Out.lean": "6482bcf6cbe31e51c2c26f6bd6f9a705ebbfa1e5d8158e58792b77f7e71a55a9",
+    "generated-incomplete/out/Out/Defs.lean": "99c054c157ee9e63582ef38809664d302b3eea7582f67f143a99ba8a566aea3c",
+    "original_addr_top.sail": "e5a91e4e3f47aeddde7b379638d1eaef3cfbc62efc8215e75c3ee9840b20478f",
+    "generated-addr-top/out/Out.lean": "fa4471d1636b6dda3135fdfec9c3a70bb8d1751491348d85f22f1bb64931ed41",
+    "generated-addr-top/out/Out/Defs.lean": "9c1d8d32161c0199b66d5e4483dfa50cbeaacd1542506c23632b191e7bf0ef77"
+  },
+  "original_AddrTop_val_sha256": "5c4377a92392ec31fd29edd2777c31eb0da4dde14ab817d67ae8a30cf8b30d35",
+  "original_AddrTop_function_sha256": "ab4db1fc2ab8aaa15cb5de7547be0149c40f93d4cb18d6b0b8e2f7700eaee582",
+  "addr_top_raw_build": "fails elaboration; no executable raw AddrTop result claimed",
+  "reviewed_scalar_source_sha256": "56df0ed635564dee0b7bafe48ea8c987a7f8b8ea362b85676bb7d3363c3db780",
+  "selected_fixture_sha256": "d6096e67e28d6b4e098fc287e5a32d26c3b2acd1ccc7b5384664c65616a8cc41",
+  "selected_results": [
+    "case0-and -> 0",
+    "case0-or -> 0",
+    "case0-xor -> 0",
+    "case1-and -> 0",
+    "case1-or -> 4294967295",
+    "case1-xor -> 4294967295",
+    "case2-and -> 4294967295",
+    "case2-or -> 4294967295",
+    "case2-xor -> 0",
+    "case3-and -> 0",
+    "case3-or -> 4294967295",
+    "case3-xor -> 4294967295",
+    "case4-and -> 2233811456",
+    "case4-or -> 2816826235",
+    "case4-xor -> 583014779"
+  ]
+}

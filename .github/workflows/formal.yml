@@ -5,6 +5,7 @@ on:
     branches:
       - specification
       - docs/spec-consolidation
+      - codex/lrat-binding-complete
   pull_request:
     branches:
       - specification
@@ -12,8 +13,162 @@ on:
 permissions:
   contents: read
 
+# Cancel only automatic PR runs; keep manual reruns and other events independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
+
 jobs:
+  sat-model:
+    name: SAT model soundness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install elan
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      # Run independently of the full specification: an unrelated proof
+      # failure must not hide the production checker and its theorem contract.
+      - name: Build production SAT-model soundness
+        working-directory: spec/lean
+        run: lake build Oak.SATModelSoundness
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Check self-hosted SAT-model admission, extraction, and soundness
+        env:
+          OAK_REQUIRE_SAT_MODEL_LEAN: '1'
+        run: go test . -run '^TestOakSATModel' -count=1 -timeout=10m -v
+
+  assembler-entry-provenance:
+    name: Native verifier entry provenance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Run executable Go correspondence before downloading Lean. A transient
+      # Lean CDN failure must not hide a native verifier regression.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Check bounded Go correspondence and native verifier regressions
+        run: go test ./asm -run '^(TestEntry(Register|Readable)|TestNativeVerifier(ISASelection|EntryReadable|RegisterStateRefinement)|TestVerifyCallSummary|TestAssemblerCallState)' -count=1 -timeout=10m -v
+
+      - name: Install elan
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Prove native call entry, clobber, write, fork, and join laws
+        working-directory: spec/lean
+        run: lake build Oak.AssemblerEntryProvenance Oak.AssemblerCallState
+
+  lrat-kernel:
+    name: LRAT kernel soundness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install elan
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      # Track the complete LRAT proof independently of unrelated formal modules.
+      - name: Build production LRAT bound-record proof
+        working-directory: spec/lean
+        run: lake build Oak.LRATAdmission Oak.LRATPreflight Oak.LRATBindingModel Oak.LRATLifecycleSoundness Oak.LRATNativeGuards Oak.CNFLiteral Oak.LRATRV64Bytes Oak.LRATRV64Compressed Oak.LRATARM64Bytes Oak.LRATNativeRefinement Oak.LRATRV64GuardCalls Oak.LRATARM64GuardCalls Oak.LRATARM64RecordLoads Oak.LRATARM64HeaderLoads Oak.LRATRV64HeaderLoads Oak.CNFEmission Oak.CNFGates Oak.CNFFolds Oak.CNFNodes Oak.CNFObligation Oak.CNFObligationStore Oak.CNFRoots Oak.CNFLayout Oak.CNFAllocation Oak.SolverAllocation
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Check production LRAT records, extraction, and scratch restoration
+        env:
+          OAK_REQUIRE_LRAT_TRAIL_LEAN: '1'
+          OAK_REQUIRE_LRAT_RECORD_LEAN: '1'
+        run: go test ./compiler -run '^TestLRATKernel' -count=1 -timeout=10m -v
+
+      - name: Check formula binding, allocation preflight, cleanup, and native guards
+        env:
+          OAK_REQUIRE_LRAT_BINDING_LEAN: '1'
+        run: |
+          command -v cc
+          go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean|TestOakLRATAllocatedEntry|TestOakLRATRawStreamEntry|TestLRATLifecycle.*|TestLRATNative.*|TestOakCNFLiteral.*|TestOakCNFEmission.*|TestOakCNFGates.*|TestOakCNFFolds.*|TestOakCNFNodes.*|TestOakCNFObligation.*|TestOakCNFObligationStore.*|TestOakCNFRoots.*|TestOakCNFLayout.*|TestOakCNFAllocation.*|TestOakSolverAllocation.*|TestCNFAxiomAudit|TestOakLRATAgrees)$' -count=1 -timeout=10m -v
+
+  native-bitwise-images:
+    # Keep full-file fixed proofs and fresh compiler/writer correspondence
+    # independent of the already substantial aggregate Lean job. Both matrix
+    # entries are required; each checker fixes its complete theorem/case inventory.
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/codex/lrat-')
+    name: Native executable images (${{ matrix.gate }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        gate: [fixtures, production]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install elan
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Check complete native executable images and theorem trust
+        if: matrix.gate == 'fixtures'
+        run: |
+          python3 -m unittest discover -s tools/native_image_fixtures -p test_check.py
+          python3 tools/native_image_fixtures/check.py
+
+      - name: Require production native executable image correspondence
+        if: matrix.gate == 'production'
+        env:
+          OAK_REQUIRE_NATIVE_IMAGE_LEAN: '1'
+        run: python3 .github/scripts/required_backend_tests.py native-image
+
   lean:
+    # Proof-branch iterations use the dedicated gates above. PR and
+    # specification runs still check the complete formal specification.
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/heads/codex/lrat-')
     name: Lean 4
     runs-on: ubuntu-24.04
     steps:
@@ -29,13 +184,21 @@ jobs:
           /tmp/elan-init -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
-      - name: Check RV64 encoding, relaxation, and materialization proofs
+      - name: Check RV64 encoding, layout, and execution proofs
         working-directory: spec/lean
-        run: lake build Oak.RiscVBranchEncoding Oak.RiscVCompressedBranchEncoding Oak.RiscVRelaxation Oak.RiscVMaterialization
+        run: lake build Oak.RiscVBranchEncoding Oak.RiscVCompressedBranchEncoding Oak.RiscVRelaxation Oak.RiscVMaterialization Oak.RiscVCallExecution Oak.RiscVDirectControl Oak.RiscVControlFlow Oak.RiscVComparison
 
       - name: Build formal specification
         working-directory: spec/lean
         run: lake build
+
+      - name: Audit session obligations and aggregate admissions
+        working-directory: spec/lean
+        run: lake env lean CheckSessionObligations.lean
+
+      - name: Check unsigned strength reduction boundaries and proof authority
+        working-directory: spec/lean
+        run: lake env lean CheckStrengthReduction.lean
 
       # The standard-library extractions are checked for faithfulness by
       # running the extracted Lean and the compiled Oak on one corpus and
@@ -45,11 +208,45 @@ jobs:
         with:
           go-version: '1.27.1'
 
+      - name: Require floating-point and extracted Lean execution
+        run: python3 .github/scripts/required_backend_tests.py lean-compiler
+
+      - name: Require generated Lean namespace imports
+        run: python3 .github/scripts/required_backend_tests.py lean-cli
+
+      - name: Check REPL obligation generation and proof trust verdicts
+        run: go test ./repl -run 'TestLean|TestClassify' -count=1 -timeout=10m -v
+
       # Production AArch64 relocation and CNF allocation/clause/replay decisions are
       # rendered as Lean examples and checked against their models in this
       # Lean-equipped lane. Ordinary Go-only jobs skip these optional oracles.
       - name: Check bounded production correspondence
         run: go test ./asm -run 'TestAArch64Branch26RelocationMatchesLean|TestAArch64ADRL21PatchBoundaries|TestRV64PCRelMatchesLean|TestValidateCNFAllocationMatchesLean|TestValidateCNFTraceMatchesLean|TestNativeCNFReplay(Apply|Term|Word|WordPairs|Header|Finish|Settled|MetadataSettled|Recording)MatchesLean|TestNativeCNFReplayWordProjection' -count=1 -v
+
+      - name: Check ARM64 bitwise emitted bytes against Lean
+        env:
+          OAK_REQUIRE_ARM64_LEAN: '1'
+        run: go test ./asm -run '^TestAArch64BitwiseFunction' -count=1 -v
+
+      - name: Check complete native bitwise objects and theorem trust
+        run: |
+          python3 -m unittest discover -s tools/native_object_fixtures -p test_check.py
+          python3 tools/native_object_fixtures/check.py
+
+      - name: Require production native bitwise object correspondence
+        env:
+          OAK_REQUIRE_NATIVE_OBJECT_LEAN: '1'
+        run: python3 .github/scripts/required_backend_tests.py native-object
+
+      - name: Check original-source to complete-artifact parity and theorem trust
+        run: |
+          python3 -m unittest discover -s tools -p test_source_object_parity.py
+          python3 tools/source_object_parity.py
+
+      - name: Check ARM64 compiler ELF startup against Lean
+        env:
+          OAK_REQUIRE_ARM64_LEAN: '1'
+        run: go test ./compiler -run '^TestAArch64MinimalStartupMatchesLean$' -count=1 -v
 
       - name: Check Wasm assembler production decisions against Lean
         env:
@@ -71,6 +268,30 @@ jobs:
           OAK_REQUIRE_WASM_TESTS: '1'
         run: go test ./compiler -run '^TestE2ESelfHostedWasm' -count=1 -v
 
+      - name: Check decoded Wasm execution against Lean and independent engine
+        env:
+          OAK_REQUIRE_WASM_LEAN: '1'
+          OAK_REQUIRE_WASM_TESTS: '1'
+        run: go test ./compiler -run '^TestWasm(Execution|Control|Calls|Module|Typing|CallComposition|ConditionalSource)(Lean|Engine)$' -count=1 -timeout=20m -v
+
+      - name: Prepare complete pinned official Wasm numeric sources
+        run: python3 -B spec/wasm-core/numeric_sources.py --fetch
+
+      - name: Check official Wasm numeric source provenance controls
+        run: python3 -B spec/wasm-core/test_numeric_sources.py
+
+      - name: Check actual source and compiled Wasm modules against source-checked numeric Core
+        env:
+          OAK_REQUIRE_WASM_LEAN: '1'
+        run: go test ./compiler -run '^TestWasmCore' -count=1 -timeout=45m -v
+
+      - name: Check official Wasm numeric semantic rejection controls
+        working-directory: spec/lean
+        run: lake env lean ../wasm-core/NumericControls.lean
+
+      - name: Audit restricted Wasm Core theorem axioms
+        run: python3 spec/wasm-core/audit.py
+
       - name: Check Wasm LEB production decisions against Lean
         env:
           OAK_REQUIRE_WASM_LEAN: '1'
@@ -81,10 +302,20 @@ jobs:
           OAK_REQUIRE_LINKER_LEAN: '1'
         run: go test ./compiler -run '^TestE2ESelfHostedPlacement$' -count=1 -v
 
+      - name: Check RV64 selector comparison and routing certificates
+        env:
+          OAK_REQUIRE_RV64_LEAN: '1'
+        run: go test ./machine -run '^TestRV64(ControlFlow|Comparison)Selector' -count=1 -v
+
       - name: Check RV64 production decisions against Lean
         env:
           OAK_REQUIRE_RV64_LEAN: '1'
-        run: go test ./asm -run '^TestRV64((LocalBranches|CompressedBranches)MatchLean|(Relaxation|Materialization)MatchesLean)$' -count=1 -v
+        run: go test ./asm -run '^TestRV64((LocalBranches|CompressedBranches)MatchLean|(Relaxation|Materialization|CallExecution|DirectControl|BitwiseFunction|BitwiseELF)MatchesLean)$' -count=1 -v
+
+      - name: Check RV64 compiler bitwise bytes against Lean
+        env:
+          OAK_REQUIRE_RV64_LEAN: '1'
+        run: go test ./compiler -run '^TestRV64FramedBitwiseCompilerMatchesLean$' -count=1 -v
 
       - name: Check solver formula binding in Go, Oak, and Lean
         env:
@@ -96,15 +327,11 @@ jobs:
           OAK_REQUIRE_CLAUSE_AGREEMENT_LEAN: '1'
         run: go test . -run '^TestClauseAgreement' -count=1 -v
 
-      - name: Check self-hosted SAT-model admission and extraction
-        env:
-          OAK_REQUIRE_SAT_MODEL_LEAN: '1'
-        run: go test . -run '^TestOakSATModel' -count=1 -v
-
       - name: Check extracted standard library against compiled and interpreted Oak
         env:
+          OAK_REQUIRE_BYTES_COPY_LEAN: '1'
           OAK_REQUIRE_TIME_LEAN: '1'
-        run: go test ./compiler -run '^Test(LeanStdlibFaithful|LeanTimeCalendarFaithful|LeanTimeCodecFaithful)$' -count=1 -timeout=20m -v
+        run: go test ./compiler -run '^Test(LeanStdlibFaithful|LeanStdlibBytesCopyCorrespondence|LeanTimeCalendarFaithful|LeanTimeCodecFaithful)$' -count=1 -timeout=20m -v
 
       - name: Check self-hosted LRAT kernel and production extraction
         run: go test ./compiler -run '^TestLRATKernel' -count=1 -v

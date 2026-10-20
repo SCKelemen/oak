@@ -10,6 +10,10 @@ import (
 type TypeScheme struct {
 	// Type variables that are quantified over (∀α₁...αₙ)
 	TypeVars []string
+	// QuantifiedBinders records the actual binder identities for inferred
+	// schemes. Explicit legacy schemes may use TypeVars alone until migrated.
+	// Never resolve inferred quantification by the variable's printed name.
+	QuantifiedBinders []*TypeVar
 	// Constraints: interface requirements (e.g., "T: Reader & Writer")
 	// These are checked at instantiation time
 	Constraints []Constraint
@@ -165,6 +169,31 @@ func (sub Substitution) Apply(typ Type) Type {
 			Name:     t.Name,
 			TypeArgs: newArgs,
 		}
+	case *UnionType:
+		result := *t
+		result.Types = sub.applyTypeList(t.Types)
+		return &result
+	case *IntersectionType:
+		result := *t
+		result.Types = sub.applyTypeList(t.Types)
+		return &result
+	case *NarrowedADTVariantType:
+		result := *t
+		result.TypeArgs = sub.applyTypeList(t.TypeArgs)
+		return &result
+	case *BufferType:
+		result := *t
+		result.Element = sub.Apply(t.Element)
+		return &result
+	case *AtomicType:
+		result := *t
+		result.Element = sub.Apply(t.Element)
+		return &result
+	case *CFnType:
+		result := *t
+		result.Parameters = sub.applyTypeList(t.Parameters)
+		result.ReturnType = sub.Apply(t.ReturnType)
+		return &result
 	default:
 		return t // Unknown type, return as-is
 	}
@@ -312,37 +341,14 @@ func (u *Unifier) unifyVar(tv *TypeVar, t Type) Substitution {
 }
 
 func (u *Unifier) occursIn(tv *TypeVar, t Type) bool {
-	switch typ := t.(type) {
-	case *TypeVar:
-		return tv == typ
-	case *RecordType:
-		for _, fieldType := range typ.Fields {
-			if u.occursIn(tv, fieldType) {
-				return true
-			}
-		}
-	case *FunctionType:
-		for _, param := range typ.Parameters {
-			if u.occursIn(tv, param) {
-				return true
-			}
-		}
-		if u.occursIn(tv, typ.ReturnType) {
-			return true
-		}
-	case *ArrayType:
-		return u.occursIn(tv, typ.ElementType)
-	case *GenericType:
-		for _, arg := range typ.TypeArgs {
-			if u.occursIn(tv, arg) {
-				return true
-			}
-		}
-	}
-	return false
+	return walkTypeVariables(t, func(variable *TypeVar) bool { return variable == tv })
 }
 
 func (u *Unifier) unifyFunction(fn1, fn2 *FunctionType) Substitution {
+	if fn1.Variadic != fn2.Variadic {
+		u.errors = append(u.errors, "cannot unify variadic and fixed-arity functions")
+		return nil
+	}
 	if len(fn1.Parameters) != len(fn2.Parameters) {
 		u.errors = append(u.errors, fmt.Sprintf("function arity mismatch: %d vs %d", len(fn1.Parameters), len(fn2.Parameters)))
 		return nil
@@ -458,17 +464,22 @@ func Generalize(typ Type, env *TypeEnvironment) *TypeScheme {
 		return makeMonomorphicScheme(typ, nil)
 	}
 
-	// Find all free type variables in typ that are not bound in env
-	freeVars := findFreeTypeVars(typ, env)
+	// Generalize by binder identity, not by printed variable name.
+	freeBinders := freeTypeVarBinders(typ, env)
+	freeVars := make([]string, 0, len(freeBinders))
+	for _, variable := range freeBinders {
+		freeVars = append(freeVars, variable.Name)
+	}
 
 	// Create constraints for any interface requirements
 	// (This will be expanded when we implement interface checking)
 	constraints := []Constraint{}
 
 	return &TypeScheme{
-		TypeVars:    freeVars,
-		Constraints: constraints,
-		Type:        typ,
+		TypeVars:          freeVars,
+		QuantifiedBinders: freeBinders,
+		Constraints:       constraints,
+		Type:              typ,
 	}
 }
 
@@ -590,63 +601,22 @@ func commitMonomorphicBindings(bindings Substitution) {
 
 func typeVarsIn(typ Type) []*TypeVar {
 	var variables []*TypeVar
-	seen := make(map[*TypeVar]bool)
-	var visit func(Type)
-	visit = func(current Type) {
-		switch t := current.(type) {
-		case *TypeVar:
-			if !seen[t] {
-				seen[t] = true
-				variables = append(variables, t)
-			}
-		case *RecordType:
-			for _, field := range t.Fields {
-				visit(field)
-			}
-		case *FunctionType:
-			for _, parameter := range t.Parameters {
-				visit(parameter)
-			}
-			visit(t.ReturnType)
-		case *ArrayType:
-			visit(t.ElementType)
-		case *GenericType:
-			for _, argument := range t.TypeArgs {
-				visit(argument)
-			}
-		}
-	}
-	visit(typ)
+	walkTypeVariables(typ, func(variable *TypeVar) bool {
+		variables = append(variables, variable)
+		return false
+	})
 	return variables
 }
 
 func findMonomorphicSubstitution(typ Type) Substitution {
 	var found Substitution
-	var visit func(Type)
-	visit = func(current Type) {
-		switch t := current.(type) {
-		case *TypeVar:
-			if found == nil && t.Monomorphic != nil {
-				found = t.Monomorphic
-			}
-		case *RecordType:
-			for _, field := range t.Fields {
-				visit(field)
-			}
-		case *FunctionType:
-			for _, parameter := range t.Parameters {
-				visit(parameter)
-			}
-			visit(t.ReturnType)
-		case *ArrayType:
-			visit(t.ElementType)
-		case *GenericType:
-			for _, argument := range t.TypeArgs {
-				visit(argument)
-			}
+	walkTypeVariables(typ, func(variable *TypeVar) bool {
+		if variable.Monomorphic != nil {
+			found = variable.Monomorphic
+			return true
 		}
-	}
-	visit(typ)
+		return false
+	})
 	return found
 }
 
@@ -660,32 +630,13 @@ func findMonomorphicGroup(typ Type) *monomorphicGroup {
 }
 
 func markMonomorphicTypeVars(typ Type, persistent Substitution, group *monomorphicGroup) {
-	var visit func(Type)
-	visit = func(current Type) {
-		switch t := current.(type) {
-		case *TypeVar:
-			if t.Monomorphic == nil {
-				t.Monomorphic = persistent
-				t.monomorphicGroup = group
-			}
-		case *RecordType:
-			for _, field := range t.Fields {
-				visit(field)
-			}
-		case *FunctionType:
-			for _, parameter := range t.Parameters {
-				visit(parameter)
-			}
-			visit(t.ReturnType)
-		case *ArrayType:
-			visit(t.ElementType)
-		case *GenericType:
-			for _, argument := range t.TypeArgs {
-				visit(argument)
-			}
+	walkTypeVariables(typ, func(variable *TypeVar) bool {
+		if variable.Monomorphic == nil {
+			variable.Monomorphic = persistent
+			variable.monomorphicGroup = group
 		}
-	}
-	visit(typ)
+		return false
+	})
 }
 
 func makeMonomorphicScheme(typ Type, constraints []Constraint) *TypeScheme {
@@ -693,24 +644,7 @@ func makeMonomorphicScheme(typ Type, constraints []Constraint) *TypeScheme {
 }
 
 func makeMonomorphicSchemeInEnv(typ Type, constraints []Constraint, env *TypeEnvironment) *TypeScheme {
-	bound := make(map[*TypeVar]bool)
-	for current := env; current != nil; current = current.outer {
-		for _, scheme := range current.store {
-			if scheme == nil {
-				continue
-			}
-			for _, variable := range typeVarsIn(scheme.Type) {
-				bound[variable] = true
-			}
-		}
-	}
-	var free []*TypeVar
-	for _, variable := range typeVarsIn(typ) {
-		if !bound[variable] {
-			free = append(free, variable)
-		}
-	}
-	return makeMonomorphicSchemeFor(typ, constraints, free)
+	return makeMonomorphicSchemeFor(typ, constraints, freeTypeVarBinders(typ, env))
 }
 
 func makeMonomorphicSchemeFor(typ Type, constraints []Constraint, variables []*TypeVar) *TypeScheme {
@@ -750,43 +684,56 @@ func makeMonomorphicSchemeFor(typ Type, constraints []Constraint, variables []*T
 }
 
 // findFreeTypeVars finds all type variables in a type that are not bound in the environment
-func findFreeTypeVars(typ Type, env *TypeEnvironment) []string {
-	// Collect all type variables in the type
-	vars := collectTypeVars(typ)
-
-	// Extract bound type variables from environment schemes
-	boundVars := extractBoundTypeVars(env)
-
-	freeVars := []string{}
-	for _, v := range vars {
-		if !boundVars[v] {
-			freeVars = append(freeVars, v)
-		}
-	}
-
-	return freeVars
-}
-
-// extractBoundTypeVars extracts all bound type variables from the environment
-// This includes type variables from all schemes in the current and outer environments
-func extractBoundTypeVars(env *TypeEnvironment) map[string]bool {
-	boundVars := make(map[string]bool)
-
-	// Traverse the environment chain (current and outer environments)
-	currentEnv := env
-	for currentEnv != nil {
-		// Extract type variables from all schemes in this environment
-		for _, scheme := range currentEnv.store {
-			if scheme != nil {
-				for _, tv := range scheme.TypeVars {
-					boundVars[tv] = true
+// freeTypeVarBinders implements FV(type) minus FV(environment) by binder
+// identity. Variables quantified by an environment scheme are not free in
+// that scheme; for legacy explicit schemes, TypeVars names identify only
+// that scheme's own quantified variables.
+func freeTypeVarBinders(typ Type, env *TypeEnvironment) []*TypeVar {
+	bound := make(map[*TypeVar]bool)
+	for current := env; current != nil; current = current.outer {
+		for _, scheme := range current.store {
+			if scheme == nil {
+				continue
+			}
+			quantified := make(map[*TypeVar]bool)
+			if len(scheme.QuantifiedBinders) != 0 {
+				for _, binder := range scheme.QuantifiedBinders {
+					quantified[binder] = true
+				}
+			} else if len(scheme.TypeVars) != 0 {
+				labels := make(map[string]bool, len(scheme.TypeVars))
+				for _, label := range scheme.TypeVars {
+					labels[label] = true
+				}
+				for _, binder := range typeVarsIn(scheme.Type) {
+					if labels[binder.Name] {
+						quantified[binder] = true
+					}
+				}
+			}
+			for _, binder := range typeVarsIn(scheme.Type) {
+				if !quantified[binder] {
+					bound[binder] = true
 				}
 			}
 		}
-		currentEnv = currentEnv.outer
 	}
+	var free []*TypeVar
+	for _, binder := range typeVarsIn(typ) {
+		if !bound[binder] {
+			free = append(free, binder)
+		}
+	}
+	return free
+}
 
-	return boundVars
+func findFreeTypeVars(typ Type, env *TypeEnvironment) []string {
+	binders := freeTypeVarBinders(typ, env)
+	out := make([]string, 0, len(binders))
+	for _, binder := range binders {
+		out = append(out, binder.Name)
+	}
+	return out
 }
 
 // collectTypeVars collects all type variable names from a type
@@ -798,28 +745,13 @@ func collectTypeVars(typ Type) []string {
 }
 
 func collectTypeVarsRec(typ Type, vars *[]string, visited map[*TypeVar]bool) {
-	switch t := typ.(type) {
-	case *TypeVar:
-		if !visited[t] {
-			visited[t] = true
-			*vars = append(*vars, t.Name)
+	walkTypeVariables(typ, func(variable *TypeVar) bool {
+		if !visited[variable] {
+			visited[variable] = true
+			*vars = append(*vars, variable.Name)
 		}
-	case *RecordType:
-		for _, fieldType := range t.Fields {
-			collectTypeVarsRec(fieldType, vars, visited)
-		}
-	case *FunctionType:
-		for _, param := range t.Parameters {
-			collectTypeVarsRec(param, vars, visited)
-		}
-		collectTypeVarsRec(t.ReturnType, vars, visited)
-	case *ArrayType:
-		collectTypeVarsRec(t.ElementType, vars, visited)
-	case *GenericType:
-		for _, arg := range t.TypeArgs {
-			collectTypeVarsRec(arg, vars, visited)
-		}
-	}
+		return false
+	})
 }
 
 // quantifiedSubstitution binds the actual TypeVar identities found in a scheme
@@ -833,41 +765,40 @@ func quantifiedSubstitution(typ Type, quantified []string, replacements map[stri
 
 	resolved := make(map[string]Type, len(quantified))
 	sub := make(Substitution)
-	var visit func(Type)
-	visit = func(current Type) {
-		switch current := current.(type) {
-		case *TypeVar:
-			if _, ok := wanted[current.Name]; !ok {
-				return
-			}
-			replacement, ok := resolved[current.Name]
-			if !ok {
-				replacement, ok = replacements[current.Name]
-				if !ok {
-					replacement = unifier.FreshTypeVar(current.Name)
-				}
-				resolved[current.Name] = replacement
-			}
-			sub[current] = replacement
-		case *RecordType:
-			for _, field := range current.Fields {
-				visit(field)
-			}
-		case *FunctionType:
-			for _, parameter := range current.Parameters {
-				visit(parameter)
-			}
-			visit(current.ReturnType)
-		case *ArrayType:
-			visit(current.ElementType)
-		case *GenericType:
-			for _, argument := range current.TypeArgs {
-				visit(argument)
-			}
+	walkTypeVariables(typ, func(current *TypeVar) bool {
+		if _, ok := wanted[current.Name]; !ok {
+			return false
 		}
-	}
-	visit(typ)
+		replacement, ok := resolved[current.Name]
+		if !ok {
+			replacement, ok = replacements[current.Name]
+			if !ok {
+				replacement = unifier.FreshTypeVar(current.Name)
+			}
+			resolved[current.Name] = replacement
+		}
+		sub[current] = replacement
+		return false
+	})
 	return sub
+}
+
+// instantiateSchemeSubstitution uses exact binder identities for inferred
+// schemes. Explicit generic declarations retain the legacy name-based path
+// until their scheme constructors carry explicit binder lists.
+func instantiateSchemeSubstitution(scheme *TypeScheme, replacements map[string]Type, unifier *Unifier) Substitution {
+	if len(scheme.QuantifiedBinders) == 0 {
+		return quantifiedSubstitution(scheme.Type, scheme.TypeVars, replacements, unifier)
+	}
+	out := make(Substitution, len(scheme.QuantifiedBinders))
+	for _, binder := range scheme.QuantifiedBinders {
+		replacement, ok := replacements[binder.Name]
+		if !ok {
+			replacement = unifier.FreshTypeVar(binder.Name)
+		}
+		out[binder] = replacement
+	}
+	return out
 }
 
 // Instantiate creates a fresh instance of a type scheme by replacing
@@ -883,7 +814,7 @@ func Instantiate(scheme *TypeScheme, unifier *Unifier) Type {
 	}
 
 	// Bind the quantified variables by their actual binder identities.
-	sub := quantifiedSubstitution(scheme.Type, scheme.TypeVars, nil, unifier)
+	sub := instantiateSchemeSubstitution(scheme, nil, unifier)
 	return sub.Apply(scheme.Type)
 }
 
@@ -908,6 +839,6 @@ func InstantiateWithConstraints(scheme *TypeScheme, typeArgs map[string]Type, un
 
 	// Bind provided arguments (and freshen any remaining quantified binders)
 	// using the scheme's actual TypeVar identities.
-	sub := quantifiedSubstitution(scheme.Type, scheme.TypeVars, typeArgs, unifier)
+	sub := instantiateSchemeSubstitution(scheme, typeArgs, unifier)
 	return sub.Apply(scheme.Type), true
 }

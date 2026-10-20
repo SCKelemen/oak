@@ -23,7 +23,11 @@ func TestNativeUnrollSmallExperimentalPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("OAK_NATIVE_UNROLL_SMALL", tc.enabled)
 			t.Setenv("OAK_OPT_SKIP", tc.skip)
-			registry := nativeSearch(asm.ArchArm64, nil).Registry
+			search, err := nativeSearch(asm.ArchArm64, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			registry := search.Registry
 			tr, found := registry.Lookup(nativegen.TransformUnrollSmall)
 			if found != tc.want {
 				t.Fatalf("offered=%v, want %v", found, tc.want)

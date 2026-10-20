@@ -1,0 +1,3 @@
+# Exact pinned originals are fetched and verified by ../numeric_sources.py.
+# Keep the checker and manifest tracked; do not vendor upstream sources here.
+*.spectec

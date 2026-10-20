@@ -7,6 +7,11 @@ on:
     branches: [specification]
     paths: ['benchmarks/stdlib/**', '.github/workflows/stdlib-benchmark.yml', 'compiler/**', 'codegen/**', 'stdlib/**']
   workflow_dispatch:
+# Cancel only automatic PR runs; keep manual reruns and other events independent.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
+
 jobs:
   smoke:
     strategy:

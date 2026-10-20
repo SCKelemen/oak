@@ -1492,6 +1492,10 @@ example : lowerF (.binary .add (.binary .mul a b) c) =
     .float .fadd (.float .fmul (.param "a") (.param "b")) (.param "c") := rfl
 example : lowerF (.binary .add a (.literal 0x3FC00000)) =
     .float .fadd (.param "a") (.literal 0x3FC00000) := rfl
+-- The Go source-admission pin rounds 1.00000005960464477550 to these bits.
+-- This example begins after rounding; it does not prove decimal parsing.
+example : lowerF (.binary .add a (.literal 0x3F800001)) =
+    .float .fadd (.param "a") (.literal 0x3F800001) := rfl
 example : lowerF (.letIn "y" (.binary .add a (.literal 0x3FC00000))
     (.binary .mul (.param "y") (.param "y"))) =
     .float .fmul

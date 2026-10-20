@@ -13,6 +13,42 @@ free: (p: c.Ptr): () = c.extern("free")
 c_getenv: (name: c.String): c.Ptr = c.extern("getenv")
 c_read: (fd: c.Int, buf: c.Ptr, n: c.Size): c.UInt64 = c.extern("read")
 
+// The parent supplies a read-only cancellation bitmap on descriptor 3.
+// One byte per theorem, monotonically 0 -> 1 after the race has settled.
+// Missing/failed reads disable cancellation for that poll, never a verdict.
+c_pread: (fd: c.Int, buf: c.Ptr, n: c.Size, offset: c.Int64): c.Int64 = c.extern("pread")
+stream_cancel_enabled: Bool = false
+stream_cancel_index: u32 = 0
+stream_cancelled: Bool = false
+stream_cancel_ticks: u32 = 0
+STATUS_CANCELLED: u32 = 9
+
+cancel_byte_set: (bytes: []u8, got: c.Int64): Bool = got == c.Int64(1) && bytes[u32(0)] != u8(0)
+
+cancel_poll: (): Bool {
+  (stream_cancel_enabled && !stream_cancelled) ? {
+    raw: c.Ptr = malloc(c.Size(1))
+    got: c.Int64 = c_pread(c.Int(3), raw, c.Size(1), c.Int64(i64(stream_cancel_index)))
+    unsafe {
+      cancel_byte: Buffer[u8] = c.own[u8](raw, u32(1))
+      stream_cancelled = cancel_byte_set(view(&cancel_byte), got)
+      free(c.disown(cancel_byte))
+    }
+  } | { }
+  stream_cancelled
+}
+
+cancel_tick: (): Bool {
+  stream_cancel_enabled ? {
+    stream_cancel_ticks = stream_cancel_ticks + u32(1)
+    stream_cancel_ticks >= u32(4096) ? {
+      stream_cancel_ticks = u32(0)
+      ignored: Bool = cancel_poll()
+    } | { }
+  } | { }
+  stream_cancelled
+}
+
 // Output is buffered: every writer appends to out_buf, which goes to
 // standard output when full, before a child process is spawned
 // (witness.oak), and at exit (write_flush from main). A certificate of

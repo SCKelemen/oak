@@ -1,0 +1,20 @@
+{
+  "arm.o": {
+    "length": 688,
+    "sha256": "35dfebbc46fa9f9a288c071c8966355648b70eec34beaf73d648e9b9fd169907"
+  },
+  "base_proof_commit": "698f6a7b013df508a831d391fe425f4f27cf4581",
+  "module.wasm": {
+    "length": 45,
+    "sha256": "b544e08b46f2bb74a8d2f7b026cd2a13589b70774138807b63c802fcc84e8d6c"
+  },
+  "rv.o": {
+    "length": 720,
+    "sha256": "d84a430ebe75f09fe976356ce38c0126d07685e7958a796f176afa3bb56a34ee"
+  },
+  "scope": "Diagnostic production bytes; hashes are not proof authority.",
+  "source.oak": {
+    "length": 39,
+    "sha256": "8a30881158bde8e6fad9782b7a7668b9aacc34adcbe9b6c47906370c0187a926"
+  }
+}

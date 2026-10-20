@@ -1,0 +1,8 @@
+{
+  "official_base": "3b7af38d66466ecadad563158b07ce2f82fe05da",
+  "experimental_source_commit": "8989869c9e74cec412a3dbd79d134cd97b8150c9",
+  "patch_sha256": "3a9cc1be0e4f098b48976fd31d38bfa580c9f1afad1aece43db149c44bcc199b",
+  "executable_sha256": "9e266a4c3977be052c13debb1cf21b579cfe2054737aadd63aa4cb3fb816464e",
+  "plugin_sha256": "731c51b755e2e8353070ef149443b177d7b2f60decd0d1fb15df88044f2833be",
+  "scope": "Experimental no-shadow typed-AST profile; no general source/export correctness claim."
+}

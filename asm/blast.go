@@ -519,6 +519,7 @@ func (bl *blaster) consistency() int {
 	// against `base + 16` — needs no implication, which keeps the
 	// constraint linear in the reads of such a body rather than quadratic.
 	forms := make([]*linearForm, len(bl.selects))
+	bounds := map[*term]indexBounds{}
 	for k := range bl.selects {
 		if bl.selects[k].index != nil {
 			forms[k] = bl.selects[k].index.linearAt(32)
@@ -537,6 +538,9 @@ func (bl *blaster) consistency() int {
 				if known, equal := indexRelation(formA, b.index); known && !equal {
 					continue
 				}
+				if a.index != nil && boundedIndexSumsDisjoint(a.index, b.index, 32, bounds) {
+					continue
+				}
 			}
 			implies(equalBits(a.idx, b.idx), equalBits(aVal, bl.varsBits(b.vars, len(b.vars))))
 			if bl.bdd.exceeded {
@@ -553,6 +557,9 @@ func (bl *blaster) consistency() int {
 				continue
 			}
 			if known, equal := indexRelation(formA, constTerm(uint64(k), 32)); known && !equal {
+				continue
+			}
+			if a.index != nil && boundedIndexSumsDisjoint(a.index, constTerm(uint64(k), 32), 32, bounds) {
 				continue
 			}
 			elem := bl.blast(paramTerm(name, bl.widths[name]))

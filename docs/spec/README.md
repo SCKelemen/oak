@@ -73,13 +73,21 @@ Use these terms precisely:
 - `71-codecs.md` — phantom-typed producer/consumer codecs: formats, encodings, policies, and validation state as erased type parameters (normative design)
 - `90-backend.md` — executable lowering and C-backend requirements
 - `91-wasm.md` — experimental Core Wasm scalar profile and explicit verification boundary
+- `91-wasm-execution.md` — binary module decoding/linking, scalar type safety, control/call execution, assembler composition and engine correspondence
 - `92-ffi.md` — the `c` interface library, extern bindings, and the abstract assembly interface
 - `93-simd.md` — portable SIMD vectors and architecture vector instruction functions
 - `94-assembler.md` — typed abstract assembly units and register types (normative design)
 - [94-arm64-control-flow-proofs.md](94-arm64-control-flow-proofs.md) — Boolean terminator layout, decoded branch transitions, and source-to-object witnesses
+- [94-arm64-condition-provenance.md](94-arm64-condition-provenance.md) — decoded CMP/CSET provenance composed with Boolean branch routing
+- [ARM64 SSA edge-copy proofs](94-arm64-edge-copy-proofs.md)
+- [ARM64 spill byte-memory proofs](94-arm64-spill-memory-proofs.md)
 - [94-rv64-compressed-control-proofs.md](94-rv64-compressed-control-proofs.md) — compressed RV64 branch/jump encoding proofs and production evidence
 - [94-rv64-relaxation-proofs.md](94-rv64-relaxation-proofs.md) — shrinking layout, range preservation, and relaxation termination proofs
 - [94-rv64-materialization-proofs.md](94-rv64-materialization-proofs.md) — signed literal expansion, register semantics, and emitted-byte correspondence
+- [94-rv64-call-execution-proofs.md](94-rv64-call-execution-proofs.md) — relocated call/address execution and indirect-jump register semantics
+- [94-rv64-direct-control-proofs.md](94-rv64-direct-control-proofs.md) — direct branch/jump execution, verifier decisions, and compressed fall-through
+- [94-rv64-control-flow-proofs.md](94-rv64-control-flow-proofs.md) — selector routing certificates and all-state successor correctness
+- [94-rv64-comparison-proofs.md](94-rv64-comparison-proofs.md) — decoded i64/u64 comparison producers composed with successor routing
 - `112-protocols.md` — protocol declarations: machines, guards, projections, lowering, typestate, model checking
 - `113-literals.md` — literal sets: the `literals` declaration and the Teddy scanner it projects
 - `STATUS.md` — implementation and proof coverage matrix

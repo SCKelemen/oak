@@ -6,24 +6,30 @@ on:
   pull_request:
     branches: [ main, master, specification ]
 
+# Cancel superseded automatic PR validation jobs independently. Keep compatibility
+# aggregates outside concurrency groups so a queued aggregate cannot block a new run.
+# Manual reruns and non-PR events remain independent.
 jobs:
   test:
+    concurrency:
+      group: ${{ github.workflow }}-test-${{ matrix.go-version }}-${{ matrix.shard }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
     name: Run Tests
     runs-on: ubuntu-latest
 
     strategy:
       matrix:
         go-version: ['1.27.1']
-        # The compiler package's end-to-end suite under the race detector
-        # passed the 40-minute ceiling once the standard library grew; the
-        # shards partition every test name exactly once (compiler E2E A-R,
-        # the standard-library E2E tests in two halves (the text tests,
-        # the rest), the remaining compiler E2E S-Z, the rest of compiler,
-        # every other package). The broad A-R shard needs a 90-minute
-        # ceiling on slow runners. The broad stdlib-rest shard also needs 90
-        # minutes, while stdlib-text uses 60; S-Z and the remaining compiler
-        # tests retain their 45-minute bound.
-        shard: [e2e-a-r, e2e-stdlib-text, e2e-stdlib-rest, e2e-s-z, compiler-rest, packages]
+        # Every compiler test must belong to exactly one shard; the runner
+        # checks the live Go test inventory before running with -race.
+        # Split the former compiler-rest by name after it exceeded 45 minutes
+        # cumulatively, retaining the same tests and 45-minute deadlines.
+        # Split stdlib-rest after F: measured root-test loads were 40 / 37
+        # minutes; both halves retain the former 90-minute deadline.
+        # Split e2e A-R after J, retaining every test and 90-minute deadlines.
+        # Split the root package before its cumulative 45-minute race deadline.
+        # package_shards.py checks exact Test/Example/Fuzz coverage.
+        shard: [e2e-a-j, e2e-k-r, e2e-stdlib-text, e2e-stdlib-rest-a-f, e2e-stdlib-rest-g-z, e2e-s-z, compiler-rest-a-m, compiler-rest-n-z, root-cnf-a-g, root-cnf-h-z, root-solver, root-rest, packages-rest]
 
     steps:
     - name: Checkout code
@@ -50,10 +56,10 @@ jobs:
 
     # Translation validation of the trusted core on rv64
     # (codegen/translation_validation_test.go) compiles the prelude helpers
-    # with the RISC-V GNU toolchain and skips without it; the packages shard
+    # with the RISC-V GNU toolchain and skips without it; the packages-rest shard
     # is where that test runs, so give it the toolchain.
     - name: Install the RISC-V GNU toolchain (rv64 translation validation)
-      if: matrix.shard == 'packages'
+      if: matrix.shard == 'packages-rest'
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf
@@ -62,23 +68,79 @@ jobs:
     - name: Check nested array store regression
       run: go test -v ./compiler -run '^TestE2ENestedArrayFieldStores$' -count=1
 
+    - name: Check required backend test inventory and runner
+      if: matrix.shard == 'packages-rest'
+      run: |
+        python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+        python3 .github/scripts/required_backend_tests.py --check
+
     - name: Run tests
       env:
         OAK_TLA2TOOLS_JAR: /tmp/tla2tools.jar
-        # The packages shard installed the RISC-V GNU toolchain above; the
+        # The packages-rest shard installed the RISC-V GNU toolchain above; the
         # rv64 translation validation must run there, not skip.
-        OAK_REQUIRE_RV64_GCC: ${{ matrix.shard == 'packages' && '1' || '' }}
+        OAK_REQUIRE_RV64_GCC: ${{ matrix.shard == 'packages-rest' && '1' || '' }}
       run: |
         case "${{ matrix.shard }}" in
-          e2e-a-r) go test -v -race -timeout 90m ./compiler -run '^TestE2E[A-R]' ;;
-          e2e-stdlib-text) go test -v -race -timeout 60m ./compiler -run '^TestE2EStdlibT' ;;
-          e2e-stdlib-rest) go test -v -race -timeout 90m ./compiler -run '^TestE2EStd(lib[^T]|[^l])' ;;
-          e2e-s-z) go test -v -race -timeout 45m ./compiler -run '^TestE2E(S[^t]|St[^d]|[T-Z])' ;;
-          compiler-rest) go test -v -race -timeout 45m ./compiler -run '^Test([^E]|E[^2]|E2[^E])' ;;
-          packages) go test -v -race -timeout 45m $(go list ./... | grep -v '/compiler$') ;;
+          root-*|packages-rest) python3 .github/scripts/package_shards.py "${{ matrix.shard }}" ;;
+          *) python3 .github/scripts/compiler_shards.py "${{ matrix.shard }}" ;;
         esac
 
+  # Preserve the old e2e A-R check name for branch protection. Like the other
+  # compatibility gates, require success from the entire replacement matrix.
+  e2e-a-r:
+    name: Run Tests (1.27.1, e2e-a-r)
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+    steps:
+    - name: Require every test shard
+      env:
+        TEST_RESULT: ${{ needs.test.result }}
+      run: test "$TEST_RESULT" = success
+
+  # Preserve the old packages check: success requires all replacement root
+  # shards and remaining packages, including cancellation/skip/failure cases.
+  packages:
+    name: Run Tests (1.27.1, packages)
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+    steps:
+    - name: Require every test shard
+      env:
+        TEST_RESULT: ${{ needs.test.result }}
+      run: test "$TEST_RESULT" = success
+
+  # Preserve the old compiler-rest check name for branch protection. It can
+  # pass only when both replacement shards (and the rest of the matrix) pass.
+  compiler-rest:
+    name: Run Tests (1.27.1, compiler-rest)
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+    steps:
+    - name: Require every test shard
+      env:
+        TEST_RESULT: ${{ needs.test.result }}
+      run: test "$TEST_RESULT" = success
+
+  # Preserve the old stdlib-rest check name for branch protection too.
+  stdlib-rest:
+    name: Run Tests (1.27.1, e2e-stdlib-rest)
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+    steps:
+    - name: Require every test shard
+      env:
+        TEST_RESULT: ${{ needs.test.result }}
+      run: test "$TEST_RESULT" = success
+
   cross-targets:
+    concurrency:
+      group: ${{ github.workflow }}-cross-targets-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
     name: Cross targets (zig)
     runs-on: ubuntu-24.04
 
@@ -102,6 +164,14 @@ jobs:
     - name: Cross-build Linux targets and run the microcontroller targets
       run: go test -v -timeout 15m ./target ./toolchain ./compiler -run '^Test(ParseAndEnv|Spellings|ResolveOrder|ResolveEmulator|Cross|E2EMicrocontroller|E2ERVV|E2ESVE|E2ENativeRV64)'
 
+    # These roots and their nested architecture checks skip in ordinary Go
+    # jobs. Require actual passes here, where Zig and both QEMU modes exist.
+    - name: Require cross-backend execution and partial linking
+      run: python3 .github/scripts/required_backend_tests.py cross-compiler
+
+    - name: Require foreign-target test runner behavior
+      run: python3 .github/scripts/required_backend_tests.py cross-testrunner
+
     - name: Run freestanding native executables under system QEMU
       run: go test -v -timeout 10m ./compiler -run '^TestE2ENativeExecutable(UnderQEMU|RefusesCBodies)$'
 
@@ -114,6 +184,9 @@ jobs:
       run: go test -v ./compiler -run '^TestE2ESelfHosted(RelocationKernel|Placement|Objects|ELF|ELFData|ELFDataAdmission)$' -count=1
 
   riscv64-memory-refinement:
+    concurrency:
+      group: ${{ github.workflow }}-riscv64-memory-refinement-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
     name: RISC-V Memory Refinement
     runs-on: ubuntu-24.04
 
@@ -139,6 +212,9 @@ jobs:
       run: go test -v ./codegen -run '^TestRISCV64'
 
   aarch64-memory-refinement:
+    concurrency:
+      group: ${{ github.workflow }}-aarch64-memory-refinement-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
     name: AArch64 Memory Refinement
     runs-on: ubuntu-24.04
 

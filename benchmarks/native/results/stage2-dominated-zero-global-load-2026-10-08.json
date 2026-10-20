@@ -1,0 +1,99 @@
+{
+  "date_local": "2026-10-08",
+  "recorded_at_utc": "2026-10-08T11:22:59Z",
+  "host": "Apple M4 Max",
+  "baseline_revision": "5e4a01946da653dd41936b20545b791358bbadb7",
+  "candidate": "baseline plus verifier-gated forwarding of a dominating exact 64-bit scalar-global zero store to a later final-spelling reload",
+  "baseline_configuration": "pushed specification compiler with its default optimizer search",
+  "os_revision": "31aeec182517d74f27ff9769e78a43a9b39ca4d3",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "differential_harness": "SCKelemen/os core/src/stage2_native_conformance.zig",
+  "differential_harness_sha256": "c7d53456d2b54f36342d2ee94575538369d9bbce83393dab1d7b1ccc8e438b01",
+  "native_shim_sha256": "0a1a8bcba5b776e55e5968e95175d2103b35b5be7dd140c1700a473989b8d8fb",
+  "toolchain": {"go": "go1.26.0 darwin/arm64", "zig": "0.16.0"},
+  "compiler_binary_sha256": {
+    "baseline": "c9e5e040fd032103dfad1efaf8bb73f0b2e026d4997160dd6f52f401a1a06b1f",
+    "candidate": "db4c243ce6f849b8d965d60088d3e7666c2b4584e456ae34f6a635911401e19c"
+  },
+  "object_sha256": {
+    "baseline": "03ad6021671f682f31dcc37d9eb56c52c6d05e846025e64b365b3fd0b270de97",
+    "candidate": "ca9d552abba39dc051ab487bf2a7465e2abfcd1e85bf3e9fabf53185e27aaef5"
+  },
+  "object_bytes": {"baseline": 4856, "candidate": 4856, "delta": 0},
+  "text_bytes": {"baseline": 3336, "candidate": 3336, "delta": 0},
+  "relocation_entries": {"baseline": 27, "candidate": 27, "delta": 0},
+  "build": {
+    "target": "darwin/arm64 host object for the OS differential harness",
+    "verify_fresh": true,
+    "baseline_verdict_cache_hits": 0,
+    "candidate_verdict_cache_hits": 0,
+    "verdicts": 22
+  },
+  "post_rebase_validation": {
+    "upstream_base_revision": "7c215d5c",
+    "compiler_binary_sha256": "5467ddf50704fcd944dcae15b832f753c88a32ff39c9592ae6c522380c9d1d79",
+    "object_sha256": "ca9d552abba39dc051ab487bf2a7465e2abfcd1e85bf3e9fabf53185e27aaef5",
+    "object_byte_identical_to_measured_candidate": true,
+    "verify_fresh": true,
+    "verdict_cache_hits": 0,
+    "selected_metrics_unchanged": true
+  },
+  "changed_selected_bodies": {
+    "translate": {
+      "instructions_before": 50,
+      "instructions_after": 50,
+      "loads_before": 5,
+      "loads_after": 4,
+      "branches_before": 10,
+      "branches_after": 10,
+      "estimated_stalls_before": 15,
+      "estimated_stalls_after": 12,
+      "static_cost_before": 78.0,
+      "static_cost_after": 73.5,
+      "verdict": "proven"
+    }
+  },
+  "summary": {
+    "selected_loads_removed": 1,
+    "selected_instructions_removed": 0,
+    "estimated_stalls_removed": 3,
+    "static_cost_removed": 4.5,
+    "text_bytes_removed": 0,
+    "object_bytes_removed": 0,
+    "interpretation": "The initial exact zero store dominates the failure-path reload with no call, memory write, or address-base change on any intervening path. The reload becomes a zero-register move; branch threading is deliberately out of scope."
+  },
+  "differential_tests": {
+    "passed": 8,
+    "cases": [
+      "PRNG operation streams against Zig",
+      "independent isolated regimes",
+      "map/translate/unmap round trip",
+      "unaligned and out-of-range rejection",
+      "pool exhaustion",
+      "shadow-model translation property",
+      "fuzz map/unmap operation stream",
+      "atomic 16 KiB granule map/unmap"
+    ]
+  },
+  "runtime": {
+    "reported": true,
+    "benchmark": "pilots/oak bench-stage2-native, ReleaseFast, 20000000 translate calls and 2000000 decoder cycles per run",
+    "method": "four sequential interleaved baseline/candidate samples after warmup",
+    "translate_ns_per_op": {
+      "baseline_samples": [2.68, 2.62, 2.79, 2.53],
+      "candidate_samples": [2.66, 2.89, 2.58, 2.62],
+      "baseline_mean": 2.655,
+      "candidate_mean": 2.688,
+      "candidate_delta_percent": 1.22
+    },
+    "decoder_ns_per_cycle": {
+      "baseline_samples": [296.7, 306.5, 308.7, 316.1],
+      "candidate_samples": [306.0, 309.1, 309.7, 289.3],
+      "baseline_mean": 307.0,
+      "candidate_mean": 303.5,
+      "candidate_delta_percent": -1.14
+    },
+    "interpretation": "samples move in both directions during a large host-frequency shift; no runtime improvement is claimed"
+  }
+}

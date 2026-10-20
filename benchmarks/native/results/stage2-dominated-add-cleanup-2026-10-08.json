@@ -1,0 +1,93 @@
+{
+  "date_local": "2026-10-08",
+  "recorded_at_utc": "2026-10-08T08:37:01Z",
+  "host": "Apple M4 Max",
+  "baseline_revision": "07bca9f919b05c0d19e5ea183cc36549cabe28cf",
+  "candidate": "baseline plus verifier-gated post-schedule elimination of exact dominated add-register-immediate recomputations whose source and destination are stable on every path",
+  "baseline_configuration": "untouched baseline revision compiler with its default optimizer search",
+  "os_revision": "31aeec182517d74f27ff9769e78a43a9b39ca4d3",
+  "source": "SCKelemen/os pilots/oak/stage2.oak",
+  "source_sha256": "18a2331c0a48eb500f6a80265afb47c38eb4d040a6651267ff41c62526ef3789",
+  "differential_harness": "SCKelemen/os core/src/stage2_native_conformance.zig",
+  "differential_harness_sha256": "c7d53456d2b54f36342d2ee94575538369d9bbce83393dab1d7b1ccc8e438b01",
+  "native_shim_sha256": "0a1a8bcba5b776e55e5968e95175d2103b35b5be7dd140c1700a473989b8d8fb",
+  "toolchain": {"go": "go1.27.1 darwin/arm64", "zig": "0.16.0"},
+  "compiler_binary_sha256": {
+    "baseline": "69c574f5b2c0d971491e6d40211208ffd4bc45050eeda72591009f53cbfe53ed",
+    "candidate": "ad6b568af41e7f1b0b4494ca2c594bcda6566d57c1e3c47731f968fed2182764"
+  },
+  "object_sha256": {
+    "baseline": "503cdbe006cdab6cddda229f37e092397627f6cb9c375221cd0fdc42743a81c3",
+    "candidate": "83670021d9c1f15292d1d80180a655ea5e5ce0ecac28a59077ebac202a754c6b"
+  },
+  "object_bytes": {"baseline": 4944, "candidate": 4928, "delta": -16},
+  "text_bytes": {"baseline": 3424, "candidate": 3408, "delta": -16},
+  "relocation_entries": {"baseline": 27, "candidate": 27, "delta": 0},
+  "build": {
+    "target": "darwin/arm64 host object for the OS differential harness",
+    "verify_fresh": true,
+    "baseline_verdict_cache_hits": 0,
+    "candidate_verdict_cache_hits": 0,
+    "verdicts": 22
+  },
+  "changed_selected_bodies": {
+    "translate": {
+      "instructions_before": 54, "instructions_after": 53,
+      "branches_before": 10, "branches_after": 10,
+      "estimated_stalls_before": 12, "estimated_stalls_after": 12,
+      "static_cost_before": 80.5, "static_cost_after": 79.5,
+      "cleanup_sites_before": 1, "cleanup_sites_after": 2,
+      "verdict": "proven"
+    },
+    "unmap_page": {
+      "instructions_before": 160, "instructions_after": 157,
+      "branches_before": 29, "branches_after": 29,
+      "estimated_stalls_before": 50, "estimated_stalls_after": 50,
+      "static_cost_before": 259.5, "static_cost_after": 256.5,
+      "cleanup_sites_before": 3, "cleanup_sites_after": 6,
+      "verdict": "proven"
+    }
+  },
+  "summary": {
+    "selected_instructions_removed": 4,
+    "selected_branches_removed": 0,
+    "estimated_stalls_removed": 0,
+    "static_cost_removed": 4.0,
+    "text_bytes_removed": 16,
+    "object_bytes_removed": 16,
+    "interpretation": "Allocation and scheduling exposed four exact add-immediate recomputations whose earlier result still occupied the same register. The fail-closed all-path check removes them without weakening either selected verdict or changing relocations."
+  },
+  "differential_tests": {
+    "passed": 8,
+    "cases": [
+      "PRNG operation streams against Zig",
+      "independent isolated regimes",
+      "map/translate/unmap round trip",
+      "unaligned and out-of-range rejection",
+      "pool exhaustion",
+      "shadow-model translation property",
+      "fuzz map/unmap operation stream",
+      "atomic 16 KiB granule map/unmap"
+    ]
+  },
+  "runtime": {
+    "reported": true,
+    "benchmark": "pilots/oak bench-stage2-native, ReleaseFast, 20000000 translate calls and 2000000 decoder cycles per run",
+    "method": "two sequential interleaved baseline/candidate pairs after warmup",
+    "translate_ns_per_op": {
+      "baseline_samples": [4.40, 4.47],
+      "candidate_samples": [4.24, 4.24],
+      "baseline_mean": 4.435,
+      "candidate_mean": 4.24,
+      "candidate_delta_percent": -4.40
+    },
+    "decoder_ns_per_cycle": {
+      "baseline_samples": [485.6, 491.6],
+      "candidate_samples": [483.5, 487.3],
+      "baseline_mean": 488.6,
+      "candidate_mean": 485.4,
+      "candidate_delta_percent": -0.65,
+      "interpretation": "within host variance; both implementations remain near parity with Zig"
+    }
+  }
+}

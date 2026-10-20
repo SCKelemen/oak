@@ -22,20 +22,38 @@ import (
 const lratAllocationShim = `
 #include <stdint.h>
 #include <stdlib.h>
-static uint32_t calls, live, fail_at, bad;
+static uint32_t calls, live, fail_at, fail_mask, bad;
+static void *blocks[32];
+static uint64_t release_order;
 void lrat_test_reset(uint32_t n) {
   if (live) abort();
-  calls = bad = 0; fail_at = n;
+  for (unsigned i = 0; i < 32; ++i) blocks[i] = NULL;
+  calls = bad = fail_mask = 0; fail_at = n; release_order = 0;
+}
+void lrat_test_reset_mask(uint32_t mask) {
+  lrat_test_reset(0); fail_mask = mask;
 }
 void *lrat_test_malloc(size_t n) {
   ++calls;
   if (!n) ++bad;
-  if (calls == fail_at || n > 1048576) return NULL;
+  if (calls > 32) abort();
+  if (calls == fail_at || ((fail_mask >> (calls - 1)) & 1) || n > 1048576) return NULL;
   void *p = malloc(n);
-  if (p) ++live;
+  if (p) { ++live; blocks[calls - 1] = p; }
   return p;
 }
-void lrat_test_free(void *p) { if (p) { --live; free(p); } }
+void lrat_test_free(void *p) {
+  if (!p) return;
+  for (unsigned i = 0; i < 32; ++i) {
+    if (blocks[i] == p) {
+      blocks[i] = NULL; --live;
+      release_order = release_order * 16 + i + 1;
+      free(p); return;
+    }
+  }
+  ++bad; /* Unknown or already-freed pointer: do not invoke undefined C behavior. */
+}
+uint64_t lrat_test_release_order(void) { return release_order; }
 uint32_t lrat_test_calls(void) { return calls; }
 uint32_t lrat_test_live(void) { return live; }
 uint32_t lrat_test_bad(void) { return bad; }
@@ -45,6 +63,8 @@ const lratAllocationExterns = `package main
 malloc: (n: c.Size): c.Ptr = c.extern("lrat_test_malloc")
 free: (p: c.Ptr): () = c.extern("lrat_test_free")
 reset: (n: c.UInt32): () = c.extern("lrat_test_reset")
+reset_mask: (n: c.UInt32): () = c.extern("lrat_test_reset_mask")
+release_order: (): c.UInt64 = c.extern("lrat_test_release_order")
 calls: (): c.UInt32 = c.extern("lrat_test_calls")
 outstanding: (): c.UInt32 = c.extern("lrat_test_live")
 bad: (): c.UInt32 = c.extern("lrat_test_bad")
@@ -153,6 +173,34 @@ func TestOakLRATAllocatedEntry(t *testing.T) {
 			fmt.Fprintf(&source, "assert(u32(calls()) == u32(%d))\nassert(u32(outstanding()) == 0 && u32(bad()) == 0)\n}\n", wantCalls)
 		}
 	}
+	// Call the allocating entry directly: malformed framing must be rejected
+	// by its own preflight, without relying on the formula-binding wrapper.
+	var malformed [][]uint32
+	for n := 0; n < len(base.record); n++ {
+		malformed = append(malformed, append([]uint32(nil), base.record[:n]...))
+	}
+	malformed = append(malformed, append(append([]uint32(nil), base.record...), 0))
+	for _, mutation := range [][2]uint32{
+		{0, 0}, {2, base.record[5] + 1}, {3, 0}, {3, ^uint32(0)},
+		{4, 0}, {4, base.record[4] - 1}, {4, base.record[4] + 1}, {4, ^uint32(0)},
+	} {
+		r := append([]uint32(nil), base.record...)
+		r[mutation[0]] = mutation[1]
+		malformed = append(malformed, r)
+	}
+	for _, words := range malformed {
+		source.WriteString("true ? {\n" + lratEntryWords("r", words))
+		fmt.Fprintf(&source, "all: []u32 = view(&r)\nrecord: []u32 = subslice(all, u32(0), u32(%d))\n", len(words))
+		source.WriteString("assert(!lrat_record_fits(record))\nreset(c.UInt32(0))\nout: [4]u32 = [4]u32{99, 99, 99, 99}\n")
+		source.WriteString("s: u32 = lrat_check_allocated(record, span(&out))\nassert(s == LRAT_CAPACITY && out[0] == s && out[1] == 0 && out[2] == 0 && out[3] == 99)\n")
+		source.WriteString("assert(u32(calls()) == 0 && u32(outstanding()) == 0 && u32(bad()) == 0)\n}\n")
+	}
+	// Zero declared capacities still reserve sentinels and make nonzero
+	// requests. Framing admission is deliberately not proof acceptance.
+	source.WriteString("true ? {\n" + lratEntryWords("r", []uint32{1280459348, 0, 0, 0, 0, 0, 0, 0}))
+	source.WriteString("assert(lrat_record_fits(view(&r)))\nreset(c.UInt32(0))\nout: [3]u32\n")
+	source.WriteString("s: u32 = lrat_check_allocated(view(&r), span(&out))\nassert(s == LRAT_NO_EMPTY && out[0] == s)\n")
+	source.WriteString("assert(u32(calls()) == 6 && u32(outstanding()) == 0 && u32(bad()) == 0)\n}\n")
 	source.WriteString("0\n}\n")
 	lratEntryRun(t, lratEntryBinary(t, source.String()), nil)
 }

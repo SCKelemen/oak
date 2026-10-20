@@ -119,7 +119,7 @@ main: (): i32 = {
 main: (): i32 = {
 	handles: [2]Seal[SealReady] = [
 		Seal { data: seal_initial_data() },
-		seal_handle(),
+		seal_handle()
 	]
 	0
 }

@@ -70,9 +70,10 @@ Its two size hypotheses are the UInt32 length domain of Oak views, not
 assumed parsing, scan soundness, or solver correctness. A second theorem
 rules out simultaneous accepted RUP evidence for that same decoded database.
 The formal-CI contract pins these hypotheses and checks for proof holes.
-**Validation pending:** these production soundness proofs await their first
-successful kernel build. The loop-refinement obligation remains open until
-the mandatory `TestOakSATModelSoundnessLean` gate passes.
+The dedicated **SAT model soundness** CI job kernel-checks these theorems
+and runs the mandatory `TestOakSATModelSoundnessLean` contract, all 514
+Oak/Lean comparisons, and forged-solver rejection. The framing/scan-loop
+soundness obligation is closed for the extracted UInt32/Array checker.
 Source lowering, extraction/compiler correctness, native memory safety,
 and ARM64/RV64 execution remain open parts of this chain. Fault injection
 verifies that a fabricated solver model is refused by the actual drivers
@@ -377,6 +378,256 @@ authority. The Go checkers are not universally refined to
 the Lean checkers; all other term operations, trap/claim provenance and source
 ordering, DIMACS correspondence, symbolic execution, and Oak lowering remain
 open.
+The Oak clause producer's literal serialization now has a separate
+implementation-linked theorem in `Oak.CNFLiteral`. `CNFLiteralExtracted`
+is regenerated from `cnf_lit` in the production solver package. For every
+nonconstant UInt32 edge, encoding and the existing production LRAT model's
+`decodeWord` preserve the zero-based variable index and complement polarity;
+`clause_semantics` lifts this to satisfaction of arbitrary lists of
+nonconstant edges, including empty and duplicate clauses. Constants 0 and 1
+are explicitly excluded: the producer must fold them before emission.
+The required `TestOakCNFLiteral*` gate checks extraction drift, fixed theorem
+contracts and foundational-only axiom closures, and compares 270 boundary and
+randomized encodings in compiled Oak and Lean kernel replay. This closes the
+scalar literal-format seam, not clause framing/capacity admission, gate
+production, source-to-term lowering, extraction correctness, or compiled
+checker soundness.
+
+`Oak.CNFEmission` now connects the production `cnf_emit` writes to that
+literal theorem. Its extracted `cnf_clause_fits` guard accepts exactly arities
+1..3 whose mathematical header-plus-payload endpoint fits the clause capacity;
+subtraction-based checks replace the old potentially wrapping addition.
+`production_record` proves the length word and every encoded payload word;
+`production_clause` composes the actual stored payload with LRAT decoding and
+clause satisfaction. The frame theorem preserves cells outside the appended
+record and the two counters; refusal changes only the exceeded flag.
+Counter arithmetic is exact under the prior clause-count ≤ used-words invariant.
+The successful-write theorems explicitly require a nonwrapping clause region
+within the supplied array and state metadata before that region. They do not
+derive those premises from allocation/layout construction or prove gate
+construction, the final obligation, extraction, or compiled execution.
+The mandatory `TestOakCNFEmission*` gate checks source extraction, fixed theorem
+contracts and 12 foundational-only closures, 168 kernel-replayed guard cases,
+and all 96 buffer words after 378 compiled append cases, including exact fits,
+capacity failures, and wrapping counters.
+
+`Oak.CNFGates` connects the production binary and mux emission helpers to their
+final stored clauses. `cnf_apply` and `cnf_ite` now call these helpers with the
+same clauses and order as before. Both are extracted from the complete solver
+package alongside `cnf_emit`. `binary_execution` and `mux_execution` identify
+the exact sequence of emitter calls. For a trace in which every call passes
+capacity admission, `admitted_words` proves every length and literal word in
+the final buffer, including preservation across subsequent appends.
+`binary_production` and `mux_production` compose this with LRAT decoding: the
+stored definitions hold exactly when the gate equals AND, OR, XOR, or mux.
+The binary helper retains the production dispatch (AND, OR, otherwise XOR).
+The premises require a nonwrapping in-array clause region, metadata before
+that region, and nonconstant edges excluding both sentinel-node polarities.
+Admission is explicit; a normal helper return alone does not imply success.
+This does not establish allocation/freshness, folding, whole-circuit
+composition, the final obligation, extraction correctness, or compiled
+execution correctness. `readRecords` uses the proved record boundaries;
+`admitted_words` also proves the corresponding stored length headers, but
+this is not yet a refinement of the whole LRAT input parser.
+The required `TestOakCNFGates*` gate checks fixed contracts and 16 theorem
+closures, compares all 96 words in 1,280 compiled cases, and checks 4,096
+assignments against the actual decoded final buffers. Cases cover all input
+polarities, aliases, preexisting payload, and partial capacity failures.
+
+The shared CNF axiom audit parses complete multiline reports and requires one
+report per named theorem. Its regression tests reject native-evaluation and
+`sorryAx` dependencies even when they appear on continuation lines. This
+corrects the earlier line-based audit, which missed wrapped native-evaluation
+axioms from `bv_decide` in the literal proofs. Those two proof steps have been
+replaced with kernel-checked arithmetic proofs; the literal, emission, and
+gate theorem closures now contain only `propext`, `Classical.choice`, and
+`Quot.sound` (or no axioms).
+
+`Oak.CNFFolds` now checks the production folding paths themselves. The complete
+`cnf_apply` and `cnf_ite`, including their dependencies, are extracted in
+`CNFEmissionExtracted`; no runtime code is replaced by a proof-only folder.
+`terminal_sound` proves the binary folder's result has the operation's Boolean
+meaning, including constant edges. `apply_folded` proves that the production
+caller returns that result without changing memory, for every extraction fuel.
+The five direct-result mux folds likewise preserve meaning and memory. The
+four constant-arm reductions are proved to dispatch to the exact binary call
+and preserve the mux's Boolean meaning. Sorting operands for the unique-table
+key is also proved semantics-preserving.
+Given valid input edges (constants or non-sentinel nodes), direct folds retain
+that range. A binary no-fold result implies regular nonconstant, distinct,
+noncomplementary operands. Mux reductions supply regular binary operands, and
+a mux requiring clause emission has three regular inputs. These facts discharge
+the operand-validity side of the gate-emission seam; they do not prove that
+allocation returns a fresh regular gate, that layouts/capacities are valid, or
+that the complete circuit and final obligation correspond to the source.
+The binary operation dispatch matches production: AND, OR, otherwise XOR;
+choosing a supported operation is still a caller obligation.
+`TestOakCNFFolds*` checks 18 foundational-only theorem closures, fixed contracts,
+and 500 kernel-replayed fold results derived independently from truth tables.
+Compiled tests run those 500 folds and 832 full builder cases, evaluate 13,312
+resulting formulas, require direct folds to leave every memory word unchanged,
+and check repeated lookups do not append clauses or allocate another node.
+These finite executions supplement the proofs, not replace allocation or
+compiler-correctness proofs.
+
+`Oak.CNFNodes` checks the extracted production allocator. Its loop theorems
+cover matching-entry reuse without writes, collision advancement, the exact
+six fresh-node writes, and capacity rejection with only the exceeded flag
+written. A finite nonmatching probe trace composes these results; the wrapper
+theorem connects the loop to `cnf_node`, including its created-flag reset.
+Readback requires six in-bounds, pairwise distinct locations, and the frame
+theorem preserves every other word. With count in [1, cap) and cap at most
+2^31-1, the allocated index differs from all earlier indices, its table
+encoding increments without wrapping, and its shifted edge satisfies the
+gate proofs' regular-edge premise.
+`TestOakCNFNodes*` audits 12 foundational-only theorem closures and checks
+224 compiled allocator cases against all 96 memory words: all eight starting
+slots, zero through six collisions, allocation, reuse even at full capacity,
+capacity rejection, and a preexisting exceeded flag.
+These results do not derive layout invariants, establish a globally unique
+table, or prove termination of probing a full table. The finite probe trace
+and enough extraction fuel remain explicit premises; full circuit semantics
+and final-obligation correspondence remain open.
+
+`Oak.CNFObligation` now checks the extracted final-obligation producer.
+The old `used + roots + 1 + 8` admission expression could wrap. Production
+now admits the header/existing words, the clause-length word, and the roots
+with three subtraction-based bounds checks. `fits_iff` proves acceptance
+is exactly the mathematical bound `8 + used + 1 + roots <= capacity`;
+`append_no_wrap` gives the used-counter bound when emitted literals do not
+outnumber roots. Rejection now returns `NONE` and sets the exceeded flag,
+instead of returning `CNF_PROVEN` and relying on `cnf_lower` to discard it.
+The refusal theorem proves the complete function changes only that flag.
+
+The finalization helper is extracted from production, with exact proofs for
+refusal, constant true/refuted, constant false/proven, and clause publication.
+The loop proof consumes a finite trace of actual root reads, negates only the
+last (claim) root, drops false constants, records true constants, and writes
+each remaining encoded literal. `production_trace` connects that reducer
+and finalizer to the full extracted function with sufficient fuel.
+The reducer's count and true-constant flag are proved, as are both constant
+outcomes and the decoded nonconstant clause's Boolean meaning. Final-buffer
+readback is now supplied by `Oak.CNFObligationStore`, described below.
+Deriving the observed root sequence from original source terms still requires
+valid root indices and the bitblasting/circuit correspondence; these are not
+assumed to follow from extraction.
+
+`TestOakCNFObligation*` audits 19 foundational-only theorem closures and
+fixed contracts, including the old wrapping counterexample. Compiled tests
+compare all 320 words for 1,554 cases, covering zero through three roots,
+constants and both polarities of two variables, prior clause words, exact
+capacity, spare capacity, and refusal. They check 4,144 actual outcome/formula
+assignments, 1,331 mathematical guard boundaries, and four whole-function
+overflow refusals with no payload writes. These tests supplement the proofs;
+they do not establish compiler correctness or whole-source verdict soundness.
+
+`Oak.CNFObligationStore` proves that the reducer's actual memory equals
+consecutive writes of the encoded nonconstant literals. It derives payload
+readback and preservation of all cells outside that append interval. Root
+reads are therefore preserved when their computed cells lie outside the
+interval. Publication preserves payload cells under explicit separation from
+the two counters and writes the exact clause length. `production_record`
+composes this through the complete extracted `cnf_obligation` call: the
+returned buffer has the proved header and every payload word. `stored_semantics`
+reads that header to choose the payload length and proves that decoding the
+stored words preserves the observed obligation's Boolean meaning.
+
+`layout_bounds` derives physical address bounds from admission and a
+nonwrapping clause region. `state_separation` discharges counter separation
+when state ends before the clause region. These are local layout invariants,
+not a proof that the allocator constructs every valid layout. The initial-root
+trace and the constructor's relevant region ordering are now supplied by
+`Oak.CNFRoots`; valid source root addresses and whole-source verdict soundness
+remain separate obligations.
+`TestOakCNFObligationStoreLean` audits 13 foundational-only theorem closures,
+checks fixed readback contracts, and kernel-replays both mixed-constant
+payload writes and a counter/payload aliasing counterexample. The existing
+compiled obligation regression and solver integration remain required.
+
+`Oak.CNFRoots` derives the obligation trace from the memory present before
+emission. `initialLiterals` reads that memory independently of the writer.
+`initial_trace` inducts over the remaining root count, proving loop-index
+progress and preservation of future reads as payload words are appended.
+`production_initial` therefore characterizes the complete extracted function
+without an assumed execution trace, given separated root cells and a bounded
+append interval.
+
+The production `layout_for_clauses` and its dependencies are now included in
+the extraction drift check. `layout_shape` proves its exact field equations;
+`constructed_regions` proves ordering and nonwrapping arithmetic for the
+bit-storage, selection, state, and clause suffix under an explicit natural
+budget. Valid root IDs within the term count place their bit cells before
+the clause region. `constructed_trace` and `constructed_production` combine
+these facts with admission, eliminating the former trace and read-separation
+premises. The initial memory's bits still need to be related to source-term
+semantics. Valid serialized root indices remain assumptions; the complete
+layout guarantees and certification-caller budget guard below address allocation
+arithmetic for the CNF arena.
+
+`TestOakCNFRootsLean` audits nine foundational-only theorem closures, fixes
+contracts for trace derivation and constructor regions, and kernel-replays
+initial root polarity and a wrapped-layout counterexample showing why the
+budget is necessary. Compiled obligation tests additionally check 81 production
+layouts across terminal/small/stack-limit capacities, term counts, and clause
+capacities. Existing full-buffer and solver-integration checks remain required.
+
+`Oak.CNFLayout` proves termination of the extracted `next_pow2` for inputs
+at most 2^31 with 32 fuel, including positivity and upper/lower bounds on the
+result. `constructor_terminates` derives constructor existence for node
+capacities at most 2^30. This is separate from allocation safety: under the
+natural-number footprint bound `3*cap + 5*u + 16*stack + 64*terms + 3120 +
+capacity < 2^32`, `complete_regions` proves exact adjoining boundaries for
+all node, unique-table, cache, stack, bit, selection, state, and clause
+regions, and equality of the final total to that footprint. `suffix_budget`
+discharges the earlier root-trace bridge's suffix budget from this bound.
+`TestOakCNFLayoutLean` fixes these contracts, audits seven theorem closures,
+and kernel-replays the doubling boundary and a terminating-but-wrapped
+constructor. The compiled layout cases now check the prefix fields too.
+These layout theorems alone do not enforce budgets in callers, prove successful
+physical allocation, establish unique-table probe termination, or relate initial
+bit cells to source-term semantics. No unrestricted constructor safety or
+whole-source verdict theorem is claimed.
+
+The certification caller now checks `cnf_allocation_fits` before constructing
+or allocating its CNF arena. The guard refuses oversized node capacities before
+`next_pow2`, computes the complete requested footprint in `u64`, and requires
+at most 1,073,741,823 words. This stronger bound protects the caller's `u32`
+four-byte multiplication as well as its `terms+1` and `terms*6144+65536`
+expressions. Rejected requests return `CERT_REFUSED` before arena allocation.
+
+`Oak.CNFAllocation` proves exact widened arithmetic for all `u32` inputs,
+guard termination, and that admission discharges the constructor's footprint
+and suffix budgets and prevents allocation-byte overflow. Its six theorem
+closures are audited against foundational axioms, with fixed contracts and
+kernel boundary replays. Compiled regressions compare 190 boundary requests
+with independent `uint64` arithmetic and exercise four refusals through
+`certify_over` itself. The guard and its dependencies participate in extraction
+drift checks. This closes the CNF arena's caller-side arithmetic premise;
+it does not establish malloc success, validate serialized problem indices,
+prove source-term correspondence, or establish success of the allocator.
+The separate BDD/SAT arena checks are described below.
+
+BDD races and the SAT certificate arena now perform their own admission
+checks before construction/allocation. `bdd_allocation_fits` bounds the node
+budget before `next_pow2`, admits only one through three race variants, and
+includes replay storage in its widened per-arena word count. `race_bounded`
+stops with `STATUS_EXCEEDED` if admission fails, without retrying an unsafe
+size. SAT checks the clause/literal-derived header capacities before writing
+them, then checks the complete `sat_layout` footprint before allocating it;
+failures return `CERT_REFUSED`. Both arena checks cap words at 1,073,741,823
+so the existing four-byte allocation multiplication is exact.
+
+`Oak.SolverAllocation` proves exact widened BDD/SAT arithmetic, admission
+bounds, nonwrapping clause/store capacities and literal-header offsets, the SAT constructor's
+natural total, and byte-count safety for both constructors (including BDD
+replay storage). Eight fixed-contract theorem closures have foundational-only
+axiom audits. Compiled checks compare 1,694 boundary requests with independent
+`uint64` arithmetic, check admitted SAT constructor totals, exercise header
+capacity admission, and call the BDD race entry on three refused requests.
+These are arena-sizing guarantees, not whole-prover memory safety: malloc
+success, upstream parser/lowering buffers, other checker allocations, and
+valid serialized indices remain separate obligations.
+
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
 the SAT solver from the audit, but it does not yet remove symbolic execution,
@@ -1236,6 +1487,37 @@ round-trips before mutation, and its boundary decisions are kernel-pinned.
 This is not symbol/layout authority, relocation-record or file-format
 correctness, loading, register execution, whole-resolver transactionality, or
 a whole-link theorem.
+
+### Narrow bitwise ET_REL object/name binding
+
+`Oak.NativeBitwiseObject.accepted_named_body` independently checks an entire
+canonical one-function Linux AArch64 or RV64 ELF64 relocatable object and proves
+that its uniquely decoded `oak_` GLOBAL/FUNC symbol owns the complete checked
+text body, with section-relative entry zero. The header's section pointer and
+symbol table's string-table link are read from the object. Exact architecture,
+ABI flags, seven section records, four symbols, empty data/relocations, padding
+and file exhaustion are checked; altered names, extents, aliases and extra
+content refuse. `named_load` and `named_fetch_byte` expose the explicit aligned,
+nonwrapping flat-section loading model. Target corollaries set PC to that entry
+and retain the existing ARM projection and RV 96-byte frame assumptions.
+
+The container theorem itself does not parse source. The separate
+`Oak.BitwiseSourceObjectParity.check` now derives name and operation from the
+original source bytes and checks both full native objects plus the complete
+Wasm module. Its all-input theorem retains exact grammar membership, the
+established typed source interpreter, actual symbol/whole-body identity and
+modeled named-entry results under explicit ABI/frame/code-base preconditions.
+The older `BitwiseSourceParity` theorem still takes native bodies. Neither
+theorem grants production proof authority, system linking/loading, executable
+startup, physical code/data coherence or full external-ISA/fetch/return-target
+execution.
+Actual full-object pins and malformed-object gates are kernel checked; a fresh
+production-emission regression and exported-theorem axiom audit run in the
+existing formal job. The source-composition gate additionally requires its
+exact seven theorem and nineteen fixture inventories plus all twenty-six clean
+axiom reports. See `docs/notes/source-bitwise-proof.md`,
+`docs/notes/source-native-object-parity.md` and
+`tools/native_object_fixtures/README.md` for exact scope and reproduction.
 
 ### 2.6 Object → binary
 

@@ -35,7 +35,87 @@ func forwardGlobalLoads(fn *asm.Function) int {
 	if forwarded != 0 {
 		fn.Items = out
 	}
+	forwarded += forwardDominatedZeroGlobalLoads(fn)
 	return forwarded
+}
+
+// forwardDominatedZeroGlobalLoads carries an exact zero stored to a scalar
+// global through acyclic or branching control flow to a later load. It is
+// deliberately narrower than general MemorySSA: the store must dominate the
+// load, and every path between must preserve the authenticated address and be
+// free of calls and every memory write. The transform remains a separately
+// materialized, whole-body-verdict-gated forward-global-loads candidate.
+func forwardDominatedZeroGlobalLoads(fn *asm.Function) int {
+	forwarded := 0
+	for {
+		succ, ok := itemSuccessors(fn.Items)
+		if !ok {
+			return forwarded
+		}
+		changed := false
+		for storeAt, item := range fn.Items {
+			store, isInstruction := item.(asm.Instruction)
+			if !isInstruction || store.Mnemonic != "str" || store.Cond != "" || len(store.Operands) != 2 {
+				continue
+			}
+			source, sourceOK := store.Operands[0].(asm.Register)
+			memory, memoryOK := store.Operands[1].(asm.Memory)
+			if !sourceOK || !source.ZeroRegister() || source.Class != asm.ClassX || !memoryOK {
+				continue
+			}
+			global, authenticated := globalAddressBefore(fn, storeAt, memory.Base.Num)
+			if !authenticated || global.Aggregate || global.Bits != 64 {
+				continue
+			}
+			for loadAt := storeAt + 1; loadAt < len(fn.Items); loadAt++ {
+				load, isInstruction := fn.Items[loadAt].(asm.Instruction)
+				if !isInstruction || load.Mnemonic != "ldr" || load.Cond != "" || len(load.Operands) != 2 {
+					continue
+				}
+				destination, destinationOK := generalReg(load.Operands[0])
+				loaded, loadedOK := load.Operands[1].(asm.Memory)
+				if !destinationOK || destination.Class != asm.ClassX || !loadedOK || !sameGlobalMemory(memory, loaded) ||
+					!itemDominates(succ, storeAt, loadAt) || !dominatedGlobalLoadPathStable(fn.Items, succ, storeAt+1, loadAt, memory.Base.Num) {
+					continue
+				}
+				replacement := load
+				replacement.Mnemonic = "mov"
+				replacement.Operands = []asm.Operand{destination, xr(31)}
+				replacement.CheckedFacts = nil
+				fn.Items[loadAt] = replacement
+				forwarded++
+				changed = true
+				break
+			}
+			if changed {
+				break
+			}
+		}
+		if !changed {
+			return forwarded
+		}
+	}
+}
+
+func dominatedGlobalLoadPathStable(items []asm.Item, succ [][]int, start, target, base int) bool {
+	from := reachableItems(succ, start, -1)
+	to := reverseReachable(succ, target)
+	if target < 0 || target >= len(items) || !from[target] {
+		return false
+	}
+	for at, item := range items {
+		if at == target || !from[at] || !to[at] {
+			continue
+		}
+		ins, isInstruction := item.(asm.Instruction)
+		if !isInstruction {
+			continue
+		}
+		if ins.Mnemonic == "bl" || ins.Mnemonic == "blr" || ins.Mnemonic == "svc" || writesMemory(ins.Mnemonic) || writesGeneral(ins, base) {
+			return false
+		}
+	}
+	return true
 }
 
 func forwardGlobalLoadAt(fn *asm.Function, at int, store, load asm.Instruction) (asm.Instruction, bool, bool) {

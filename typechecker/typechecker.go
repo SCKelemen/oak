@@ -153,7 +153,7 @@ func (t *UnitType) Equals(other Type) bool {
 	}
 	// Unit equals empty record {}
 	if otherRecord, ok := other.(*RecordType); ok {
-		return len(otherRecord.Fields) == 0
+		return len(otherRecord.Fields) == 0 && !(otherRecord.Struct && otherRecord.Name != "")
 	}
 	return false
 }
@@ -301,13 +301,19 @@ func (t *RecordType) String() string {
 }
 
 func (t *RecordType) Equals(other Type) bool {
-	// Empty record {} is equivalent to Unit
+	// A nominal zero-field struct retains its identity.
+	if t.Struct && t.Name != "" && len(t.Fields) == 0 {
+		otherRecord, ok := other.(*RecordType)
+		return ok && otherRecord.Struct && otherRecord.Name == t.Name
+	}
+	// Empty semantic records are compatible with Unit.
 	if len(t.Fields) == 0 {
 		if _, ok := other.(*UnitType); ok {
 			return true
 		}
 		if otherRecord, ok := other.(*RecordType); ok {
-			return len(otherRecord.Fields) == 0
+			// The nominal-empty boundary also applies with the struct on the right.
+			return len(otherRecord.Fields) == 0 && !(otherRecord.Struct && otherRecord.Name != "")
 		}
 		return false
 	}
@@ -489,7 +495,7 @@ func (t *FunctionType) String() string {
 
 func (t *FunctionType) Equals(other Type) bool {
 	if otherFunc, ok := other.(*FunctionType); ok {
-		if len(t.Parameters) != len(otherFunc.Parameters) {
+		if t.Variadic != otherFunc.Variadic || len(t.Parameters) != len(otherFunc.Parameters) {
 			return false
 		}
 		if !t.ReturnType.Equals(otherFunc.ReturnType) {
@@ -4653,6 +4659,11 @@ func (tc *TypeChecker) checkVariableDeclaration(stmt *ast.VariableDeclaration) {
 			return
 		}
 		if stmt.Value == nil {
+			if path, callable := tc.zeroContainsCallable(varType); callable {
+				tc.addTypeDiagnostic(stmt.Name, CodeCallableInitializer,
+					fmt.Sprintf("variable %s: callable storage %s%s requires an explicit initializer; functions have no zero value", stmt.Name.Value, stmt.Name.Value, path))
+				return
+			}
 			// A zero-initialized binding whose type holds a refinement is
 			// admitted only when zero satisfies the predicate: nothing else
 			// may produce a refined value (typechecker/refinements.go).
@@ -5909,11 +5920,11 @@ func typeExpressionFor(t Type, tok token.Token) ast.Expression {
 		}
 		switch {
 		case t.IsSlice:
-			return &ast.IndexExpression{Token: tok, Left: element, Index: &ast.Identifier{Token: tok, Value: ""}}
+			return &ast.IndexExpression{TypeForm: ast.IndexArrayType, Align: t.Align, Token: tok, Left: element, Index: &ast.Identifier{Token: tok, Value: ""}}
 		case t.IsSpan:
-			return &ast.IndexExpression{Token: tok, Left: element, Index: &ast.Identifier{Token: tok, Value: "*"}}
+			return &ast.IndexExpression{TypeForm: ast.IndexArrayType, Align: t.Align, Token: tok, Left: element, Index: &ast.Identifier{Token: tok, Value: "*"}}
 		default:
-			return &ast.IndexExpression{Token: tok, Left: element, Index: &ast.IntegerLiteral{Token: tok, Value: t.Length}}
+			return &ast.IndexExpression{TypeForm: ast.IndexArrayType, Align: t.Align, Token: tok, Left: element, Index: &ast.IntegerLiteral{Token: tok, Value: t.Length}}
 		}
 	}
 	return nil
@@ -5989,7 +6000,7 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ..
 				if expectedArray.IsSlice || expectedArray.IsSpan {
 					expr.Type = shape
 				} else {
-					expr.Type = &ast.IndexExpression{Token: expr.Token, Left: typeExpressionFor(expectedArray.ElementType, expr.Token), Index: &ast.IntegerLiteral{Token: expr.Token, Value: int64(len(expr.Elements))}}
+					expr.Type = &ast.IndexExpression{TypeForm: ast.IndexArrayType, Token: expr.Token, Left: typeExpressionFor(expectedArray.ElementType, expr.Token), Index: &ast.IntegerLiteral{Token: expr.Token, Value: int64(len(expr.Elements))}}
 				}
 			}
 		}
@@ -6011,7 +6022,7 @@ func (tc *TypeChecker) checkArrayLiteral(expr *ast.ArrayLiteral, expectedType ..
 				}
 				// Create IndexExpression for []Type (empty index means slice)
 				sliceTypeExpr := &ast.IndexExpression{
-					Token: expr.Token,
+					TypeForm: ast.IndexArrayType, Token: expr.Token,
 					Left:  elementTypeIdent,
 					Index: &ast.Identifier{Token: expr.Token, Value: ""}, // empty string = slice
 				}
@@ -6706,6 +6717,11 @@ func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type
 			// Method is not a function type - invalid
 			return false
 		}
+		// A fixed slice parameter and a variadic tail have different call
+		// contracts even when their parameter representations are identical.
+		if concreteMethodType.Variadic != requiredMethodType.Variadic {
+			return false
+		}
 
 		// Check that return types match
 		if !latticeAtomIdentical(concreteMethodType.ReturnType, requiredMethodType.ReturnType) {
@@ -6897,11 +6913,23 @@ func (tc *TypeChecker) getLiteralType(literal object.Object) Type {
 
 // checkInterfaceType type checks an interface definition
 func (tc *TypeChecker) checkInterfaceType(stmt *ast.InterfaceType) {
-	// Extract type parameters
-	typeVars := []string{}
-	if stmt.TypeParams != nil {
-		for _, tp := range stmt.TypeParams {
-			typeVars = append(typeVars, tp.Name.Value)
+	// The parser preserves the wider interface syntax for tooling. Until
+	// checking and calling implement these contracts, reject them before
+	// registering a weaker interface (docs/spec/20-types.md section 8).
+	if len(stmt.TypeParams) > 0 {
+		tc.addError(stmt.Name, "generic interface contracts are not supported yet")
+		return
+	}
+	for _, method := range stmt.Methods {
+		if method.ReceiverType != nil {
+			tc.addError(method.ReceiverType, "typed interface receivers are not supported yet")
+			return
+		}
+		for _, param := range method.Parameters {
+			if param.Variadic {
+				tc.addError(param.Name, "variadic interface methods are not supported yet")
+				return
+			}
 		}
 	}
 

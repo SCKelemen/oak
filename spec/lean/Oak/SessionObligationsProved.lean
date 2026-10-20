@@ -3,16 +3,14 @@ import Oak.SessionObligations
 /-!
 # Discharging a session's obligations
 
-`Oak.SessionObligations` is what the REPL's `:lean` emitted for the example
-session in `repl/lean_test.go`: three loop-termination statements left as
-`sorry`, a tail cycle already discharged by the compiler's rank certificate,
-and a refuted span-disjointness assumption. This file is the programmer's
-half of the exchange — proofs of the two closed loop statements by ranking
-functions (`Oak.Loops.ranking_terminates`), showing the emitted statements
-are the real obligations and are provable as stated. The third loop (`fill`)
-calls a function the translator could not inline, so its statement quantifies
-over an uninterpreted `F`; it is provable only under hypotheses about `F`,
-which is exactly what its `sorry` asks the programmer to supply.
+`Oak.SessionObligations` records five named propositions for the example
+session in `repl/lean_test.go`. A proposition definition asserts no proof.
+This file proves exactly two: `loop` and `countdown`. The unrestricted
+`fill`, `walk`, and `drive` claims are false, as proved independently in
+`Oak.SessionObligationsRefuted`; they must not be advertised as discharged.
+Any replacement termination contract needs justified reachable/well-typed
+state and callee assumptions, and its own proof. These model statements do
+not establish source translation correctness or trap/divergence preservation.
 -/
 
 namespace Oak.Session
@@ -25,7 +23,7 @@ theorem two_pow_32 : (2 : Int) ^ 32 = 4294967296 := by decide
 32-bit range wraps on the first step and is then smaller, so `k.toNat` ranks
 every state. -/
 theorem loop_countdown_2_terminates_proved :
-    ∀ (F : Funs) (s : State), Terminates F loop_countdown_2 s := by
+    loop_countdown_2_terminates := by
   intro F
   refine ranking_terminates F loop_countdown_2 (fun s => (s.vars 0).toNat) ?_
   intro s h
@@ -42,7 +40,7 @@ becomes `i + 1 < 10` on the wrapped value. Rank by distance to 10 while `i`
 is in range; from any other `i` the wrapped successor is either in range or
 clears the flag, so one step reaches a smaller rank. -/
 theorem loop_loop_1_terminates_proved :
-    ∀ (F : Funs) (s : State), Terminates F loop_loop_1 s := by
+    loop_loop_1_terminates := by
   intro F
   refine ranking_terminates F loop_loop_1
     (fun s => if s.vars 0 = 0 then 0

@@ -97,13 +97,12 @@ main: (): i32 {
 	}
 }
 
-func TestE2EMultipleRegionNestedRecords(t *testing.T) {
-	// Deliberately declare the outer record first, and retain an ordinary type
-	// parameter beside its regions through specialization.
-	src := `
+// Deliberately declare the outer record first, and retain an ordinary type
+// parameter beside its regions through specialization.
+const multipleRegionNestedRecordsSource = `
 Envelope[T,A,B]: type = struct { tag:T, parts:Pair[A,B] }
 Pair[A,B]: type = struct { left:View[u8,A], right:View[u8,B] }
-pack[A,B]: (a:View[u8,A], b:View[u8,B]): Envelope[u8,A,B] = Envelope {tag:0u8,parts:Pair {left:a,right:b}}
+pack[A,B]: (a:View[u8,A], b:View[u8,B]): Envelope[u8,A,B] = Envelope {tag:u8(0),parts:Pair {left:a,right:b}}
 right[A,B]: (p:Envelope[u8,A,B]): View[u8,B] = p.parts.right
 choose[A,B]: (a:View[u8,A], b:View[u8,B], first:Bool): Pair[A,B] = first ? { Pair {left:a,right:b} } | { Pair {left:subslice(a,0,1),right:b} }
 main: (): i32 {
@@ -114,7 +113,9 @@ main: (): i32 {
  v:[]u8=right(p)
  i32(q.left[0])+i32(v[0])
 }`
-	code, abnormal := buildAndRun(t, "nested-regions", src)
+
+func TestE2EMultipleRegionNestedRecords(t *testing.T) {
+	code, abnormal := buildAndRun(t, "nested-regions", multipleRegionNestedRecordsSource)
 	if abnormal || code != 42 {
 		t.Fatalf("exit = (%d,%v)", code, abnormal)
 	}

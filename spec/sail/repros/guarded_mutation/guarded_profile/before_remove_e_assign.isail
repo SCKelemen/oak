@@ -1,0 +1,41 @@
+:rewrite move_termination_measures
+:rewrite instantiate_outcomes lean
+:rewrite realize_mappings
+:rewrite remove_vector_subrange_pats
+:rewrite remove_duplicate_valspecs
+:rewrite toplevel_string_append
+:rewrite pat_string_append
+:rewrite mapping_patterns
+:rewrite add_unspecified_rec
+:rewrite undefined true
+:rewrite remove_not_pats
+:rewrite remove_impossible_int_cases
+:rewrite tuple_assignments
+:rewrite vector_concat_assignments
+:rewrite simple_assignments
+:rewrite remove_vector_concat
+:rewrite remove_bitvector_pats
+:rewrite recheck_defs
+:rewrite guarded_pats
+:rewrite nexp_ids
+:rewrite split execute
+:rewrite minimise_recursive_functions
+:rewrite remove_bitfield_records
+:rewrite recheck_defs
+:rewrite top_sort_defs
+:rewrite add_register_init_function
+:rewrite const_prop_mutrec lean
+:rewrite exp_lift_assign
+:rewrite early_return
+:rewrite recheck_defs
+:rewrite make_cases_exhaustive
+:rewrite merge_function_clauses
+:rewrite recheck_defs
+:rewrite rewrite_loops_with_escape_effect
+:rewrite recheck_defs
+:rewrite infer_effects true
+:rewrite attach_effects
+:rewrite remove_blocks
+:rewrite attach_effects
+:rewrite remove_e_assign
+:quit

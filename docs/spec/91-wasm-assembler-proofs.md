@@ -3,8 +3,8 @@
 Wasm has the same evidence obligations as the ARM64 and RV64 lanes: a named
 profile, real encoding and decoding implementations, universal model laws,
 production correspondence checks, and independent execution of output bytes.
-This increment closes the instruction-encoding model for the existing scalar
-profile. It does not close source-to-module verification or full target parity.
+The existing scalar profile has an instruction-encoding model and exact-byte
+refinement of its mechanically extracted Oak instruction and sequence writers. It does not close source-to-module verification or full target parity.
 
 ## Implemented boundary
 
@@ -82,11 +82,25 @@ The binary rules retain the [pinned Core reference](https://github.com/WebAssemb
 | `preflight_bound`, `assemble_success_bound` | The extracted first pass maintains its total-capacity invariant, and every successful assembly reports an extent within the original span |
 | `write_uleb_refuses`, `write_sleb_refuses`, `write_instruction_refuses`, `assemble_failure_atomic` | Rejected footprints and every returned whole-plan failure preserve the complete destination, including late invalid instructions |
 | `write_uleb_frame`, `write_sleb_frame` | Every returning extracted LEB writer preserves the array length and all bytes outside its reported extent |
+| `uleb_size_exact`, `sleb_size_exact` | The extracted sizing loops terminate with the canonical encoding length for every u64/i64; ten guard evaluations suffice |
+| `write_uleb_exact`, `write_sleb_exact` | The extracted public LEB writers terminate with exactly `WasmEncoding.encode` bytes and count when the footprint fits, or zero and the original storage otherwise; eleven guard evaluations suffice |
+| `writeBytes_get`, `writeBytes_suffix` | Pointwise buffer contents are exactly the encoding inside the admitted window and the original bytes outside; reading from the offset yields the encoding followed by the untouched suffix |
+| `write_uleb_decode`, `write_sleb_decode` | The independent `WasmLEB` decoder recovers every u64/i64 from the actual written buffer and returns the original suffix beyond the encoding |
+| `instruction_kind_exact`, `instruction_size_exact` | Opcode dispatch matches the independent grammar, including rejection above 255; every instruction size terminates within ten fuel units and equals the accepted encoding length or zero on rejection |
+| `write_instruction_exact`, `write_instruction_decode` | Every instruction write terminates within eleven fuel units, writes exact canonical bytes when valid and fitting, preserves the entire destination otherwise, and decodes from the actual buffer |
+| `assemble_preflight_exact`, `assemble_emit_exact`, `assemble_admitted_exact` | Both extracted passes terminate for every valid fitting plan with `plan.size + 11` fuel, compute the exact size, and write the independent instruction sequence's bytes without wrapped addresses or counts |
+| `assemble_decode`, `assemble_success_bytes` | Actual assembled output decodes to the original instruction tokens in order with the original suffix; array length and every byte outside the exact window are preserved |
+| `assemble_preflight_refuses`, `assemble_refuses` | Every invalid or non-fitting plan terminates within `plan.size + 11` fuel and returns failure, zero size and the complete original destination, including late malformed instructions and offsets past the end |
+| `assemble_exact`, `assemble_terminates` | For all representable plans/destinations and all u32 offsets, the extracted assembler terminates and equals the independent validity/capacity/byte-result model |
+| `assemble_admission_iff`, `assemble_refusal_iff`, `assemble_fuel_independent` | Success occurs exactly for valid fitting plans; refusal occurs exactly otherwise with unchanged storage; additional sufficient fuel cannot change any status, count or output byte |
 
 Encoding recursion decreases the bit-width budget; it is not an execution-fuel
 assumption. Sequence decoding uses a syntactic instruction count. The numeric law assumes already-evaluated integer operands; it does not prove
-local selection or the emitted control structure. These models do not assert
-runtime termination, execute general control flow, or prove guest memory safety. The target model also corrects the existing RISC-V default CPU names
+local selection or the emitted control structure. The encoding, numeric and
+target models do not execute general control flow or prove guest memory safety.
+The extracted LEB, instruction and whole-plan operations have the bounded
+termination proofs described below, including all refusals.
+The target model also corrects the existing RISC-V default CPU names
 and places unsupported-target refusal before explicit C-driver selection, as
 the current Go implementation does.
 
@@ -96,13 +110,52 @@ the current Go implementation does.
 subject to the compiler/extractor correspondence and modeling choices in
 [Lean extraction](95-extraction.md). The source is not duplicated by hand.
 Mutable spans become threaded arrays; the plan and destination must be disjoint.
-The universal writer/frame and preflight laws quantify over arbitrary extraction
+The original writer/frame and preflight laws quantify over arbitrary extraction
 fuel and returning runs. `none` denotes fuel exhaustion, not assembler failure.
-They do not yet prove sufficient fuel for every valid plan, byte content against
-`WasmEncoding`, or the complete instruction/sequence success frame. The
-`admitted_store` law separately discharges the in-bounds, nonwrapping address
-obligation for the LEB loops; the extractor's out-of-bounds-store behavior is
-not used as evidence of runtime safety.
+
+`WasmAssemblerBytes.lean` closes the LEB sizing and byte-content obligations.
+For every u64/i64, the sizing loops compute the length of `WasmEncoding.encode`
+with at least ten fuel units. With at least eleven units, each public LEB writer
+returns its complete result for every representable span length and every u32
+offset, including refusals. These bounds count guard evaluations in each
+extracted loop; they are not processor instruction counts or a sufficient
+budget for an entire assembly plan.
+
+The byte proof relates both extracted writers to one integer-based sequence,
+then proves that sequence equal to the canonical encoding. The public contract
+requires `dst.size < 2^32`; it proves the exact footprint admission check,
+returned byte count, complete buffer contents and unchanged-on-refusal result.
+In-bounds readback and the independent decoder then establish value recovery
+and preservation of the original suffix. The `admitted_store` law discharges
+the nonwrapping address obligation; the readback proof requires the full window
+to fit. No dropped out-of-range store is used to justify runtime safety.
+
+`WasmAssemblerInstruction.lean` relates the complete extracted opcode dispatch
+and operand checks to the independent scalar grammar. Canonical LEB bytes are
+proved independent of width when a value fits both widths, connecting the
+implementation's 64-bit helpers to the grammar's 32-bit operands. Instruction
+sizing needs ten fuel units; writing needs eleven, including invalid inputs and
+capacity refusals. No returned-run assumption is needed for these contracts.
+
+`WasmAssemblerSequence.lean` composes these results through both extracted
+assembly loops. For every valid fitting plan with `plan.size < 2^32`,
+`dst.size < 2^32`, and fuel at least `plan.size + 11`, assembly returns success
+with the exact independent byte sequence and count. Readback recovers every
+opcode/immediate pair in order and the untouched original suffix. The pointwise
+success frame covers every array index. The plan and destination remain disjoint.
+These are extraction-loop budgets, not CPU instruction counts or a complexity
+claim about generated code.
+
+`WasmAssemblerTotal.lean` closes whole-plan refusal and totality. It proves that
+any invalid instruction or capacity failure in an arbitrary suffix reaches a
+returned refusal, including after a long valid prefix. An offset past the end
+refuses before reading the plan. The same `plan.size + 11` budget therefore
+suffices for every input with representable disjoint spans, regardless of
+validity or fit. `assemble_exact` equates the extracted result to `assemblyResult`,
+which uses independent sequence encoding and mathematical capacity, with exact
+bytes on success and the original buffer on refusal. Success/refusal equivalences
+and fuel independence follow without assuming a returning run. These proofs do
+not authorize a source-to-module verification claim.
 
 ## Production evidence and gates
 
@@ -126,7 +179,13 @@ not used as evidence of runtime safety.
   assembly routines with kernel-checked `decide` claims. It shares instruction,
   full-width LEB and transaction corpora with the compiled-Oak tests, comparing
   complete buffers and returned counts/status against the Go encoder. Fuel
-  exhaustion is explicitly distinct from ordinary refusal.
+  exhaustion is explicitly distinct from ordinary refusal. The LEB corpus uses
+  the proved bounds of ten sizing guards and eleven writer guards, including
+  instruction operations. Plan checks use `instruction count + 11`, with a
+  maximum-width operand late in a long plan and an explicit insufficient-fuel
+  case. The shared plan corpus also kernel-checks the total result model against
+  the Go oracle, including long valid prefixes ending in invalid opcodes or
+  out-of-range immediates. Refusing plans have the same universal fuel bound.
 - `TestE2ESelfHostedWasmTransactions`: the shared whole-plan corpus covers empty
   and mixed plans, exact fits, short storage, out-of-range offsets and late bad
   opcodes/immediates; every destination byte is checked.
@@ -146,12 +205,63 @@ holes or custom axioms. Finite Go/Oak/Lean agreement is not universal implementa
 refinement. The universal claims are for the named models and, where stated,
 the mechanically extracted Oak definitions under the extraction boundary above.
 
+The [decoded execution layer](91-wasm-execution.md) now gives typed operand/local
+semantics for 49 straight-line scalar forms and composes execution through the
+actual assembled bytes. `Oak.WasmControl` extends that bridge to structured
+blocks, loops, branches, conditionals and single-function returns.
+`Oak.WasmCalls` adds direct calls with isolated frames in a closed function table;
+`Oak.WasmModule` now decodes binary metadata and links that table. Structural
+decoding and byte correctness still do not imply module validity.
+`Oak.WasmTyping` proves scalar type preservation and absence of model diagnostics
+for accepted straight-line sequences, including their assembled bytes; full
+control-polymorphic module validation remains open.
+
+## Complete bitwise module name validation
+
+`asm/selfhost/bitwise_wasm.oak` is a separate complete one-function module
+writer for the strict bitwise image profile. `TestLeanWasmBitwiseModuleExtract`
+mechanically extracts it with the existing assembler, requires the old helper
+extraction to be an exact byte-for-byte prefix, reconstructs the combined
+extraction before import factoring, and checks committed-source drift. The
+source compiler/extractor trust boundary above is unchanged.
+
+`Oak.WasmBitwiseModuleValidation` adds universal name-validation laws over those
+actual extracted definitions:
+
+- `bitwise_name_scan_index` proves that a true loop guard addresses the name
+  array and that the u32 increment cannot wrap.
+- `bitwise_name_scan_exact` validates any remaining suffix from any initial
+  Boolean flag. With a representable name length and at least the remaining
+  byte count plus one fuel, it returns the exact non-NUL ASCII predicate and
+  the represented final length. It requires no returning-run premise.
+- `bitwise_name_validation_exact` specializes that result to the whole name;
+  `bitwise_name_all_iff` identifies the byte domain as `b != 0` and `b < 128`.
+- `bitwise_module_invalid_name` and `bitwise_module_invalid_name_at` prove that
+  any malformed name byte, including a late in-bounds byte, makes the complete
+  writer return zero and the entire original destination. Operation tags and
+  destination contents are arbitrary; earlier operation/length refusals are
+  included. The fuel bound is `name.size + 1`, with `name.size < 2^32` explicit.
+  This path never reads or writes the destination, so it needs no destination
+  capacity or representability premise.
+
+The loop induction proves real source-index bounds; no out-of-bounds `getD`
+default supplies a malformed byte. This scan performs no shifts. Arrays still
+model disjoint spans. The domain is the writer's export-name proposal domain,
+not the source language's identifier grammar. The existing faithful-module
+gate builds this proof module alongside the extraction. Its finite complete
+module examples remain separate evidence from these universal laws.
+
+Successful module layout, arithmetic and write-index safety, success/failure
+composition with the LEB and instruction helpers, complete byte refinement,
+success framing and full module-writer totality remain open. These validation
+laws do not establish source compilation, module admission, or runtime behavior.
+
 ## Remaining parity obligations
 
 | Boundary | Required next work |
 | --- | --- |
-| Implementation refinement | Extend the extracted Oak laws to termination/sufficient fuel, exact byte content, instruction/sequence success frames and model equivalence; prove Go encoder and exact module parser/type-validator correspondence |
-| Decoded semantics | Model values, operand/local/control stacks, calls, traps and module instantiation; connect every admitted numeric/control form |
+| Implementation refinement | Prove Go encoder and exact module parser/type-validator correspondence; discharge compiler/extractor correspondence beyond the stated modeling boundary |
+| Decoded semantics | Extend scalar type safety through control/calls and prove full validator correspondence |
 | Compiler correctness | Source/OptIR-to-decoded-Wasm refinement, edge-copy and structured/dispatch control proofs, certificate identity and authoritative admission |
 | Language/library coverage | Narrow integers, conversions and checked shifts; memory/aggregates/globals; explicit float/SIMD/atomic profiles; corresponding stdlib coverage |
 | Modules and environment | Oak module writer and symbolic linking, layout/index/section-length proofs, declared browser/WASI imports and runtime contracts |

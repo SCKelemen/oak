@@ -1,0 +1,175 @@
+{
+  "repository": "SCKelemen/oak",
+  "target_branch": "specification",
+  "local_branch": "integration/external-semantics",
+  "base_pr_692": {
+    "commit": "cee8ef30c4cf203ff059fedfc642e288624b4b00",
+    "tree": "ef7a967ec0e3b4442383a82abd5caaf0d8723b62",
+    "parents": [
+      "cbaa4a16227bec08ea59c1687c59f0af7e6d79f9"
+    ],
+    "subject": "Record reviewed CI dependency and live compiler partition coverage"
+  },
+  "target_snapshot": {
+    "commit": "d1454cdaf79beea3f4d73fc1e91cfa92637fb498",
+    "tree": "66482f21f55ba0099b893542aa5a0915a2f9ced4",
+    "parents": [
+      "1234426fe4302d30f9db512570a3b4767a34d1e4",
+      "bc6742af30bfa65c8403eb358218e72c4cc638fa"
+    ],
+    "subject": "Repair empty nominal type identity on specification (#700)"
+  },
+  "validated_review_candidate": {
+    "commit": "09e03313fae9fba2c9d948bc48ac3b2d1767e8b4",
+    "tree": "077134a578b21463cfc45f6859a5fd38534f083e",
+    "parents": [
+      "1153226f0788b74defb0f76ad9c253481fd4f851"
+    ],
+    "subject": "Distinguish exported model artifact from pinned Sail support provenance"
+  },
+  "component_commits": [
+    {
+      "commit": "2121135567ef8e0123aaa7457ee82347a57372a8",
+      "tree": "7c41d48d3a3b308a7d2d4824af3d7dd772be8daf",
+      "parents": [
+        "26a93bc719cdaf608209ff1bbb2ebc627da43c9a"
+      ],
+      "subject": "Prove pinned exported ARM scalar bitwise and return boundary composition"
+    },
+    {
+      "commit": "8aac7d76b52b841eac16cc84e03b1099c8a63b4d",
+      "tree": "2eaf34df7eac01f7e82f224f31596c9901e6f6a1",
+      "parents": [
+        "3bfe14da2b38f781c115f158f9f6a216922e23b9"
+      ],
+      "subject": "Compose source-bound RV64 instruction projection with actual Sail decoder and execution"
+    },
+    {
+      "commit": "23d9b00ef1daba8415ada9a5101fbfa438448fa9",
+      "tree": "5d1391f5f8ae0fdb4775e4d108d0f704f7382afb",
+      "parents": [
+        "dd75f76f0aef54a9b03b1d24bc2d176bbf4ac8d1"
+      ],
+      "subject": "Prove explicitly bounded Core-shaped Wasm bitwise projection"
+    },
+    {
+      "commit": "89f83b69a2e50ee2ca6650f7d9777c6a8e9217e8",
+      "tree": "b2a9382555320c40e034b9784a1ae69280b7b257",
+      "parents": [
+        "23d9b00ef1daba8415ada9a5101fbfa438448fa9"
+      ],
+      "subject": "Derive restricted Core module decoding instantiation and invocation"
+    }
+  ],
+  "local_commits": [
+    {
+      "commit": "8203ad553b98c3803775342bfa407df7639f93f8",
+      "tree": "952e3aa405555b7f9c5d2d2a6c0c2071068ccfd1",
+      "parents": [
+        "cee8ef30c4cf203ff059fedfc642e288624b4b00",
+        "d1454cdaf79beea3f4d73fc1e91cfa92637fb498"
+      ],
+      "subject": "Merge current specification into external semantics integration"
+    },
+    {
+      "commit": "5757b4a437a68e06573e1a206c45f95ca344c422",
+      "tree": "ea725a37e5bb82ab9de7e3d4c8f9475dbed84c42",
+      "parents": [
+        "8203ad553b98c3803775342bfa407df7639f93f8"
+      ],
+      "subject": "Prove pinned exported ARM scalar bitwise and return boundary composition"
+    },
+    {
+      "commit": "32ca937c85377a4ce75b8e3c919669a7b32fabd3",
+      "tree": "4a3eaa9ccf5573798034eaba3ff06c68f546063a",
+      "parents": [
+        "5757b4a437a68e06573e1a206c45f95ca344c422"
+      ],
+      "subject": "Compose source-bound RV64 instruction projection with actual Sail decoder and execution"
+    },
+    {
+      "commit": "54ff258f4df30fa2b4ea5277a019fce9f764905a",
+      "tree": "49ea3f3792d717cee2b91316a98952c72d0e5202",
+      "parents": [
+        "32ca937c85377a4ce75b8e3c919669a7b32fabd3"
+      ],
+      "subject": "Prove explicitly bounded Core-shaped Wasm bitwise projection"
+    },
+    {
+      "commit": "1aa2ef37a81dcebb77b43e3b2c18630ed16bdb2d",
+      "tree": "061ef498f2f5781e31a27b38e50e70c49a1e7337",
+      "parents": [
+        "54ff258f4df30fa2b4ea5277a019fce9f764905a"
+      ],
+      "subject": "Derive restricted Core module decoding instantiation and invocation"
+    },
+    {
+      "commit": "1153226f0788b74defb0f76ad9c253481fd4f851",
+      "tree": "a94c44b90d2b3530d15cb39cba0492f76b6a2192",
+      "parents": [
+        "1aa2ef37a81dcebb77b43e3b2c18630ed16bdb2d"
+      ],
+      "subject": "Require reviewed external proof regeneration provenance and actual-source checks"
+    },
+    {
+      "commit": "09e03313fae9fba2c9d948bc48ac3b2d1767e8b4",
+      "tree": "077134a578b21463cfc45f6859a5fd38534f083e",
+      "parents": [
+        "1153226f0788b74defb0f76ad9c253481fd4f851"
+      ],
+      "subject": "Distinguish exported model artifact from pinned Sail support provenance"
+    }
+  ],
+  "validation": {
+    "core_lean": "lake build: PASS, 368 jobs",
+    "arm": "Pinned Sail 0.20.2 regeneration/raw hashes and ScalarExecutionBridge build: PASS; 21 standard-logical-axiom theorem closures",
+    "wasm": "Actual original source/compiler modules instantiate source_to_core for 3 operators, arbitrary represented stores, and all input pairs; generated closures and 14 static closures allow only standard logical axioms",
+    "rv": "Default committed lakefile, no local override: bounded 4.33 build, 165 jobs, PASS; 9 audited closures, narrow 4 dependencies and full 76 as explicitly allowlisted; no optional RvfiDii/full 4.33 model build",
+    "rv_previous_project": "Unchanged 4.29 bridge default build: 140 jobs, PASS with cached complete export",
+    "provenance": "164 generated model/config hashes from verified artifact11540095028;9 separate support library/config hashes from upstream lean-sail07946313 git blobs;valid input and five negative mutation cases checked",
+    "regressions": "Full current Wasm execution/control/calls Lean and Node engines, actual modules, ARM startup and RV framed compiler pins: PASS, 91.460 seconds, no skips; full 1,993 Wasm execution claims completed",
+    "race_inventory": {
+      "count": 1373,
+      "partition": {
+        "e2e-a-r": 646,
+        "e2e-stdlib-text": 27,
+        "e2e-stdlib-rest": 79,
+        "e2e-s-z": 92,
+        "compiler-rest-a-m": 267,
+        "compiler-rest-n-z": 262
+      },
+      "status": "each test belongs to exactly one shard"
+    },
+    "workflow": "Current specification jobs/steps retained, with unchanged #692 mandatory native gates and extended RV regex, plus the new required external proof checks"
+  },
+  "boundaries": {
+    "arm": "Four selected clauses; SEE initialization, successful read-only feature-query callbacks, and BranchTo return boundary remain assumptions; not full decoder/fetch",
+    "rv": "All 9 wrapper words decoded; external execution covers only bitwise and RET bodies, not stack loads/stores or hardware fetch; narrow Unit -> Bool parameter plus 72 additional full-dispatch primitives remain explicit",
+    "wasm": "Manual source-pinned Core transcription, not verified SpecTec importer or equivalence to full Core; production parser/compiler/runtime refinement remains external",
+    "authority": "No native/sail/production verification label or verdict promotion"
+  },
+  "baseline_notes": [
+    "Five pre-existing SessionObligations sorry warnings remain outside these audited closures.",
+    "Exact unchanged ARM raw export retains a trailing blank line in RawDefs.lean; git diff --check reports that imported whitespace, intentionally not rewritten.",
+    "Full repository sanitizer suite is not claimed; no sanitizer disabled."
+  ],
+  "evidence": {
+    "directory": "/workspace/shared/external-proof-validation",
+    "sha256": {
+      "core-build.log": "80b1d425823be172531248b2954dd646f2759742f5df8491938d5f82217e5478",
+      "arm-regeneration-with-sail.log": "58a0894eb3dcdfa4558ab260e271d1cf8cb0765e473aa7ede750654fd5f6c323",
+      "arm-lean.log": "06ea870a0d65cb7866f806c8bf1cbd6d79caf1b986d4b7d69aff07b43ecf56ff",
+      "arm-axioms.log": "d86a8687df549203f0627aefe606b4b91a807810bfbd19e031af96eedcd69de4",
+      "wasm-actual-core.log": "18ec734daad4a8f5b134456d8e03de14e6549baec30464db4a03b834938d8916",
+      "wasm-axioms.log": "bc17686e601f97a1f38d4064ffa354306f9c5c6cc206f0f57e881251f528f32a",
+      "rv-prepare.log": "7fc7fa48badf2a62cc24a52c4f4d4b67611f9374f9ed3319a1d710f9f6538f7d",
+      "rv-provenance-mutants.log": "995ba8c58ef638a5ea5bb0ceb592f2a358ad721278ba74c3d7388301121173c5",
+      "rv-bounded-build.log": "1dcc6c14bccf756f140b584ac5a3f4feb0c0edc023cb6a06ef8beaa5d2d47684",
+      "rv-axioms.log": "b77f20bee66a3831c77a6f17f44efe608909bec7d658cfe9730a0dcf68cbf7ca",
+      "rv-original-429-bridge.log": "fb84b7bc082879b5ac29edeff4f82b8de3e45b5d403f6ab1ffebe5aee2d691ac",
+      "integrated-regressions.log": "34202630058210115e37474faf8d597af5bdef31eac25e3f6a6c84171b0aecee",
+      "compiler-race-inventory.log": "55ed4990955670ebc36099faa372095cd3cbea01796ca579497d7710df91b01a"
+    }
+  },
+  "publication": "Fresh integrated review approved candidate 09e03313; this manifest is evidence-only. Authorized for a separate draft PR. Never mutate #692 or merge specification from this task."
+}

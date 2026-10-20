@@ -28,6 +28,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"sync"
 
 	"github.com/SCKelemen/oak/ast"
 	"github.com/SCKelemen/oak/discipline"
@@ -835,6 +836,26 @@ func identifierAt(tok token.Token, name string) *ast.Identifier {
 	return &ast.Identifier{Token: tok, Value: name}
 }
 
+// Cache only immutable type metadata, never AST values or visitor results.
+// Compilation rewrites nodes between walks; every walk still reads the current
+// fields and visits each occurrence, including shared nodes. LoadOrStore lets
+// independent compilations safely populate the same field plan concurrently.
+var syntaxFieldCache sync.Map // reflect.Type -> []int, immutable after publication
+
+func syntaxFields(typ reflect.Type) []int {
+	if cached, ok := syntaxFieldCache.Load(typ); ok {
+		return cached.([]int)
+	}
+	fields := make([]int, 0, typ.NumField())
+	for i := 0; i < typ.NumField(); i++ {
+		if typ.Field(i).IsExported() {
+			fields = append(fields, i)
+		}
+	}
+	cached, _ := syntaxFieldCache.LoadOrStore(typ, fields)
+	return cached.([]int)
+}
+
 // walkSyntax visits every pointer node in a syntax tree, pre-order; visit
 // returns false to stop descending.
 func walkSyntax(v reflect.Value, visit func(node any) bool) {
@@ -850,10 +871,8 @@ func walkSyntax(v reflect.Value, visit func(node any) bool) {
 		}
 		walkSyntax(v.Elem(), visit)
 	case reflect.Struct:
-		for i := 0; i < v.NumField(); i++ {
-			if v.Type().Field(i).IsExported() {
-				walkSyntax(v.Field(i), visit)
-			}
+		for _, i := range syntaxFields(v.Type()) {
+			walkSyntax(v.Field(i), visit)
 		}
 	case reflect.Slice:
 		for i := 0; i < v.Len(); i++ {

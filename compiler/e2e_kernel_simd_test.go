@@ -12,7 +12,7 @@ import (
 // their own, so the interpreter, the C, and the device compute one value.
 const kernelSimdProgram = `package main
 
-kernel block_sums: (gid: u32, x: []f32, out: [*]f32): () = {
+block_sums: (gid: u32, x: []f32, out: [*]f32): () (kernel) = {
   i: u32 = gid * 8 + lane(8)
   v: f32 = 0.0
   i < len(x) ? { v = x[i] }
@@ -67,10 +67,10 @@ func TestE2EKernelSimdShuffle(t *testing.T) {
 		}
 	}
 	for name, c := range map[string][2]string{
-		"shuffle in a loop":     {"kernel k: (gid: u32, out: [*]f32): () = {\n  v: f32 = 1.0\n  n: u32 = 0\n  while n < 2 {\n    v = v + simd_shuffle_xor(v, 1)\n    n = n + 1\n  }\n  lane(4) == 0 && gid < len(out) ? { out[gid] = v }\n}\n", "top level"},
-		"shuffle of an element": {"kernel k: (gid: u32, x: []f32, out: [*]f32): () = {\n  v: f32 = simd_shuffle_xor(x[0], 1)\n  lane(4) == 0 && gid < len(out) ? { out[gid] = v }\n}\n", "scalar local declared at the kernel body's top level"},
-		"shuffle in a helper":   {"twice: (v: f32): f32 = v + simd_shuffle_xor(v, 1)\nkernel k: (gid: u32, out: [*]f32): () = {\n  v: f32 = 1.0\n  lane(4) == 0 && gid < len(out) ? { out[gid] = twice(v) }\n}\n", "belongs to a kernel body"},
-		"offset past the group": {"kernel k: (gid: u32, out: [*]f32): () = {\n  v: f32 = 1.0\n  v = v + simd_shuffle_xor(v, 8)\n  lane(4) == 0 && gid < len(out) ? { out[gid] = v }\n}\n", "below the group size"},
+		"shuffle in a loop":     {"k: (gid: u32, out: [*]f32): () (kernel) = {\n  v: f32 = 1.0\n  n: u32 = 0\n  while n < 2 {\n    v = v + simd_shuffle_xor(v, 1)\n    n = n + 1\n  }\n  lane(4) == 0 && gid < len(out) ? { out[gid] = v }\n}\n", "top level"},
+		"shuffle of an element": {"k: (gid: u32, x: []f32, out: [*]f32): () (kernel) = {\n  v: f32 = simd_shuffle_xor(x[0], 1)\n  lane(4) == 0 && gid < len(out) ? { out[gid] = v }\n}\n", "scalar local declared at the kernel body's top level"},
+		"shuffle in a helper":   {"twice: (v: f32): f32 = v + simd_shuffle_xor(v, 1)\nk: (gid: u32, out: [*]f32): () (kernel) = {\n  v: f32 = 1.0\n  lane(4) == 0 && gid < len(out) ? { out[gid] = twice(v) }\n}\n", "belongs to a kernel body"},
+		"offset past the group": {"k: (gid: u32, out: [*]f32): () (kernel) = {\n  v: f32 = 1.0\n  v = v + simd_shuffle_xor(v, 8)\n  lane(4) == 0 && gid < len(out) ? { out[gid] = v }\n}\n", "below the group size"},
 	} {
 		src := "package main\n\n" + c[0] + "\nmain: (): i32 = 0\n"
 		root := writeModule(t, map[string]string{"oak.mod": helloManifest, "main.oak": src})

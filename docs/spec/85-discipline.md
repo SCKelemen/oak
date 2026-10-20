@@ -116,9 +116,10 @@ runs at most `bound - i` iterations). Every other `while` records the
 obligation `OAK-D0103` (warning), which the strict profile rejects.
 
 A loop the recognizer rejects is an `OAK-D0103` obligation. The REPL's
-`:lean <file>` states it as a termination theorem over `Oak.Loops` — the
+`:lean <file>` states it as a named termination proposition over `Oak.Loops` — the
 loop's guard and body translated into a semantics with explicit wrap-around —
-and `Oak.Loops.ranking_terminates` is the law that discharges it: exhibit a
+without asserting that the proposition is true. `Oak.Loops.ranking_terminates`
+can discharge a valid claim: exhibit a
 `Nat`-valued rank that strictly decreases across every guarded step
 (`docs/spec/83-modules.md` section 10).
 

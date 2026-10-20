@@ -1,0 +1,113 @@
+name: Kernel-checked complete-image bundle
+
+on:
+  push:
+    branches: [main, specification, consolidation]
+  pull_request:
+    branches: [main, specification, consolidation]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.run_attempt == 1 && format('pr-{0}', github.event.pull_request.number) || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
+
+jobs:
+  checked-complete-images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GOMAXPROCS: '2'
+      CGO_ENABLED: '1'
+      GOFLAGS: '-p=2'
+      OAK_REQUIRE_BITWISE_IMAGECHECK: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Require Go race-instrumented runtime support
+        run: |
+          test "$(go env GOOS)" = linux
+          test "$(go env GOARCH)" = amd64
+          test "$(go env CGO_ENABLED)" = 1
+          command -v "$(go env CC)"
+      - name: Check fail-closed exact image test inventory
+        run: python3 -m unittest discover -s .github/scripts -p test_required_backend_tests.py
+      - name: Install trusted host decompressor
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd
+          test -x /usr/bin/zstd
+      - name: Fetch the exact pinned official offline Lean archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          OAK_BITWISECHECK_LEAN_ARCHIVE="$RUNNER_TEMP/lean-4.33.1-linux.tar.zst"
+          printf 'OAK_BITWISECHECK_LEAN_ARCHIVE=%s\n' "$OAK_BITWISECHECK_LEAN_ARCHIVE" >> "$GITHUB_ENV"
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            https://github.com/leanprover/lean4/releases/download/v4.33.1/lean-4.33.1-linux.tar.zst \
+            --output "$OAK_BITWISECHECK_LEAN_ARCHIVE"
+          echo "890afd185370f85666025b883914ab4f4b339136f8c96167b69cfb62aecaf235  $OAK_BITWISECHECK_LEAN_ARCHIVE" | sha256sum --check --strict
+      - name: Check exact live suite selectors
+        run: python3 .github/scripts/required_backend_tests.py --check
+      - name: Require separate image source closure and unchanged object identity
+        run: python3 .github/scripts/required_backend_tests.py checked-image-sources
+      - name: Require real image runtime, maximum paired request and refusal controls
+        run: python3 .github/scripts/required_backend_tests.py checked-image-runtime
+      - name: Require fresh compiler-to-complete-image correspondence and admission
+        run: python3 .github/scripts/required_backend_tests.py checked-image-bundle
+
+  selfhost-complete-images:
+    name: Required raw Oak complete-image producers and admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GOMAXPROCS: '2'
+      CGO_ENABLED: '1'
+      GOFLAGS: '-p=2'
+      LEAN_NUM_THREADS: '2'
+      OAK_REQUIRE_SELFHOST_IMAGE_PRODUCERS: '1'
+      OAK_REQUIRE_WASM_LEAN: '1'
+      OAK_REQUIRE_BITWISE_IMAGECHECK: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Require the actual C bootstrap and race support
+        run: |
+          test "$(go env GOOS)" = linux
+          test "$(go env GOARCH)" = amd64
+          test "$(go env CGO_ENABLED)" = 1
+          command -v cc
+          command -v "$(go env CC)"
+      - name: Check fail-closed producer inventories and refusal reporting
+        run: python3 -m unittest discover -s .github/scripts -p test_required_backend_tests.py
+      - name: Install trusted host decompressor
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd
+          test -x /usr/bin/zstd
+      - name: Fetch and verify the exact official checker and extraction toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          OAK_BITWISECHECK_LEAN_ARCHIVE="$RUNNER_TEMP/lean-4.33.1-linux.tar.zst"
+          printf 'OAK_BITWISECHECK_LEAN_ARCHIVE=%s\n' "$OAK_BITWISECHECK_LEAN_ARCHIVE" >> "$GITHUB_ENV"
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 \
+            https://github.com/leanprover/lean4/releases/download/v4.33.1/lean-4.33.1-linux.tar.zst \
+            --output "$OAK_BITWISECHECK_LEAN_ARCHIVE"
+          echo "890afd185370f85666025b883914ab4f4b339136f8c96167b69cfb62aecaf235  $OAK_BITWISECHECK_LEAN_ARCHIVE" | sha256sum --check --strict
+          mkdir "$RUNNER_TEMP/oak-selfhost-lean"
+          tar --use-compress-program=/usr/bin/zstd -xf "$OAK_BITWISECHECK_LEAN_ARCHIVE" -C "$RUNNER_TEMP/oak-selfhost-lean"
+          echo "$RUNNER_TEMP/oak-selfhost-lean/lean-4.33.1-linux/bin" >> "$GITHUB_PATH"
+      - name: Require exact live Go race inventories
+        run: python3 .github/scripts/required_backend_tests.py --check
+      # Separate from the old compiler/runtime gates. No optional selectors,
+      # skipped-tool success, cached checker installation, or continue-on-error.
+      - name: Require exact complete native and Wasm producer corpora and extraction
+        run: python3 .github/scripts/required_backend_tests.py selfhost-image-producers
+      - name: Require six actual Oak tuples and genuine checker refusal controls
+        run: python3 .github/scripts/required_backend_tests.py selfhost-image-admission

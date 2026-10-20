@@ -39,10 +39,17 @@ func (p *Parser) parseSeparated[T any](
 		return items, true
 	}
 
+	errorsBefore := len(p.diagnostics.Errors())
 	p.nextToken()
 	for {
+		itemToken := p.currentToken
 		item, ok := parseItem()
 		if !ok {
+			// A failed required item is never a successful empty sequence.
+			// Preserve a production's own error, or diagnose its silent failure.
+			if len(p.diagnostics.Errors()) == errorsBefore {
+				p.addErrorAtToken(&itemToken, "expected list item")
+			}
 			return nil, false
 		}
 		items = append(items, item)
@@ -56,6 +63,8 @@ func (p *Parser) parseSeparated[T any](
 			return nil, false
 		}
 
+		// Include lexical errors found while advancing to the required item.
+		errorsBefore = len(p.diagnostics.Errors())
 		p.nextToken() // separator
 		if allowTrailing && p.peekTokenIs(close) {
 			p.nextToken()

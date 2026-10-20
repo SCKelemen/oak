@@ -1,0 +1,53 @@
+"""Negative controls for the exact Wasm-module axiom/build gate."""
+import importlib.util
+from pathlib import Path
+import tempfile
+import unittest
+
+SPEC = importlib.util.spec_from_file_location('wasm_module_check', Path(__file__).with_name('check.py'))
+CHECK = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(CHECK)
+
+
+class AuditTests(unittest.TestCase):
+    def test_standard_and_axiom_free(self):
+        CHECK.audit_reports("'a' does not depend on any axioms\n'b' depends on axioms: [propext,\nQuot.sound, Classical.choice]\n", ('a', 'b'))
+
+    def test_refusals(self):
+        for text, names in (
+            ("'a' depends on axioms: [sorryAx]\n", ('a',)),
+            ("'a' depends on axioms: [Lean.ofReduceBool]\n", ('a',)),
+            ("'a' depends on axioms: [assumedWriter]\n", ('a',)),
+            ("'a' depends on axioms: []\n", ('a', 'missing')),
+            ("'a' depends on axioms: []\n'a' depends on axioms: []\n", ('a',)),
+            ("'unexpected' depends on axioms: []\n", ('a',)),
+            ("warning\n'a' depends on axioms: []\n", ('a',)),
+            ("'a' depends on axioms: []\ntrailing\n", ('a',)),
+            ('', ()),
+            ("'a' depends on axioms: []\n", ('a', 'a')),
+        ):
+            with self.subTest(text=text, names=names), self.assertRaises(ValueError):
+                CHECK.audit_reports(text, names)
+
+    def test_missing_local_import_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'Oak').mkdir()
+            (root / 'Oak' / 'Root.lean').write_text('import Oak.Missing\n')
+            with self.assertRaisesRegex(ValueError, 'missing local source'):
+                CHECK.dependency_order('Oak.Root', root)
+
+    def test_current_source_closure(self):
+        order = CHECK.dependency_order(CHECK.MODULE)
+        self.assertEqual(order[-1][0], CHECK.MODULE)
+        names = {name for name, _ in order}
+        self.assertIn('Oak.WasmBitwiseModuleExtracted', names)
+        self.assertIn('Oak.BitwiseNamedModule', names)
+        self.assertIn('Oak.WasmAssemblerTotal', names)
+        self.assertEqual(len(names), len(order))
+        self.assertIn('Oak.WasmBitwiseModuleValidation', names)
+        self.assertIn('Oak.WasmBitwiseModuleCopy', names)
+
+
+if __name__ == '__main__':
+    unittest.main()

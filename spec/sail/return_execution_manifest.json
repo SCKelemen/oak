@@ -1,0 +1,114 @@
+{
+  "AddrTop_adapter": {
+    "original_signature": "val AddrTop : forall ('IsInstr : Bool).\n  (bits(64), bool('IsInstr), bits(2)) -> int effect {escape, rreg, undef}\n\n",
+    "strengthened_signature": "val AddrTop : forall ('IsInstr : Bool).\n  (bits(64), bool('IsInstr), bits(2)) -> {'top, 'top in {31, 55, 63}. int('top)} effect {escape, rreg, undef}\n\n",
+    "original_signature_sha256": "5c4377a92392ec31fd29edd2777c31eb0da4dde14ab817d67ae8a30cf8b30d35",
+    "strengthened_signature_sha256": "9a4f31902d48bd494e5a0d3486713c092afdd95fb941a7be0d9fce5e1cc4dfac",
+    "unchanged_body_sha256": "ab4db1fc2ab8aaa15cb5de7547be0149c40f93d4cb18d6b0b8e2f7700eaee582"
+  },
+  "files": {
+    "return_execution.sail": "0faf8c6b77ef98363437904fba9a3827e3c8026b1913abc6b6a2bfd1c9f1987d",
+    "return_execution_vector.sail": "bb11bdbed65daa83716cbf4a1a40b6e5702751af492b9264f134b1fd06257f83",
+    "lean/ReturnExecution/Raw.lean": "34b666fe4042d510cc61eda3cfcf90393ecb4cd592ffdc6361e81feb1da0d079",
+    "lean/ReturnExecution/RawDefs.lean": "2631cec85fed6f1797768c827c3a1be57df610725aec9df8130dccea0ab69587",
+    "lean/ScalarExecution/Raw.lean": "db0b8ed93db97925f152d508f3c2020230c13c09cf5ea29942a4666d3df24f83",
+    "lean/ScalarExecution/RawDefs.lean": "4599759ae12f5aff5af70c4fcc35fb4fff1d56bbfa6ef94c8997426fedaeac01",
+    "lean/ScalarExecution/Interface.lean": "6032a5b9f082f9b903bb07c546bb114ce7ef567d86d9a036f7a916cc07d4cef0",
+    "lean/ScalarExecutionBridge.lean": "539d94c8e4c1d0e3adb77299c1921cecd89ed2cb3d792c6a6e771d2c4ea6b56d",
+    "repros/guarded_mutation/guarded_profile/no-shadow.patch": "3a9cc1be0e4f098b48976fd31d38bfa580c9f1afad1aece43db149c44bcc199b"
+  },
+  "query_bodies": {
+    "HaveEL": {
+      "signature_sha256": "b8065d67832396b3cb4efc21ae7ca2f3d3823a9cd0f006702d98326065a4ee6b",
+      "unchanged_body_sha256": "18d50ba895481dddd633c3093334c607123fcbec6408a4c14c4d528abb90e26a"
+    },
+    "HasArchVersion": {
+      "signature_sha256": "9942e24d2ce7d2bd834ca786c48533581c0c970428ab95243aab69871d27a868",
+      "unchanged_body_sha256": "467a3fbaa69c16d92c3032f4cafbcacebdba9fba43bf8fcb4179253f601d4aa2"
+    },
+    "HavePACExt": {
+      "signature_sha256": "d5119a41fc148a15b116ed088f4d035bd1215df645348e4faffb75b6eb69d206",
+      "unchanged_body_sha256": "72931a32f54e4ed8138463657cb664597b486e83d3c207183cc446e43a07405b"
+    },
+    "HaveBTIExt": {
+      "signature_sha256": "fe66f47c3979bcbcc2599159cad051a9becc67ae950b59de0baa23d0a0b3e9f6",
+      "unchanged_body_sha256": "be5d55889787015a008b22f7923e2aec3b848b5bcf32a9febb9d15dd768893ba"
+    },
+    "HaveAnyAArch32": {
+      "signature_sha256": "7a50791cab4a63f6ba65352ee2023b863c9aa197c61a41568ab0cfd2f48227bb",
+      "unchanged_body_sha256": "8d77227f9a53091a213997dc3ae55c4c8c00fd08e3bf7a732bbd9ae0ff52eead"
+    },
+    "HighestELUsingAArch32": {
+      "signature_sha256": "ae222cc929f1fcec15b3e5a2129134a4718622d41620b300279979cae61e00fd",
+      "unchanged_body_sha256": "7fd07e2bf84231d0ac74946cd4c6ee50726cc0185f47058e53398db1dd9bf646"
+    },
+    "UsingAArch32": {
+      "signature_sha256": "8f613e18d72956ee92b2408c101ce213c8efe1b6e37859fbff4af11b9a5d2f34",
+      "unchanged_body_sha256": "e81262b4d86efa3df11834538160278bb6f309cb2288758654e7c8ec90842302"
+    },
+    "HaveVirtHostExt": {
+      "signature_sha256": "9360700ac53f220ab720664fc1020518c9f87c526ce065617d1d388d4a532d04",
+      "unchanged_body_sha256": "31297ff831131f59e4a4c0f659ca2aa9485f340ed81c498d8cfc5e460800359a"
+    },
+    "HaveSecureEL2Ext": {
+      "signature_sha256": "2ee36bfdf725e9b8684a8a8a713eafbbb89c6d8948577dea1d363b9cb1dbcb4c",
+      "unchanged_body_sha256": "6894d82aea4c2e32ed91f979953d813de69dfdfffb95d219cfd50c048a399579"
+    },
+    "aget_SCR_GEN": {
+      "signature_sha256": "a7c4d7a1867dd139c6d43ef55f6237b887f6e28e2233159cc841e5eace3ce876",
+      "unchanged_body_sha256": "a8fd661d98c6f8311ecf0f1b6eeb82dc53d3edfa7f59605170d5afbb55dee0d8"
+    },
+    "HighestEL": {
+      "signature_sha256": "ee85494c8acd9defcd758539d95bf31e416e447a44dd5a98a3e1ccbfa5920da0",
+      "unchanged_body_sha256": "7732bd324e547b7ed3318092e174242a227dd4a52e109c18fe8a8cbb270b0fbc"
+    },
+    "IsSecureBelowEL3": {
+      "signature_sha256": "9389f9fcdd31193354ff30c0157f3f56ff7c551d24912529de0ea1e67dc6e796",
+      "unchanged_body_sha256": "140a096851acef10c7350d6a9e5ead4ae7521b54638f0686f9c81d7ddf85f5bc"
+    },
+    "HaveAArch32EL": {
+      "signature_sha256": "aa6ed8db095f72a42ea0caa583786a1277c4861ee2e3a511e386d5f495ffb479",
+      "unchanged_body_sha256": "ce55308717f1bfd4ad27806ca0cc60eab783924d2e2e20653b84c9008c7cdda0"
+    },
+    "ELStateUsingAArch32K": {
+      "signature_sha256": "43e489edaae1283f476715a3971b0d5c82550d2d9d5ae7eb2987fa4ca7742e5b",
+      "unchanged_body_sha256": "51cfc325d770bda142b37dd1b2367c174347b0c4255d5bafb7a2e9c74c543887"
+    },
+    "ELStateUsingAArch32": {
+      "signature_sha256": "e5311e58deefb5658b6cacf926d96f8107c1b70413cff8ab85073bfe54debe62",
+      "unchanged_body_sha256": "6844d31a0f26f155a1d73513a949804346f43c31395e63dedd3844822ffbba00"
+    },
+    "ELUsingAArch32": {
+      "signature_sha256": "120b2ce60b3bfb6a76181a2e798e08e5bbbe7816f4acac33d99cec314ab9cb3e",
+      "unchanged_body_sha256": "c386de13bf8ddbe78b2fb22a5a2574d351e6a924a0748835922f2e099399abc2"
+    },
+    "S1TranslationRegime__0": {
+      "signature_sha256": "8d3f02273c58b73526e01c6e2b40a22935976589d81c9a31d0f19488ab46d8e9",
+      "unchanged_body_sha256": "b23a22c6642933d61d4fa1488c6c81745674a67f98a06921fd0a7235fd1ab589"
+    },
+    "ThisInstr": {
+      "signature_sha256": "1b0284ef8e595960fb58991b369a5e3dc85a0b2cdc5024f37baf7445a2a859bc",
+      "unchanged_body_sha256": "8fa0627e78b778a1f349f2e0ce89b43062db0f5282b3004bc62d6509ec5083c4"
+    },
+    "ThisInstrAddr": {
+      "signature_sha256": "d5cfdba92288eaf016ce6e4a5c6e58e7f01d72f13bc832deda5dd80b07567cb0",
+      "unchanged_body_sha256": "758dde43c95d7ff986cc5d29f204469382031316213ddea8bf9039564d1c30e9"
+    },
+    "Halted": {
+      "signature_sha256": "886033b1fa9068b06f41fed6d32911e48c8ae6974bd19981b1ee19733642e210",
+      "unchanged_body_sha256": "648ee3e6aea5e483d6896181bbea0fea870e0ee653103d873ac50a5ef2a8f840"
+    },
+    "AArch64_ExecutingBTIInstr": {
+      "signature_sha256": "7a14848bae6fcbe3e11dd023542ee7541dcbfd1ebc8bfd1f6bbcf8b91599b2d4",
+      "unchanged_body_sha256": "8df17fef5112ddc910c5894ae2a39751f5dd9fe280bbf72a16bad440844bce1e"
+    },
+    "AArch64_ExecutingBROrBLROrRetInstr": {
+      "signature_sha256": "559be6b801d381fe7b61ed900dbf4ac7941f8f6d41868b287b7458780c9b35fa",
+      "unchanged_body_sha256": "f52dedb5bd48d3ff879656b917b4ac03636789e68b59418a3c903d3c790827d4"
+    },
+    "BranchTargetCheck": {
+      "signature_sha256": "007aa3da06d183e5fdff165b77c47fc984d97a72549c602aecf0621eb2705b99",
+      "unchanged_body_sha256": "16434996f92f747a48966325d4138e8aa1ffc67bf2e0656c1fd436e46930cddd"
+    }
+  }
+}
