@@ -8,8 +8,9 @@ import (
 )
 
 // Called by the already-required Faithful gate after fresh extraction checking.
-// Every local import and the new controls are rebuilt in an isolated directory
-// with trust zero; no candidate .olean cache can satisfy the universal proof.
+// The total-outcome superset retains both root inventories and both control
+// files. Every local import is rebuilt in an isolated directory with trust
+// zero; no candidate .olean cache can satisfy either universal proof.
 func testLeanWasmBitwiseModuleProof(t *testing.T, lake string) {
 	t.Helper()
 	python, err := exec.LookPath("python3")
@@ -20,7 +21,8 @@ func testLeanWasmBitwiseModuleProof(t *testing.T, lake string) {
 	defer cancel()
 	for _, args := range [][]string{
 		{"-m", "unittest", "discover", "-s", "tools/wasm_module_proof", "-p", "test_check.py"},
-		{"tools/wasm_module_proof/check.py", "--lake", lake},
+		{"-m", "unittest", "discover", "-s", "tools/wasm_module_total_proof", "-p", "test_check.py"},
+		{"tools/wasm_module_total_proof/check.py", "--lake", lake},
 	} {
 		cmd := exec.CommandContext(ctx, python, args...)
 		cmd.Dir = ".."

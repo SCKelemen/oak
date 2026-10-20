@@ -180,9 +180,39 @@ class RequiredBackendTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 required.check_inventory(suite)
 
+    def test_stateful_copy_gate_is_fail_closed(self):
+        suite = required.SUITES['stateful-copy']
+        self.assertTrue(suite.exact_children)
+        self.assertEqual(len(suite.tests), 7)
+        for omitted in suite.tests:
+            results = required.RequiredResults(suite)
+            for name in suite.tests:
+                if name != omitted:
+                    for action in ('run', 'pass'):
+                        results.accept({'Action': action, 'Package': suite.import_path, 'Test': name})
+            results.accept({'Action': 'pass', 'Package': suite.import_path})
+            with self.subTest(omitted=omitted), self.assertRaisesRegex(ValueError, omitted):
+                results.finish(0)
+        for skipped in suite.tests:
+            results = required.RequiredResults(suite)
+            for name in suite.tests:
+                results.accept({'Action': 'run', 'Package': suite.import_path, 'Test': name})
+                results.accept({'Action': 'skip' if name == skipped else 'pass',
+                                'Package': suite.import_path, 'Test': name})
+            results.accept({'Action': 'pass', 'Package': suite.import_path})
+            with self.subTest(skipped=skipped), self.assertRaisesRegex(ValueError, 'skip'):
+                results.finish(0)
+        workflow = (Path(__file__).resolve().parents[1] / 'workflows/formal.yml').read_text()
+        self.assertIn("OAK_REQUIRE_STATEFUL_COPY_LEAN: '1'", workflow)
+        self.assertNotIn('continue-on-error:', workflow)
+
     def test_audited_suite_manifest(self):
         expected_roots = {
-            'selfhost-image-producers': {'TestE2ESelfHostedBitwiseELF', 'TestE2ESelfHostedBitwiseELFExtract', 'TestLeanNativeBitwiseEnvelopeExtract', 'TestLeanNativeBitwiseEnvelopeProof', 'TestE2ESelfHostedWasmBitwiseModule', 'TestE2ESelfHostedWasmBitwiseModuleRefusal', 'TestLeanWasmBitwiseModuleExtract', 'TestLeanWasmBitwiseModuleFaithful', 'TestE2ESelfHostedBitwiseImageBytes'},
+            'stateful-copy': {'TestLeanStatefulCopyProof', 'TestStatefulCopySourceClosure',
+                              'TestStatefulCopyConcreteLayoutAndNativeCall',
+                              'TestStatefulCopyCurrentOptIRAndWasmRefusals',
+                              'TestStatefulCopyCallerMemoryFixtures'},
+            'selfhost-image-producers': {'TestE2ESelfHostedBitwiseELF', 'TestE2ESelfHostedBitwiseELFExtract', 'TestLeanNativeBitwiseEnvelopeExtract', 'TestLeanNativeBitwiseEnvelopeProof', 'TestLeanNativeBitwiseEnvelopeTotalProof', 'TestE2ESelfHostedWasmBitwiseModule', 'TestE2ESelfHostedWasmBitwiseModuleRefusal', 'TestLeanWasmBitwiseModuleExtract', 'TestLeanWasmBitwiseModuleFaithful', 'TestE2ESelfHostedBitwiseImageBytes'},
             'selfhost-image-admission': {'TestSelfHostedBitwiseImageBundleReal'},
             'checked-image-sources': {'TestEmbeddedClosureCustody', 'TestImageEmbeddedClosureCustody'},
             'checked-image-runtime': {'TestImageClosedInstallationProfile', 'TestImagePinnedRuntime', 'TestProcessRefusal', 'TestExtractionBoundaries', 'TestInstallRefusesUntrustedArchive', 'TestArchiveDigestMismatch', 'TestImageProtocolFieldLimits', 'TestImageMaximumProtocolSize', 'TestArchiveFIFORefusesWithoutBlocking', 'TestImageZeroAuthority', 'TestImageSnapshotAndRenderer', 'TestImageStrictProtocol'},
@@ -223,6 +253,8 @@ class RequiredBackendTests(unittest.TestCase):
                 self.assertIsNone(re.search(suite.pattern, root + "Other"))
                 self.assertIsNone(re.search(suite.pattern, "Other" + root))
         expected_children = {
+            'stateful-copy': {'TestStatefulCopyConcreteLayoutAndNativeCall/arm64',
+                              'TestStatefulCopyConcreteLayoutAndNativeCall/rv64'},
             "strict-entry": {"TestRV64StrictEntryBitwiseCompilerMatchesLean/" + child
                              for child in ("interfaces", "pins", "audit")},
             "cross-compiler": {"TestE2ENativeConstantTablesExecutable/freestanding/riscv64", "TestE2ENativeConstantTablesExecutable/freestanding/arm64", "TestRingsCrossTargets/linux/riscv64", "TestRingsCrossTargets/linux/arm64"},
@@ -258,14 +290,14 @@ class RequiredBackendTests(unittest.TestCase):
     def test_raw_producer_gates_are_exact_and_fail_closed(self):
         producers = required.SUITES["selfhost-image-producers"]
         admissions = required.SUITES["selfhost-image-admission"]
-        self.assertEqual(len(producers.tests), 217)
+        self.assertEqual(len(producers.tests), 218)
         self.assertEqual(len(admissions.tests), 35)
         self.assertEqual(sum(n.startswith("TestE2ESelfHostedBitwiseELF/") for n in producers.tests), 145)
         self.assertEqual(sum(n.startswith("TestE2ESelfHostedWasmBitwiseModule/") for n in producers.tests), 24)
         self.assertEqual(sum(n.startswith("TestE2ESelfHostedWasmBitwiseModuleRefusal/") for n in producers.tests), 33)
         self.assertEqual(sum(n.startswith("TestSelfHostedBitwiseImageBundleReal/Refusals/") for n in admissions.tests), 26)
         self.assertTrue({"TestLeanWasmBitwiseModuleExtract", "TestLeanWasmBitwiseModuleFaithful",
-                         "TestLeanNativeBitwiseEnvelopeExtract", "TestLeanNativeBitwiseEnvelopeProof"} <= set(producers.tests))
+                         "TestLeanNativeBitwiseEnvelopeExtract", "TestLeanNativeBitwiseEnvelopeProof", "TestLeanNativeBitwiseEnvelopeTotalProof"} <= set(producers.tests))
         matrix = {"TestSelfHostedBitwiseImageBundleReal/Canonical/" + family + "/" + op
                   for family in ("bitwise", "Mix9") for op in ("and", "or", "xor")}
         self.assertEqual({n for n in admissions.tests if "/Canonical/" in n}, matrix)
@@ -323,7 +355,7 @@ class RequiredBackendTests(unittest.TestCase):
         lanes = {
             "checked-image-bundle.yml": ("checked-image-sources", "checked-image-runtime", "checked-image-bundle", "selfhost-image-producers", "selfhost-image-admission"),
             "ci.yml": ("cross-compiler", "cross-testrunner"),
-            "formal.yml": ("lean-compiler", "lean-cli", "native-object", "native-image"),
+            "formal.yml": ("lean-compiler", "lean-cli", "native-object", "native-image", "stateful-copy"),
             "formal-sail.yml": ("sail-source", "llvm"),
             "checked-bitwise-bundle.yml": ("checked-bitwise-sources", "checked-bitwise-runtime", "checked-bitwise-bundle"),
         }
