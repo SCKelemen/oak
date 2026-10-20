@@ -94,7 +94,28 @@ theorem localWord_step {kind : Kind} {rt : BitVec 5} {pc target : BitVec 64} {wo
 
 /-- Compatibility names for the shared fixed-width terminator plan. -/
 abbrev Plan := Oak.ControlFlowPlan.Plan
+
+-- Preserve fully qualified constructor spellings, including in patterns.
+namespace Plan
+export Oak.ControlFlowPlan.Plan (fall jump zero nonzero pair)
+end Plan
+
 abbrev Plan.words (p : Plan) : Nat := Oak.ControlFlowPlan.Plan.words p
+
+-- Public spelling and definitional-equality regression controls.
+example : Oak.AArch64ControlFlow.Plan.fall = Oak.ControlFlowPlan.Plan.fall := rfl
+example (t : Nat) : Oak.AArch64ControlFlow.Plan.jump t = Oak.ControlFlowPlan.Plan.jump t := rfl
+example (t : Nat) : Oak.AArch64ControlFlow.Plan.zero t = Oak.ControlFlowPlan.Plan.zero t := rfl
+example (t : Nat) : Oak.AArch64ControlFlow.Plan.nonzero t = Oak.ControlFlowPlan.Plan.nonzero t := rfl
+example (yes no : Nat) : Oak.AArch64ControlFlow.Plan.pair yes no = Oak.ControlFlowPlan.Plan.pair yes no := rfl
+example (p : Plan) :
+  (match p with
+    | Oak.AArch64ControlFlow.Plan.fall => Oak.AArch64ControlFlow.Plan.fall
+    | Oak.AArch64ControlFlow.Plan.jump t => Oak.AArch64ControlFlow.Plan.jump t
+    | Oak.AArch64ControlFlow.Plan.zero t => Oak.AArch64ControlFlow.Plan.zero t
+    | Oak.AArch64ControlFlow.Plan.nonzero t => Oak.AArch64ControlFlow.Plan.nonzero t
+    | Oak.AArch64ControlFlow.Plan.pair yes no => Oak.AArch64ControlFlow.Plan.pair yes no
+  ) = p := by cases p <;> rfl
 abbrev selectPlan := Oak.ControlFlowPlan.selectPlan
 
 def boolValue (regs : Registers) (rt : BitVec 5) : Bool :=
