@@ -140,79 +140,102 @@ certify_in_oak: (lw: Lower, b0: c.Ptr, n0: u32, node_budget: u32, out: [*]u32): 
   }
 }
 
+// Compute the complete CNF arena size before narrowing any term/capacity
+// arithmetic. Even maximal u32 inputs fit this calculation in u64.
+cnf_allocation_words: (cap: u32, terms: u32, ucap: u32): u64 {
+  stack: u32 = cap < u32(32768) ? { (cap == u32(0) ? { u32(1) } | { cap }) } | { u32(32768) }
+  u64(cap) * u64(3) + u64(ucap) * u64(5) + u64(stack) * u64(16) +
+    (u64(terms) + u64(1)) * u64(64) + u64(3120) + u64(terms) * u64(6144) + u64(65536)
+}
+
+// Guard next_pow2 before calling it, then reserve room for the u32 byte
+// multiplication used by malloc. A word bound alone would be insufficient.
+cnf_allocation_fits: (cap: u32, terms: u32): Bool {
+  cap > u32(1073741824) ? { false } | {
+    ucap: u32 = next_pow2(cap * u32(2))
+    cnf_allocation_words(cap, terms, ucap) <= u64(1073741823)
+  }
+}
+
 // certify_over is the rung over the problem in the first n0 words of the
 // built buffer's view.
 certify_over: (whole: []u32, n0: u32, node_budget: u32, out: [*]u32): () {
   unsafe {
     p: []u32 = subslice(whole, u32(0), n0)
     terms: u32 = problem_terms(p)
-    clause_layout: Layout = layout_for_clauses(node_budget, terms + u32(1), terms * u32(6144) + u32(65536))
-    arena_raw: c.Ptr = malloc(c.Size(clause_layout.total * u32(4)))
-    arena: Buffer[u32] = c.own[u32](arena_raw, clause_layout.total)
-    outcome: u32 = cnf_lower(clause_layout, span(&arena), p)
-    outcome == CNF_PROVEN ? { out[u32(0)] = CERT_CONSTANT_TRUE } | {
-    outcome == CNF_REFUTED ? { out[u32(0)] = CERT_CONSTANT_FALSE } | {
-    outcome == CNF_CLAUSE ? {
-      conflicts: u32 = cert_conflicts()
-      cnf_set_capacities(span(&arena), clause_layout.clauses_at, conflicts)
-      region_view: []u32 = view(&arena)
-      variables: u32 = region_view[clause_layout.clauses_at + u32(1)]
-      literal_words: u32 = region_view[clause_layout.clauses_at + u32(3)]
-      clause_cap: u32 = region_view[clause_layout.clauses_at + u32(5)]
-      store_cap: u32 = region_view[clause_layout.clauses_at + u32(6)]
-      clause_count: u32 = region_view[clause_layout.clauses_at + u32(2)]
-      record_cap: u32 = sat_record_cap(sat_conflicts(conflicts, clause_count), LRAT_HEADER_WORDS + literal_words)
-      sl: SatLayout = sat_layout(variables, clause_cap, store_cap, record_cap)
-      sat_raw: c.Ptr = malloc(c.Size(sl.total * u32(4)))
-      sat_arena: Buffer[u32] = c.own[u32](sat_raw, sl.total)
-      status: u32 = SAT_MALFORMED
-      sat_init(sl, span(&sat_arena), subslice(region_view, clause_layout.clauses_at, LRAT_HEADER_WORDS + literal_words), conflicts, true) ? {
-        status = sat_solve(sl, span(&sat_arena))
-      } | { }
-      status == SAT_UNSATISFIABLE ? {
-        length: u32 = sat_record_finish(sl, span(&sat_arena))
-        length == u32(0) ? { out[u32(0)] = CERT_REFUSED } | {
-          sat_view: []u32 = view(&sat_arena)
-          record: []u32 = subslice(sat_view, sl.record_at, length)
-          checked: [3]u32
-          formula: []u32 = subslice(region_view, clause_layout.clauses_at, LRAT_HEADER_WORDS + literal_words)
-          accepted: u32 = lrat_check_record(formula, record, span(&checked))
-          accepted == LRAT_ACCEPTED ? {
-            out[u32(0)] = CERT_PROVEN
-            out[u32(1)] = checked[u32(1)] + checked[u32(2)]
-          } | { out[u32(0)] = CERT_REFUSED }
-        }
-      } | {
-        status == SAT_SATISFIABLE ? {
-          // Check the original formula independently of solver storage.
-          sat_view: []u32 = view(&sat_arena)
-          formula: []u32 = subslice(region_view, clause_layout.clauses_at, LRAT_HEADER_WORDS + literal_words)
-          assignment: []u32 = subslice(sat_view, sl.assign_at, variables)
-          holds: Bool = sat_check_model(formula, assignment)
-          holds ? {
-            kept: u32 = 0
-            node: u32 = 1
-            nodes: u32 = region_view[clause_layout.state_at + STATE_COUNT]
-            while node < nodes && kept + u32(4) < len(out) {
-              key: u32 = region_view[clause_layout.var_at + node]
-              (key & CNF_VAR_KEY) != u32(0) && (key & CNF_ITE_KEY) == u32(0) && sat_view[sl.assign_at + node - u32(1)] == u32(2) ? {
-                lb: u32 = leaf_bit_of(p, key ^ CNF_VAR_KEY)
-                lb == NONE ? { } | {
-                  out[u32(4) + kept] = lb
-                  kept = kept + u32(1)
-                }
+    cnf_allocation_fits(node_budget, terms) ? {
+      clause_layout: Layout = layout_for_clauses(node_budget, terms + u32(1), terms * u32(6144) + u32(65536))
+      arena_raw: c.Ptr = malloc(c.Size(clause_layout.total * u32(4)))
+      arena: Buffer[u32] = c.own[u32](arena_raw, clause_layout.total)
+      outcome: u32 = cnf_lower(clause_layout, span(&arena), p)
+      outcome == CNF_PROVEN ? { out[u32(0)] = CERT_CONSTANT_TRUE } | {
+      outcome == CNF_REFUTED ? { out[u32(0)] = CERT_CONSTANT_FALSE } | {
+      outcome == CNF_CLAUSE ? {
+        cnf_sat_capacity_fits(span(&arena), clause_layout.clauses_at) ? {
+          conflicts: u32 = cert_conflicts()
+          cnf_set_capacities(span(&arena), clause_layout.clauses_at, conflicts)
+          region_view: []u32 = view(&arena)
+          variables: u32 = region_view[clause_layout.clauses_at + u32(1)]
+          literal_words: u32 = region_view[clause_layout.clauses_at + u32(3)]
+          clause_cap: u32 = region_view[clause_layout.clauses_at + u32(5)]
+          store_cap: u32 = region_view[clause_layout.clauses_at + u32(6)]
+          clause_count: u32 = region_view[clause_layout.clauses_at + u32(2)]
+          record_cap: u32 = sat_record_cap(sat_conflicts(conflicts, clause_count), LRAT_HEADER_WORDS + literal_words)
+          sat_allocation_fits(variables, clause_cap, store_cap, record_cap) ? {
+            sl: SatLayout = sat_layout(variables, clause_cap, store_cap, record_cap)
+            sat_raw: c.Ptr = malloc(c.Size(sl.total * u32(4)))
+            sat_arena: Buffer[u32] = c.own[u32](sat_raw, sl.total)
+            status: u32 = SAT_MALFORMED
+            sat_init(sl, span(&sat_arena), subslice(region_view, clause_layout.clauses_at, LRAT_HEADER_WORDS + literal_words), conflicts, true) ? {
+              status = sat_solve(sl, span(&sat_arena))
+            } | { }
+            status == SAT_UNSATISFIABLE ? {
+              length: u32 = sat_record_finish(sl, span(&sat_arena))
+              length == u32(0) ? { out[u32(0)] = CERT_REFUSED } | {
+                sat_view: []u32 = view(&sat_arena)
+                record: []u32 = subslice(sat_view, sl.record_at, length)
+                checked: [3]u32
+                formula: []u32 = subslice(region_view, clause_layout.clauses_at, LRAT_HEADER_WORDS + literal_words)
+                accepted: u32 = lrat_check_record(formula, record, span(&checked))
+                accepted == LRAT_ACCEPTED ? {
+                  out[u32(0)] = CERT_PROVEN
+                  out[u32(1)] = checked[u32(1)] + checked[u32(2)]
+                } | { out[u32(0)] = CERT_REFUSED }
+              }
+            } | {
+              status == SAT_SATISFIABLE ? {
+                // Check the original formula independently of solver storage.
+                sat_view: []u32 = view(&sat_arena)
+                formula: []u32 = subslice(region_view, clause_layout.clauses_at, LRAT_HEADER_WORDS + literal_words)
+                assignment: []u32 = subslice(sat_view, sl.assign_at, variables)
+                holds: Bool = sat_check_model(formula, assignment)
+                holds ? {
+                  kept: u32 = 0
+                  node: u32 = 1
+                  nodes: u32 = region_view[clause_layout.state_at + STATE_COUNT]
+                  while node < nodes && kept + u32(4) < len(out) {
+                    key: u32 = region_view[clause_layout.var_at + node]
+                    (key & CNF_VAR_KEY) != u32(0) && (key & CNF_ITE_KEY) == u32(0) && sat_view[sl.assign_at + node - u32(1)] == u32(2) ? {
+                      lb: u32 = leaf_bit_of(p, key ^ CNF_VAR_KEY)
+                      lb == NONE ? { } | {
+                        out[u32(4) + kept] = lb
+                        kept = kept + u32(1)
+                      }
+                    } | { }
+                    node = node + u32(1)
+                  }
+                  marked: u32 = mentioned_marks(p, out, u32(4) + kept)
+                  out[u32(3)] = marked - u32(4)
+                  out[u32(0)] = CERT_MODEL
+                } | { out[u32(0)] = CERT_MODEL_UNCONFIRMED }
               } | { }
-              node = node + u32(1)
             }
-            marked: u32 = mentioned_marks(p, out, u32(4) + kept)
-            out[u32(3)] = marked - u32(4)
-            out[u32(0)] = CERT_MODEL
-          } | { out[u32(0)] = CERT_MODEL_UNCONFIRMED }
-        } | { }
-      }
-      free(c.disown(sat_arena))
-    } | { } } }
-    free(c.disown(arena))
+            free(c.disown(sat_arena))
+          } | { out[u32(0)] = CERT_REFUSED }
+        } | { out[u32(0)] = CERT_REFUSED }
+      } | { } } }
+      free(c.disown(arena))
+    } | { out[u32(0)] = CERT_REFUSED }
   }
 }
 

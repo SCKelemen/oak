@@ -123,6 +123,14 @@ reject: (used: u32, roots: u32): () {
 }
 layout_case: (cap: u32, terms: u32, capacity: u32, expected_bits: u32, expected_state: u32, expected_total: u32): () {
  l: Layout = layout_for_clauses(cap,terms,capacity)
+ u: u32 = next_pow2(cap*u32(2))
+ assert(l.var_at == u32(0))
+ assert(l.low_at == cap)
+ assert(l.high_at == cap*u32(2))
+ assert(l.unique_at == cap*u32(3))
+ assert(l.cache_at == l.unique_at+u)
+ assert(l.stack_at == l.cache_at+u*u32(4))
+ assert(l.bits_at == l.stack_at+l.stack_cap*u32(16))
  assert(l.bits_at == expected_bits)
  assert(l.state_at == expected_state)
  assert(l.clauses_at == expected_state+u32(16))
@@ -194,7 +202,7 @@ main: (): i32 {
 	for _, pair := range [][2]uint32{{4294967295, 0}, {0, 4294967295}, {4294967287, 1}, {1, 4294967287}} {
 		fmt.Fprintf(&calls, "reject(u32(%d),u32(%d))\n", pair[0], pair[1])
 	}
-	for _, cap := range []uint32{0, 1, 2, 16, 32768} {
+	for _, cap := range []uint32{0, 1, 2, 3, 16, 32767, 32768, 32769, 268435456} {
 		u := uint32(1)
 		for u < 2*cap {
 			u *= 2
@@ -235,7 +243,7 @@ main: (): i32 {
 	if out, err := exec.CommandContext(ctx, bin).CombinedOutput(); err != nil {
 		t.Fatalf("compiled nodes: %v\n%s", err, out)
 	}
-	t.Log("checked 1554 obligation cases, 1331 mathematical guard cases, four whole-function overflow refusals, 4144 actual outcome/formula assignments, and 45 production layout cases")
+	t.Log("checked 1554 obligation cases, 1331 mathematical guard cases, four whole-function overflow refusals, 4144 actual outcome/formula assignments, and 81 production layout cases")
 }
 
 func TestOakCNFObligationLean(t *testing.T) {

@@ -29,6 +29,46 @@ structure Layout where
   deriving Repr, BEq, DecidableEq
 instance : Inhabited Layout := ⟨{ cap := (0 : UInt32), var_at := (0 : UInt32), low_at := (0 : UInt32), high_at := (0 : UInt32), unique_at := (0 : UInt32), umask := (0 : UInt32), cache_at := (0 : UInt32), cmask := (0 : UInt32), stack_at := (0 : UInt32), stack_cap := (0 : UInt32), bits_at := (0 : UInt32), selects_at := (0 : UInt32), select_cap := (0 : UInt32), state_at := (0 : UInt32), clauses_at := (0 : UInt32), clauses_cap := (0 : UInt32), total := (0 : UInt32) }⟩
 
+structure SatLayout where
+  vars : UInt32
+  clause_cap : UInt32
+  store_cap : UInt32
+  assign_at : UInt32
+  level_at : UInt32
+  reason_at : UInt32
+  seen_at : UInt32
+  phase_at : UInt32
+  activity_at : UInt32
+  heap_at : UInt32
+  heap_pos_at : UInt32
+  trail_at : UInt32
+  lim_at : UInt32
+  starts_at : UInt32
+  lengths_at : UInt32
+  ids_at : UInt32
+  store_at : UInt32
+  watch_head_at : UInt32
+  watch_next_at : UInt32
+  watch_block_at : UInt32
+  learnt_at : UInt32
+  probe_at : UInt32
+  hints_at : UInt32
+  hints_cap : UInt32
+  remap_at : UInt32
+  lock_at : UInt32
+  cact_at : UInt32
+  touched_at : UInt32
+  occ_count_at : UInt32
+  occ_start_at : UInt32
+  occ_list_at : UInt32
+  elim_at : UInt32
+  record_at : UInt32
+  record_cap : UInt32
+  state_at : UInt32
+  total : UInt32
+  deriving Repr, BEq, DecidableEq
+instance : Inhabited SatLayout := ⟨{ vars := (0 : UInt32), clause_cap := (0 : UInt32), store_cap := (0 : UInt32), assign_at := (0 : UInt32), level_at := (0 : UInt32), reason_at := (0 : UInt32), seen_at := (0 : UInt32), phase_at := (0 : UInt32), activity_at := (0 : UInt32), heap_at := (0 : UInt32), heap_pos_at := (0 : UInt32), trail_at := (0 : UInt32), lim_at := (0 : UInt32), starts_at := (0 : UInt32), lengths_at := (0 : UInt32), ids_at := (0 : UInt32), store_at := (0 : UInt32), watch_head_at := (0 : UInt32), watch_next_at := (0 : UInt32), watch_block_at := (0 : UInt32), learnt_at := (0 : UInt32), probe_at := (0 : UInt32), hints_at := (0 : UInt32), hints_cap := (0 : UInt32), remap_at := (0 : UInt32), lock_at := (0 : UInt32), cact_at := (0 : UInt32), touched_at := (0 : UInt32), occ_count_at := (0 : UInt32), occ_start_at := (0 : UInt32), occ_list_at := (0 : UInt32), elim_at := (0 : UInt32), record_at := (0 : UInt32), record_cap := (0 : UInt32), state_at := (0 : UInt32), total := (0 : UInt32) }⟩
+
 def NONE : UInt32 := (4294967295 : UInt32)
 
 def BDD_FALSE : UInt32 := (0 : UInt32)
@@ -59,6 +99,8 @@ def STATE_CLAUSE_COUNT : UInt32 := (5 : UInt32)
 
 def STATE_CREATED : UInt32 := (6 : UInt32)
 
+def REPLAY_WORDS : UInt32 := (32768 : UInt32)
+
 def CNF_ITE_KEY : UInt32 := (2147483648 : UInt32)
 
 def CNF_CLAUSE : UInt32 := (0 : UInt32)
@@ -68,6 +110,13 @@ def CNF_PROVEN : UInt32 := (1 : UInt32)
 def CNF_REFUTED : UInt32 := (2 : UInt32)
 
 def LRAT_HEADER_WORDS : UInt32 := (8 : UInt32)
+
+def ST_WORDS : UInt32 := (40 : UInt32)
+
+def bdd_allocation_words (cap : UInt32) (terms : UInt32) (ucap : UInt32) (variants : UInt32) (fuel : Nat) : Option (UInt64) := do
+  let stack : UInt32 := (if (decide (cap < (32768 : UInt32))) then (if (cap == (0 : UInt32)) then (1 : UInt32) else cap) else (32768 : UInt32))
+  let extra : UInt32 := (if (decide (variants > (1 : UInt32))) then REPLAY_WORDS else (0 : UInt32))
+  pure (((((((cap.toUInt64) * (3 : UInt64)) + ((ucap.toUInt64) * (5 : UInt64))) + ((stack.toUInt64) * (16 : UInt64))) + ((terms.toUInt64) * (64 : UInt64))) + (3120 : UInt64)) + (extra.toUInt64))
 
 def next_pow2.loop1 (n : UInt32) (p : UInt32) : Nat → Option (UInt32)
   | 0 => none
@@ -81,6 +130,17 @@ def next_pow2 (n : UInt32) (fuel : Nat) : Option (UInt32) := do
   let p : UInt32 := (1 : UInt32)
   let p ← next_pow2.loop1 n p fuel
   pure p
+
+def bdd_allocation_fits (cap : UInt32) (terms : UInt32) (variants : UInt32) (fuel : Nat) : Option (Bool) := do
+  let r1 ← (
+    if (((decide (cap > (1073741824 : UInt32))) || (decide (variants < (1 : UInt32)))) || (decide (variants > (3 : UInt32)))) then (do
+      pure false)
+    else (do
+      let r2 ← next_pow2 (cap * (2 : UInt32)) fuel
+      let ucap : UInt32 := r2
+      let r3 ← bdd_allocation_words cap terms ucap variants fuel
+      pure (decide (r3 <= (1073741823 : UInt64)))))
+  pure r1
 
 def layout_for (cap : UInt32) (terms : UInt32) (fuel : Nat) : Option (Layout) := do
   let r1 ← next_pow2 (cap * (2 : UInt32)) fuel
@@ -102,6 +162,21 @@ def layout_for_clauses (cap : UInt32) (terms : UInt32) (clause_words : UInt32) (
   let r1 ← layout_for cap terms fuel
   let base : Layout := r1
   pure ({ cap := base.cap, var_at := base.var_at, low_at := base.low_at, high_at := base.high_at, unique_at := base.unique_at, umask := base.umask, cache_at := base.cache_at, cmask := base.cmask, stack_at := base.stack_at, stack_cap := base.stack_cap, bits_at := base.bits_at, selects_at := base.selects_at, select_cap := base.select_cap, state_at := base.state_at, clauses_at := base.total, clauses_cap := clause_words, total := (base.total + clause_words) } : Layout)
+
+def cnf_allocation_words (cap : UInt32) (terms : UInt32) (ucap : UInt32) (fuel : Nat) : Option (UInt64) := do
+  let stack : UInt32 := (if (decide (cap < (32768 : UInt32))) then (if (cap == (0 : UInt32)) then (1 : UInt32) else cap) else (32768 : UInt32))
+  pure ((((((((cap.toUInt64) * (3 : UInt64)) + ((ucap.toUInt64) * (5 : UInt64))) + ((stack.toUInt64) * (16 : UInt64))) + (((terms.toUInt64) + (1 : UInt64)) * (64 : UInt64))) + (3120 : UInt64)) + ((terms.toUInt64) * (6144 : UInt64))) + (65536 : UInt64))
+
+def cnf_allocation_fits (cap : UInt32) (terms : UInt32) (fuel : Nat) : Option (Bool) := do
+  let r1 ← (
+    if (decide (cap > (1073741824 : UInt32))) then (do
+      pure false)
+    else (do
+      let r2 ← next_pow2 (cap * (2 : UInt32)) fuel
+      let ucap : UInt32 := r2
+      let r3 ← cnf_allocation_words cap terms ucap fuel
+      pure (decide (r3 <= (1073741823 : UInt64)))))
+  pure r1
 
 def lrat_fits (at_ : UInt32) (count : UInt32) (limit : UInt32) (fuel : Nat) : Option (Bool) := do
   pure ((decide (at_ <= limit)) && (decide (count <= (limit - at_))))
@@ -398,5 +473,50 @@ def cnf_obligation (l : Layout) (mem : Array UInt32) (p : Array UInt32) (fuel : 
   let (mem, n, always, r) ← cnf_obligation.loop1 l mem p roots at_ n always fits r fuel
   let (r5, mem) ← cnf_obligation_finish l mem at_ used n always fits fuel
   pure (r5, mem)
+
+def sat_allocation_words (vars : UInt32) (clauses : UInt32) (store : UInt32) (record : UInt32) (fuel : Nat) : Option (UInt64) := do
+  pure ((((((23 : UInt64) * ((vars.toUInt64) + (1 : UInt64))) + ((10 : UInt64) * (clauses.toUInt64))) + ((3 : UInt64) * (store.toUInt64))) + (record.toUInt64)) + (50 : UInt64))
+
+def sat_allocation_fits (vars : UInt32) (clauses : UInt32) (store : UInt32) (record : UInt32) (fuel : Nat) : Option (Bool) := do
+  let r1 ← sat_allocation_words vars clauses store record fuel
+  pure (decide (r1 <= (1073741823 : UInt64)))
+
+def sat_capacity_fits (clauses : UInt32) (literals : UInt32) (fuel : Nat) : Option (Bool) := do
+  pure ((decide ((((clauses.toUInt64) * (8 : UInt64)) + (65536 : UInt64)) <= (4294967295 : UInt64))) && (decide ((((literals.toUInt64) * (64 : UInt64)) + (1048576 : UInt64)) <= (4294967295 : UInt64))))
+
+def sat_layout (vars : UInt32) (clause_cap : UInt32) (store_cap : UInt32) (record_cap : UInt32) (fuel : Nat) : Option (SatLayout) := do
+  let v : UInt32 := (vars + (1 : UInt32))
+  let assign_at : UInt32 := (0 : UInt32)
+  let level_at : UInt32 := (assign_at + v)
+  let reason_at : UInt32 := (level_at + v)
+  let seen_at : UInt32 := (reason_at + v)
+  let phase_at : UInt32 := (seen_at + v)
+  let activity_at : UInt32 := (phase_at + v)
+  let heap_at : UInt32 := (activity_at + v)
+  let heap_pos_at : UInt32 := (heap_at + v)
+  let trail_at : UInt32 := (heap_pos_at + v)
+  let lim_at : UInt32 := (trail_at + v)
+  let starts_at : UInt32 := ((lim_at + v) + (1 : UInt32))
+  let lengths_at : UInt32 := (starts_at + clause_cap)
+  let ids_at : UInt32 := (lengths_at + clause_cap)
+  let store_at : UInt32 := (ids_at + clause_cap)
+  let watch_head_at : UInt32 := (store_at + store_cap)
+  let watch_next_at : UInt32 := (watch_head_at + ((2 : UInt32) * v))
+  let watch_block_at : UInt32 := (watch_next_at + ((2 : UInt32) * clause_cap))
+  let learnt_at : UInt32 := (watch_block_at + ((2 : UInt32) * clause_cap))
+  let probe_at : UInt32 := ((learnt_at + v) + (1 : UInt32))
+  let hints_at : UInt32 := (probe_at + ((3 : UInt32) * v))
+  let hints_cap : UInt32 := (((2 : UInt32) * v) + (4 : UInt32))
+  let remap_at : UInt32 := (hints_at + hints_cap)
+  let lock_at : UInt32 := (remap_at + clause_cap)
+  let cact_at : UInt32 := (lock_at + clause_cap)
+  let touched_at : UInt32 := (cact_at + clause_cap)
+  let occ_count_at : UInt32 := (touched_at + v)
+  let occ_start_at : UInt32 := ((occ_count_at + ((2 : UInt32) * v)) + (2 : UInt32))
+  let occ_list_at : UInt32 := ((occ_start_at + ((2 : UInt32) * v)) + (2 : UInt32))
+  let elim_at : UInt32 := (occ_list_at + store_cap)
+  let record_at : UInt32 := (elim_at + store_cap)
+  let state_at : UInt32 := (record_at + record_cap)
+  pure ({ vars := vars, clause_cap := clause_cap, store_cap := store_cap, assign_at := assign_at, level_at := level_at, reason_at := reason_at, seen_at := seen_at, phase_at := phase_at, activity_at := activity_at, heap_at := heap_at, heap_pos_at := heap_pos_at, trail_at := trail_at, lim_at := lim_at, starts_at := starts_at, lengths_at := lengths_at, ids_at := ids_at, store_at := store_at, watch_head_at := watch_head_at, watch_next_at := watch_next_at, watch_block_at := watch_block_at, learnt_at := learnt_at, probe_at := probe_at, hints_at := hints_at, hints_cap := hints_cap, remap_at := remap_at, lock_at := lock_at, cact_at := cact_at, touched_at := touched_at, occ_count_at := occ_count_at, occ_start_at := occ_start_at, occ_list_at := occ_list_at, elim_at := elim_at, record_at := record_at, record_cap := record_cap, state_at := state_at, total := (state_at + ST_WORDS) } : SatLayout)
 
 end Oak.CNFEmission

@@ -234,6 +234,20 @@ next_pow2: (n: u32): u32 {
   p
 }
 
+// Widen all sizing arithmetic before constructing or allocating a race arena.
+bdd_allocation_words: (cap: u32, terms: u32, ucap: u32, variants: u32): u64 {
+  stack: u32 = cap < u32(32768) ? { (cap == u32(0) ? { u32(1) } | { cap }) } | { u32(32768) }
+  extra: u32 = variants > u32(1) ? { REPLAY_WORDS } | { u32(0) }
+  u64(cap)*u64(3) + u64(ucap)*u64(5) + u64(stack)*u64(16) + u64(terms)*u64(64) + u64(3120) + u64(extra)
+}
+
+bdd_allocation_fits: (cap: u32, terms: u32, variants: u32): Bool {
+  cap > u32(1073741824) || variants < u32(1) || variants > u32(3) ? { false } | {
+    ucap: u32 = next_pow2(cap*u32(2))
+    bdd_allocation_words(cap, terms, ucap, variants) <= u64(1073741823)
+  }
+}
+
 // layout_for sizes the buffer for a node budget and a term count: the unique
 // table twice the budget rounded up, an apply cache of the same size (a
 // smaller cache recomputes cofactors and costs more than its words), a

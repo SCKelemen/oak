@@ -560,16 +560,73 @@ budget. Valid root IDs within the term count place their bit cells before
 the clause region. `constructed_trace` and `constructed_production` combine
 these facts with admission, eliminating the former trace and read-separation
 premises. The initial memory's bits still need to be related to source-term
-semantics. The constructor's earlier node/hash/cache/stack region allocation,
-`next_pow2` termination, caller-enforced budgets, and valid serialized root
-indices are not proved by these suffix guarantees.
+semantics. Valid serialized root indices remain assumptions; the complete
+layout guarantees and certification-caller budget guard below address allocation
+arithmetic for the CNF arena.
 
 `TestOakCNFRootsLean` audits nine foundational-only theorem closures, fixes
 contracts for trace derivation and constructor regions, and kernel-replays
 initial root polarity and a wrapped-layout counterexample showing why the
-budget is necessary. Compiled obligation tests additionally check 45 production
+budget is necessary. Compiled obligation tests additionally check 81 production
 layouts across terminal/small/stack-limit capacities, term counts, and clause
 capacities. Existing full-buffer and solver-integration checks remain required.
+
+`Oak.CNFLayout` proves termination of the extracted `next_pow2` for inputs
+at most 2^31 with 32 fuel, including positivity and upper/lower bounds on the
+result. `constructor_terminates` derives constructor existence for node
+capacities at most 2^30. This is separate from allocation safety: under the
+natural-number footprint bound `3*cap + 5*u + 16*stack + 64*terms + 3120 +
+capacity < 2^32`, `complete_regions` proves exact adjoining boundaries for
+all node, unique-table, cache, stack, bit, selection, state, and clause
+regions, and equality of the final total to that footprint. `suffix_budget`
+discharges the earlier root-trace bridge's suffix budget from this bound.
+`TestOakCNFLayoutLean` fixes these contracts, audits seven theorem closures,
+and kernel-replays the doubling boundary and a terminating-but-wrapped
+constructor. The compiled layout cases now check the prefix fields too.
+These layout theorems alone do not enforce budgets in callers, prove successful
+physical allocation, establish unique-table probe termination, or relate initial
+bit cells to source-term semantics. No unrestricted constructor safety or
+whole-source verdict theorem is claimed.
+
+The certification caller now checks `cnf_allocation_fits` before constructing
+or allocating its CNF arena. The guard refuses oversized node capacities before
+`next_pow2`, computes the complete requested footprint in `u64`, and requires
+at most 1,073,741,823 words. This stronger bound protects the caller's `u32`
+four-byte multiplication as well as its `terms+1` and `terms*6144+65536`
+expressions. Rejected requests return `CERT_REFUSED` before arena allocation.
+
+`Oak.CNFAllocation` proves exact widened arithmetic for all `u32` inputs,
+guard termination, and that admission discharges the constructor's footprint
+and suffix budgets and prevents allocation-byte overflow. Its six theorem
+closures are audited against foundational axioms, with fixed contracts and
+kernel boundary replays. Compiled regressions compare 190 boundary requests
+with independent `uint64` arithmetic and exercise four refusals through
+`certify_over` itself. The guard and its dependencies participate in extraction
+drift checks. This closes the CNF arena's caller-side arithmetic premise;
+it does not establish malloc success, validate serialized problem indices,
+prove source-term correspondence, or establish success of the allocator.
+The separate BDD/SAT arena checks are described below.
+
+BDD races and the SAT certificate arena now perform their own admission
+checks before construction/allocation. `bdd_allocation_fits` bounds the node
+budget before `next_pow2`, admits only one through three race variants, and
+includes replay storage in its widened per-arena word count. `race_bounded`
+stops with `STATUS_EXCEEDED` if admission fails, without retrying an unsafe
+size. SAT checks the clause/literal-derived header capacities before writing
+them, then checks the complete `sat_layout` footprint before allocating it;
+failures return `CERT_REFUSED`. Both arena checks cap words at 1,073,741,823
+so the existing four-byte allocation multiplication is exact.
+
+`Oak.SolverAllocation` proves exact widened BDD/SAT arithmetic, admission
+bounds, nonwrapping clause/store capacities and literal-header offsets, the SAT constructor's
+natural total, and byte-count safety for both constructors (including BDD
+replay storage). Eight fixed-contract theorem closures have foundational-only
+axiom audits. Compiled checks compare 1,694 boundary requests with independent
+`uint64` arithmetic, check admitted SAT constructor totals, exercise header
+capacity admission, and call the BDD race entry on three refused requests.
+These are arena-sizing guarantees, not whole-prover memory safety: malloc
+success, upstream parser/lowering buffers, other checker allocations, and
+valid serialized indices remain separate obligations.
 
 The hardened Go acceptance kernel is isolated in the standard-library-only `internal/lrat`
 package, below `prove`'s compatibility wrappers and word codec. This removes
