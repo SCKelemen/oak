@@ -106,6 +106,9 @@ func TestNativeTargetLeanCorrespondence(t *testing.T) {
 	}
 	lake, err := exec.LookPath("lake")
 	if err != nil {
+		if os.Getenv("OAK_REQUIRE_NATIVE_TARGET_LEAN") != "" {
+			t.Fatal("native target correspondence requires lake on PATH")
+		}
 		t.Skip("lake not on PATH; formal CI checks production pins")
 	}
 	buildLeanImports(t, lake, path)
