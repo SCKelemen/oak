@@ -55,6 +55,15 @@ func lratARM64CallContract(t *testing.T) string {
 				}
 				c.WriteString(lratARM64HeaderLoadContract(t, load, word))
 			}
+			if caller == "lrat_record_fits" && name == "lrat_fits" {
+				if at < 12 {
+					t.Fatal("missing record argument preparation")
+				}
+				c.WriteString(lratARM64RecordLoadContract(t,
+					binary.LittleEndian.Uint32(code[at-12:]),
+					binary.LittleEndian.Uint32(code[at-8:]),
+					binary.LittleEndian.Uint32(code[at-4:]), word))
+			}
 			fmt.Fprintf(&c, "example : %d#32 &&& 0xfc000000#32 = 0x94000000#32 := by decide\n", word)
 			fmt.Fprintf(&c, "example (s : Oak.LRATARM64Bytes.State) : (Oak.LRATARM64GuardCalls.transfer %d#32 {s with pc := %d}).pc = %d := by unfold Oak.LRATARM64GuardCalls.transfer; dsimp only; decide\n", word, place, destination)
 			fmt.Fprintf(&c, "example (s : Oak.LRATARM64Bytes.State) : (Oak.LRATARM64GuardCalls.%sCall %d#32 s).map Oak.LRATARM64Bytes.State.pc = some (s.pc + 4) := Oak.LRATARM64GuardCalls.%s_return %d#32 s (by decide)\n", kind, word, kind, word)
@@ -77,6 +86,9 @@ func lratARM64CallContract(t *testing.T) string {
 	}
 	for _, name := range []string{"load_header", "allocation_refines", "allocation_return", "allocation_sp"} {
 		fmt.Fprintf(&c, "#print axioms Oak.LRATARM64HeaderLoads.%s\n", name)
+	}
+	for _, name := range []string{"prepare_record", "prepared_arguments", "record_refines", "record_return", "record_sp"} {
+		fmt.Fprintf(&c, "#print axioms Oak.LRATARM64RecordLoads.%s\n", name)
 	}
 	return c.String()
 }
