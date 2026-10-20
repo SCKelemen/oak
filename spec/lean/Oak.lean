@@ -358,3 +358,4 @@ import Oak.CNFObligationStore
 import Oak.CNFRoots
 import Oak.CNFLayout
 import Oak.CNFAllocation
+import Oak.SolverAllocation

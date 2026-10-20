@@ -103,7 +103,7 @@ jobs:
       # Track the complete LRAT proof independently of unrelated formal modules.
       - name: Build production LRAT bound-record proof
         working-directory: spec/lean
-        run: lake build Oak.LRATAdmission Oak.LRATPreflight Oak.LRATBindingModel Oak.LRATLifecycleSoundness Oak.LRATNativeGuards Oak.CNFLiteral Oak.LRATRV64Bytes Oak.LRATRV64Compressed Oak.LRATARM64Bytes Oak.LRATNativeRefinement Oak.LRATRV64GuardCalls Oak.LRATARM64GuardCalls Oak.LRATARM64RecordLoads Oak.LRATARM64HeaderLoads Oak.LRATRV64HeaderLoads Oak.CNFEmission Oak.CNFGates Oak.CNFFolds Oak.CNFNodes Oak.CNFObligation Oak.CNFObligationStore Oak.CNFRoots Oak.CNFLayout Oak.CNFAllocation
+        run: lake build Oak.LRATAdmission Oak.LRATPreflight Oak.LRATBindingModel Oak.LRATLifecycleSoundness Oak.LRATNativeGuards Oak.CNFLiteral Oak.LRATRV64Bytes Oak.LRATRV64Compressed Oak.LRATARM64Bytes Oak.LRATNativeRefinement Oak.LRATRV64GuardCalls Oak.LRATARM64GuardCalls Oak.LRATARM64RecordLoads Oak.LRATARM64HeaderLoads Oak.LRATRV64HeaderLoads Oak.CNFEmission Oak.CNFGates Oak.CNFFolds Oak.CNFNodes Oak.CNFObligation Oak.CNFObligationStore Oak.CNFRoots Oak.CNFLayout Oak.CNFAllocation Oak.SolverAllocation
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -121,7 +121,7 @@ jobs:
           OAK_REQUIRE_LRAT_BINDING_LEAN: '1'
         run: |
           command -v cc
-          go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean|TestOakLRATAllocatedEntry|TestOakLRATRawStreamEntry|TestLRATLifecycle.*|TestLRATNative.*|TestOakCNFLiteral.*|TestOakCNFEmission.*|TestOakCNFGates.*|TestOakCNFFolds.*|TestOakCNFNodes.*|TestOakCNFObligation.*|TestOakCNFObligationStore.*|TestOakCNFRoots.*|TestOakCNFLayout.*|TestOakCNFAllocation.*|TestCNFAxiomAudit|TestOakLRATAgrees)$' -count=1 -timeout=10m -v
+          go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean|TestOakLRATAllocatedEntry|TestOakLRATRawStreamEntry|TestLRATLifecycle.*|TestLRATNative.*|TestOakCNFLiteral.*|TestOakCNFEmission.*|TestOakCNFGates.*|TestOakCNFFolds.*|TestOakCNFNodes.*|TestOakCNFObligation.*|TestOakCNFObligationStore.*|TestOakCNFRoots.*|TestOakCNFLayout.*|TestOakCNFAllocation.*|TestOakSolverAllocation.*|TestCNFAxiomAudit|TestOakLRATAgrees)$' -count=1 -timeout=10m -v
 
   native-bitwise-images:
     # Keep full-file fixed proofs and fresh compiler/writer correspondence

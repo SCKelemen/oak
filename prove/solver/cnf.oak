@@ -206,6 +206,10 @@ cnf_obligation: (l: Layout, mem: [*]u32, p: []u32): u32 {
   cnf_obligation_finish(l, mem, at, used, n, always, fits)
 }
 
+cnf_sat_capacity_fits: (region: [*]u32, at: u32): Bool {
+  sat_capacity_fits(region[at + u32(2)], region[at + u32(3)])
+}
+
 // cnf_set_capacities writes the solver's capacities into the clause
 // region's header words 5, 6, and 7 from its counts: eight learned clauses
 // per clause plus a floor, sixty-four literal words per literal plus a
