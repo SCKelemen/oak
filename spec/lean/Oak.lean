@@ -274,6 +274,7 @@ import Oak.LRATARM64Bytes
 import Oak.LRATNativeRefinement
 import Oak.LRATRV64GuardCalls
 import Oak.LRATARM64GuardCalls
+import Oak.LRATARM64RecordLoads
 import Oak.LRATARM64HeaderLoads
 import Oak.LRATRV64HeaderLoads
 import Oak.LRATRUP
