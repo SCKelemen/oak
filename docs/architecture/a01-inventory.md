@@ -98,7 +98,8 @@ The edge records identify which scoped package each consumes. In particular,
 `codegen -> asm` and `wasm -> optir` enlarge the impact of ostensibly native-only
 API changes.
 
-Test imports within scope are `compiler -> asm/machine/nativegen/optir`,
+Test imports within scope are `asm -> asm/internal/armfeat` (from
+`asm/isa_xml_test.go`), `compiler -> asm/machine/nativegen/optir`,
 `compiler_test -> compiler/asm`, `machine -> asm/optir`, and
 `nativegen -> asm/machine/optir`. They do not create production import edges.
 Do not move compiler integration fixtures into an internal `asm` test package
