@@ -183,6 +183,8 @@ SUITES = {
         'TestE2ESelfHostedBitwiseELF/invalid-arch3',
         'TestE2ESelfHostedBitwiseELF/invalid-arch4294967295',
         'TestE2ESelfHostedBitwiseELFExtract',
+        'TestLeanNativeBitwiseEnvelopeExtract',
+        'TestLeanNativeBitwiseEnvelopeProof',
         'TestE2ESelfHostedWasmBitwiseModule',
         'TestE2ESelfHostedWasmBitwiseModule/and_bitwise',
         'TestE2ESelfHostedWasmBitwiseModule/and_Mix9',
