@@ -9,8 +9,10 @@ import sys
 # The former stdlib-rest took 77 minutes of root-test time on CI run
 # 37770732969. Splitting after F gives measured loads of 39.92 / 37.24 minutes.
 # Both halves retain its 90-minute timeout; stdlib T stays in the text shard.
+# Split e2e A-R after J, preserving its complete name set and 90-minute timeout.
 SHARDS = {
-    "e2e-a-r": (r"^TestE2E[A-R]", "90m"),
+    "e2e-a-j": (r"^TestE2E[A-J]", "90m"),
+    "e2e-k-r": (r"^TestE2E[K-R]", "90m"),
     "e2e-stdlib-text": (r"^TestE2EStdlibT", "60m"),
     "e2e-stdlib-rest-a-f": (r"^TestE2EStdlib[A-F]", "90m"),
     # Complement of A-F and T, including the old non-stdlib Std fallback.
@@ -23,6 +25,7 @@ SHARDS = {
 
 # Check preservation against the old sets on the live inventory too.
 REPLACEMENTS = {
+    r"^TestE2E[A-R]": ("e2e-a-j", "e2e-k-r"),
     r"^TestE2EStd(lib[^T]|[^l])": ("e2e-stdlib-rest-a-f", "e2e-stdlib-rest-g-z"),
     r"^Test([^E]|E[^2]|E2[^E])": ("compiler-rest-a-m", "compiler-rest-n-z"),
 }
@@ -59,13 +62,19 @@ def self_test():
         "TestExtract", "TestE2Other", "TestMathLibrary",
         "TestNativeBlake3", "TestTimehostCompilesEverywhere", "Test_Extra",
     ]
-    # Exercise every initial, especially F/G and S/T/U boundaries, plus
+    # Exercise both sides of the A-R split, including the J/K boundary.
+    names += ["TestE2E" + initial + "Case" for initial in "ABCDEFGHIJKLMNOPQR"]
+    # Exercise every stdlib initial, especially F/G and S/T/U boundaries, plus
     # non-alphabetic names and the historical Std-but-not-Stdlib fallback.
     names += ["TestE2EStdlib" + initial + "Case"
               for initial in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_0123456789"]
     counts = check_partition(names)
     check_replacements(names)
     for name, expected in {
+        "TestE2EA": "e2e-a-j",
+        "TestE2EJ": "e2e-a-j",
+        "TestE2EK": "e2e-k-r",
+        "TestE2ER": "e2e-k-r",
         "TestE2EStdlibFloatDifferential": "e2e-stdlib-rest-a-f",
         "TestE2EStdlibGraphemeConformance": "e2e-stdlib-rest-g-z",
         "TestE2EStdlibText": "e2e-stdlib-text",

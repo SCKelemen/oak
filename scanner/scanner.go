@@ -91,6 +91,9 @@ func (s *Scanner) readChar() {
 	}
 }
 
+// atEOF distinguishes physical end of input from a decoded U+0000 rune.
+func (s *Scanner) atEOF() bool { return s.width == 0 }
+
 // NextToken emits the next token from the rune stream.
 // Returns TRIVIA tokens for whitespace and other non-syntactic content.
 func (s *Scanner) NextToken() token.Token {
@@ -243,10 +246,13 @@ func (s *Scanner) NextToken() token.Token {
 	case '?':
 		tok = newTokenWithPos(token.QMARK, s.current, line, column)
 	case '"':
-		literal, valid := s.readString()
+		literal, valid, unterminated := s.readString()
 		tok.Literal = literal
 		tok.TokenKind = token.STRING
-		if !valid {
+		if unterminated {
+			tok.TokenKind = token.ILLEGAL
+			tok.Literal = "unclosed string literal: expected closing quote before end of input"
+		} else if !valid {
 			tok.TokenKind = token.ILLEGAL
 			tok.Literal = "invalid escape sequence in string literal (docs/spec/10-syntax.md section 2a: \\n \\t \\r \\0 \\\\ \\\" \\xHH)"
 		}
@@ -255,6 +261,10 @@ func (s *Scanner) NextToken() token.Token {
 		return s.finishToken(tok, byteStart)
 
 	case 0:
+		if !s.atEOF() {
+			tok = token.Token{TokenKind: token.ILLEGAL, Literal: "unexpected NUL character outside string literal or comment", Line: line, Column: column}
+			break
+		}
 		tok.Literal = ""
 		tok.TokenKind = token.EOF
 		tok.Line = line
@@ -474,18 +484,27 @@ func (s *Scanner) isRadixTailChar(ch rune) bool {
 //
 // Any other character after a backslash is an invalid escape: the literal is
 // still consumed to its closing quote so the token span stays right, and
-// ok is false so the caller reports the token as ILLEGAL.
-func (s *Scanner) readString() (literal string, ok bool) {
+// ok is false so the caller reports the token as ILLEGAL. unterminated reports
+// physical EOF before a closing quote, independently of escape validity.
+func (s *Scanner) readString() (literal string, ok, unterminated bool) {
 	var out bytes.Buffer
 	ok = true
 scan:
 	for {
 		s.readChar()
+		if s.atEOF() {
+			break scan
+		}
 		switch s.current {
-		case '"', 0:
+		case '"':
 			break scan
 		case '\\':
 			s.readChar()
+			if s.atEOF() {
+				// A backslash at physical EOF cannot complete an escape.
+				ok = false
+				break scan
+			}
 			switch s.current {
 			case 'n':
 				out.WriteByte('\n')
@@ -506,7 +525,7 @@ scan:
 					d, isHex := hexDigitValue(s.current)
 					if !isHex {
 						ok = false
-						if s.current == '"' || s.current == 0 {
+						if s.current == '"' || s.atEOF() {
 							break scan
 						}
 						continue scan
@@ -514,10 +533,6 @@ scan:
 					value = value*16 + d
 				}
 				out.WriteByte(byte(value))
-			case 0:
-				// A backslash at end of input: unterminated literal.
-				ok = false
-				break scan
 			default:
 				ok = false
 			}
@@ -525,10 +540,11 @@ scan:
 			out.WriteRune(s.current)
 		}
 	}
+	unterminated = s.atEOF()
 	if s.current == '"' {
 		s.readChar()
 	}
-	return out.String(), ok
+	return out.String(), ok, unterminated
 }
 
 // hexDigitValue decodes one hexadecimal digit.
@@ -561,7 +577,7 @@ func (s *Scanner) readLineComment() token.Token {
 	s.readChar()
 
 	var comment bytes.Buffer
-	for s.current != '\n' && s.current != 0 {
+	for s.current != '\n' && !s.atEOF() {
 		comment.WriteRune(s.current)
 		s.readChar()
 	}
@@ -584,7 +600,7 @@ func (s *Scanner) readBlockComment() token.Token {
 
 	var comment bytes.Buffer
 	for {
-		if s.current == 0 {
+		if s.atEOF() {
 			return s.finishToken(token.Token{
 				TokenKind: token.ILLEGAL,
 				Literal:   "unterminated block comment",

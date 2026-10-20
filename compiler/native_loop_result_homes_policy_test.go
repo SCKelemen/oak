@@ -26,7 +26,11 @@ func TestNativeLoopResultHomesExperimentalPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("OAK_NATIVE_LOOP_RESULT_HOMES", tc.enabled)
 			t.Setenv("OAK_OPT_SKIP", tc.skip)
-			tr, found := nativeSearch(asm.ArchArm64, nil).Registry.Lookup(nativegen.TransformLoopResultHomes)
+			search, err := nativeSearch(asm.ArchArm64, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tr, found := search.Registry.Lookup(nativegen.TransformLoopResultHomes)
 			if found != tc.want {
 				t.Fatalf("offered=%v, want %v", found, tc.want)
 			}

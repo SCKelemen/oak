@@ -445,6 +445,123 @@ the Oak fallback. The solver cache includes both units. This closes a scalar
 realization step, not general instruction decoding, ABI/linker correctness,
 the Go verifier's implementation, or whole-checker compiled soundness.
 
+`Oak.LRATRV64Bytes` additionally decodes and executes the exact uncompressed
+RV64 bodies for both guards. The result register is exactly zero or one for
+arbitrary initial registers, and acceptance implies the existing mathematical
+bounds. Return clears bit zero of `ra`; all nonzero registers outside the
+body's argument/scratch writes are preserved. The proof uses Oak's internal
+register, comparison and JALR semantics, with a fail-closed decoder for shifts,
+LUI and ADDIW, and requires a final RET with no trailing words.
+
+The required native Lean test binds both bodies to production encoder output
+and ELF symbol bytes for explicit `generic_rv64+m` (without C compression).
+It checks truncated/corrupt returns and semantic counterexamples for changed
+threshold, comparison, and normalization instructions.
+
+`Oak.LRATRV64Compressed` extends the same guarantees to default hosted RV64.
+Its independent mixed-width decoder handles the emitted C.SLLI, C.SRLI,
+C.ADDIW and C.JR ra encodings alongside 32-bit words. Execution advances the
+PC by the actual two or four bytes and requires one final return without
+trailing instructions. Both guard bodies have exact zero/one result, bounds,
+return and register-preservation proofs for arbitrary register inputs. The
+required byte contract now checks both the explicit non-C configuration and
+the default hosted ELF symbols, including malformed/truncated returns,
+trailing instructions, reserved compressed encodings, and semantic mutations.
+
+`Oak.LRATARM64Bytes` covers both emitted ARM64 guard bodies in the no-fault
+scalar projection. The independent decoder admits the exact 32-bit CMP/SUB,
+CSET alias, AND, MOVN/MOVZ and terminal RET X30 forms. Existing W-register
+semantics establish zero-extension of writes and unrestricted upper input
+bits; existing subtraction flags supply the unsigned comparison semantics.
+The proofs establish exact zero/one results, mathematical bounds, return to
+X30, preservation of SP, and preservation of non-clobbered registers. Tests
+bind both bodies to production encoder and ELF symbol bytes, check endpoint
+and threshold mutations, and refuse truncated/trailing bytes, altered returns,
+64-bit comparisons and shifted subtraction outside the proved subset.
+
+`Oak.LRATNativeRefinement` provides caller-facing contracts for ARM64 and both
+RV64 encodings. The returned register equals the extracted production guard's
+Boolean result encoded as zero or one, for every fuel and arbitrary upper
+input bits. Acceptance is equivalent in both directions, so rejection is
+preserved too. Native acceptance transfers the existing exact endpoint,
+interior-index, and positive, non-wrapping allocation arithmetic guarantees.
+The required native test builds and audits all eighteen refinement theorems.
+These contracts do not yet establish compiled call-site argument placement,
+linkage, memory operations, allocation success, or whole-checker soundness.
+
+`Oak.LRATRV64GuardCalls` composes decoded AUIPC/JALR calls with both RV64
+guard encodings. Calls preserve the incoming argument registers, return the
+extracted guard's Boolean result, and return to the call continuation (with
+JALR's low-bit clearing). The native test links the production preflight
+prefix and checks all five guard calls in its header/record functions for
+each encoding: instruction shape, link register, target address, and exact
+destination body bytes. Argument-producing loads, caller control flow and
+memory/fetch/trap semantics remain separate obligations.
+
+`Oak.LRATARM64GuardCalls` supplies the corresponding ordinary BL composition:
+argument registers retain their low-word inputs, X30 receives PC+4, the guard
+returns the extracted Boolean result to that continuation, and SP is
+preserved. The required test binds all five ARM64 preflight guard calls to
+linked instruction words, target addresses, and exact guard body bytes. B,
+BR and BLR are refused by this direct-call decoder. Both ISA tests share the
+same production-prefix extraction and ELF symbol reader. This is a no-fault
+scalar call-transfer contract; argument-producing loads, whole-caller control
+flow, and full architectural execution remain open. No additional native
+axiom allowances are introduced.
+
+`Oak.LRATARM64HeaderLoads` extends the three header allocation checks across
+the adjacent `LDR W0,[X19,Wm,UXTW #2]` and BL instructions. It reuses the total
+little-endian byte-memory model, admits only the emitted load form, and rejects
+address-space wrapping. Given a header representation, the live base register,
+an in-range index and a non-wrapping array extent, the composed execution
+returns the extracted allocation predicate of that header element, preserves
+SP, and returns eight bytes past the load. Linked ELF tests bind each load
+and call, pin the observed index constants 1/5/6, and exercise byte order,
+high-bit rejection, malformed load fields and wrapping addresses. These are
+conditional load/call proofs: establishing the memory representation, base and
+index through earlier instructions, branch decisions, permissions and faults
+remains open. No axiom allowlist additions are required.
+
+`Oak.LRATRV64HeaderLoads` covers the corresponding three RV64 allocation
+argument loads for both guard encodings. It decodes the emitted zero-offset
+LW into a0, performs its 32-to-64-bit sign extension, and decodes the following
+ADDI s2,t0,0 through the existing ISA model. The composed guard computes the
+extracted predicate of the supplied header element and returns sixteen bytes
+past the load (with JALR low-bit clearing). `Oak.LRATHeaderMemory` now holds
+the shared little-endian representation used by both architectures. Linked
+ELF checks pin the adjacent LW, move, and call pair; tests cover sign extension,
+byte order, wrong width/displacement/destination and wrapping addresses. The
+source element's computed address, header representation and bounds are
+explicit premises: earlier address formation and branches are still unproved.
+No axiom allowlist additions are required.
+
+`Oak.LRATARM64RecordLoads` covers the record caller's fits argument
+sequence: LDR W1 from the represented record, MOV W0,#8, MOV W2,W20,
+then BL and the pinned guard. Under explicit live-base, index=3, length,
+in-range access and non-wrapping extent premises, it returns exactly the
+extracted `lrat_fits(8,record[3],len(record))` Boolean, preserves SP, and
+returns sixteen bytes past the load. Linked ELF tests pin all three argument
+instructions and instantiate the refinement with the actual call word.
+Boundary cases cover exact fit, excess count, short length and high-bit
+counts; mutations of the load fields and both moves, plus address wrapping,
+are rejected. Earlier index/length setup and branch decisions remain open,
+as do the ARM64 header fits arguments and RV64 fits arguments. This uses
+the same no-fault scalar projection and adds no axiom allowances.
+
+The native guard axiom audit now parses complete multiline reports. Lean's
+`bv_decide` in the pinned toolchain checks LRAT certificates through native
+evaluation; its generated axioms are explicitly enumerated alongside the
+three standard Lean axioms. This trusts Lean's native evaluation/compiler
+path and is not kernel-only certificate reduction. Previously the audit
+missed wrapped entries; regression tests now reject hidden `sorryAx`, unknown
+native dependencies, and truncated reports. No wildcard native-axiom allowance
+is used.
+
+Both ARM64 and RV64 guard byte execution are now covered in their internal
+models. Instruction fetch, alignment, translation, traps, the full Sail
+execution bridge, and whole-checker machine soundness remain open. No runtime
+selection changes.
+
 This establishes expected-formula soundness for the extracted binding gate
 and word checker. Extraction correctness, allocation/FFI semantics, and
 compiled ARM64/RV64 executables remain separate obligations.
@@ -1349,4 +1466,3 @@ In order of payoff, each reusing a surface that exists:
   and stated for TLC through the TLA+ module (`112-protocols.md` §4).
   Next: the every-line reading inside the compiler, and liveness over
   infinite data domains through Lean.
-

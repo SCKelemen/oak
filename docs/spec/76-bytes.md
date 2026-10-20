@@ -138,12 +138,23 @@ remaining correspondence is explicitly recorded.
 - **Proved:** `spec/lean/Oak/Stdlib/BytesLaws.lean` proves short-copy rejection
   and destination preservation for arbitrary arrays and fuel, unequal-length
   rejection, empty search/copy/compare, non-wrapping range edges, and atomic
-  rejected offset copy/move directly over the extraction.
+  rejected offset copies and moves whose destination starts past the logical
+  end, directly over the extraction. `copy_into_spec` and `copy_at_spec` prove
+  successful contents, destination size, and every destination-frame byte
+  for lengths below `2^32`, a source that fits the destination interval, and
+  fuel strictly above the source length. `range_fits_success_iff` identifies
+  the exact nonwrapping range guard.
 - **Refined:** not yet. The extractor/compiler correspondence remains the
   project-wide boundary described by `95-extraction.md` and
   `126-verification-chain.md`.
 
-Full extracted semantic theorems for successful copying/movement,
-equal-length equality, lexicographic order, and first-index search remain open,
-as does executable extraction-versus-C faithfulness coverage. Optimized
-implementations and benchmarks follow those laws rather than changing the API.
+`compiler/lean_stdlib_bytes_copy_test.go` adds 174 shared independent-Go-oracle
+cases for compiled/interpreted copies and kernel-decided extraction results,
+including whole frames, empty/exact/short ranges, hostile offsets, and fuel
+boundaries. These are correspondence tests, not compiler-refinement proofs.
+
+Full extracted semantic theorems for successful overlap-safe movement and its
+frames, remaining move-rejection cases, equal-length equality, lexicographic
+order, and first-index search remain open. Correspondence coverage is scoped
+to copying. Optimized implementations and benchmarks follow those laws rather
+than changing the API.

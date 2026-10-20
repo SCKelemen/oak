@@ -426,6 +426,16 @@ laws are proved universally, which are decided, what the faithfulness
 harness covers, and the benchmark ratios — is kept as one table in
 `stdlib/VERIFICATION.md`; this section holds the theorems themselves.
 
+`Oak/Stdlib/BytesLaws.lean` proves `copy_into_spec` and `copy_at_spec`:
+for representable array lengths, a source that fits, and fuel above its length,
+each extracted copy returns its length, preserves destination size, and gives
+all output bytes, including the untouched destination frame. The exact range
+guard is `range_fits_success_iff`; its sum is in `Nat`, excluding `u32` wrapping.
+The shared 174-case Go-oracle corpus in `lean_stdlib_bytes_copy_test.go` checks
+compiled/interpreted Oak and kernel-decided extraction outcomes. These proofs
+and tests retain the compiler/extractor trust boundary; overlap-safe move laws
+and runtime implementation refinement remain open.
+
 `proof/ExtractionScanner.lean` proves the scanner gate: `rup_token_scan`
 states that on any text of at most 65536 bytes, from any cursor inside it,
 with fuel above the text length, the extracted `rup_token` returns exactly

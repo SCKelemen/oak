@@ -49,12 +49,18 @@ cnf_node: (l: Layout, mem: [*]u32, key: u32, a: u32, b: u32): u32 {
 // complemented.
 cnf_lit: (edge: u32): u32 = u32(2) * ((edge >> u32(1)) - u32(1)) + (u32(1) - (edge & u32(1)))
 
+// Check the mathematical endpoint without allowing UInt32 addition to wrap.
+cnf_clause_fits: (used: u32, n: u32, capacity: u32): Bool =
+  n >= u32(1) && n <= u32(3) &&
+  lrat_fits(LRAT_HEADER_WORDS, used, capacity) &&
+  lrat_fits(LRAT_HEADER_WORDS + used, n + u32(1), capacity)
+
 // cnf_emit appends a clause of up to three edges (NONE for fewer).
 cnf_emit: (l: Layout, mem: [*]u32, a: u32, b: u32, c: u32): () {
   n: u32 = c == NONE ? { b == NONE ? { u32(1) } | { u32(2) } } | { u32(3) }
   used: u32 = mem[l.state_at + STATE_CLAUSES_USED]
-  at: u32 = l.clauses_at + LRAT_HEADER_WORDS + used
-  used + n + u32(1) + LRAT_HEADER_WORDS <= l.clauses_cap ? {
+  cnf_clause_fits(used, n, l.clauses_cap) ? {
+    at: u32 = l.clauses_at + LRAT_HEADER_WORDS + used
     mem[at] = n
     mem[at + u32(1)] = cnf_lit(a)
     n >= u32(2) ? { mem[at + u32(2)] = cnf_lit(b) } | { }
@@ -62,6 +68,36 @@ cnf_emit: (l: Layout, mem: [*]u32, a: u32, b: u32, c: u32): () {
     mem[l.state_at + STATE_CLAUSES_USED] = used + n + u32(1)
     mem[l.state_at + STATE_CLAUSE_COUNT] = mem[l.state_at + STATE_CLAUSE_COUNT] + u32(1)
   } | { mem[l.state_at + STATE_EXCEEDED] = u32(1) }
+}
+
+// The production Tseitin clause sequences, separated from allocation and folds.
+// These helpers are extracted with cnf_emit for Oak.CNFGates.
+cnf_emit_binary: (l: Layout, mem: [*]u32, op: u32, g: u32, x: u32, y: u32): () {
+  op == OP_AND ? {
+    cnf_emit(l, mem, g ^ u32(1), x, NONE)
+    cnf_emit(l, mem, g ^ u32(1), y, NONE)
+    cnf_emit(l, mem, g, x ^ u32(1), y ^ u32(1))
+  } | {
+    op == OP_OR ? {
+      cnf_emit(l, mem, g, x ^ u32(1), NONE)
+      cnf_emit(l, mem, g, y ^ u32(1), NONE)
+      cnf_emit(l, mem, g ^ u32(1), x, y)
+    } | {
+      cnf_emit(l, mem, g ^ u32(1), x, y)
+      cnf_emit(l, mem, g ^ u32(1), x ^ u32(1), y ^ u32(1))
+      cnf_emit(l, mem, g, x ^ u32(1), y)
+      cnf_emit(l, mem, g, x, y ^ u32(1))
+    }
+  }
+}
+
+cnf_emit_mux: (l: Layout, mem: [*]u32, g: u32, c: u32, t: u32, e: u32): () {
+  cnf_emit(l, mem, g ^ u32(1), c ^ u32(1), t)
+  cnf_emit(l, mem, g ^ u32(1), c, e)
+  cnf_emit(l, mem, g, c ^ u32(1), t ^ u32(1))
+  cnf_emit(l, mem, g, c, e ^ u32(1))
+  cnf_emit(l, mem, g ^ u32(1), t, e)
+  cnf_emit(l, mem, g, t ^ u32(1), e ^ u32(1))
 }
 
 // cnf_variable is the input node of a blaster variable.
@@ -81,22 +117,7 @@ cnf_apply: (l: Layout, mem: [*]u32, op: u32, x: u32, y: u32): u32 {
     n == NONE ? { BDD_FALSE } | {
       g: u32 = n << u32(1)
       mem[l.state_at + STATE_CREATED] == u32(1) ? {
-        op == OP_AND ? {
-          cnf_emit(l, mem, g ^ u32(1), cx, NONE)
-          cnf_emit(l, mem, g ^ u32(1), cy, NONE)
-          cnf_emit(l, mem, g, cx ^ u32(1), cy ^ u32(1))
-        } | {
-          op == OP_OR ? {
-            cnf_emit(l, mem, g, cx ^ u32(1), NONE)
-            cnf_emit(l, mem, g, cy ^ u32(1), NONE)
-            cnf_emit(l, mem, g ^ u32(1), cx, cy)
-          } | {
-            cnf_emit(l, mem, g ^ u32(1), cx, cy)
-            cnf_emit(l, mem, g ^ u32(1), cx ^ u32(1), cy ^ u32(1))
-            cnf_emit(l, mem, g, cx ^ u32(1), cy)
-            cnf_emit(l, mem, g, cx, cy ^ u32(1))
-          }
-        }
+        cnf_emit_binary(l, mem, op, g, cx, cy)
       } | { }
       g
     }
@@ -118,12 +139,7 @@ cnf_ite: (l: Layout, mem: [*]u32, c: u32, t: u32, e: u32): u32 {
     n == NONE ? { BDD_FALSE } | {
       g: u32 = n << u32(1)
       mem[l.state_at + STATE_CREATED] == u32(1) ? {
-        cnf_emit(l, mem, g ^ u32(1), c ^ u32(1), t)
-        cnf_emit(l, mem, g ^ u32(1), c, e)
-        cnf_emit(l, mem, g, c ^ u32(1), t ^ u32(1))
-        cnf_emit(l, mem, g, c, e ^ u32(1))
-        cnf_emit(l, mem, g ^ u32(1), t, e)
-        cnf_emit(l, mem, g, t ^ u32(1), e ^ u32(1))
+        cnf_emit_mux(l, mem, g, c, t, e)
       } | { }
       g
     }
@@ -139,6 +155,30 @@ CNF_CLAUSE: u32 = 0
 CNF_PROVEN: u32 = 1
 CNF_REFUTED: u32 = 2
 
+// Admit the header, existing words, clause length, and worst-case roots
+// separately. No unchecked sum may wrap into an apparently small request.
+cnf_obligation_fits: (used: u32, roots: u32, capacity: u32): Bool =
+  lrat_fits(LRAT_HEADER_WORDS, used, capacity) &&
+  lrat_fits(LRAT_HEADER_WORDS + used, u32(1), capacity) &&
+  lrat_fits(LRAT_HEADER_WORDS + used + u32(1), roots, capacity)
+
+// A rejected append is not a proof, even when called without cnf_lower.
+cnf_obligation_finish: (l: Layout, mem: [*]u32, at: u32, used: u32, n: u32, always: Bool, fits: Bool): u32 {
+  fits ? {
+    always ? { CNF_REFUTED } | {
+      n == u32(0) ? { CNF_PROVEN } | {
+        mem[at] = n
+        mem[l.state_at + STATE_CLAUSES_USED] = used + n + u32(1)
+        mem[l.state_at + STATE_CLAUSE_COUNT] = mem[l.state_at + STATE_CLAUSE_COUNT] + u32(1)
+        CNF_CLAUSE
+      }
+    }
+  } | {
+    mem[l.state_at + STATE_EXCEEDED] = u32(1)
+    NONE
+  }
+}
+
 // cnf_obligation appends "some trap fires or the claim is false" from the
 // blasted roots (traps first, the claim last), one literal per root that
 // is not a constant.
@@ -148,7 +188,7 @@ cnf_obligation: (l: Layout, mem: [*]u32, p: []u32): u32 {
   at: u32 = l.clauses_at + LRAT_HEADER_WORDS + used
   n: u32 = 0
   always: Bool = false
-  fits: Bool = used + roots + u32(1) + LRAT_HEADER_WORDS <= l.clauses_cap
+  fits: Bool = cnf_obligation_fits(used, roots, l.clauses_cap)
   r: u32 = 0
   while r < roots && fits {
     root: u32 = p[roots_at(p) + r]
@@ -163,15 +203,11 @@ cnf_obligation: (l: Layout, mem: [*]u32, p: []u32): u32 {
     }
     r = r + u32(1)
   }
-  fits ? { } | { mem[l.state_at + STATE_EXCEEDED] = u32(1) }
-  always ? { CNF_REFUTED } | {
-    n == u32(0) ? { CNF_PROVEN } | {
-      mem[at] = n
-      mem[l.state_at + STATE_CLAUSES_USED] = used + n + u32(1)
-      mem[l.state_at + STATE_CLAUSE_COUNT] = mem[l.state_at + STATE_CLAUSE_COUNT] + u32(1)
-      CNF_CLAUSE
-    }
-  }
+  cnf_obligation_finish(l, mem, at, used, n, always, fits)
+}
+
+cnf_sat_capacity_fits: (region: [*]u32, at: u32): Bool {
+  sat_capacity_fits(region[at + u32(2)], region[at + u32(3)])
 }
 
 // cnf_set_capacities writes the solver's capacities into the clause

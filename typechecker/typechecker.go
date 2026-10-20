@@ -4154,6 +4154,13 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 				tc.addError(p, "variant %s not found in ADT %s", p.Variant.Value, adtName)
 				return nil
 			}
+			// Pattern analysis treats exhausted expansion as unknown. Ordinary
+			// pattern checking must still fail closed rather than expanding an
+			// exponentially growing generic argument tree without a bound.
+			if _, bounded := coverageTypeSize(expectedType); !bounded {
+				tc.addError(p, "constructor pattern type expansion exceeds the supported complexity limit")
+				return nil
+			}
 			bindings, _, reachable := tc.variantIndexBindings(adtDef, variant, typeArgs)
 			if !reachable {
 				bindings = map[string]Type{}
@@ -6717,6 +6724,11 @@ func (tc *TypeChecker) implementsInterface(concreteType Type, interfaceType Type
 			// Method is not a function type - invalid
 			return false
 		}
+		// A fixed slice parameter and a variadic tail have different call
+		// contracts even when their parameter representations are identical.
+		if concreteMethodType.Variadic != requiredMethodType.Variadic {
+			return false
+		}
 
 		// Check that return types match
 		if !latticeAtomIdentical(concreteMethodType.ReturnType, requiredMethodType.ReturnType) {
@@ -6908,11 +6920,23 @@ func (tc *TypeChecker) getLiteralType(literal object.Object) Type {
 
 // checkInterfaceType type checks an interface definition
 func (tc *TypeChecker) checkInterfaceType(stmt *ast.InterfaceType) {
-	// Extract type parameters
-	typeVars := []string{}
-	if stmt.TypeParams != nil {
-		for _, tp := range stmt.TypeParams {
-			typeVars = append(typeVars, tp.Name.Value)
+	// The parser preserves the wider interface syntax for tooling. Until
+	// checking and calling implement these contracts, reject them before
+	// registering a weaker interface (docs/spec/20-types.md section 8).
+	if len(stmt.TypeParams) > 0 {
+		tc.addError(stmt.Name, "generic interface contracts are not supported yet")
+		return
+	}
+	for _, method := range stmt.Methods {
+		if method.ReceiverType != nil {
+			tc.addError(method.ReceiverType, "typed interface receivers are not supported yet")
+			return
+		}
+		for _, param := range method.Parameters {
+			if param.Variadic {
+				tc.addError(param.Name, "variadic interface methods are not supported yet")
+				return
+			}
 		}
 	}
 

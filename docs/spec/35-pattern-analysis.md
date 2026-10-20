@@ -233,12 +233,23 @@ used the wildcard spelling.
 A closed ADT with no reachable constructors has no inhabitants. A constructor
 whose mandatory payload is uninhabited likewise contributes no inhabitants.
 An arm matching such a space is **impossible**, rather than redundant. The
-compiler must not invent a missing witness for either space.
+compiler must not invent a missing witness for either space. Constructor
+payloads use their checked, structurally substituted types. A record requires
+an inhabitant for every declared field, and a positive-length fixed array
+requires an element inhabitant. Zero-length arrays, slices, and spans do not
+require an element inhabitant.
 
 Unknown, unresolved, or recursive cases must be handled conservatively: the
 absence of a termination proof is not permission to infer uninhabitability.
-This first implementation treats recursive cycles as potentially inhabited.
-Open scalar domains remain open and need a catch-all.
+This implementation treats recursive cycles and non-decreasing recursive
+generic expansion as potentially inhabited. It bounds unfolded type-shape
+inspection before expanding generic substitutions; reaching that bound is
+unknown, not proof of emptiness. Finite nested instantiations whose shapes
+strictly decrease can still be analyzed. Open scalar domains remain open and
+need a catch-all. A constructor pattern whose type expansion exceeds this
+implementation bound is rejected with a complexity diagnostic; it is not
+silently accepted or treated as an impossible arm. A wildcard still covers
+an unknown remaining space.
 
 These are properties of semantic values; storage layout and runtime tagging
 have no role in the usefulness decision. The Lean model proves that completed

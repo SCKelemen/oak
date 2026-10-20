@@ -2743,7 +2743,7 @@ func compileArm64Pass(fn *ast.FunctionStatement, scalarEligibilityReference ast.
 	if frame > 4080 {
 		return nil, 0, 0, unsupported("a frame of %d bytes", frame)
 	}
-	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Fallback: true, Records: records, ADTs: adts, System: g.system, Tables: tableSizes(g.tables)}
+	out := &asm.Function{Name: NativeSymbol(fn), Signature: fn, Line: fn.Token.Line, Arch: asm.ArchArm64, Fallback: true, Records: records, ADTs: adts, System: g.system, Tables: tableSizes(g.tables)}
 	recordFrameObjects(out, g.frameObjects, g.slotMem(0).Offset)
 	out.ResultSlot = g.returnSlotPlaced
 	out.Globals = g.reachableGlobals()

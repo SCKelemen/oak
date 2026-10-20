@@ -182,7 +182,13 @@ func outcomeOf(kind asm.VerdictKind) opt.Outcome {
 // lane's static cost model, and the beam (OAK_OPT_BEAM overrides the
 // default for experiments; -opt keeps its one meaning, the C compiler's
 // level, docs/spec/90-backend.md §16 item 5).
-func nativeSearch(arch string, report *opt.Report) *opt.Search {
+func nativeSearch(arch string, report *opt.Report) (*opt.Search, error) {
+	// Reject unknown lanes before constructing the transform search.
+	// In particular, Wasm cannot inherit the ARM64 cost model.
+	costs, err := opt.CostsFor(arch)
+	if err != nil {
+		return nil, err
+	}
 	registry := nativegen.Registry()
 	// Result homes currently trade less result traffic for more frame traffic.
 	// Keep them experimental until native timings justify default selection;
@@ -216,7 +222,7 @@ func nativeSearch(arch string, report *opt.Report) *opt.Search {
 		}
 		registry = opt.NewRegistry(kept...)
 	}
-	search := &opt.Search{Registry: registry, Costs: opt.CostsFor(arch), Report: report}
+	search := &opt.Search{Registry: registry, Costs: costs, Report: report}
 	if beam, err := strconv.Atoi(os.Getenv("OAK_OPT_BEAM")); err == nil && beam > 0 {
 		search.Beam = beam
 	}
@@ -228,7 +234,7 @@ func nativeSearch(arch string, report *opt.Report) *opt.Search {
 			fmt.Fprintf(os.Stderr, "// refused %s form of %s (round %d): %s\n%s", c.Name(), fn.Name, round, findings[0], nativegen.Describe(fn))
 		}
 	}
-	return search
+	return search, nil
 }
 
 // setAside spells, in the compiler's established phrasing, that a

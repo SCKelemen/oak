@@ -115,8 +115,98 @@ class RequiredBackendTests(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(required.main(["llvm"]), 1)
 
+    def test_equipped_race_suites_use_race_for_inventory_and_execution(self):
+        self.assertEqual({n for n, s in required.SUITES.items() if s.race},
+                         {"checked-image-runtime", "selfhost-image-producers", "selfhost-image-admission"})
+        suite = required.Suite("./compiler", "10m", ("TestRequired",), race=True)
+        with patch.object(required.subprocess, "check_output", return_value="TestRequired\n") as call:
+            required.check_inventory(suite)
+            self.assertEqual(call.call_args.args[0], ["go", "test", "-race", "./compiler", "-list", "^(TestRequired)$"])
+        process = MagicMock()
+        process.stdout = iter([])
+        process.wait.return_value = 9
+        process.__enter__.return_value = process
+        with patch.object(required.subprocess, "Popen", return_value=process) as call:
+            with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, "exited 9"):
+                required.run_suite(suite)
+        self.assertEqual(call.call_args.args[0], ["go", "test", "-race", "-json", "-count=1", "-timeout=10m", "./compiler", "-run", "^(TestRequired)$"])
+
+    def test_exact_child_inventory_rejects_unlisted_image_cases(self):
+        suite = required.Suite("./compiler", "10m", ("TestRequired",), exact_children=True)
+        results = required.RequiredResults(suite)
+        with self.assertRaisesRegex(ValueError, "unexpected unlisted test"):
+            results.accept({"Action": "run", "Package": suite.import_path, "Test": "TestRequired/Unexpected"})
+
+    def test_image_suites_require_every_named_check(self):
+        for key in ("checked-image-sources", "checked-image-runtime", "checked-image-bundle", "selfhost-image-producers", "selfhost-image-admission"):
+            suite = required.SUITES[key]
+            self.assertTrue(suite.exact_children)
+            for omitted in suite.tests:
+                results = required.RequiredResults(suite)
+                for name in suite.tests:
+                    if name != omitted:
+                        for action in ("run", "pass"):
+                            results.accept({"Action": action, "Package": suite.import_path, "Test": name})
+                results.accept({"Action": "pass", "Package": suite.import_path})
+                with self.assertRaisesRegex(ValueError, omitted):
+                    results.finish(0)
+        required_runtime = {"MaximumNameAndSource", "DropContract/arm", "DropContract/rv", "ActualSuccessfulRefusalProof", "ValidRecordThenFailure", "CanceledGlobalQueue", "CloseActiveRequest"}
+        self.assertTrue({"TestImagePinnedRuntime/" + n for n in required_runtime} <= set(required.SUITES["checked-image-runtime"].tests))
+
+    def test_strict_entry_gate_is_fail_closed(self):
+        workflow = (Path(__file__).resolve().parents[1] / "workflows/formal-sail.yml").read_text()
+        self.assertEqual(workflow.count("          python3 .github/scripts/required_backend_tests.py strict-entry\n"), 1)
+        suite = required.SUITES["strict-entry"]
+        self.assertTrue(suite.exact_children)
+        for omitted in suite.tests:
+            results = required.RequiredResults(suite)
+            for name in suite.tests:
+                if name != omitted:
+                    for action in ("run", "pass"):
+                        results.accept({"Action": action, "Package": suite.import_path, "Test": name})
+            results.accept({"Action": "pass", "Package": suite.import_path})
+            with self.subTest(omitted=omitted), self.assertRaisesRegex(ValueError, omitted):
+                results.finish(0)
+        for skipped in suite.tests:
+            results = required.RequiredResults(suite)
+            for name in suite.tests:
+                results.accept({"Action": "run", "Package": suite.import_path, "Test": name})
+                results.accept({"Action": "skip" if name == skipped else "pass",
+                                "Package": suite.import_path, "Test": name})
+            results.accept({"Action": "pass", "Package": suite.import_path})
+            with self.subTest(skipped=skipped), self.assertRaisesRegex(ValueError, "skip"):
+                results.finish(0)
+        with patch.object(required.subprocess, "check_output", return_value="ok package [no tests to run]\n"):
+            with self.assertRaises(ValueError):
+                required.check_inventory(suite)
+
     def test_audited_suite_manifest(self):
         expected_roots = {
+            'selfhost-image-producers': {'TestE2ESelfHostedBitwiseELF', 'TestE2ESelfHostedBitwiseELFExtract', 'TestLeanNativeBitwiseEnvelopeExtract', 'TestLeanNativeBitwiseEnvelopeProof', 'TestE2ESelfHostedWasmBitwiseModule', 'TestE2ESelfHostedWasmBitwiseModuleRefusal', 'TestLeanWasmBitwiseModuleExtract', 'TestLeanWasmBitwiseModuleFaithful', 'TestE2ESelfHostedBitwiseImageBytes'},
+            'selfhost-image-admission': {'TestSelfHostedBitwiseImageBundleReal'},
+            'checked-image-sources': {'TestEmbeddedClosureCustody', 'TestImageEmbeddedClosureCustody'},
+            'checked-image-runtime': {'TestImageClosedInstallationProfile', 'TestImagePinnedRuntime', 'TestProcessRefusal', 'TestExtractionBoundaries', 'TestInstallRefusesUntrustedArchive', 'TestArchiveDigestMismatch', 'TestImageProtocolFieldLimits', 'TestImageMaximumProtocolSize', 'TestArchiveFIFORefusesWithoutBlocking', 'TestImageZeroAuthority', 'TestImageSnapshotAndRenderer', 'TestImageStrictProtocol'},
+            'checked-image-bundle': {'TestEmitKernelCheckedBitwiseImageBundleReal', 'TestEmitKernelCheckedBitwiseImageBundleRefusesInvalidInstallation', 'TestCheckedImageProposedSymbolBoundaries', 'TestCheckedImageProposalOwnsCopyWithoutClaimingBodyAuthority', 'TestCheckedImageProposalProduction', 'TestCheckedImageProposalRefusesMalformedObjects', 'TestEmitKernelCheckedBitwiseImageBundleRefusesCanceledContext', 'TestKernelCheckedBitwiseImageBundleDoesNotPromoteLegacyAuthority'},
+            "checked-bitwise-sources": {"TestEmbeddedClosureCustody"},
+            "checked-bitwise-runtime": {
+                "TestArchiveFIFORefusesWithoutBlocking", "TestArchiveDigestMismatch", "TestExtractionBoundaries",
+                "TestStrictProtocol", "TestProcessRefusal", "TestZeroAuthority",
+                "TestSnapshotsAndDriver", "TestInstallRefusesUntrustedArchive", "TestRealKernelAdmission",
+            },
+            "checked-bitwise-bundle": {
+                "TestEmitKernelCheckedBitwiseBundleRefusesInvalidInstallation",
+                "TestEmitKernelCheckedBitwiseBundleRefusesCanceledContext",
+                "TestKernelCheckedBitwiseBundleDoesNotPromoteLegacyAuthority",
+                "TestEmitKernelCheckedBitwiseBundleReal",
+                "TestVerifiedProfileClosesOverCallees",
+                "TestVerdictCacheRoundTripsDependencies",
+                "TestVerdictCacheRejectsMalformedDependencyRecords",
+                "TestVerdictCacheKeyIncludesMachineOnlyCalleeBodies",
+                "TestVerdictCacheMachineCalleesAgreeWithStrictResolver",
+            },
+            "native-object": {"TestNativeBitwiseObjectLean"},
+            "native-image": {"TestNativeBitwiseImageLean"},
+            "strict-entry": {"TestRV64StrictEntryBitwiseCompilerMatchesLean", "TestRV64StrictEntryToolchainSelection"},
             "cross-compiler": {"TestE2EInferredValueNativeRV64UnderQEMU", "TestE2EDispatchSelectsSVEUnderQEMU", "TestE2EFreestandingPartialLink", "TestE2ENativeConstantTablesExecutable", "TestRingsCrossTargets"},
             "cross-testrunner": {"TestForeignTargetRunsUnderEmulator", "TestTargetFlagBuildsWithoutRunning"},
             "lean-compiler": {"TestLeanFloatBitsAgreeWithHost", "TestE2ELeanFunctionArguments", "TestE2ELeanReduceLanesFunctionArgument", "TestE2ELeanNestedAssignment"},
@@ -133,6 +223,8 @@ class RequiredBackendTests(unittest.TestCase):
                 self.assertIsNone(re.search(suite.pattern, root + "Other"))
                 self.assertIsNone(re.search(suite.pattern, "Other" + root))
         expected_children = {
+            "strict-entry": {"TestRV64StrictEntryBitwiseCompilerMatchesLean/" + child
+                             for child in ("interfaces", "pins", "audit")},
             "cross-compiler": {"TestE2ENativeConstantTablesExecutable/freestanding/riscv64", "TestE2ENativeConstantTablesExecutable/freestanding/arm64", "TestRingsCrossTargets/linux/riscv64", "TestRingsCrossTargets/linux/arm64"},
             "lean-compiler": {"TestE2ELeanFunctionArguments/Lean", "TestE2ELeanReduceLanesFunctionArgument/Lean", "TestE2ELeanNestedAssignment/Lean"},
             "lean-cli": {"TestBuildLeanNamespace/LeanImports"},
@@ -142,12 +234,98 @@ class RequiredBackendTests(unittest.TestCase):
         for name, children in expected_children.items():
             self.assertEqual({test for test in required.SUITES[name].tests if "/" in test}, children)
 
+    def test_checked_bundle_requires_all_six_production_bundles(self):
+        suite = required.SUITES["checked-bitwise-bundle"]
+        matrix = {
+            "TestEmitKernelCheckedBitwiseBundleReal/Canonical/" + family + "/" + op
+            for family in ("bitwise", "Mix9") for op in ("and", "or", "xor")
+        }
+        self.assertEqual({name for name in suite.tests if "/Canonical/" in name}, matrix)
+        for omitted in matrix:
+            results = required.RequiredResults(suite)
+            for name in suite.tests:
+                if name == omitted:
+                    continue
+                for action in ("run", "pass"):
+                    results.accept({"Action": action, "Package": suite.import_path, "Test": name})
+            results.accept({"Action": "pass", "Package": suite.import_path})
+            with self.assertRaisesRegex(ValueError, omitted):
+                results.finish(0)
+        children = {name.rsplit("/", 1)[-1] for name in suite.tests if "/" in name}
+        self.assertTrue({"CopyCustody", "RenamedParametersFreshAdmission", "Canceled", "Closed",
+                         "source_operation", "source_name", "wasm_trailing", "arm_body", "rv_abi"} <= children)
+
+    def test_raw_producer_gates_are_exact_and_fail_closed(self):
+        producers = required.SUITES["selfhost-image-producers"]
+        admissions = required.SUITES["selfhost-image-admission"]
+        self.assertEqual(len(producers.tests), 217)
+        self.assertEqual(len(admissions.tests), 35)
+        self.assertEqual(sum(n.startswith("TestE2ESelfHostedBitwiseELF/") for n in producers.tests), 145)
+        self.assertEqual(sum(n.startswith("TestE2ESelfHostedWasmBitwiseModule/") for n in producers.tests), 24)
+        self.assertEqual(sum(n.startswith("TestE2ESelfHostedWasmBitwiseModuleRefusal/") for n in producers.tests), 33)
+        self.assertEqual(sum(n.startswith("TestSelfHostedBitwiseImageBundleReal/Refusals/") for n in admissions.tests), 26)
+        self.assertTrue({"TestLeanWasmBitwiseModuleExtract", "TestLeanWasmBitwiseModuleFaithful",
+                         "TestLeanNativeBitwiseEnvelopeExtract", "TestLeanNativeBitwiseEnvelopeProof"} <= set(producers.tests))
+        matrix = {"TestSelfHostedBitwiseImageBundleReal/Canonical/" + family + "/" + op
+                  for family in ("bitwise", "Mix9") for op in ("and", "or", "xor")}
+        self.assertEqual({n for n in admissions.tests if "/Canonical/" in n}, matrix)
+        for suite in (producers, admissions):
+            self.assertTrue(suite.exact_children)
+            self.assertTrue(suite.race)
+            for skipped in suite.tests:
+                results = required.RequiredResults(suite)
+                for name in suite.tests:
+                    results.accept({"Action": "run", "Package": suite.import_path, "Test": name})
+                    results.accept({"Action": "skip" if name == skipped else "pass",
+                                    "Package": suite.import_path, "Test": name})
+                results.accept({"Action": "pass", "Package": suite.import_path})
+                with self.subTest(skipped=skipped), self.assertRaisesRegex(ValueError, "skip"):
+                    results.finish(0)
+            with patch.object(required.subprocess, "check_output", return_value="ok package [no tests to run]\n"):
+                with self.assertRaises(ValueError):
+                    required.check_inventory(suite)
+        root = Path(__file__).resolve().parents[2]
+        for name in ("e2e_selfhost_bitwise_wasm_module_test.go", "lean_selfhost_bitwise_wasm_module_test.go"):
+            self.assertTrue((root / "compiler" / name).is_file())
+            self.assertFalse(name.endswith("_wasm_test.go"))
+        job = (root / ".github/workflows/checked-image-bundle.yml").read_text().split("  selfhost-complete-images:\n", 1)[1]
+        for flag in ("OAK_REQUIRE_SELFHOST_IMAGE_PRODUCERS", "OAK_REQUIRE_WASM_LEAN", "OAK_REQUIRE_BITWISE_IMAGECHECK"):
+            self.assertIn(flag + ": '1'", job)
+        self.assertNotIn("continue-on-error:", job)
+        self.assertIn("command -v cc", job)
+        self.assertIn("sha256sum --check --strict", job)
+        self.assertIn("lean-4.33.1-linux/bin", job)
+
+    def test_native_image_gates_run_in_complete_isolated_matrix(self):
+        source = (Path(__file__).resolve().parents[1] / "workflows" / "formal.yml").read_text()
+        job = source.split("  native-bitwise-images:\n", 1)[1].split("  lean:\n", 1)[0]
+        self.assertIn("gate: [fixtures, production]", job)
+        self.assertIn("fail-fast: false", job)
+        self.assertIn("if: matrix.gate == 'fixtures'", job)
+        self.assertIn("if: matrix.gate == 'production'", job)
+        self.assertEqual(job.count("python3 tools/native_image_fixtures/check.py"), 1)
+        self.assertEqual(job.count("python3 .github/scripts/required_backend_tests.py native-image"), 1)
+        self.assertIn("OAK_REQUIRE_NATIVE_IMAGE_LEAN: '1'", job)
+        self.assertEqual(required.SUITES["native-image"].timeout, "30m")
+
+    def test_image_workflow_preserves_protected_branches_and_reruns(self):
+        source = (Path(__file__).resolve().parents[1] / "workflows" / "checked-image-bundle.yml").read_text()
+        self.assertEqual(source.count("branches: [main, specification, consolidation]"), 2)
+        self.assertIn("permissions:\n  contents: read", source)
+        self.assertIn("format('run-{0}-{1}', github.run_id, github.run_attempt)", source)
+        self.assertIn("OAK_REQUIRE_BITWISE_IMAGECHECK: '1'", source)
+        self.assertIn("CGO_ENABLED: '1'", source)
+        self.assertNotIn("Oak.CheckedBundleAudit", source)
+        self.assertNotIn("tools/checked_bundle/test_request.py", source)
+
     def test_workflows_select_every_suite_in_equipped_lane(self):
         root = Path(__file__).resolve().parents[1]
         lanes = {
+            "checked-image-bundle.yml": ("checked-image-sources", "checked-image-runtime", "checked-image-bundle", "selfhost-image-producers", "selfhost-image-admission"),
             "ci.yml": ("cross-compiler", "cross-testrunner"),
-            "formal.yml": ("lean-compiler", "lean-cli"),
+            "formal.yml": ("lean-compiler", "lean-cli", "native-object", "native-image"),
             "formal-sail.yml": ("sail-source", "llvm"),
+            "checked-bitwise-bundle.yml": ("checked-bitwise-sources", "checked-bitwise-runtime", "checked-bitwise-bundle"),
         }
         for file, suites in lanes.items():
             source = (root / "workflows" / file).read_text()

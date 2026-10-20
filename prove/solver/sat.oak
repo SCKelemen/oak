@@ -123,6 +123,21 @@ ST_WORDS: u32 = 40
 // sat_layout sizes the arena for a variable count, a clause capacity
 // (initial plus learned), and a literal store capacity; occurrence nodes
 // are one per stored literal.
+// The natural layout footprint, computed before any u32 field can wrap.
+sat_allocation_words: (vars: u32, clauses: u32, store: u32, record: u32): u64 {
+  u64(23)*(u64(vars)+u64(1)) + u64(10)*u64(clauses) + u64(3)*u64(store) + u64(record) + u64(50)
+}
+
+sat_allocation_fits: (vars: u32, clauses: u32, store: u32, record: u32): Bool {
+  sat_allocation_words(vars, clauses, store, record) <= u64(1073741823)
+}
+
+// Check the header capacity derivation before cnf_set_capacities narrows it.
+sat_capacity_fits: (clauses: u32, literals: u32): Bool {
+  u64(clauses)*u64(8)+u64(65536) <= u64(4294967295) &&
+    u64(literals)*u64(64)+u64(1048576) <= u64(4294967295)
+}
+
 sat_layout: (vars: u32, clause_cap: u32, store_cap: u32, record_cap: u32): SatLayout {
   v: u32 = vars + u32(1)
   assign_at: u32 = 0

@@ -88,6 +88,9 @@ func (tc *TypeChecker) variantPayloadType(parent Type, variant *object.ADTVarian
 	if variant == nil || variant.Payload == "" {
 		return &UnitType{}
 	}
+	if _, bounded := coverageTypeSize(parent); !bounded {
+		return nil
+	}
 	adtName, _, args, ok := adtInstantiation(parent)
 	if !ok {
 		return nil
@@ -96,19 +99,39 @@ func (tc *TypeChecker) variantPayloadType(parent Type, variant *object.ADTVarian
 	if !reachable {
 		return nil
 	}
-	return tc.instantiateStoredType(variant.Payload, bindings)
+	return tc.instantiatedVariantPayload(adtName, variant, bindings)
 }
 
 // typeHasInhabitant conservatively decides whether a type has at least one
 // reachable semantic value. Unknown/open types and recursive cycles are treated
 // as inhabited: we must never declare an arm impossible without proof.
-// The seen set follows only the current recursion path.
-func (tc *TypeChecker) typeHasInhabitant(typ Type, seen map[string]bool) bool {
+// The seen map follows only the current recursion path.
+func (tc *TypeChecker) typeHasInhabitant(typ Type, seen map[string]int) bool {
 	if typ == nil {
 		return true
 	}
 	if _, bottom := typ.(*NeverType); bottom {
 		return false
+	}
+	// Bound the unfolded shape before the index solver copies type arguments.
+	// Counting shared children each time also bounds branching generic growth;
+	// serializing the type first would itself permit exponential work.
+	size, bounded := coverageTypeSize(typ)
+	if !bounded {
+		return true
+	}
+	switch t := typ.(type) {
+	case *RecordType:
+		for _, field := range t.Fields {
+			if !tc.typeHasInhabitant(field, seen) {
+				return false
+			}
+		}
+		return true
+	case *ArrayType:
+		// Empty arrays, slices and spans need no element inhabitant. Unknown
+		// lengths are not evidence of a mandatory element either.
+		return t.IsSlice || t.IsSpan || t.Length <= 0 || tc.typeHasInhabitant(t.ElementType, seen)
 	}
 	adtName, onlyVariant, _, isADT := tc.adtNameForCoverageType(typ)
 	if !isADT {
@@ -118,13 +141,23 @@ func (tc *TypeChecker) typeHasInhabitant(typ Type, seen map[string]bool) bool {
 	if !known {
 		return true
 	}
-	key := typ.String()
-	if seen[key] {
-		// A recursive cycle is not evidence that a value is impossible.
+	key := adtName + "\x00" + onlyVariant
+	previous, active := seen[key]
+	if active && size >= previous {
+		// Re-entering a declaration without a strictly smaller instantiation
+		// is not evidence of emptiness. This also stops Grow[Pair[T, T]],
+		// whose instantiated spelling never repeats. Finite Box[Box[Void]]
+		// still descends to Void because each instantiation is smaller.
 		return true
 	}
-	seen[key] = true
-	defer delete(seen, key)
+	seen[key] = size
+	defer func() {
+		if active {
+			seen[key] = previous
+		} else {
+			delete(seen, key)
+		}
+	}()
 
 	for _, variant := range adt.Variants {
 		if onlyVariant != "" && variant.Name != onlyVariant {
@@ -144,12 +177,68 @@ func (tc *TypeChecker) typeHasInhabitant(typ Type, seen map[string]bool) bool {
 	return false
 }
 
+// coverageTypeSize bounds the unfolded input to Substitution.Apply, including
+// repeated DAG children, without serializing it or allocating an expanded tree.
+// A budget/cycle limit is unknown, never evidence that a type is uninhabited.
+func coverageTypeSize(typ Type) (int, bool) {
+	const limit = 1024
+	remaining := limit
+	var visit func(Type) bool
+	visitList := func(types []Type) bool {
+		for _, child := range types {
+			if !visit(child) {
+				return false
+			}
+		}
+		return true
+	}
+	visit = func(typ Type) bool {
+		if remaining == 0 {
+			return false
+		}
+		remaining--
+		switch t := typ.(type) {
+		case *TypeVar:
+			if replacement, ok := t.Monomorphic[t]; ok && replacement != t {
+				return visit(replacement)
+			}
+		case *RecordType:
+			for _, field := range t.Fields {
+				if !visit(field) {
+					return false
+				}
+			}
+		case *ArrayType:
+			return visit(t.ElementType)
+		case *GenericType:
+			return visitList(t.TypeArgs)
+		case *NarrowedADTVariantType:
+			return visitList(t.TypeArgs)
+		case *FunctionType:
+			return visitList(t.Parameters) && visit(t.ReturnType)
+		case *UnionType:
+			return visitList(t.Types)
+		case *IntersectionType:
+			return visitList(t.Types)
+		case *BufferType:
+			return visit(t.Element)
+		case *AtomicType:
+			return visit(t.Element)
+		case *CFnType:
+			return visitList(t.Parameters) && visit(t.ReturnType)
+		}
+		return true
+	}
+	bounded := visit(typ)
+	return limit - remaining, bounded
+}
+
 func (tc *TypeChecker) adtNameForCoverageType(typ Type) (string, string, []Type, bool) {
 	return adtInstantiation(typ)
 }
 
 func (tc *TypeChecker) coverageHasValues(typ Type) bool {
-	return tc.typeHasInhabitant(typ, make(map[string]bool))
+	return tc.typeHasInhabitant(typ, make(map[string]int))
 }
 
 func literalMatchesCoverageType(typ Type, expr ast.Expression) bool {
@@ -228,6 +317,12 @@ func (tc *TypeChecker) applyCoverage(node *coverageNode, pattern ast.Pattern) (c
 		if onlyVariant != "" && variant.Name != onlyVariant {
 			return false, false, true
 		}
+		if _, bounded := coverageTypeSize(node.typ); !bounded {
+			// Unknown expansion is potentially useful, but adds no coverage
+			// evidence. In particular, do not mark analysis unreliable and
+			// thereby suppress a genuine non-exhaustiveness diagnostic.
+			return !node.full, true, true
+		}
 		if !tc.variantReachable(node.typ, adtName, variant) {
 			return false, false, true
 		}
@@ -289,6 +384,9 @@ func (tc *TypeChecker) coverageComplete(node *coverageNode) bool {
 		return node.literals["bool:true"] && node.literals["bool:false"]
 	}
 
+	if _, bounded := coverageTypeSize(node.typ); !bounded {
+		return false
+	}
 	adtName, onlyVariant, ok := tc.adtNameForCoverage(node.typ)
 	if !ok {
 		// Integers, strings, and other open domains require a catch-all.
@@ -333,6 +431,9 @@ func (tc *TypeChecker) coverageWitnesses(node *coverageNode, limit int) []string
 		return witnesses
 	}
 
+	if _, bounded := coverageTypeSize(node.typ); !bounded {
+		return []string{"_"}
+	}
 	adtName, onlyVariant, ok := tc.adtNameForCoverage(node.typ)
 	if !ok {
 		return []string{"_"}
@@ -391,6 +492,9 @@ func (tc *TypeChecker) constructorRefinement(subject string, pattern ast.Pattern
 	adt := tc.adtTypes[adtName]
 	variant, found := tc.findADTVariant(adtName, patternVariant.Variant.Value)
 	if !found {
+		return []PatternRefinement{refinement}
+	}
+	if _, bounded := coverageTypeSize(scrutinee); !bounded {
 		return []PatternRefinement{refinement}
 	}
 	bindings, _, reachable := tc.variantIndexBindings(adt, variant, args)

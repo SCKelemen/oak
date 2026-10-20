@@ -391,15 +391,24 @@ race_bounded: (lw: Lower, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, n0: u32, n1: u32, n2:
   attempts: u32 = 0
   cleared: u32 = 0
   while !done {
-    l: Layout = layout_for(cap, terms)
-    race_in_oak(l, lw, b0, b1, b2, n0, n1, n2, variants, out)
-    attempts = attempts + u32(1)
-    cleared = cleared + (l.umask + l.cmask + u32(2)) * variants
-    out[u32(517)] = cleared
-    out[u32(518)] = (l.total + (variants > u32(1) ? { REPLAY_WORDS } | { u32(0) })) * variants + u32(3) - variants
-    out[u32(519)] = attempts
-    done = out[u32(0)] != STATUS_EXCEEDED || cap >= budget
-    !done ? { cap = cap > budget / u32(4) ? { budget } | { cap * u32(4) } } | { }
+    bdd_allocation_fits(cap, terms, variants) ? {
+      l: Layout = layout_for(cap, terms)
+      race_in_oak(l, lw, b0, b1, b2, n0, n1, n2, variants, out)
+      attempts = attempts + u32(1)
+      cleared = cleared + (l.umask + l.cmask + u32(2)) * variants
+      out[u32(517)] = cleared
+      out[u32(518)] = (l.total + (variants > u32(1) ? { REPLAY_WORDS } | { u32(0) })) * variants + u32(3) - variants
+      out[u32(519)] = attempts
+      done = out[u32(0)] != STATUS_EXCEEDED || cap >= budget
+      !done ? { cap = cap > budget / u32(4) ? { budget } | { cap * u32(4) } } | { }
+    } | {
+      out[u32(0)] = STATUS_EXCEEDED
+      out[u32(2)] = u32(0)
+      out[u32(517)] = cleared
+      attempts == u32(0) ? { out[u32(518)] = u32(0) } | { }
+      out[u32(519)] = attempts
+      done = true
+    }
   }
   solver_stats_env() ? {
     // c bdd <allocated bytes> <table clears> <attempts> <winning nodes>

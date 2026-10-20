@@ -1,6 +1,9 @@
 # Oak Surface Syntax
 
-This document defines the canonical surface conventions. Compatibility spellings in older documents are not normative.
+This document defines the canonical surface conventions. Compatibility
+spellings in older documents are not normative. Accepted input aliases are
+identified separately from preferred authoring forms below. These conventions
+do not promise that `oak fmt` rewrites aliases into canonical declarations.
 
 ## 1. Punctuation has one job
 
@@ -44,13 +47,38 @@ Reassignment:
 count = count + 1
 ```
 
-Safe Oak does not assign an implicit `NULL` value to an uninitialized declaration. A declaration such as:
+An explicitly typed declaration may omit its initializer when its type admits
+zero initialization. It denotes an initialized zero value, not storage waiting
+for a later assignment: numeric scalars start at zero, `Bool` at `false`, and
+owned arrays and records initialize their stored elements and fields recursively
+(`95-extraction.md` §3). For example:
 
 ```oak
-x: T
+State: type = struct { count: u32, ready: Bool, bytes: [4]u8 }
+zeroed: (): State {
+  state: State
+  state
+}
+counter: Atomic[u64]
 ```
 
-is not part of the safe core until definite-initialization semantics are specified and mechanically checked. Prefer initialization at declaration or an explicit `Option[T]`/state ADT.
+This is not a universal `NULL` default or definite-assignment analysis:
+
+- Function values have no zero value. Callable storage, including owned
+  record fields, nonempty owned arrays, and sum payload alternatives,
+  requires an explicit initializer (`OAK-T0801`; `20-types.md` §12).
+- Refined scalars, fixed arrays, and named record fields must admit zero;
+  otherwise the checker requires an initializer (`OAK-T0602`; `20-types.md` §12).
+- A `Buffer[T]` binding and records holding buffers must use their permitted
+  construction forms (`92-ffi.md` §2.8); sealed resource handles must use
+  their designated constructor and transitions (`112-protocols.md`).
+- `Atomic[T]` cells and aggregates holding cells are zero-initialized storage
+  declarations only, not values initialized by copying; set a cell afterward
+  with an atomic store (`65-machine-memory.md` §1).
+
+Assigning later does not waive these construction rules. Use an explicit
+initializer, or an explicit `Option[T]`/state ADT constructor, when zero is not
+the intended or permitted state.
 
 ## 2a. String literals
 
@@ -284,8 +312,13 @@ call. After `=`, a `{` opens a block body — a whole-body record literal
 must use its named form (`= Point { ... }`), which is preferred at
 boundaries anyway (§8).
 
-The `fn` keyword form remains available (methods with receivers and generic
-type parameters currently use it) with the same body semantics:
+The `fn` keyword form remains an accepted input alias with the same body
+semantics. Named functions, including generics, are canonically authored
+identifier-first; generic parameters follow the name (§9). Explicit receiver
+methods still use the `fn (receiver: Type) name(...)` form (§13;
+`83-modules.md` §6.5). For example,
+this accepted alias defines the same function as `add: (a: i32, b: i32): i32
+= a + b`:
 
 ```oak
 fn add(a: i32, b: i32): i32 = a + b
@@ -305,10 +338,10 @@ type and relies on where a call goes through it.
 
 ### Variadic trailing parameters
 
-The last parameter may be variadic, Go-style:
+The last parameter may be variadic, Go-style (signature shown):
 
 ```oak
-fn total(base: i32, rest: ...i32) -> i32
+total: (base: i32, rest: ...i32) -> i32
 ```
 
 Inside the body, `rest` is `[]i32` — a read-only view. A call supplies at
@@ -812,30 +845,43 @@ Anonymous record values/types may be supported where context makes the type unam
 
 ## 9. Generics and constraints
 
-```oak
-fn map[A, B](xs: []A, f: (A) -> B): ()
-  ...
-```
-
-Constraints use `:` and conjunction:
+Generic parameters follow the function name in the canonical declaration.
+Unconstrained calls may infer the type arguments or supply them explicitly
+(`20-types.md` §11.2):
 
 ```oak
-fn copy[T: Reader & Writer](x: T): ()
-  ...
+identity[T]: (value: T): T = value
+inferred: u32 = identity(u32(7))
+explicit: u32 = identity[u32](7)
 ```
 
-`&` in a generic constraint means “satisfies both constraints.” Record composition, if retained, is a separate definition-time operation despite sharing the token.
+The accepted compatibility form is `fn [T] identity(value: T): T = value`: its
+binders precede the name. Generics do not require `fn`.
 
-A semantic record type may also be used as a structural shape requirement in a constraint position once shape constraints are implemented:
+Constraints use `:`; `&` means “satisfies both requirements.” Requirements
+name declared semantic record shapes or interfaces. For example:
 
 ```oak
 XY: type = { x: f32, y: f32 }
+Tagged: type = { tag: u32 }
 
-fn length2[T: XY](value: T): f32
-  value.x * value.x + value.y * value.y
+length2[T: XY]: (value: T): f32 = value.x * value.x + value.y * value.y
+tag_of[T: XY & Tagged]: (value: T): u32 = value.tag
+
+Point: type = struct { x: f32, y: f32, tag: u32 }
+p: Point = Point { x: 3.0, y: 4.0, tag: 7 }
+squared: f32 = length2(p)
+tag: u32 = tag_of(p)
 ```
 
-This means `T` must expose the required semantic fields. It does **not** require `T` to share the same runtime layout as `XY`, and it does not create a runtime interface object or vtable. Shape-constraint implementation remains separate from ordinary value subtyping.
+Here `T` must expose the required semantic fields. It need not share the
+runtime layout of `XY`, and there is no runtime interface object or vtable.
+The body is checked against the named requirements at declaration, and the
+inferred calls above check the concrete argument's fields (`20-types.md`
+§11.2). For the shape-constrained functions shown, use inferred calls:
+explicit type-argument calls currently reject in the checker. This is a named
+shape/interface requirement mechanism, not a general predicate-constraint
+language; record composition remains a separate definition-time operation.
 
 ## 10. Unsafe
 

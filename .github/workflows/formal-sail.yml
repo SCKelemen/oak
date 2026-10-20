@@ -60,6 +60,46 @@ on:
       - 'spec/lean-sail/**'
       - 'spec/lean-sail433/**'
       - 'spec/lean-sail429/**'
+      # Complete shared strict source/image dependency closure.
+      - 'spec/lean/Oak/AArch64BitwiseFunction.lean'
+      - 'spec/lean/Oak/AArch64BranchExecution.lean'
+      - 'spec/lean/Oak/AArch64CompareBranchEncoding.lean'
+      - 'spec/lean/Oak/AArch64ConditionalBranch.lean'
+      - 'spec/lean/Oak/AArch64ControlFlow.lean'
+      - 'spec/lean/Oak/AArch64SpillMemory.lean'
+      - 'spec/lean/Oak/BitwiseFunction.lean'
+      - 'spec/lean/Oak/BitwiseModule.lean'
+      - 'spec/lean/Oak/BitwiseSourceImageParity.lean'
+      - 'spec/lean/Oak/BitwiseSourceLowering.lean'
+      - 'spec/lean/Oak/IntegerDivision.lean'
+      - 'spec/lean/Oak/LoweringRefinement.lean'
+      - 'spec/lean/Oak/MinimalELF.lean'
+      - 'spec/lean/Oak/NativeBitwiseImage.lean'
+      - 'spec/lean/Oak/NativeBitwiseObject.lean'
+      - 'spec/lean/Oak/ObjectRelocation.lean'
+      - 'spec/lean/Oak/RV64Relocation.lean'
+      - 'spec/lean/Oak/RiscVBitwiseFunction.lean'
+      - 'spec/lean/Oak/RiscVBranchEncoding.lean'
+      - 'spec/lean/Oak/RiscVCallExecution.lean'
+      - 'spec/lean/Oak/RiscVMaterialization.lean'
+      - 'spec/lean/Oak/StrictImageEntryContract.lean'
+      - 'spec/lean/Oak/WasmAssemblerBytes.lean'
+      - 'spec/lean/Oak/WasmAssemblerExtracted.lean'
+      - 'spec/lean/Oak/WasmAssemblerInstruction.lean'
+      - 'spec/lean/Oak/WasmAssemblerLaws.lean'
+      - 'spec/lean/Oak/WasmAssemblerSequence.lean'
+      - 'spec/lean/Oak/WasmAssemblerTotal.lean'
+      - 'spec/lean/Oak/WasmEncoding.lean'
+      - 'spec/lean/Oak/WasmExecution.lean'
+      - 'spec/lean/Oak/WasmInstruction.lean'
+      - 'spec/lean/Oak/WasmLEB.lean'
+      - 'spec/lean/Oak/WasmNumeric.lean'
+      - 'spec/lean/check-strict-image-entry-contract.py'
+      - 'spec/lean/lean-toolchain'
+      - 'compiler/rv64_strict_entry_bitwise_lean_test.go'
+      - 'compiler/checked_bitwise_image_bundle.go'
+      - 'compiler/checked_bitwise_image_proposal_test.go'
+      - 'compiler/rv64_image_bitwise_lean_test.go'
       - 'spec/lean/Oak/ByteFields.lean'
       - 'spec/lean/Oak/BitwiseSource.lean'
       - 'spec/lean/Oak/ArmDecoderClassification/**'
@@ -478,12 +518,23 @@ jobs:
           python3 image-audit.py
           python3 entry-audit.py
           python3 exit-audit.py
+          lake build OakSailStrictImageEntry OakSailStrictImageEntryExecution OakSailStrictImageEntryChecks
+          python3 -m unittest discover -p test_strict_entry_audit.py
+          python3 strict-entry-audit.py
 
       - name: Pin actual compiler source and bytes to fetched/stepped theorems
         env:
           OAK_REQUIRE_RV64_LEAN: '1'
           LEAN_NUM_THREADS: '2'
         run: go test ./compiler -run '^TestRV64((Fetched|Stepped|Clocked|Image|Entry)Bitwise|ExitReady)CompilerMatchesLean$' -count=1 -timeout=30m -v
+
+      - name: Require strict original bundles at actual RV64 entry
+        env:
+          OAK_REQUIRE_RV64_LEAN: '1'
+          LEAN_NUM_THREADS: '2'
+        run: |
+          python3 -m unittest discover -s .github/scripts -p test_required_backend_tests.py
+          python3 .github/scripts/required_backend_tests.py strict-entry
 
       - name: Build bounded RV64 source and external execution composition
         working-directory: spec/lean-sail433
