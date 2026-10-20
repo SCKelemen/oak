@@ -80,22 +80,11 @@ func (i *Installation) CheckBundle(ctx context.Context, source, wasm, arm, rv []
 		return nil, err
 	}
 	s := i.state
-	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
-	defer cancel()
-	stop := context.AfterFunc(s.ctx, cancel)
-	defer stop()
-	select {
-	case s.gate <- struct{}{}:
-		defer func() { <-s.gate }()
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	if !i.Valid() {
-		return nil, ErrInvalidInstallation
-	}
-	if err = ctx.Err(); err != nil {
+	ctx, release, err := s.beginRequest(ctx)
+	if err != nil {
 		return nil, err
 	}
+	defer release()
 	out, err := s.runRequest(ctx, generated)
 	if err != nil {
 		return nil, err
@@ -130,4 +119,32 @@ func (s *installationState) runRequest(ctx context.Context, generated []byte) ([
 		return nil, err
 	}
 	return runLeanProcess(ctx, request, s.environment(), s.lean, "-j1", "-M4096", "--trust=0", file)
+}
+
+// beginRequest is private shared custody/process scheduling; the typed callers
+// validate their distinct seals before entry. The request deadline includes both
+// the installation gate and the global Lean-process gate.
+func (s *installationState) beginRequest(parent context.Context) (context.Context, func(), error) {
+	ctx, cancel := context.WithTimeout(parent, RequestTimeout)
+	stop := context.AfterFunc(s.ctx, cancel)
+	cleanup := func() { stop(); cancel() }
+	select {
+	case s.gate <- struct{}{}:
+	case <-ctx.Done():
+		cleanup()
+		return nil, nil, ctx.Err()
+	}
+	release := func() { <-s.gate; cleanup() }
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		release()
+		return nil, nil, ErrInvalidInstallation
+	}
+	if err := ctx.Err(); err != nil {
+		release()
+		return nil, nil, err
+	}
+	return ctx, release, nil
 }

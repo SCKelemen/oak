@@ -41,9 +41,53 @@ type installationState struct {
 // Install accepts only an offline copy of the exact reviewed official Linux
 // amd64 archive. Archive bytes, not its name, manifest, or claimed version, are
 // authority. No network downloads or caller-supplied imports/runners are used.
-func Install(ctx context.Context, archivePath string) (_ *Installation, err error) {
+func Install(ctx context.Context, archivePath string) (*Installation, error) {
+	st, err := installRuntime(ctx, archivePath, installationProfile{
+		kind: objectInstallation, authority: installationSeal,
+		sources: leansources.Sources, identity: leansources.Identity,
+		selfTest: func(ctx context.Context, state *installationState) error {
+			return (&Installation{state: state}).selfTest(ctx)
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Installation{state: st}, nil
+}
+
+// installationKind is closed: callers cannot supply runners, imports, source
+// closures, build flags, auditor text, or precompiled proof objects.
+type installationKind uint8
+
+const (
+	objectInstallation installationKind = iota
+	imageInstallation
+)
+
+// Profiles are constructed only by the two fixed public constructors. Keeping
+// their function references at those call sites lets an object-only consumer
+// dead-strip the image closure and controls. No public injection is available.
+type installationProfile struct {
+	kind      installationKind
+	authority *seal
+	sources   func() []leansources.Source
+	identity  func() string
+	selfTest  func(context.Context, *installationState) error
+}
+
+func installRuntime(ctx context.Context, archivePath string, profile installationProfile) (_ *installationState, err error) {
 	if ctx == nil {
 		return nil, errors.New("bitwisecheck: nil context")
+	}
+	if profile.kind != objectInstallation && profile.kind != imageInstallation {
+		return nil, errors.New("bitwisecheck: unknown private installation profile")
+	}
+	expectedSeal := installationSeal
+	if profile.kind == imageInstallation {
+		expectedSeal = imageInstallationSeal
+	}
+	if profile.authority != expectedSeal || profile.sources == nil || profile.identity == nil || profile.selfTest == nil {
+		return nil, errors.New("bitwisecheck: incomplete or mismatched private installation profile")
 	}
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		return nil, errors.New("bitwisecheck: only Linux amd64 hosts are supported")
@@ -80,7 +124,8 @@ func Install(ctx context.Context, archivePath string) (_ *Installation, err erro
 		return nil, err
 	}
 	lean := filepath.Join(root, "lean-4.33.1-linux", "bin", "lean")
-	st := &installationState{root: root, lean: lean, proof: proof, sourceHash: leansources.Identity(), gate: make(chan struct{}, 1)}
+	sources, sourceHash := profile.sources(), profile.identity()
+	st := &installationState{root: root, lean: lean, proof: proof, sourceHash: sourceHash, gate: make(chan struct{}, 1)}
 	version, e := runLeanProcess(ctx, root, st.environment(), lean, "--version")
 	if e != nil {
 		return nil, e
@@ -89,7 +134,7 @@ func Install(ctx context.Context, archivePath string) (_ *Installation, err erro
 	if string(version) != expected {
 		return nil, errors.New("bitwisecheck: unexpected pinned Lean version")
 	}
-	for _, source := range leansources.Sources() {
+	for _, source := range sources {
 		if err = ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -109,13 +154,13 @@ func Install(ctx context.Context, archivePath string) (_ *Installation, err erro
 		return nil, err
 	}
 	st.ctx, st.cancel = context.WithCancel(context.Background())
-	st.authority = installationSeal
-	installation := &Installation{state: st}
-	if err = installation.selfTest(ctx); err != nil {
+	st.authority = profile.authority
+	err = profile.selfTest(ctx, st)
+	if err != nil {
 		st.cancel()
 		return nil, fmt.Errorf("bitwisecheck: installation self-test: %w", err)
 	}
-	return installation, nil
+	return st, nil
 }
 func (s *installationState) environment() []string {
 	return []string{"HOME=" + s.root, "TMPDIR=" + s.root, "PATH=/nonexistent", "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "LEAN_PATH=" + s.proof + ":" + filepath.Join(s.root, "lean-4.33.1-linux", "lib", "lean")}
@@ -127,7 +172,9 @@ func (i *Installation) Close() error {
 	if i == nil || i.state == nil || i.state.authority != installationSeal {
 		return ErrInvalidInstallation
 	}
-	s := i.state
+	return i.state.close()
+}
+func (s *installationState) close() error {
 	s.once.Do(func() {
 		s.mu.Lock()
 		s.closed = true
