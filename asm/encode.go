@@ -31,9 +31,25 @@ type Relocation struct {
 // EncodeFunction encodes every instruction of a checked function, resolving
 // labels within it; references to other symbols become relocations.
 func EncodeFunction(fn *Function) ([]byte, []Relocation, error) {
-	if fn.Arch == ArchRV64 {
-		return encodeRV64Function(fn)
+	if fn == nil {
+		return nil, nil, fmt.Errorf("asm: cannot encode a nil native function")
 	}
+	// Preserve the historical empty-name ARM64 API at this boundary only.
+	// The shared contract itself requires an explicit architecture.
+	arch := fn.Arch
+	if arch == "" {
+		arch = ArchArm64
+	}
+	target, err := ResolveNativeTarget(arch)
+	if err != nil {
+		return nil, nil, err
+	}
+	bound := *fn
+	bound.Arch = arch
+	return target.Encode(&bound)
+}
+
+func encodeArm64Function(fn *Function) ([]byte, []Relocation, error) {
 	labels := map[string]int64{}
 	offset := int64(0)
 	for _, item := range fn.Items {
