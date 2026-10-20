@@ -182,7 +182,7 @@ class RequiredBackendTests(unittest.TestCase):
 
     def test_audited_suite_manifest(self):
         expected_roots = {
-            'selfhost-image-producers': {'TestE2ESelfHostedBitwiseELF', 'TestE2ESelfHostedBitwiseELFExtract', 'TestLeanNativeBitwiseEnvelopeExtract', 'TestLeanNativeBitwiseEnvelopeProof', 'TestE2ESelfHostedWasmBitwiseModule', 'TestE2ESelfHostedWasmBitwiseModuleRefusal', 'TestLeanWasmBitwiseModuleExtract', 'TestLeanWasmBitwiseModuleFaithful', 'TestE2ESelfHostedBitwiseImageBytes'},
+            'selfhost-image-producers': {'TestE2ESelfHostedBitwiseELF', 'TestE2ESelfHostedBitwiseELFExtract', 'TestLeanNativeBitwiseEnvelopeExtract', 'TestLeanNativeBitwiseEnvelopeProof', 'TestLeanNativeBitwiseEnvelopeTotalProof', 'TestE2ESelfHostedWasmBitwiseModule', 'TestE2ESelfHostedWasmBitwiseModuleRefusal', 'TestLeanWasmBitwiseModuleExtract', 'TestLeanWasmBitwiseModuleFaithful', 'TestE2ESelfHostedBitwiseImageBytes'},
             'selfhost-image-admission': {'TestSelfHostedBitwiseImageBundleReal'},
             'checked-image-sources': {'TestEmbeddedClosureCustody', 'TestImageEmbeddedClosureCustody'},
             'checked-image-runtime': {'TestImageClosedInstallationProfile', 'TestImagePinnedRuntime', 'TestProcessRefusal', 'TestExtractionBoundaries', 'TestInstallRefusesUntrustedArchive', 'TestArchiveDigestMismatch', 'TestImageProtocolFieldLimits', 'TestImageMaximumProtocolSize', 'TestArchiveFIFORefusesWithoutBlocking', 'TestImageZeroAuthority', 'TestImageSnapshotAndRenderer', 'TestImageStrictProtocol'},
@@ -258,14 +258,14 @@ class RequiredBackendTests(unittest.TestCase):
     def test_raw_producer_gates_are_exact_and_fail_closed(self):
         producers = required.SUITES["selfhost-image-producers"]
         admissions = required.SUITES["selfhost-image-admission"]
-        self.assertEqual(len(producers.tests), 217)
+        self.assertEqual(len(producers.tests), 218)
         self.assertEqual(len(admissions.tests), 35)
         self.assertEqual(sum(n.startswith("TestE2ESelfHostedBitwiseELF/") for n in producers.tests), 145)
         self.assertEqual(sum(n.startswith("TestE2ESelfHostedWasmBitwiseModule/") for n in producers.tests), 24)
         self.assertEqual(sum(n.startswith("TestE2ESelfHostedWasmBitwiseModuleRefusal/") for n in producers.tests), 33)
         self.assertEqual(sum(n.startswith("TestSelfHostedBitwiseImageBundleReal/Refusals/") for n in admissions.tests), 26)
         self.assertTrue({"TestLeanWasmBitwiseModuleExtract", "TestLeanWasmBitwiseModuleFaithful",
-                         "TestLeanNativeBitwiseEnvelopeExtract", "TestLeanNativeBitwiseEnvelopeProof"} <= set(producers.tests))
+                         "TestLeanNativeBitwiseEnvelopeExtract", "TestLeanNativeBitwiseEnvelopeProof", "TestLeanNativeBitwiseEnvelopeTotalProof"} <= set(producers.tests))
         matrix = {"TestSelfHostedBitwiseImageBundleReal/Canonical/" + family + "/" + op
                   for family in ("bitwise", "Mix9") for op in ("and", "or", "xor")}
         self.assertEqual({n for n in admissions.tests if "/Canonical/" in n}, matrix)

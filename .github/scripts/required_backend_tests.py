@@ -185,6 +185,7 @@ SUITES = {
         'TestE2ESelfHostedBitwiseELFExtract',
         'TestLeanNativeBitwiseEnvelopeExtract',
         'TestLeanNativeBitwiseEnvelopeProof',
+        'TestLeanNativeBitwiseEnvelopeTotalProof',
         'TestE2ESelfHostedWasmBitwiseModule',
         'TestE2ESelfHostedWasmBitwiseModule/and_bitwise',
         'TestE2ESelfHostedWasmBitwiseModule/and_Mix9',
