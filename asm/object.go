@@ -259,9 +259,9 @@ func layOut(functions []EncodedFunction) (*textLayout, error) {
 		if fn.Symbol == "" {
 			return nil, fmt.Errorf("object: a function without a symbol")
 		}
-		arch := fn.Arch
-		if arch == "" {
-			arch = ArchArm64
+		arch, err := encodingArchitecture(fn.Arch)
+		if err != nil {
+			return nil, fmt.Errorf("object: function %s: %w", fn.Symbol, err)
 		}
 		if i == 0 {
 			l.arch = arch
