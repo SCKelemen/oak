@@ -165,12 +165,13 @@ python3 check-strict-image-entry-contract.py --evidence-dir /absolute/local/evid
 ```
 
 This diagnostic builds the projection, mechanically extracts current pure
-consumer declarations, and reuses the actual adapter proof text. It rechecks
+consumer declarations and their existing pure admission iff lemmas, and reuses
+the actual adapter proof text. It rechecks
 selected complete committed native compiler fixtures for all three operations,
 with exact original sources and a canonical checked Wasm companion. That
 companion is not described as freshly compiler-generated. Both touching stack
 boundaries and numerical/source/artifact refusals are checked. Source/snippet
-SHA-256 values, generated source, build/kernel logs and 47 standard-only root
+SHA-256 values, generated source, build/kernel logs and 50 standard-only root
 closures are retained. Extracted expressions exist only as local test data.
 
 Fresh compiler tuples/certificate can additionally be retained with

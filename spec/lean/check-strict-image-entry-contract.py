@@ -24,13 +24,16 @@ PURE = [
     ("lean-sail433/OakSailFramedComposition.lean", "OakSailFramedComposition", "acceptsFrame"),
     ("lean-sail429/OakSailImageLoad.lean", "OakSailImageLoad", "ImageLayout"),
     ("lean-sail429/OakSailImageLoad.lean", "OakSailImageLoad", "acceptsImage"),
+    ("lean-sail429/OakSailImageLoad.lean", "OakSailImageLoad", "acceptsImage_iff"),
     ("lean-sail429/OakSailImageSource.lean", "OakSailImageSource", "accepts"),
+    ("lean-sail429/OakSailImageSource.lean", "OakSailImageSource", "accepts_iff"),
     ("lean-sail429/OakSailEntryInstructions.lean", "OakSailEntryInstructions", "startupBytes"),
     ("lean-sail429/OakSailEntrySource.lean", "OakSailEntrySource", "acceptsEntry"),
+    ("lean-sail429/OakSailEntrySource.lean", "OakSailEntrySource", "acceptsEntry_iff"),
 ]
 
 def declaration(text, name):
-    starts = list(re.finditer(r"(?m)^(?:def|abbrev) " + re.escape(name) + r"\b", text))
+    starts = list(re.finditer(r"(?m)^(?:def|abbrev|theorem) " + re.escape(name) + r"\b", text))
     if len(starts) != 1:
         raise RuntimeError(f"Expected exactly one declaration: {name}")
     tail = text[starts[0].start():]
@@ -242,6 +245,8 @@ def main():
     model = (ROOT / "Oak/StrictImageEntryContract.lean").read_text()
     names = ["Oak.StrictImageEntryContract." + name for name in
              re.findall(r"(?m)^theorem ([A-Za-z0-9_]+)", model)]
+    names += ["ExtractedOnly." + namespace + "." + name
+              for _, namespace, name in PURE if name.endswith("_iff")]
     adapter_text = (SPEC / "lean-sail429/OakSailStrictImageEntry.lean").read_text()
     names += ["ExtractedOnly.OakSailStrictImageEntry." + name for name in
               re.findall(r"(?m)^theorem ([A-Za-z0-9_]+)", adapter_text)] + fixture_names

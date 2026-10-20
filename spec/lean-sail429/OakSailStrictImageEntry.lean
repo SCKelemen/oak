@@ -26,11 +26,12 @@ theorem strict_source_entry_admitted
   obtain ⟨parsed, framed, body, prefixFacts, layout⟩ :=
     Oak.StrictImageEntryContract.entry_preconditions checked stack_lower stack_upper
       stack_aligned stack_separate
-  simp only [OakSailEntrySource.acceptsEntry, OakSailImageSource.accepts,
-    OakSailFramedComposition.acceptsFrame, OakSailComposition.acceptsProjection,
-    OakSailImageLoad.acceptsImage, OakSailImageLoad.ImageLayout,
-    OakSailEntryInstructions.startupBytes, Bool.and_eq_true_iff, decide_eq_true_eq]
-  exact ⟨⟨⟨parsed, framed⟩, ⟨body, by exact decide_eq_true layout⟩⟩, prefixFacts⟩
+  apply (OakSailEntrySource.acceptsEntry_iff source d image sp).mpr
+  refine ⟨?_, prefixFacts⟩
+  apply (OakSailImageSource.accepts_iff source d image
+    ((Oak.MinimalELF.segment image).entry + 16) sp).mpr
+  refine ⟨?_, (OakSailImageLoad.acceptsImage_iff image _ sp _).mpr ⟨body, layout⟩⟩
+  exact Bool.and_eq_true_iff.mpr ⟨decide_eq_true parsed, framed⟩
 
 /-- Smallest actual consumer interface: retain its existing layout premise.
 No new production predicate or source extraction is necessary for composition. -/
