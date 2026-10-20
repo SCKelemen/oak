@@ -362,3 +362,5 @@ import Oak.CNFAllocation
 import Oak.SolverAllocation
 
 import Oak.NativeTarget
+
+import Oak.RecordUnificationBoundary
