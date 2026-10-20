@@ -1,5 +1,5 @@
 import Oak.LRATARM64GuardCalls
-import Oak.AArch64SpillMemory
+import Oak.LRATHeaderMemory
 
 /-! The emitted LDR W0,[X19,Wm,UXTW #2] immediately before allocation guards.
 Memory uses the existing total, little-endian byte model. A supplied header
@@ -10,13 +10,10 @@ set_option autoImplicit false
 namespace Oak.LRATARM64HeaderLoads
 open Oak.LRATARM64Bytes
 open Oak.AArch64BitwiseFunction (readW writeW)
-open Oak.AArch64SpillMemory (Memory loadBytes)
+open Oak.AArch64SpillMemory (Memory)
 
-def read32 (mem : Memory) (addr : Nat) : BitVec 32 :=
-  (loadBytes 4 mem addr).truncate 32
-
-def Represents (mem : Memory) (base : Nat) (words : Array UInt32) : Prop :=
-  ∀ i, i < words.size → read32 mem (base + i * 4) = (words.getD i 0).toBitVec
+abbrev read32 := Oak.LRATHeaderMemory.read32
+abbrev Represents := Oak.LRATHeaderMemory.Represents
 
 def index (word : BitVec 32) (s : State) : Nat :=
   (readW s.regs (word.extractLsb' 16 5)).toNat
