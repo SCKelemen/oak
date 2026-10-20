@@ -102,6 +102,8 @@ func TestProtocolSealedArrayInitializerContract(t *testing.T) {
 func TestArrayInitializerRejectsTrailingComma(t *testing.T) {
 	// Array productions currently do not permit trailing separators. In an
 	// annotated declaration, a failed literal must not become an absent value.
+	// The required-item diagnostic is anchored to the closing delimiter rather
+	// than falling back to the outer assignment token.
 	for _, tc := range []struct{ name, prefix, declaration string }{
 		{"primitive_single", "", "xs: [2]i32 = [11, 31,]"},
 		{"primitive_multiline", "", "xs: [2]i32 = [\n11,\n31,\n]"},
@@ -120,7 +122,7 @@ func TestArrayInitializerRejectsTrailingComma(t *testing.T) {
 			} {
 				t.Run(phase.name, func(t *testing.T) {
 					comp := New().WithSource(tc.name+".oak", tc.prefix+"main: (): i32 = {\n"+tc.declaration+"\n0\n}")
-					if err := phase.run(comp); err == nil || err.Error() != "parse failed: expected value expression after =" {
+					if err := phase.run(comp); err == nil || err.Error() != "parse failed: expected list item" {
 						t.Errorf("must reject malformed initializer at parsing: %v", err)
 					}
 				})
