@@ -332,6 +332,13 @@ jobs:
           OAK_REQUIRE_CLAUSE_AGREEMENT_LEAN: '1'
         run: go test . -run '^TestClauseAgreement' -count=1 -v
 
+      # Separate required inventory: source/layout fixtures are evidence, while
+      # the adapter theorem is freshly checked from source at trust zero.
+      - name: Require stateful-copy representation and source contract
+        env:
+          OAK_REQUIRE_STATEFUL_COPY_LEAN: '1'
+        run: python3 .github/scripts/required_backend_tests.py stateful-copy
+
       - name: Check extracted standard library against compiled and interpreted Oak
         env:
           OAK_REQUIRE_BYTES_COPY_LEAN: '1'

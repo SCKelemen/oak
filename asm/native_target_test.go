@@ -61,6 +61,22 @@ func TestNativeTargetClosedBoundary(t *testing.T) {
 	}
 }
 
+// The legacy encoding adapter may default only the empty spelling; it must
+// otherwise agree with the strict selector used by generation and verification.
+func TestNativeTargetEncodingAdapter(t *testing.T) {
+	for _, arch := range []string{"", ArchArm64, ArchRV64, "unknown", "riscv64", "wasm32", " ARM64"} {
+		canonical := arch
+		if canonical == "" {
+			canonical = ArchArm64
+		}
+		target, strictErr := ResolveNativeTarget(canonical)
+		got, err := encodingArchitecture(arch)
+		if (err == nil) != (strictErr == nil) || got != target.Arch() {
+			t.Fatalf("adapter %q: %q, %v; strict: %q, %v", arch, got, err, target.Arch(), strictErr)
+		}
+	}
+}
+
 func TestNativeTargetRelocationOwnership(t *testing.T) {
 	for _, arch := range []string{ArchArm64, ArchRV64} {
 		target, _ := ResolveNativeTarget(arch)

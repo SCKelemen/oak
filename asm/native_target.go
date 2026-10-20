@@ -34,7 +34,7 @@ func (t NativeTarget) Encode(fn *Function) ([]byte, []Relocation, error) {
 	}
 	switch t.arch {
 	case ArchArm64:
-		return encodeArm64Function(fn)
+		return encodeARM64Function(fn)
 	case ArchRV64:
 		return encodeRV64Function(fn)
 	default:
