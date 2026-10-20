@@ -1,0 +1,4943 @@
+{
+  "Schema": 1,
+  "Method": "Go AST; all build-tag variants; nested modules, vendor, hidden directories and testdata excluded; test imports separate; line counts include comments and blanks; exact function bodies \u003e=20 lines are review candidates, not semantic equivalence",
+  "Scope": [
+    "asm",
+    "compiler",
+    "machine",
+    "nativegen",
+    "optir"
+  ],
+  "Packages": [
+    {
+      "Path": ".",
+      "ProductionFiles": 11,
+      "TestFiles": 56,
+      "ProductionLines": 5552
+    },
+    {
+      "Path": "asm",
+      "ProductionFiles": 77,
+      "TestFiles": 225,
+      "ProductionLines": 59435
+    },
+    {
+      "Path": "asm/internal/armfeat",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 168
+    },
+    {
+      "Path": "asm/internal/isagen",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 1841
+    },
+    {
+      "Path": "asm/internal/riscvgen",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 235
+    },
+    {
+      "Path": "asm/internal/sysreggen",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 285
+    },
+    {
+      "Path": "ast",
+      "ProductionFiles": 1,
+      "TestFiles": 2,
+      "ProductionLines": 2051
+    },
+    {
+      "Path": "benchmarks/native/emit",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 51
+    },
+    {
+      "Path": "benchmarks/native/exact_fma",
+      "ProductionFiles": 1,
+      "TestFiles": 1,
+      "ProductionLines": 258
+    },
+    {
+      "Path": "benchmarks/rings/goref",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 93
+    },
+    {
+      "Path": "benchmarks/stdlib/goref",
+      "ProductionFiles": 4,
+      "TestFiles": 0,
+      "ProductionLines": 891
+    },
+    {
+      "Path": "bitwisecheck",
+      "ProductionFiles": 15,
+      "TestFiles": 6,
+      "ProductionLines": 1770
+    },
+    {
+      "Path": "borrowchecker",
+      "ProductionFiles": 10,
+      "TestFiles": 15,
+      "ProductionLines": 4233
+    },
+    {
+      "Path": "buildcache",
+      "ProductionFiles": 1,
+      "TestFiles": 1,
+      "ProductionLines": 181
+    },
+    {
+      "Path": "cmd/generate_golden",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 46
+    },
+    {
+      "Path": "cmd/oak-architecture",
+      "ProductionFiles": 1,
+      "TestFiles": 1,
+      "ProductionLines": 342
+    },
+    {
+      "Path": "cmd/oak-browser",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 29
+    },
+    {
+      "Path": "cmd/verify_golden",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 45
+    },
+    {
+      "Path": "codegen",
+      "ProductionFiles": 28,
+      "TestFiles": 27,
+      "ProductionLines": 12442
+    },
+    {
+      "Path": "codegen/lean",
+      "ProductionFiles": 5,
+      "TestFiles": 4,
+      "ProductionLines": 3982
+    },
+    {
+      "Path": "codegen/metal",
+      "ProductionFiles": 3,
+      "TestFiles": 0,
+      "ProductionLines": 2959
+    },
+    {
+      "Path": "codegen/metal/gpu",
+      "ProductionFiles": 1,
+      "TestFiles": 1,
+      "ProductionLines": 259
+    },
+    {
+      "Path": "compiler",
+      "ProductionFiles": 55,
+      "TestFiles": 581,
+      "ProductionLines": 24637
+    },
+    {
+      "Path": "diagnostic",
+      "ProductionFiles": 1,
+      "TestFiles": 1,
+      "ProductionLines": 559
+    },
+    {
+      "Path": "discipline",
+      "ProductionFiles": 2,
+      "TestFiles": 1,
+      "ProductionLines": 1108
+    },
+    {
+      "Path": "evaluator",
+      "ProductionFiles": 13,
+      "TestFiles": 13,
+      "ProductionLines": 4770
+    },
+    {
+      "Path": "experiments/verification-poc",
+      "ProductionFiles": 10,
+      "TestFiles": 22,
+      "ProductionLines": 2457
+    },
+    {
+      "Path": "experiments/verification-poc/frontend",
+      "ProductionFiles": 1,
+      "TestFiles": 1,
+      "ProductionLines": 279
+    },
+    {
+      "Path": "experiments/verification-poc/internal/lrat",
+      "ProductionFiles": 1,
+      "TestFiles": 4,
+      "ProductionLines": 247
+    },
+    {
+      "Path": "hostform",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 589
+    },
+    {
+      "Path": "internal/lrat",
+      "ProductionFiles": 1,
+      "TestFiles": 3,
+      "ProductionLines": 617
+    },
+    {
+      "Path": "internal/wasmtest",
+      "ProductionFiles": 1,
+      "TestFiles": 1,
+      "ProductionLines": 141
+    },
+    {
+      "Path": "layout",
+      "ProductionFiles": 2,
+      "TestFiles": 4,
+      "ProductionLines": 521
+    },
+    {
+      "Path": "lowering",
+      "ProductionFiles": 1,
+      "TestFiles": 1,
+      "ProductionLines": 737
+    },
+    {
+      "Path": "lsp",
+      "ProductionFiles": 2,
+      "TestFiles": 2,
+      "ProductionLines": 254
+    },
+    {
+      "Path": "lsp/server",
+      "ProductionFiles": 1,
+      "TestFiles": 1,
+      "ProductionLines": 968
+    },
+    {
+      "Path": "machine",
+      "ProductionFiles": 23,
+      "TestFiles": 31,
+      "ProductionLines": 9467
+    },
+    {
+      "Path": "modules",
+      "ProductionFiles": 9,
+      "TestFiles": 3,
+      "ProductionLines": 1604
+    },
+    {
+      "Path": "nativegen",
+      "ProductionFiles": 46,
+      "TestFiles": 40,
+      "ProductionLines": 30676
+    },
+    {
+      "Path": "object",
+      "ProductionFiles": 2,
+      "TestFiles": 0,
+      "ProductionLines": 774
+    },
+    {
+      "Path": "opt",
+      "ProductionFiles": 9,
+      "TestFiles": 7,
+      "ProductionLines": 2942
+    },
+    {
+      "Path": "optir",
+      "ProductionFiles": 28,
+      "TestFiles": 30,
+      "ProductionLines": 10388
+    },
+    {
+      "Path": "packageapi",
+      "ProductionFiles": 2,
+      "TestFiles": 3,
+      "ProductionLines": 297
+    },
+    {
+      "Path": "parser",
+      "ProductionFiles": 13,
+      "TestFiles": 35,
+      "ProductionLines": 7363
+    },
+    {
+      "Path": "playground",
+      "ProductionFiles": 2,
+      "TestFiles": 1,
+      "ProductionLines": 156
+    },
+    {
+      "Path": "prove",
+      "ProductionFiles": 12,
+      "TestFiles": 13,
+      "ProductionLines": 3675
+    },
+    {
+      "Path": "repl",
+      "ProductionFiles": 4,
+      "TestFiles": 4,
+      "ProductionLines": 3234
+    },
+    {
+      "Path": "resourceflow",
+      "ProductionFiles": 1,
+      "TestFiles": 2,
+      "ProductionLines": 503
+    },
+    {
+      "Path": "scanner",
+      "ProductionFiles": 1,
+      "TestFiles": 7,
+      "ProductionLines": 626
+    },
+    {
+      "Path": "semir",
+      "ProductionFiles": 20,
+      "TestFiles": 29,
+      "ProductionLines": 3589
+    },
+    {
+      "Path": "serialize",
+      "ProductionFiles": 8,
+      "TestFiles": 4,
+      "ProductionLines": 2105
+    },
+    {
+      "Path": "source",
+      "ProductionFiles": 3,
+      "TestFiles": 3,
+      "ProductionLines": 241
+    },
+    {
+      "Path": "spec/lean",
+      "ProductionFiles": 2,
+      "TestFiles": 2,
+      "ProductionLines": 193
+    },
+    {
+      "Path": "spec/sail",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 327
+    },
+    {
+      "Path": "spec/tamarin/crypto",
+      "ProductionFiles": 1,
+      "TestFiles": 1,
+      "ProductionLines": 153
+    },
+    {
+      "Path": "stdlib",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 578
+    },
+    {
+      "Path": "target",
+      "ProductionFiles": 2,
+      "TestFiles": 2,
+      "ProductionLines": 371
+    },
+    {
+      "Path": "testrunner",
+      "ProductionFiles": 15,
+      "TestFiles": 21,
+      "ProductionLines": 3343
+    },
+    {
+      "Path": "token",
+      "ProductionFiles": 3,
+      "TestFiles": 1,
+      "ProductionLines": 290
+    },
+    {
+      "Path": "toolchain",
+      "ProductionFiles": 1,
+      "TestFiles": 1,
+      "ProductionLines": 230
+    },
+    {
+      "Path": "tools/checked_bundle/emit",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 58
+    },
+    {
+      "Path": "tools/native_image_fixtures",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 333
+    },
+    {
+      "Path": "tools/native_object_fixtures",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 243
+    },
+    {
+      "Path": "tools/source_image_parity",
+      "ProductionFiles": 1,
+      "TestFiles": 0,
+      "ProductionLines": 39
+    },
+    {
+      "Path": "typechecker",
+      "ProductionFiles": 65,
+      "TestFiles": 68,
+      "ProductionLines": 29090
+    },
+    {
+      "Path": "util",
+      "ProductionFiles": 1,
+      "TestFiles": 1,
+      "ProductionLines": 108
+    },
+    {
+      "Path": "wasm",
+      "ProductionFiles": 7,
+      "TestFiles": 7,
+      "ProductionLines": 1510
+    },
+    {
+      "Path": "wasm/check",
+      "ProductionFiles": 4,
+      "TestFiles": 3,
+      "ProductionLines": 541
+    },
+    {
+      "Path": "wasm/encoding",
+      "ProductionFiles": 1,
+      "TestFiles": 2,
+      "ProductionLines": 95
+    }
+  ],
+  "ProductionEdges": [
+    {
+      "From": ".",
+      "To": "asm",
+      "Files": [
+        "clause_agreement.go",
+        "oaksolver.go",
+        "prove_cmd.go",
+        "prove_sat.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "buildcache",
+      "Files": [
+        "cli.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "codegen/metal/gpu",
+      "Files": [
+        "main.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "compiler",
+      "Files": [
+        "cli.go",
+        "cli_extra.go",
+        "flags.go",
+        "main.go",
+        "mod_extra.go",
+        "oaksolver.go",
+        "protocol_cmd.go",
+        "prove_cmd.go",
+        "prove_sat.go",
+        "prove_synthesis.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "diagnostic",
+      "Files": [
+        "cli.go",
+        "main.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "layout",
+      "Files": [
+        "cli_extra.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "lsp/server",
+      "Files": [
+        "cli.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "modules",
+      "Files": [
+        "cli.go",
+        "cli_extra.go",
+        "flags.go",
+        "main.go",
+        "mod_extra.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "packageapi",
+      "Files": [
+        "cli_extra.go",
+        "main.go",
+        "mod_extra.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "prove",
+      "Files": [
+        "clause_agreement.go",
+        "oaksolver.go",
+        "prove_cmd.go",
+        "prove_sat.go",
+        "prove_synthesis.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "repl",
+      "Files": [
+        "main.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "scanner",
+      "Files": [
+        "cli_extra.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "target",
+      "Files": [
+        "cli.go",
+        "main.go",
+        "oaksolver.go",
+        "prove_cmd.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "testrunner",
+      "Files": [
+        "main.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "token",
+      "Files": [
+        "cli_extra.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "toolchain",
+      "Files": [
+        "cli.go",
+        "main.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "typechecker",
+      "Files": [
+        "cli.go"
+      ]
+    },
+    {
+      "From": "asm",
+      "To": "ast",
+      "Files": [
+        "asm/abi.go",
+        "asm/agg_views.go",
+        "asm/atomics.go",
+        "asm/break_form.go",
+        "asm/call_application.go",
+        "asm/callee.go",
+        "asm/check.go",
+        "asm/cnf.go",
+        "asm/derived_spans.go",
+        "asm/effects.go",
+        "asm/floats_lowering.go",
+        "asm/inferred_local.go",
+        "asm/loops.go",
+        "asm/native_bitwise_certificate.go",
+        "asm/native_certificate.go",
+        "asm/problem.go",
+        "asm/return_slot.go",
+        "asm/rv64_check.go",
+        "asm/rv64_verify.go",
+        "asm/span_args.go",
+        "asm/syntax.go",
+        "asm/theorem.go",
+        "asm/trap_domain.go",
+        "asm/unit.go",
+        "asm/verify.go",
+        "asm/verify_calls.go",
+        "asm/verify_simd.go",
+        "asm/verify_vector.go"
+      ]
+    },
+    {
+      "From": "asm",
+      "To": "layout",
+      "Files": [
+        "asm/unit.go"
+      ]
+    },
+    {
+      "From": "asm",
+      "To": "parser",
+      "Files": [
+        "asm/unit.go"
+      ]
+    },
+    {
+      "From": "asm",
+      "To": "scanner",
+      "Files": [
+        "asm/unit.go"
+      ]
+    },
+    {
+      "From": "asm",
+      "To": "semir",
+      "Files": [
+        "asm/atomics.go",
+        "asm/call_application.go",
+        "asm/verify.go"
+      ]
+    },
+    {
+      "From": "asm",
+      "To": "token",
+      "Files": [
+        "asm/break_form.go"
+      ]
+    },
+    {
+      "From": "asm",
+      "To": "typechecker",
+      "Files": [
+        "asm/call_application.go",
+        "asm/check.go",
+        "asm/floats_lowering.go",
+        "asm/syntax.go",
+        "asm/verify.go",
+        "asm/verify_calls.go",
+        "asm/verify_simd.go",
+        "asm/verify_vector.go"
+      ]
+    },
+    {
+      "From": "asm/internal/isagen",
+      "To": "asm/internal/armfeat",
+      "Files": [
+        "asm/internal/isagen/main.go"
+      ]
+    },
+    {
+      "From": "ast",
+      "To": "token",
+      "Files": [
+        "ast/ast.go"
+      ]
+    },
+    {
+      "From": "benchmarks/native/emit",
+      "To": "compiler",
+      "Files": [
+        "benchmarks/native/emit/main.go"
+      ]
+    },
+    {
+      "From": "benchmarks/native/emit",
+      "To": "diagnostic",
+      "Files": [
+        "benchmarks/native/emit/main.go"
+      ]
+    },
+    {
+      "From": "benchmarks/native/exact_fma",
+      "To": "asm",
+      "Files": [
+        "benchmarks/native/exact_fma/main.go"
+      ]
+    },
+    {
+      "From": "benchmarks/native/exact_fma",
+      "To": "compiler",
+      "Files": [
+        "benchmarks/native/exact_fma/main.go"
+      ]
+    },
+    {
+      "From": "benchmarks/native/exact_fma",
+      "To": "nativegen",
+      "Files": [
+        "benchmarks/native/exact_fma/main.go"
+      ]
+    },
+    {
+      "From": "benchmarks/native/exact_fma",
+      "To": "opt",
+      "Files": [
+        "benchmarks/native/exact_fma/main.go"
+      ]
+    },
+    {
+      "From": "bitwisecheck",
+      "To": "spec/lean",
+      "Files": [
+        "bitwisecheck/image_installation.go",
+        "bitwisecheck/installation.go"
+      ]
+    },
+    {
+      "From": "borrowchecker",
+      "To": "ast",
+      "Files": [
+        "borrowchecker/aggregate_storage.go",
+        "borrowchecker/borrowchecker.go",
+        "borrowchecker/diagnostics.go",
+        "borrowchecker/global_effects.go",
+        "borrowchecker/multiple_regions.go",
+        "borrowchecker/regions.go",
+        "borrowchecker/resource_flow.go",
+        "borrowchecker/string_views.go"
+      ]
+    },
+    {
+      "From": "borrowchecker",
+      "To": "diagnostic",
+      "Files": [
+        "borrowchecker/diagnostics.go",
+        "borrowchecker/resource_flow.go"
+      ]
+    },
+    {
+      "From": "borrowchecker",
+      "To": "resourceflow",
+      "Files": [
+        "borrowchecker/resource_flow.go"
+      ]
+    },
+    {
+      "From": "borrowchecker",
+      "To": "typechecker",
+      "Files": [
+        "borrowchecker/aggregate_storage.go",
+        "borrowchecker/borrowchecker.go",
+        "borrowchecker/escape.go",
+        "borrowchecker/global_effects.go",
+        "borrowchecker/multiple_regions.go",
+        "borrowchecker/regions.go",
+        "borrowchecker/string_views.go"
+      ]
+    },
+    {
+      "From": "cmd/generate_golden",
+      "To": "object",
+      "Files": [
+        "cmd/generate_golden/main.go"
+      ]
+    },
+    {
+      "From": "cmd/generate_golden",
+      "To": "serialize",
+      "Files": [
+        "cmd/generate_golden/main.go"
+      ]
+    },
+    {
+      "From": "cmd/generate_golden",
+      "To": "typechecker",
+      "Files": [
+        "cmd/generate_golden/main.go"
+      ]
+    },
+    {
+      "From": "cmd/oak-browser",
+      "To": "playground",
+      "Files": [
+        "cmd/oak-browser/main_js.go"
+      ]
+    },
+    {
+      "From": "cmd/verify_golden",
+      "To": "serialize",
+      "Files": [
+        "cmd/verify_golden/main.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "asm",
+      "Files": [
+        "codegen/codegen.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "ast",
+      "Files": [
+        "codegen/arithmetic.go",
+        "codegen/arrays.go",
+        "codegen/byte_pack.go",
+        "codegen/callable_bindings.go",
+        "codegen/callable_inline.go",
+        "codegen/codegen.go",
+        "codegen/compare_exchange.go",
+        "codegen/conversions.go",
+        "codegen/dispatch.go",
+        "codegen/ffi.go",
+        "codegen/floats.go",
+        "codegen/globals.go",
+        "codegen/header.go",
+        "codegen/launch.go",
+        "codegen/memory.go",
+        "codegen/mono.go",
+        "codegen/quantifier.go",
+        "codegen/records.go",
+        "codegen/sequence.go",
+        "codegen/simd.go",
+        "codegen/slices.go",
+        "codegen/string_views.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "discipline",
+      "Files": [
+        "codegen/codegen.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "evaluator",
+      "Files": [
+        "codegen/globals.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "lsp",
+      "Files": [
+        "codegen/codegen.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "modules",
+      "Files": [
+        "codegen/globals.go",
+        "codegen/header.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "object",
+      "Files": [
+        "codegen/codegen.go",
+        "codegen/globals.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "semir",
+      "Files": [
+        "codegen/codegen.go",
+        "codegen/compare_exchange.go",
+        "codegen/dispatch.go",
+        "codegen/eret.go",
+        "codegen/event_control.go",
+        "codegen/ffi.go",
+        "codegen/memory.go",
+        "codegen/mmio.go",
+        "codegen/records.go",
+        "codegen/sequence.go",
+        "codegen/simd.go",
+        "codegen/sysreg.go",
+        "codegen/tlbi.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "token",
+      "Files": [
+        "codegen/byte_pack.go",
+        "codegen/callable_inline.go",
+        "codegen/codegen.go",
+        "codegen/floats.go",
+        "codegen/globals.go",
+        "codegen/sequence.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "typechecker",
+      "Files": [
+        "codegen/arithmetic.go",
+        "codegen/byte_pack.go",
+        "codegen/callable_bindings.go",
+        "codegen/codegen.go",
+        "codegen/conversions.go",
+        "codegen/ffi.go",
+        "codegen/floats.go",
+        "codegen/globals.go",
+        "codegen/header.go",
+        "codegen/launch.go",
+        "codegen/memory.go",
+        "codegen/mono.go",
+        "codegen/quantifier.go",
+        "codegen/sequence.go",
+        "codegen/simd.go",
+        "codegen/slices.go",
+        "codegen/string_views.go"
+      ]
+    },
+    {
+      "From": "codegen/lean",
+      "To": "ast",
+      "Files": [
+        "codegen/lean/adt.go",
+        "codegen/lean/assignment.go",
+        "codegen/lean/lean.go",
+        "codegen/lean/quantifier.go",
+        "codegen/lean/specialization.go"
+      ]
+    },
+    {
+      "From": "codegen/lean",
+      "To": "modules",
+      "Files": [
+        "codegen/lean/specialization.go"
+      ]
+    },
+    {
+      "From": "codegen/lean",
+      "To": "typechecker",
+      "Files": [
+        "codegen/lean/adt.go",
+        "codegen/lean/lean.go"
+      ]
+    },
+    {
+      "From": "codegen/metal",
+      "To": "ast",
+      "Files": [
+        "codegen/metal/independence.go",
+        "codegen/metal/metal.go",
+        "codegen/metal/uniformity.go"
+      ]
+    },
+    {
+      "From": "codegen/metal",
+      "To": "hostform",
+      "Files": [
+        "codegen/metal/metal.go"
+      ]
+    },
+    {
+      "From": "codegen/metal",
+      "To": "modules",
+      "Files": [
+        "codegen/metal/metal.go"
+      ]
+    },
+    {
+      "From": "codegen/metal",
+      "To": "token",
+      "Files": [
+        "codegen/metal/metal.go"
+      ]
+    },
+    {
+      "From": "codegen/metal",
+      "To": "typechecker",
+      "Files": [
+        "codegen/metal/metal.go"
+      ]
+    },
+    {
+      "From": "codegen/metal/gpu",
+      "To": "codegen/metal",
+      "Files": [
+        "codegen/metal/gpu/gpu.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "asm",
+      "Files": [
+        "compiler/asm_units.go",
+        "compiler/checked_bitwise_bundle.go",
+        "compiler/checked_bitwise_image_bundle.go",
+        "compiler/compilation.go",
+        "compiler/modules.go",
+        "compiler/native_bodies.go",
+        "compiler/native_call_identity.go",
+        "compiler/native_materialization.go",
+        "compiler/native_search.go",
+        "compiler/verdict_cache.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "ast",
+      "Files": [
+        "compiler/api_snapshot.go",
+        "compiler/asm_units.go",
+        "compiler/canonical.go",
+        "compiler/canonical_integer.go",
+        "compiler/closures.go",
+        "compiler/codec_binary.go",
+        "compiler/codec_decode.go",
+        "compiler/codecs.go",
+        "compiler/compilation.go",
+        "compiler/derive.go",
+        "compiler/derive_testing.go",
+        "compiler/effects.go",
+        "compiler/effects_walk.go",
+        "compiler/fluent.go",
+        "compiler/inline.go",
+        "compiler/kernels.go",
+        "compiler/layout_claims.go",
+        "compiler/literals.go",
+        "compiler/module_api.go",
+        "compiler/module_tidy.go",
+        "compiler/modules.go",
+        "compiler/native_bodies.go",
+        "compiler/native_materialization.go",
+        "compiler/native_search.go",
+        "compiler/operators.go",
+        "compiler/optimize.go",
+        "compiler/optir.go",
+        "compiler/protocol_conform.go",
+        "compiler/protocol_exclusivity.go",
+        "compiler/protocol_invariants.go",
+        "compiler/protocol_refine.go",
+        "compiler/protocol_static.go",
+        "compiler/protocol_tla.go",
+        "compiler/protocols.go",
+        "compiler/semantic_types.go",
+        "compiler/simulation.go",
+        "compiler/stdlib.go",
+        "compiler/syntax_walk.go",
+        "compiler/synth.go",
+        "compiler/text_literals.go",
+        "compiler/try.go",
+        "compiler/variants.go",
+        "compiler/verdict_cache.go",
+        "compiler/wasm.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "bitwisecheck",
+      "Files": [
+        "compiler/checked_bitwise_bundle.go",
+        "compiler/checked_bitwise_image_bundle.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "borrowchecker",
+      "Files": [
+        "compiler/compilation.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "codegen",
+      "Files": [
+        "compiler/compilation.go",
+        "compiler/native_bodies.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "codegen/lean",
+      "Files": [
+        "compiler/compilation.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "codegen/metal",
+      "Files": [
+        "compiler/compilation.go",
+        "compiler/kernels.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "diagnostic",
+      "Files": [
+        "compiler/asm_units.go",
+        "compiler/codec_binary.go",
+        "compiler/compilation.go",
+        "compiler/derive.go",
+        "compiler/diagnostic_error.go",
+        "compiler/effects.go",
+        "compiler/kernels.go",
+        "compiler/layout_claims.go",
+        "compiler/literals.go",
+        "compiler/modules.go",
+        "compiler/native_bodies.go",
+        "compiler/protocols.go",
+        "compiler/try.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "discipline",
+      "Files": [
+        "compiler/compilation.go",
+        "compiler/inline.go",
+        "compiler/kernels.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "evaluator",
+      "Files": [
+        "compiler/native_bodies.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "hostform",
+      "Files": [
+        "compiler/kernels.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "layout",
+      "Files": [
+        "compiler/compilation.go",
+        "compiler/literals.go",
+        "compiler/modules.go",
+        "compiler/protocol_static.go",
+        "compiler/protocols.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "lowering",
+      "Files": [
+        "compiler/compilation.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "lsp",
+      "Files": [
+        "compiler/asm_units.go",
+        "compiler/codec_binary.go",
+        "compiler/modules.go",
+        "compiler/native_bodies.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "modules",
+      "Files": [
+        "compiler/api_snapshot.go",
+        "compiler/codec_binary.go",
+        "compiler/codecs.go",
+        "compiler/derive.go",
+        "compiler/diagnostic_error.go",
+        "compiler/effects.go",
+        "compiler/literals.go",
+        "compiler/module_api.go",
+        "compiler/module_compat.go",
+        "compiler/module_tidy.go",
+        "compiler/module_vendor.go",
+        "compiler/modules.go",
+        "compiler/protocols.go",
+        "compiler/stdlib.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "nativegen",
+      "Files": [
+        "compiler/asm_units.go",
+        "compiler/native_bodies.go",
+        "compiler/native_materialization.go",
+        "compiler/native_search.go",
+        "compiler/verdict_cache.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "object",
+      "Files": [
+        "compiler/compilation.go",
+        "compiler/native_bodies.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "opt",
+      "Files": [
+        "compiler/canonical.go",
+        "compiler/canonical_integer.go",
+        "compiler/emission_artifacts.go",
+        "compiler/inline.go",
+        "compiler/native_bodies.go",
+        "compiler/native_materialization.go",
+        "compiler/native_search.go",
+        "compiler/optimize.go",
+        "compiler/optir_artifacts.go",
+        "compiler/wasm.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "optir",
+      "Files": [
+        "compiler/native_bodies.go",
+        "compiler/native_call_identity.go",
+        "compiler/native_materialization.go",
+        "compiler/optir.go",
+        "compiler/optir_artifacts.go",
+        "compiler/optir_memory_cleanup.go",
+        "compiler/wasm.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "packageapi",
+      "Files": [
+        "compiler/api_snapshot.go",
+        "compiler/module_api.go",
+        "compiler/module_compat.go",
+        "compiler/module_tidy.go",
+        "compiler/module_vendor.go",
+        "compiler/modules.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "parser",
+      "Files": [
+        "compiler/compilation.go",
+        "compiler/literals.go",
+        "compiler/module_tidy.go",
+        "compiler/modules.go",
+        "compiler/protocol_static.go",
+        "compiler/protocols.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "scanner",
+      "Files": [
+        "compiler/compilation.go",
+        "compiler/literals.go",
+        "compiler/module_tidy.go",
+        "compiler/modules.go",
+        "compiler/protocol_static.go",
+        "compiler/protocols.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "semir",
+      "Files": [
+        "compiler/api_snapshot.go",
+        "compiler/asm_units.go",
+        "compiler/resource_semir.go",
+        "compiler/semantic_types.go",
+        "compiler/simulation.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "source",
+      "Files": [
+        "compiler/compilation.go",
+        "compiler/modules.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "stdlib",
+      "Files": [
+        "compiler/literals.go",
+        "compiler/module_tidy.go",
+        "compiler/modules.go",
+        "compiler/stdlib.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "target",
+      "Files": [
+        "compiler/asm_units.go",
+        "compiler/checked_bitwise_bundle.go",
+        "compiler/checked_bitwise_image_bundle.go",
+        "compiler/compilation.go",
+        "compiler/emission_artifacts.go",
+        "compiler/native_bodies.go",
+        "compiler/wasm.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "token",
+      "Files": [
+        "compiler/api_snapshot.go",
+        "compiler/closures.go",
+        "compiler/inline.go",
+        "compiler/layout_claims.go",
+        "compiler/modules.go",
+        "compiler/optir.go",
+        "compiler/semantic_types.go",
+        "compiler/synth.go",
+        "compiler/try.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "typechecker",
+      "Files": [
+        "compiler/api_snapshot.go",
+        "compiler/canonical.go",
+        "compiler/canonical_integer.go",
+        "compiler/compilation.go",
+        "compiler/derive.go",
+        "compiler/effects.go",
+        "compiler/kernels.go",
+        "compiler/modules.go",
+        "compiler/native_bodies.go",
+        "compiler/native_search.go",
+        "compiler/operators.go",
+        "compiler/optimize.go",
+        "compiler/optir.go",
+        "compiler/protocol_static.go",
+        "compiler/protocols.go",
+        "compiler/resource_semir.go",
+        "compiler/simulation.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "wasm",
+      "Files": [
+        "compiler/wasm.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "wasm/check",
+      "Files": [
+        "compiler/wasm.go"
+      ]
+    },
+    {
+      "From": "diagnostic",
+      "To": "ast",
+      "Files": [
+        "diagnostic/diagnostic.go"
+      ]
+    },
+    {
+      "From": "diagnostic",
+      "To": "lsp",
+      "Files": [
+        "diagnostic/diagnostic.go"
+      ]
+    },
+    {
+      "From": "diagnostic",
+      "To": "token",
+      "Files": [
+        "diagnostic/diagnostic.go"
+      ]
+    },
+    {
+      "From": "discipline",
+      "To": "ast",
+      "Files": [
+        "discipline/discipline.go",
+        "discipline/loops.go"
+      ]
+    },
+    {
+      "From": "discipline",
+      "To": "diagnostic",
+      "Files": [
+        "discipline/discipline.go",
+        "discipline/loops.go"
+      ]
+    },
+    {
+      "From": "evaluator",
+      "To": "ast",
+      "Files": [
+        "evaluator/arithmetic.go",
+        "evaluator/borrow.go",
+        "evaluator/conversions.go",
+        "evaluator/evaluator.go",
+        "evaluator/ffi.go",
+        "evaluator/floats.go",
+        "evaluator/memory.go",
+        "evaluator/quantifier.go",
+        "evaluator/scalable.go",
+        "evaluator/simd.go",
+        "evaluator/zero.go"
+      ]
+    },
+    {
+      "From": "evaluator",
+      "To": "hostform",
+      "Files": [
+        "evaluator/evaluator.go"
+      ]
+    },
+    {
+      "From": "evaluator",
+      "To": "modules",
+      "Files": [
+        "evaluator/evaluator.go"
+      ]
+    },
+    {
+      "From": "evaluator",
+      "To": "object",
+      "Files": [
+        "evaluator/arithmetic.go",
+        "evaluator/assert_values.go",
+        "evaluator/borrow.go",
+        "evaluator/conversions.go",
+        "evaluator/evaluator.go",
+        "evaluator/ffi.go",
+        "evaluator/floats.go",
+        "evaluator/memory.go",
+        "evaluator/quantifier.go",
+        "evaluator/scalable.go",
+        "evaluator/simd.go",
+        "evaluator/u128.go",
+        "evaluator/zero.go"
+      ]
+    },
+    {
+      "From": "evaluator",
+      "To": "semir",
+      "Files": [
+        "evaluator/ffi.go",
+        "evaluator/memory.go"
+      ]
+    },
+    {
+      "From": "evaluator",
+      "To": "source",
+      "Files": [
+        "evaluator/evaluator.go"
+      ]
+    },
+    {
+      "From": "evaluator",
+      "To": "token",
+      "Files": [
+        "evaluator/evaluator.go"
+      ]
+    },
+    {
+      "From": "evaluator",
+      "To": "typechecker",
+      "Files": [
+        "evaluator/arithmetic.go",
+        "evaluator/conversions.go",
+        "evaluator/evaluator.go",
+        "evaluator/floats.go",
+        "evaluator/u128.go",
+        "evaluator/zero.go"
+      ]
+    },
+    {
+      "From": "experiments/verification-poc",
+      "To": "experiments/verification-poc/frontend",
+      "Files": [
+        "experiments/verification-poc/evidence.go",
+        "experiments/verification-poc/model.go"
+      ]
+    },
+    {
+      "From": "experiments/verification-poc",
+      "To": "experiments/verification-poc/internal/lrat",
+      "Files": [
+        "experiments/verification-poc/backend.go",
+        "experiments/verification-poc/evidence.go",
+        "experiments/verification-poc/main.go",
+        "experiments/verification-poc/produce.go"
+      ]
+    },
+    {
+      "From": "experiments/verification-poc/frontend",
+      "To": "ast",
+      "Files": [
+        "experiments/verification-poc/frontend/main.go"
+      ]
+    },
+    {
+      "From": "experiments/verification-poc/frontend",
+      "To": "compiler",
+      "Files": [
+        "experiments/verification-poc/frontend/main.go"
+      ]
+    },
+    {
+      "From": "experiments/verification-poc/frontend",
+      "To": "typechecker",
+      "Files": [
+        "experiments/verification-poc/frontend/main.go"
+      ]
+    },
+    {
+      "From": "hostform",
+      "To": "ast",
+      "Files": [
+        "hostform/hostform.go"
+      ]
+    },
+    {
+      "From": "hostform",
+      "To": "token",
+      "Files": [
+        "hostform/hostform.go"
+      ]
+    },
+    {
+      "From": "layout",
+      "To": "source",
+      "Files": [
+        "layout/layout.go"
+      ]
+    },
+    {
+      "From": "layout",
+      "To": "token",
+      "Files": [
+        "layout/headers.go",
+        "layout/layout.go"
+      ]
+    },
+    {
+      "From": "lowering",
+      "To": "ast",
+      "Files": [
+        "lowering/lowering.go"
+      ]
+    },
+    {
+      "From": "lowering",
+      "To": "hostform",
+      "Files": [
+        "lowering/lowering.go"
+      ]
+    },
+    {
+      "From": "lowering",
+      "To": "typechecker",
+      "Files": [
+        "lowering/lowering.go"
+      ]
+    },
+    {
+      "From": "lsp/server",
+      "To": "ast",
+      "Files": [
+        "lsp/server/server.go"
+      ]
+    },
+    {
+      "From": "lsp/server",
+      "To": "compiler",
+      "Files": [
+        "lsp/server/server.go"
+      ]
+    },
+    {
+      "From": "lsp/server",
+      "To": "diagnostic",
+      "Files": [
+        "lsp/server/server.go"
+      ]
+    },
+    {
+      "From": "lsp/server",
+      "To": "lsp",
+      "Files": [
+        "lsp/server/server.go"
+      ]
+    },
+    {
+      "From": "lsp/server",
+      "To": "modules",
+      "Files": [
+        "lsp/server/server.go"
+      ]
+    },
+    {
+      "From": "lsp/server",
+      "To": "parser",
+      "Files": [
+        "lsp/server/server.go"
+      ]
+    },
+    {
+      "From": "lsp/server",
+      "To": "scanner",
+      "Files": [
+        "lsp/server/server.go"
+      ]
+    },
+    {
+      "From": "lsp/server",
+      "To": "token",
+      "Files": [
+        "lsp/server/server.go"
+      ]
+    },
+    {
+      "From": "machine",
+      "To": "asm",
+      "Files": [
+        "machine/callee_saves.go",
+        "machine/cfg.go",
+        "machine/empty_frame.go",
+        "machine/exact_trips.go",
+        "machine/frame_pair_init.go",
+        "machine/fuse.go",
+        "machine/ir.go",
+        "machine/licm.go",
+        "machine/optir_aarch64.go",
+        "machine/optir_arm64_spills.go",
+        "machine/optir_memory.go",
+        "machine/optir_rv64.go",
+        "machine/reallocation_cache.go",
+        "machine/recurrence.go",
+        "machine/regalloc.go",
+        "machine/schedule.go",
+        "machine/slots.go",
+        "machine/target.go"
+      ]
+    },
+    {
+      "From": "machine",
+      "To": "ast",
+      "Files": [
+        "machine/optir_aarch64.go",
+        "machine/optir_rv64.go"
+      ]
+    },
+    {
+      "From": "machine",
+      "To": "optir",
+      "Files": [
+        "machine/optir_aarch64.go",
+        "machine/optir_arm64_spills.go",
+        "machine/optir_memory.go",
+        "machine/optir_rv64.go",
+        "machine/optir_spills.go"
+      ]
+    },
+    {
+      "From": "modules",
+      "To": "packageapi",
+      "Files": [
+        "modules/fetch.go",
+        "modules/manifest.go",
+        "modules/version.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "asm",
+      "Files": [
+        "nativegen/affine_index.go",
+        "nativegen/atomics.go",
+        "nativegen/callgraph.go",
+        "nativegen/cleanup.go",
+        "nativegen/compile_session.go",
+        "nativegen/const_branches.go",
+        "nativegen/fill_unroll.go",
+        "nativegen/forward.go",
+        "nativegen/global_address_cse.go",
+        "nativegen/global_load_forward.go",
+        "nativegen/global_load_mask_elide.go",
+        "nativegen/inline.go",
+        "nativegen/licm.go",
+        "nativegen/loop_array_homes.go",
+        "nativegen/multiply_add.go",
+        "nativegen/nativegen.go",
+        "nativegen/opt.go",
+        "nativegen/pair_loads.go",
+        "nativegen/post_schedule_cleanup.go",
+        "nativegen/record_base_cse.go",
+        "nativegen/redundant_guards.go",
+        "nativegen/rewrite.go",
+        "nativegen/rotate.go",
+        "nativegen/rv64.go",
+        "nativegen/rv64_simd.go",
+        "nativegen/select.go",
+        "nativegen/simd.go",
+        "nativegen/value_select.go",
+        "nativegen/vector_blocks.go",
+        "nativegen/word_fusion.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "ast",
+      "Files": [
+        "nativegen/array_permutation.go",
+        "nativegen/array_result.go",
+        "nativegen/atomics.go",
+        "nativegen/callgraph.go",
+        "nativegen/extent_fold.go",
+        "nativegen/fields.go",
+        "nativegen/fill_unroll.go",
+        "nativegen/homes.go",
+        "nativegen/horizontal_reduction.go",
+        "nativegen/inline.go",
+        "nativegen/liveness.go",
+        "nativegen/loop_array_homes.go",
+        "nativegen/multiply_add.go",
+        "nativegen/nativegen.go",
+        "nativegen/opt.go",
+        "nativegen/reduction.go",
+        "nativegen/rewrite.go",
+        "nativegen/rewrite_eligibility.go",
+        "nativegen/rv64.go",
+        "nativegen/rv64_simd.go",
+        "nativegen/scalar_arrays.go",
+        "nativegen/select.go",
+        "nativegen/simd.go",
+        "nativegen/span_forward.go",
+        "nativegen/unroll_constant.go",
+        "nativegen/value_select.go",
+        "nativegen/vector_fold.go",
+        "nativegen/vector_lanes.go",
+        "nativegen/vector_map.go",
+        "nativegen/vector_reduction.go",
+        "nativegen/word_fusion.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "machine",
+      "Files": [
+        "nativegen/compile_session.go",
+        "nativegen/nativegen.go",
+        "nativegen/opt.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "opt",
+      "Files": [
+        "nativegen/opt.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "optir",
+      "Files": [
+        "nativegen/nativegen.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "semir",
+      "Files": [
+        "nativegen/atomics.go",
+        "nativegen/nativegen.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "token",
+      "Files": [
+        "nativegen/fill_unroll.go",
+        "nativegen/horizontal_reduction.go",
+        "nativegen/nativegen.go",
+        "nativegen/reduction.go",
+        "nativegen/rewrite.go",
+        "nativegen/rv64.go",
+        "nativegen/unroll_constant.go",
+        "nativegen/vector_fold.go",
+        "nativegen/vector_lanes.go",
+        "nativegen/vector_map.go",
+        "nativegen/vector_reduction.go",
+        "nativegen/word_fusion.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "typechecker",
+      "Files": [
+        "nativegen/fill_unroll.go",
+        "nativegen/loop_array_homes.go",
+        "nativegen/nativegen.go",
+        "nativegen/opt.go",
+        "nativegen/rewrite.go",
+        "nativegen/rewrite_eligibility.go",
+        "nativegen/rv64.go",
+        "nativegen/rv64_simd.go",
+        "nativegen/vector_map.go"
+      ]
+    },
+    {
+      "From": "object",
+      "To": "ast",
+      "Files": [
+        "object/object.go"
+      ]
+    },
+    {
+      "From": "object",
+      "To": "token",
+      "Files": [
+        "object/object.go"
+      ]
+    },
+    {
+      "From": "optir",
+      "To": "opt",
+      "Files": [
+        "optir/aspects.go"
+      ]
+    },
+    {
+      "From": "parser",
+      "To": "ast",
+      "Files": [
+        "parser/defer.go",
+        "parser/parser.go",
+        "parser/parser_test_adt_routing.go",
+        "parser/parser_test_array_types.go",
+        "parser/parser_test_interface.go",
+        "parser/parser_test_numbers.go",
+        "parser/parser_test_slice.go",
+        "parser/return.go"
+      ]
+    },
+    {
+      "From": "parser",
+      "To": "diagnostic",
+      "Files": [
+        "parser/parser.go"
+      ]
+    },
+    {
+      "From": "parser",
+      "To": "scanner",
+      "Files": [
+        "parser/parser_test_adt_routing.go",
+        "parser/parser_test_array_types.go",
+        "parser/parser_test_interface.go",
+        "parser/parser_test_numbers.go",
+        "parser/parser_test_slice.go",
+        "parser/parser_test_zoo.go"
+      ]
+    },
+    {
+      "From": "parser",
+      "To": "source",
+      "Files": [
+        "parser/location.go"
+      ]
+    },
+    {
+      "From": "parser",
+      "To": "token",
+      "Files": [
+        "parser/location.go",
+        "parser/lookahead.go",
+        "parser/parser.go",
+        "parser/return.go",
+        "parser/separated.go",
+        "parser/source.go"
+      ]
+    },
+    {
+      "From": "parser",
+      "To": "util",
+      "Files": [
+        "parser/parser.go"
+      ]
+    },
+    {
+      "From": "playground",
+      "To": "ast",
+      "Files": [
+        "playground/compile.go"
+      ]
+    },
+    {
+      "From": "playground",
+      "To": "compiler",
+      "Files": [
+        "playground/compile.go"
+      ]
+    },
+    {
+      "From": "playground",
+      "To": "diagnostic",
+      "Files": [
+        "playground/compile.go",
+        "playground/diagnostics.go"
+      ]
+    },
+    {
+      "From": "playground",
+      "To": "layout",
+      "Files": [
+        "playground/compile.go"
+      ]
+    },
+    {
+      "From": "playground",
+      "To": "parser",
+      "Files": [
+        "playground/compile.go"
+      ]
+    },
+    {
+      "From": "playground",
+      "To": "scanner",
+      "Files": [
+        "playground/compile.go"
+      ]
+    },
+    {
+      "From": "playground",
+      "To": "wasm",
+      "Files": [
+        "playground/compile.go"
+      ]
+    },
+    {
+      "From": "prove",
+      "To": "asm",
+      "Files": [
+        "prove/native_bitwise_certificate.go",
+        "prove/native_certificate.go",
+        "prove/problem.go",
+        "prove/prove.go",
+        "prove/sat.go"
+      ]
+    },
+    {
+      "From": "prove",
+      "To": "ast",
+      "Files": [
+        "prove/laws.go",
+        "prove/liveness.go",
+        "prove/native_bitwise_certificate.go",
+        "prove/native_certificate.go",
+        "prove/problem.go",
+        "prove/protocols.go",
+        "prove/prove.go",
+        "prove/synthesis.go",
+        "prove/witness.go"
+      ]
+    },
+    {
+      "From": "prove",
+      "To": "compiler",
+      "Files": [
+        "prove/laws.go",
+        "prove/liveness.go",
+        "prove/problem.go",
+        "prove/protocols.go",
+        "prove/prove.go",
+        "prove/sat.go",
+        "prove/synthesis.go",
+        "prove/witness.go"
+      ]
+    },
+    {
+      "From": "prove",
+      "To": "evaluator",
+      "Files": [
+        "prove/liveness.go",
+        "prove/prove.go",
+        "prove/synthesis.go"
+      ]
+    },
+    {
+      "From": "prove",
+      "To": "internal/lrat",
+      "Files": [
+        "prove/lrat.go"
+      ]
+    },
+    {
+      "From": "prove",
+      "To": "layout",
+      "Files": [
+        "prove/laws.go",
+        "prove/protocols.go",
+        "prove/synthesis.go",
+        "prove/witness.go"
+      ]
+    },
+    {
+      "From": "prove",
+      "To": "object",
+      "Files": [
+        "prove/liveness.go",
+        "prove/prove.go",
+        "prove/synthesis.go"
+      ]
+    },
+    {
+      "From": "prove",
+      "To": "parser",
+      "Files": [
+        "prove/laws.go",
+        "prove/protocols.go",
+        "prove/synthesis.go",
+        "prove/witness.go"
+      ]
+    },
+    {
+      "From": "prove",
+      "To": "scanner",
+      "Files": [
+        "prove/laws.go",
+        "prove/protocols.go",
+        "prove/synthesis.go",
+        "prove/witness.go"
+      ]
+    },
+    {
+      "From": "prove",
+      "To": "token",
+      "Files": [
+        "prove/prove.go",
+        "prove/synthesis.go"
+      ]
+    },
+    {
+      "From": "prove",
+      "To": "typechecker",
+      "Files": [
+        "prove/liveness.go",
+        "prove/prove.go",
+        "prove/witness.go"
+      ]
+    },
+    {
+      "From": "repl",
+      "To": "ast",
+      "Files": [
+        "repl/lean.go",
+        "repl/repl.go",
+        "repl/session.go"
+      ]
+    },
+    {
+      "From": "repl",
+      "To": "borrowchecker",
+      "Files": [
+        "repl/lean.go"
+      ]
+    },
+    {
+      "From": "repl",
+      "To": "codegen/lean",
+      "Files": [
+        "repl/lean.go"
+      ]
+    },
+    {
+      "From": "repl",
+      "To": "compiler",
+      "Files": [
+        "repl/lean.go",
+        "repl/session.go"
+      ]
+    },
+    {
+      "From": "repl",
+      "To": "diagnostic",
+      "Files": [
+        "repl/session.go"
+      ]
+    },
+    {
+      "From": "repl",
+      "To": "discipline",
+      "Files": [
+        "repl/lean.go"
+      ]
+    },
+    {
+      "From": "repl",
+      "To": "evaluator",
+      "Files": [
+        "repl/session.go"
+      ]
+    },
+    {
+      "From": "repl",
+      "To": "modules",
+      "Files": [
+        "repl/lean.go",
+        "repl/repl.go"
+      ]
+    },
+    {
+      "From": "repl",
+      "To": "object",
+      "Files": [
+        "repl/repl.go",
+        "repl/session.go"
+      ]
+    },
+    {
+      "From": "repl",
+      "To": "parser",
+      "Files": [
+        "repl/repl.go",
+        "repl/session.go"
+      ]
+    },
+    {
+      "From": "repl",
+      "To": "scanner",
+      "Files": [
+        "repl/repl.go",
+        "repl/session.go"
+      ]
+    },
+    {
+      "From": "repl",
+      "To": "typechecker",
+      "Files": [
+        "repl/session.go"
+      ]
+    },
+    {
+      "From": "resourceflow",
+      "To": "ast",
+      "Files": [
+        "resourceflow/flow.go"
+      ]
+    },
+    {
+      "From": "resourceflow",
+      "To": "diagnostic",
+      "Files": [
+        "resourceflow/flow.go"
+      ]
+    },
+    {
+      "From": "scanner",
+      "To": "source",
+      "Files": [
+        "scanner/scanner.go"
+      ]
+    },
+    {
+      "From": "scanner",
+      "To": "token",
+      "Files": [
+        "scanner/scanner.go"
+      ]
+    },
+    {
+      "From": "scanner",
+      "To": "util",
+      "Files": [
+        "scanner/scanner.go"
+      ]
+    },
+    {
+      "From": "serialize",
+      "To": "ast",
+      "Files": [
+        "serialize/golden.go",
+        "serialize/serialize.go"
+      ]
+    },
+    {
+      "From": "serialize",
+      "To": "borrowchecker",
+      "Files": [
+        "serialize/borrowchecker.go",
+        "serialize/golden.go"
+      ]
+    },
+    {
+      "From": "serialize",
+      "To": "codegen",
+      "Files": [
+        "serialize/golden.go",
+        "serialize/pipeline.go"
+      ]
+    },
+    {
+      "From": "serialize",
+      "To": "layout",
+      "Files": [
+        "serialize/pipeline.go"
+      ]
+    },
+    {
+      "From": "serialize",
+      "To": "lowering",
+      "Files": [
+        "serialize/golden.go",
+        "serialize/pipeline.go"
+      ]
+    },
+    {
+      "From": "serialize",
+      "To": "object",
+      "Files": [
+        "serialize/golden.go",
+        "serialize/golden_verify.go",
+        "serialize/pipeline.go"
+      ]
+    },
+    {
+      "From": "serialize",
+      "To": "parser",
+      "Files": [
+        "serialize/golden.go",
+        "serialize/pipeline.go"
+      ]
+    },
+    {
+      "From": "serialize",
+      "To": "scanner",
+      "Files": [
+        "serialize/golden.go",
+        "serialize/pipeline.go"
+      ]
+    },
+    {
+      "From": "serialize",
+      "To": "token",
+      "Files": [
+        "serialize/golden.go",
+        "serialize/pipeline.go",
+        "serialize/serialize.go"
+      ]
+    },
+    {
+      "From": "serialize",
+      "To": "typechecker",
+      "Files": [
+        "serialize/golden.go",
+        "serialize/golden_verify.go",
+        "serialize/pipeline.go",
+        "serialize/typechecker.go"
+      ]
+    },
+    {
+      "From": "testrunner",
+      "To": "ast",
+      "Files": [
+        "testrunner/discover.go"
+      ]
+    },
+    {
+      "From": "testrunner",
+      "To": "buildcache",
+      "Files": [
+        "testrunner/native.go"
+      ]
+    },
+    {
+      "From": "testrunner",
+      "To": "codegen/metal",
+      "Files": [
+        "testrunner/launches.go",
+        "testrunner/native.go"
+      ]
+    },
+    {
+      "From": "testrunner",
+      "To": "codegen/metal/gpu",
+      "Files": [
+        "testrunner/launches.go"
+      ]
+    },
+    {
+      "From": "testrunner",
+      "To": "compiler",
+      "Files": [
+        "testrunner/adapter.go",
+        "testrunner/discover.go",
+        "testrunner/native.go"
+      ]
+    },
+    {
+      "From": "testrunner",
+      "To": "target",
+      "Files": [
+        "testrunner/discover.go",
+        "testrunner/runner.go"
+      ]
+    },
+    {
+      "From": "testrunner",
+      "To": "toolchain",
+      "Files": [
+        "testrunner/native.go",
+        "testrunner/runner.go"
+      ]
+    },
+    {
+      "From": "token",
+      "To": "source",
+      "Files": [
+        "token/cursor.go",
+        "token/source.go"
+      ]
+    },
+    {
+      "From": "toolchain",
+      "To": "target",
+      "Files": [
+        "toolchain/toolchain.go"
+      ]
+    },
+    {
+      "From": "tools/checked_bundle/emit",
+      "To": "asm",
+      "Files": [
+        "tools/checked_bundle/emit/main.go"
+      ]
+    },
+    {
+      "From": "tools/checked_bundle/emit",
+      "To": "compiler",
+      "Files": [
+        "tools/checked_bundle/emit/main.go"
+      ]
+    },
+    {
+      "From": "tools/checked_bundle/emit",
+      "To": "target",
+      "Files": [
+        "tools/checked_bundle/emit/main.go"
+      ]
+    },
+    {
+      "From": "tools/native_image_fixtures",
+      "To": "asm",
+      "Files": [
+        "tools/native_image_fixtures/main.go"
+      ]
+    },
+    {
+      "From": "tools/native_image_fixtures",
+      "To": "compiler",
+      "Files": [
+        "tools/native_image_fixtures/main.go"
+      ]
+    },
+    {
+      "From": "tools/native_image_fixtures",
+      "To": "target",
+      "Files": [
+        "tools/native_image_fixtures/main.go"
+      ]
+    },
+    {
+      "From": "tools/native_object_fixtures",
+      "To": "asm",
+      "Files": [
+        "tools/native_object_fixtures/main.go"
+      ]
+    },
+    {
+      "From": "tools/native_object_fixtures",
+      "To": "compiler",
+      "Files": [
+        "tools/native_object_fixtures/main.go"
+      ]
+    },
+    {
+      "From": "tools/native_object_fixtures",
+      "To": "target",
+      "Files": [
+        "tools/native_object_fixtures/main.go"
+      ]
+    },
+    {
+      "From": "tools/source_image_parity",
+      "To": "compiler",
+      "Files": [
+        "tools/source_image_parity/wasm.go"
+      ]
+    },
+    {
+      "From": "tools/source_image_parity",
+      "To": "target",
+      "Files": [
+        "tools/source_image_parity/wasm.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "ast",
+      "Files": [
+        "typechecker/arithmetic.go",
+        "typechecker/borrow_storage.go",
+        "typechecker/buffers.go",
+        "typechecker/closures.go",
+        "typechecker/diagnostics.go",
+        "typechecker/discharge.go",
+        "typechecker/equality.go",
+        "typechecker/extents.go",
+        "typechecker/ffi.go",
+        "typechecker/ffi_const.go",
+        "typechecker/ffi_fnptr.go",
+        "typechecker/ffi_msgsend.go",
+        "typechecker/floats.go",
+        "typechecker/gadt.go",
+        "typechecker/generalization.go",
+        "typechecker/generic_constraints.go",
+        "typechecker/genericfn.go",
+        "typechecker/globals.go",
+        "typechecker/lattice.go",
+        "typechecker/layout_builtins.go",
+        "typechecker/memory.go",
+        "typechecker/modules.go",
+        "typechecker/mono.go",
+        "typechecker/pattern_analysis.go",
+        "typechecker/quantifier.go",
+        "typechecker/refinement_templates.go",
+        "typechecker/refinements.go",
+        "typechecker/regions.go",
+        "typechecker/resource_call_exclusivity.go",
+        "typechecker/resource_diagnostics.go",
+        "typechecker/resource_flow.go",
+        "typechecker/resource_resolution.go",
+        "typechecker/resource_sealed.go",
+        "typechecker/resource_semir.go",
+        "typechecker/rowfn.go",
+        "typechecker/scalable.go",
+        "typechecker/scalar_global_writes.go",
+        "typechecker/string_views.go",
+        "typechecker/tags.go",
+        "typechecker/theorems.go",
+        "typechecker/typechecker.go",
+        "typechecker/typechecker_test_helper.go",
+        "typechecker/typechecker_test_match_expressions.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "diagnostic",
+      "Files": [
+        "typechecker/diagnostics.go",
+        "typechecker/pattern_analysis.go",
+        "typechecker/resource_call_exclusivity.go",
+        "typechecker/resource_diagnostics.go",
+        "typechecker/resource_flow.go",
+        "typechecker/typechecker.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "lsp",
+      "Files": [
+        "typechecker/diagnostics.go",
+        "typechecker/resource_diagnostics.go",
+        "typechecker/typechecker.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "modules",
+      "Files": [
+        "typechecker/ffi.go",
+        "typechecker/modules.go",
+        "typechecker/resource_diagnostics.go",
+        "typechecker/typechecker.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "object",
+      "Files": [
+        "typechecker/borrow_storage.go",
+        "typechecker/gadt.go",
+        "typechecker/pattern_analysis.go",
+        "typechecker/typechecker.go",
+        "typechecker/typechecker_test_helper.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "parser",
+      "Files": [
+        "typechecker/typechecker_test_helper.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "resourceflow",
+      "Files": [
+        "typechecker/resource_flow.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "scanner",
+      "Files": [
+        "typechecker/typechecker_test_helper.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "semir",
+      "Files": [
+        "typechecker/barrier.go",
+        "typechecker/eret.go",
+        "typechecker/event_control.go",
+        "typechecker/memory.go",
+        "typechecker/mmio.go",
+        "typechecker/resource_semir.go",
+        "typechecker/sysreg.go",
+        "typechecker/tlbi.go",
+        "typechecker/typechecker.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "token",
+      "Files": [
+        "typechecker/equality.go",
+        "typechecker/expression_facts.go",
+        "typechecker/extents.go",
+        "typechecker/floats.go",
+        "typechecker/genericfn.go",
+        "typechecker/globals.go",
+        "typechecker/layout_builtins.go",
+        "typechecker/modules.go",
+        "typechecker/mono.go",
+        "typechecker/refinement_templates.go",
+        "typechecker/refinements.go",
+        "typechecker/regions.go",
+        "typechecker/scalar_global_writes.go",
+        "typechecker/typechecker.go"
+      ]
+    },
+    {
+      "From": "wasm",
+      "To": "optir",
+      "Files": [
+        "wasm/diamond.go",
+        "wasm/emit.go",
+        "wasm/forward.go",
+        "wasm/loop.go",
+        "wasm/region_loop.go",
+        "wasm/stack.go",
+        "wasm/structured.go"
+      ]
+    },
+    {
+      "From": "wasm",
+      "To": "wasm/check",
+      "Files": [
+        "wasm/emit.go"
+      ]
+    },
+    {
+      "From": "wasm",
+      "To": "wasm/encoding",
+      "Files": [
+        "wasm/emit.go"
+      ]
+    }
+  ],
+  "TestEdges": [
+    {
+      "From": ".",
+      "To": "asm",
+      "Files": [
+        "clause_agreement_test.go",
+        "lrat_native_bytes_test.go",
+        "lrat_native_test.go",
+        "native_bitwise_certificate_test.go",
+        "native_certificate_test.go",
+        "sat_model_test.go",
+        "sat_oak_test.go",
+        "solver_bench_test.go",
+        "solver_scheduling_test.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "ast",
+      "Files": [
+        "fmt_raw_nul_test.go",
+        "lrat_native_test.go",
+        "native_certificate_test.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "compiler",
+      "Files": [
+        "cnf_allocation_test.go",
+        "cnf_emission_test.go",
+        "cnf_folds_test.go",
+        "cnf_gates_test.go",
+        "cnf_literal_test.go",
+        "cnf_nodes_test.go",
+        "cnf_obligation_test.go",
+        "fmt_inferred_values_test.go",
+        "fmt_kernel_test.go",
+        "fmt_preservation_test.go",
+        "inferred_primitive_source_test.go",
+        "lrat_entry_test.go",
+        "lrat_formula_test.go",
+        "lrat_native_bytes_test.go",
+        "lrat_native_calls_test.go",
+        "lrat_native_test.go",
+        "prove_validation_test.go",
+        "sat_model_test.go",
+        "solver_allocation_test.go",
+        "spec_syntax_test.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "layout",
+      "Files": [
+        "fmt_raw_nul_test.go",
+        "lrat_native_test.go",
+        "native_certificate_test.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "modules",
+      "Files": [
+        "main_test.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "parser",
+      "Files": [
+        "fmt_raw_nul_test.go",
+        "lrat_lifecycle_test.go",
+        "lrat_native_test.go",
+        "native_certificate_test.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "prove",
+      "Files": [
+        "clause_agreement_test.go",
+        "inferred_primitive_source_test.go",
+        "lrat_bench_test.go",
+        "lrat_entry_test.go",
+        "lrat_formula_test.go",
+        "lrat_twin_test.go",
+        "native_bitwise_certificate_test.go",
+        "native_certificate_test.go",
+        "prove_synthesis_test.go",
+        "sat_model_test.go",
+        "sat_oak_test.go",
+        "spec_syntax_test.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "scanner",
+      "Files": [
+        "fmt_preservation_test.go",
+        "fmt_raw_nul_test.go",
+        "lrat_lifecycle_test.go",
+        "lrat_native_test.go",
+        "native_certificate_test.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "target",
+      "Files": [
+        "lrat_native_arm64_bytes_test.go",
+        "lrat_native_arm64_calls_test.go",
+        "lrat_native_bytes_test.go",
+        "lrat_native_calls_test.go",
+        "lrat_native_test.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "token",
+      "Files": [
+        "fmt_preservation_test.go",
+        "lrat_lifecycle_test.go"
+      ]
+    },
+    {
+      "From": ".",
+      "To": "wasm/check",
+      "Files": [
+        "main_webassembly_test.go"
+      ]
+    },
+    {
+      "From": "asm",
+      "To": "asm/internal/armfeat",
+      "Files": [
+        "asm/isa_xml_test.go"
+      ]
+    },
+    {
+      "From": "asm",
+      "To": "ast",
+      "Files": [
+        "asm/agg_views_test.go",
+        "asm/call_application_test.go",
+        "asm/call_bounds_test.go",
+        "asm/call_summary_test.go",
+        "asm/callee_refinement_test.go",
+        "asm/checker_refinement_test.go",
+        "asm/effects_test.go",
+        "asm/float_call_test.go",
+        "asm/float_literal_rounding_test.go",
+        "asm/globals_verify_test.go",
+        "asm/inferred_local_test.go",
+        "asm/loop_call_results_test.go",
+        "asm/loop_sites_test.go",
+        "asm/lowering_refinement_test.go",
+        "asm/memory_result_test.go",
+        "asm/native_callee_test.go",
+        "asm/record_array_memory_test.go",
+        "asm/record_index_test.go",
+        "asm/span_args_test.go",
+        "asm/syntax_float_literal_test.go",
+        "asm/table_views_test.go",
+        "asm/theorem_roots_test.go",
+        "asm/verdict_dependencies_test.go",
+        "asm/verify_vector_test.go"
+      ]
+    },
+    {
+      "From": "asm",
+      "To": "layout",
+      "Files": [
+        "asm/call_bounds_test.go",
+        "asm/lowering_refinement_test.go",
+        "asm/memory_result_test.go",
+        "asm/record_array_memory_test.go",
+        "asm/record_index_test.go",
+        "asm/theorem_roots_test.go",
+        "asm/verdict_dependencies_test.go"
+      ]
+    },
+    {
+      "From": "asm",
+      "To": "parser",
+      "Files": [
+        "asm/call_bounds_test.go",
+        "asm/lowering_refinement_test.go",
+        "asm/memory_result_test.go",
+        "asm/record_array_memory_test.go",
+        "asm/record_index_test.go",
+        "asm/theorem_roots_test.go",
+        "asm/verdict_dependencies_test.go"
+      ]
+    },
+    {
+      "From": "asm",
+      "To": "scanner",
+      "Files": [
+        "asm/call_bounds_test.go",
+        "asm/lowering_refinement_test.go",
+        "asm/memory_result_test.go",
+        "asm/record_array_memory_test.go",
+        "asm/record_index_test.go",
+        "asm/theorem_roots_test.go",
+        "asm/verdict_dependencies_test.go"
+      ]
+    },
+    {
+      "From": "asm",
+      "To": "typechecker",
+      "Files": [
+        "asm/checked_facts_test.go"
+      ]
+    },
+    {
+      "From": "ast",
+      "To": "token",
+      "Files": [
+        "ast/bodyless_string_test.go"
+      ]
+    },
+    {
+      "From": "borrowchecker",
+      "To": "ast",
+      "Files": [
+        "borrowchecker/borrowchecker_test.go",
+        "borrowchecker/derived_borrow_test.go",
+        "borrowchecker/diagnostics_test.go",
+        "borrowchecker/test_helper_test.go"
+      ]
+    },
+    {
+      "From": "borrowchecker",
+      "To": "diagnostic",
+      "Files": [
+        "borrowchecker/diagnostics_test.go",
+        "borrowchecker/resource_flow_test.go",
+        "borrowchecker/unsafe_test.go"
+      ]
+    },
+    {
+      "From": "borrowchecker",
+      "To": "object",
+      "Files": [
+        "borrowchecker/test_helper_test.go"
+      ]
+    },
+    {
+      "From": "borrowchecker",
+      "To": "parser",
+      "Files": [
+        "borrowchecker/test_helper_test.go"
+      ]
+    },
+    {
+      "From": "borrowchecker",
+      "To": "scanner",
+      "Files": [
+        "borrowchecker/test_helper_test.go"
+      ]
+    },
+    {
+      "From": "borrowchecker",
+      "To": "token",
+      "Files": [
+        "borrowchecker/diagnostics_test.go"
+      ]
+    },
+    {
+      "From": "borrowchecker",
+      "To": "typechecker",
+      "Files": [
+        "borrowchecker/aggregate_escape_test.go",
+        "borrowchecker/borrowchecker_test.go",
+        "borrowchecker/test_helper_test.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "asm",
+      "Files": [
+        "codegen/translation_validation_test.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "ast",
+      "Files": [
+        "codegen/translation_validation_test.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "layout",
+      "Files": [
+        "codegen/translation_validation_test.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "lowering",
+      "Files": [
+        "codegen/tail_loop_test.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "object",
+      "Files": [
+        "codegen/codegen_test.go",
+        "codegen/memory_e2e_test.go",
+        "codegen/tail_loop_test.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "parser",
+      "Files": [
+        "codegen/codegen_test.go",
+        "codegen/memory_e2e_test.go",
+        "codegen/tail_loop_test.go",
+        "codegen/translation_validation_test.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "scanner",
+      "Files": [
+        "codegen/codegen_test.go",
+        "codegen/memory_e2e_test.go",
+        "codegen/tail_loop_test.go",
+        "codegen/translation_validation_test.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "semir",
+      "Files": [
+        "codegen/aarch64_tlbi_test.go",
+        "codegen/memory_test.go"
+      ]
+    },
+    {
+      "From": "codegen",
+      "To": "typechecker",
+      "Files": [
+        "codegen/codegen_test.go",
+        "codegen/memory_e2e_test.go",
+        "codegen/tail_loop_test.go",
+        "codegen/translation_validation_test.go"
+      ]
+    },
+    {
+      "From": "codegen/lean",
+      "To": "object",
+      "Files": [
+        "codegen/lean/lean_test.go"
+      ]
+    },
+    {
+      "From": "codegen/lean",
+      "To": "parser",
+      "Files": [
+        "codegen/lean/lean_test.go"
+      ]
+    },
+    {
+      "From": "codegen/lean",
+      "To": "scanner",
+      "Files": [
+        "codegen/lean/lean_test.go"
+      ]
+    },
+    {
+      "From": "codegen/lean",
+      "To": "typechecker",
+      "Files": [
+        "codegen/lean/lean_test.go"
+      ]
+    },
+    {
+      "From": "codegen_test",
+      "To": "compiler",
+      "Files": [
+        "codegen/match_statement_e2e_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "asm",
+      "Files": [
+        "compiler/aarch64_condition_provenance_lean_test.go",
+        "compiler/aarch64_control_flow_lean_test.go",
+        "compiler/callable_initialization_test.go",
+        "compiler/checked_bitwise_image_proposal_test.go",
+        "compiler/e2e_cross_test.go",
+        "compiler/e2e_native_affine_index_test.go",
+        "compiler/e2e_native_aggregate_inline_test.go",
+        "compiler/e2e_native_array_permutation_loop_test.go",
+        "compiler/e2e_native_array_permutation_test.go",
+        "compiler/e2e_native_array_result_test.go",
+        "compiler/e2e_native_barrier_words_test.go",
+        "compiler/e2e_native_blake3_proven_test.go",
+        "compiler/e2e_native_boundary_copies_test.go",
+        "compiler/e2e_native_break_test.go",
+        "compiler/e2e_native_chain_operand_test.go",
+        "compiler/e2e_native_condition_test.go",
+        "compiler/e2e_native_const_index_test.go",
+        "compiler/e2e_native_constant_condition_test.go",
+        "compiler/e2e_native_constant_conversion_test.go",
+        "compiler/e2e_native_constant_fold_test.go",
+        "compiler/e2e_native_constant_shift_test.go",
+        "compiler/e2e_native_extent_fold_test.go",
+        "compiler/e2e_native_fact_transport_test.go",
+        "compiler/e2e_native_field_promotion_test.go",
+        "compiler/e2e_native_fma_map_test.go",
+        "compiler/e2e_native_forwarding_bases_test.go",
+        "compiler/e2e_native_forwarding_test.go",
+        "compiler/e2e_native_fuse_test.go",
+        "compiler/e2e_native_global_address_cse_test.go",
+        "compiler/e2e_native_guard_lines_test.go",
+        "compiler/e2e_native_header_hoist_test.go",
+        "compiler/e2e_native_inline_index_target_test.go",
+        "compiler/e2e_native_inplace_element_test.go",
+        "compiler/e2e_native_inplace_update_test.go",
+        "compiler/e2e_native_instructions_test.go",
+        "compiler/e2e_native_licm_constant_test.go",
+        "compiler/e2e_native_licm_test.go",
+        "compiler/e2e_native_loop_array_homes_test.go",
+        "compiler/e2e_native_loop_result_homes_test.go",
+        "compiler/e2e_native_macho_ordering_test.go",
+        "compiler/e2e_native_map_unroll_test.go",
+        "compiler/e2e_native_masked_table_test.go",
+        "compiler/e2e_native_multiply_add_test.go",
+        "compiler/e2e_native_object_test.go",
+        "compiler/e2e_native_optir_calls_test.go",
+        "compiler/e2e_native_optir_identity_test.go",
+        "compiler/e2e_native_optir_load_test.go",
+        "compiler/e2e_native_optir_memory_calls_test.go",
+        "compiler/e2e_native_optir_memory_cfg_test.go",
+        "compiler/e2e_native_optir_memory_cleanup_dse_test.go",
+        "compiler/e2e_native_optir_memory_cleanup_licm_test.go",
+        "compiler/e2e_native_optir_memory_cleanup_test.go",
+        "compiler/e2e_native_optir_memory_loop_test.go",
+        "compiler/e2e_native_optir_memory_spill_test.go",
+        "compiler/e2e_native_optir_memory_test.go",
+        "compiler/e2e_native_optir_rv64_test.go",
+        "compiler/e2e_native_optir_test.go",
+        "compiler/e2e_native_pair_copies_test.go",
+        "compiler/e2e_native_readonly_borrow_test.go",
+        "compiler/e2e_native_record_base_cse_test.go",
+        "compiler/e2e_native_record_loop_store_test.go",
+        "compiler/e2e_native_reduction_liveness_test.go",
+        "compiler/e2e_native_reduction_test.go",
+        "compiler/e2e_native_redundant_guards_test.go",
+        "compiler/e2e_native_return_test.go",
+        "compiler/e2e_native_rotation_test.go",
+        "compiler/e2e_native_rv64_elision_test.go",
+        "compiler/e2e_native_rv64_rewrites_test.go",
+        "compiler/e2e_native_rv64_simd_test.go",
+        "compiler/e2e_native_rv64_test.go",
+        "compiler/e2e_native_scalar_array_release_test.go",
+        "compiler/e2e_native_select_test.go",
+        "compiler/e2e_native_sha256_path_test.go",
+        "compiler/e2e_native_table_view_test.go",
+        "compiler/e2e_native_unroll_constant_test.go",
+        "compiler/e2e_native_unroll_names_test.go",
+        "compiler/e2e_native_value_select_test.go",
+        "compiler/e2e_native_vector_fold_test.go",
+        "compiler/e2e_native_vector_homes_test.go",
+        "compiler/e2e_native_vector_lanes_test.go",
+        "compiler/e2e_native_vector_map_test.go",
+        "compiler/e2e_native_vector_reduction_test.go",
+        "compiler/e2e_native_walker_cleanup_test.go",
+        "compiler/e2e_rv64_cpu_test.go",
+        "compiler/e2e_rv64_test.go",
+        "compiler/e2e_selfhost_bitwise_elf_test.go",
+        "compiler/e2e_selfhost_linker_test.go",
+        "compiler/e2e_trap_domain_test.go",
+        "compiler/float_literal_rounding_test.go",
+        "compiler/inferred_primitive_verification_test.go",
+        "compiler/inferred_values_test.go",
+        "compiler/native_allocation_reuse_test.go",
+        "compiler/native_bitwise_object_lean_test.go",
+        "compiler/native_call_identity_test.go",
+        "compiler/native_fill_fallback_test.go",
+        "compiler/native_loop_result_homes_policy_test.go",
+        "compiler/native_materialization_test.go",
+        "compiler/native_rv64_globals_test.go",
+        "compiler/native_shape_test.go",
+        "compiler/native_unroll_small_policy_test.go",
+        "compiler/native_unroll_small_test.go",
+        "compiler/rv64_framed_bitwise_lean_test.go",
+        "compiler/rv64_image_bitwise_lean_test.go",
+        "compiler/rv64_strict_entry_bitwise_lean_test.go",
+        "compiler/selfhost_bitwise_image_bundle_test.go",
+        "compiler/source_bitwise_parity_test.go",
+        "compiler/verdict_cache_test.go",
+        "compiler/verified_profile_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "ast",
+      "Files": [
+        "compiler/array_initializer_contract_test.go",
+        "compiler/canonical_integer_test.go",
+        "compiler/canonical_test.go",
+        "compiler/e2e_native_array_permutation_loop_test.go",
+        "compiler/e2e_native_array_result_test.go",
+        "compiler/e2e_native_fma_map_test.go",
+        "compiler/e2e_native_loop_array_homes_test.go",
+        "compiler/e2e_native_loop_result_homes_test.go",
+        "compiler/e2e_native_map_unroll_test.go",
+        "compiler/e2e_native_optir_identity_test.go",
+        "compiler/e2e_native_optir_memory_cleanup_dse_test.go",
+        "compiler/e2e_native_optir_memory_cleanup_licm_test.go",
+        "compiler/e2e_native_optir_memory_cleanup_test.go",
+        "compiler/e2e_native_scalar_array_release_test.go",
+        "compiler/e2e_protocol_lowering_test.go",
+        "compiler/io_port_surface_test.go",
+        "compiler/lean_stdlib_extract_test.go",
+        "compiler/list_contract_test.go",
+        "compiler/native_allocation_reuse_test.go",
+        "compiler/native_call_identity_test.go",
+        "compiler/native_materialization_test.go",
+        "compiler/native_rv64_globals_test.go",
+        "compiler/native_unroll_small_test.go",
+        "compiler/semantic_types_test.go",
+        "compiler/synth_type_fidelity_test.go",
+        "compiler/verdict_cache_test.go",
+        "compiler/wasm_nested_loop_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "bitwisecheck",
+      "Files": [
+        "compiler/checked_bitwise_image_proposal_test.go",
+        "compiler/selfhost_bitwise_image_bundle_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "borrowchecker",
+      "Files": [
+        "compiler/diagnostic_corpus_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "codegen/lean",
+      "Files": [
+        "compiler/e2e_lean_function_arguments_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "codegen/metal",
+      "Files": [
+        "compiler/e2e_kernels_gpu_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "codegen/metal/gpu",
+      "Files": [
+        "compiler/e2e_kernel_helper_names_test.go",
+        "compiler/e2e_kernel_strided_test.go",
+        "compiler/e2e_kernels_gpu_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "diagnostic",
+      "Files": [
+        "compiler/e2e_asm_package_test.go",
+        "compiler/e2e_binary_codec_test.go",
+        "compiler/e2e_ffi_cstrings_test.go",
+        "compiler/e2e_ffi_fnptr_test.go",
+        "compiler/e2e_ffi_objc_test.go",
+        "compiler/e2e_guard_wrap_test.go",
+        "compiler/e2e_native_absorber_call_test.go",
+        "compiler/e2e_native_adt_test.go",
+        "compiler/e2e_native_aggregate_inline_test.go",
+        "compiler/e2e_native_array_test.go",
+        "compiler/e2e_native_array_value_test.go",
+        "compiler/e2e_native_assert_callee_test.go",
+        "compiler/e2e_native_atomics_test.go",
+        "compiler/e2e_native_blake3_package_test.go",
+        "compiler/e2e_native_bool_field_test.go",
+        "compiler/e2e_native_boundary_copies_test.go",
+        "compiler/e2e_native_break_test.go",
+        "compiler/e2e_native_budget_escalation_test.go",
+        "compiler/e2e_native_call_index_test.go",
+        "compiler/e2e_native_call_liveness_test.go",
+        "compiler/e2e_native_call_result_carried_test.go",
+        "compiler/e2e_native_call_summary_test.go",
+        "compiler/e2e_native_callee_cell_loop_test.go",
+        "compiler/e2e_native_callee_effects_test.go",
+        "compiler/e2e_native_callee_loop_reached_test.go",
+        "compiler/e2e_native_caller_homes_test.go",
+        "compiler/e2e_native_chain_operand_test.go",
+        "compiler/e2e_native_compound_test.go",
+        "compiler/e2e_native_condition_test.go",
+        "compiler/e2e_native_const_index_test.go",
+        "compiler/e2e_native_constant_condition_test.go",
+        "compiler/e2e_native_constant_conversion_test.go",
+        "compiler/e2e_native_constant_fold_test.go",
+        "compiler/e2e_native_constant_shift_test.go",
+        "compiler/e2e_native_constants_test.go",
+        "compiler/e2e_native_deep_test.go",
+        "compiler/e2e_native_dispatch_test.go",
+        "compiler/e2e_native_extern_call_test.go",
+        "compiler/e2e_native_fact_transport_test.go",
+        "compiler/e2e_native_far_field_test.go",
+        "compiler/e2e_native_field_address_argument_test.go",
+        "compiler/e2e_native_field_promotion_test.go",
+        "compiler/e2e_native_field_view_proof_test.go",
+        "compiler/e2e_native_float_simd_test.go",
+        "compiler/e2e_native_float_span_store_test.go",
+        "compiler/e2e_native_float_test.go",
+        "compiler/e2e_native_fma_map_test.go",
+        "compiler/e2e_native_forked_loops_test.go",
+        "compiler/e2e_native_forwarding_bases_test.go",
+        "compiler/e2e_native_forwarding_test.go",
+        "compiler/e2e_native_frame_record_span_test.go",
+        "compiler/e2e_native_frame_span_test.go",
+        "compiler/e2e_native_fuse_test.go",
+        "compiler/e2e_native_generic_test.go",
+        "compiler/e2e_native_global_aggregates_test.go",
+        "compiler/e2e_native_global_array_test.go",
+        "compiler/e2e_native_globals_test.go",
+        "compiler/e2e_native_guard_lines_test.go",
+        "compiler/e2e_native_guarded_writes_test.go",
+        "compiler/e2e_native_header_hoist_test.go",
+        "compiler/e2e_native_inline_index_target_test.go",
+        "compiler/e2e_native_inplace_update_test.go",
+        "compiler/e2e_native_instructions_test.go",
+        "compiler/e2e_native_large_array_test.go",
+        "compiler/e2e_native_leaf_test.go",
+        "compiler/e2e_native_licm_constant_test.go",
+        "compiler/e2e_native_licm_test.go",
+        "compiler/e2e_native_linear_mask_test.go",
+        "compiler/e2e_native_literals_test.go",
+        "compiler/e2e_native_loop_array_homes_test.go",
+        "compiler/e2e_native_loop_bool_test.go",
+        "compiler/e2e_native_loop_bound_field_test.go",
+        "compiler/e2e_native_loop_cells_test.go",
+        "compiler/e2e_native_loop_header_loads_test.go",
+        "compiler/e2e_native_loop_stores_test.go",
+        "compiler/e2e_native_map_page_cases_test.go",
+        "compiler/e2e_native_masked_table_test.go",
+        "compiler/e2e_native_multiply_add_test.go",
+        "compiler/e2e_native_narrow_counter_test.go",
+        "compiler/e2e_native_nested_loop_frame_test.go",
+        "compiler/e2e_native_nested_record_span_test.go",
+        "compiler/e2e_native_nested_test.go",
+        "compiler/e2e_native_nested_zeroing_test.go",
+        "compiler/e2e_native_optir_calls_test.go",
+        "compiler/e2e_native_optir_identity_test.go",
+        "compiler/e2e_native_optir_load_test.go",
+        "compiler/e2e_native_optir_memory_calls_test.go",
+        "compiler/e2e_native_optir_memory_cfg_test.go",
+        "compiler/e2e_native_optir_memory_cleanup_dse_test.go",
+        "compiler/e2e_native_optir_memory_cleanup_licm_test.go",
+        "compiler/e2e_native_optir_memory_cleanup_test.go",
+        "compiler/e2e_native_optir_memory_loop_test.go",
+        "compiler/e2e_native_optir_memory_spill_test.go",
+        "compiler/e2e_native_optir_memory_test.go",
+        "compiler/e2e_native_optir_rv64_test.go",
+        "compiler/e2e_native_optir_test.go",
+        "compiler/e2e_native_padded_record_span_test.go",
+        "compiler/e2e_native_pair_copies_test.go",
+        "compiler/e2e_native_readonly_borrow_test.go",
+        "compiler/e2e_native_record_abi_test.go",
+        "compiler/e2e_native_record_array_memory_test.go",
+        "compiler/e2e_native_record_array_test.go",
+        "compiler/e2e_native_record_element_call_test.go",
+        "compiler/e2e_native_record_field_loop_test.go",
+        "compiler/e2e_native_record_inplace_test.go",
+        "compiler/e2e_native_record_loop_store_test.go",
+        "compiler/e2e_native_record_span_proof_test.go",
+        "compiler/e2e_native_record_span_test.go",
+        "compiler/e2e_native_record_test.go",
+        "compiler/e2e_native_record_words_test.go",
+        "compiler/e2e_native_reduction_test.go",
+        "compiler/e2e_native_register_budget_test.go",
+        "compiler/e2e_native_result_block_test.go",
+        "compiler/e2e_native_result_span_test.go",
+        "compiler/e2e_native_return_test.go",
+        "compiler/e2e_native_rotate_test.go",
+        "compiler/e2e_native_rotation_test.go",
+        "compiler/e2e_native_rv64_elision_test.go",
+        "compiler/e2e_native_rv64_rewrites_test.go",
+        "compiler/e2e_native_rv64_simd_test.go",
+        "compiler/e2e_native_rv64_strength_test.go",
+        "compiler/e2e_native_rv64_test.go",
+        "compiler/e2e_native_scalar_array_release_test.go",
+        "compiler/e2e_native_select_guard_test.go",
+        "compiler/e2e_native_select_index_linear_test.go",
+        "compiler/e2e_native_select_test.go",
+        "compiler/e2e_native_sha256_path_test.go",
+        "compiler/e2e_native_simd_test.go",
+        "compiler/e2e_native_slot_index_test.go",
+        "compiler/e2e_native_span_call_test.go",
+        "compiler/e2e_native_span_effects_test.go",
+        "compiler/e2e_native_span_fields_test.go",
+        "compiler/e2e_native_stack_args_test.go",
+        "compiler/e2e_native_stack_summary_test.go",
+        "compiler/e2e_native_staircase_test.go",
+        "compiler/e2e_native_statement_shapes_test.go",
+        "compiler/e2e_native_strength_test.go",
+        "compiler/e2e_native_stride_test.go",
+        "compiler/e2e_native_subslice_test.go",
+        "compiler/e2e_native_table_loop_test.go",
+        "compiler/e2e_native_tables_test.go",
+        "compiler/e2e_native_test.go",
+        "compiler/e2e_native_union_binder_test.go",
+        "compiler/e2e_native_unroll_constant_test.go",
+        "compiler/e2e_native_value_select_test.go",
+        "compiler/e2e_native_vector_fold_test.go",
+        "compiler/e2e_native_vector_homes_test.go",
+        "compiler/e2e_native_vector_lanes_test.go",
+        "compiler/e2e_native_vector_map_test.go",
+        "compiler/e2e_native_vector_reduction_test.go",
+        "compiler/e2e_native_vector_stack_args_test.go",
+        "compiler/e2e_native_verdict_aggregates_test.go",
+        "compiler/e2e_native_walker_cleanup_test.go",
+        "compiler/e2e_native_wide_result_test.go",
+        "compiler/e2e_native_zero_record_test.go",
+        "compiler/e2e_simd_record_fields_test.go",
+        "compiler/e2e_strict_admit_test.go",
+        "compiler/float_literal_rounding_test.go",
+        "compiler/inferred_values_test.go",
+        "compiler/verdict_cache_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "discipline",
+      "Files": [
+        "compiler/diagnostic_corpus_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "evaluator",
+      "Files": [
+        "compiler/differential_float_test.go",
+        "compiler/differential_sweep_test.go",
+        "compiler/differential_views_test.go",
+        "compiler/e2e_aggregate_index_lowering_test.go",
+        "compiler/e2e_blake3_update_test.go",
+        "compiler/e2e_dispatch_test.go",
+        "compiler/e2e_f8_storage_test.go",
+        "compiler/e2e_ffi_const_test.go",
+        "compiler/e2e_ffi_objc_test.go",
+        "compiler/e2e_hash_test.go",
+        "compiler/e2e_io_port_test.go",
+        "compiler/e2e_math_test.go",
+        "compiler/e2e_measured_imports_test.go",
+        "compiler/e2e_scalable_test.go",
+        "compiler/e2e_stdlib_array_list_package_test.go",
+        "compiler/e2e_stdlib_bitset_package_test.go",
+        "compiler/e2e_stdlib_buffer_package_test.go",
+        "compiler/e2e_stdlib_bytes_package_test.go",
+        "compiler/e2e_stdlib_endian_package_test.go",
+        "compiler/e2e_stdlib_float_test.go",
+        "compiler/e2e_stdlib_time_test.go",
+        "compiler/e2e_time_interval_test.go",
+        "compiler/e2e_trapping_arithmetic_test.go",
+        "compiler/lean_stdlib_bytes_copy_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "internal/lrat",
+      "Files": [
+        "compiler/lrat_kernel_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "internal/wasmtest",
+      "Files": [
+        "compiler/e2e_selfhost_wasm_assembler_test.go",
+        "compiler/inferred_primitive_verification_test.go",
+        "compiler/wasm_bitwise_module_test.go",
+        "compiler/wasm_branch_test.go",
+        "compiler/wasm_call_composition_test.go",
+        "compiler/wasm_calls_test.go",
+        "compiler/wasm_conditional_source_test.go",
+        "compiler/wasm_divrem_test.go",
+        "compiler/wasm_execution_test.go",
+        "compiler/wasm_forward_test.go",
+        "compiler/wasm_loop_test.go",
+        "compiler/wasm_module_test.go",
+        "compiler/wasm_nested_loop_test.go",
+        "compiler/wasm_region_loop_test.go",
+        "compiler/wasm_size_test.go",
+        "compiler/wasm_stack_test.go",
+        "compiler/wasm_test.go",
+        "compiler/wasm_typing_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "layout",
+      "Files": [
+        "compiler/differential_float_test.go",
+        "compiler/differential_sweep_test.go",
+        "compiler/differential_views_test.go",
+        "compiler/e2e_aggregate_index_lowering_test.go",
+        "compiler/e2e_blake3_update_test.go",
+        "compiler/e2e_ffi_const_test.go",
+        "compiler/e2e_ffi_objc_test.go",
+        "compiler/e2e_hash_test.go",
+        "compiler/e2e_io_port_test.go",
+        "compiler/e2e_math_test.go",
+        "compiler/e2e_protocol_lowering_test.go",
+        "compiler/e2e_stdlib_array_list_package_test.go",
+        "compiler/e2e_stdlib_bitset_package_test.go",
+        "compiler/e2e_stdlib_buffer_package_test.go",
+        "compiler/e2e_stdlib_bytes_package_test.go",
+        "compiler/e2e_stdlib_endian_package_test.go",
+        "compiler/e2e_stdlib_float_test.go",
+        "compiler/e2e_stdlib_time_test.go",
+        "compiler/e2e_time_interval_test.go",
+        "compiler/e2e_trapping_arithmetic_test.go",
+        "compiler/io_port_surface_test.go",
+        "compiler/lean_stdlib_bytes_copy_test.go",
+        "compiler/native_allocation_reuse_test.go",
+        "compiler/syntax_walk_bench_test.go",
+        "compiler/syntax_walk_test.go",
+        "compiler/verdict_cache_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "machine",
+      "Files": [
+        "compiler/aarch64_control_flow_lean_test.go",
+        "compiler/e2e_native_optir_memory_cleanup_licm_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "modules",
+      "Files": [
+        "compiler/module_api_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "nativegen",
+      "Files": [
+        "compiler/e2e_native_affine_index_test.go",
+        "compiler/e2e_native_array_permutation_loop_test.go",
+        "compiler/e2e_native_array_result_test.go",
+        "compiler/e2e_native_blake3_proven_test.go",
+        "compiler/e2e_native_chain_operand_test.go",
+        "compiler/e2e_native_fma_map_test.go",
+        "compiler/e2e_native_fuse_test.go",
+        "compiler/e2e_native_global_address_cse_test.go",
+        "compiler/e2e_native_header_hoist_test.go",
+        "compiler/e2e_native_inplace_element_test.go",
+        "compiler/e2e_native_inplace_update_test.go",
+        "compiler/e2e_native_loop_array_homes_test.go",
+        "compiler/e2e_native_loop_result_homes_test.go",
+        "compiler/e2e_native_map_unroll_test.go",
+        "compiler/e2e_native_multiply_add_test.go",
+        "compiler/e2e_native_optir_identity_test.go",
+        "compiler/e2e_native_optir_memory_cleanup_licm_test.go",
+        "compiler/e2e_native_record_base_cse_test.go",
+        "compiler/e2e_native_record_loop_store_test.go",
+        "compiler/e2e_native_reduction_test.go",
+        "compiler/e2e_native_redundant_guards_test.go",
+        "compiler/e2e_native_scalar_array_release_test.go",
+        "compiler/e2e_native_select_test.go",
+        "compiler/e2e_native_table_view_test.go",
+        "compiler/e2e_native_unroll_constant_test.go",
+        "compiler/e2e_native_unroll_names_test.go",
+        "compiler/e2e_native_value_select_test.go",
+        "compiler/e2e_native_vector_fold_test.go",
+        "compiler/e2e_native_vector_lanes_test.go",
+        "compiler/e2e_native_vector_map_test.go",
+        "compiler/e2e_native_vector_reduction_test.go",
+        "compiler/e2e_native_walker_cleanup_test.go",
+        "compiler/native_allocation_reuse_test.go",
+        "compiler/native_call_identity_test.go",
+        "compiler/native_fill_fallback_test.go",
+        "compiler/native_loop_result_homes_policy_test.go",
+        "compiler/native_materialization_test.go",
+        "compiler/native_rv64_globals_test.go",
+        "compiler/native_shape_test.go",
+        "compiler/native_unroll_small_policy_test.go",
+        "compiler/native_unroll_small_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "object",
+      "Files": [
+        "compiler/differential_float_test.go",
+        "compiler/differential_sweep_test.go",
+        "compiler/differential_views_test.go",
+        "compiler/e2e_aggregate_index_lowering_test.go",
+        "compiler/e2e_blake3_update_test.go",
+        "compiler/e2e_ffi_const_test.go",
+        "compiler/e2e_ffi_objc_test.go",
+        "compiler/e2e_hash_test.go",
+        "compiler/e2e_io_port_test.go",
+        "compiler/e2e_math_test.go",
+        "compiler/e2e_measured_imports_test.go",
+        "compiler/e2e_stdlib_array_list_package_test.go",
+        "compiler/e2e_stdlib_bitset_package_test.go",
+        "compiler/e2e_stdlib_buffer_package_test.go",
+        "compiler/e2e_stdlib_bytes_package_test.go",
+        "compiler/e2e_stdlib_endian_package_test.go",
+        "compiler/e2e_stdlib_float_test.go",
+        "compiler/e2e_stdlib_time_test.go",
+        "compiler/e2e_time_interval_test.go",
+        "compiler/e2e_trapping_arithmetic_test.go",
+        "compiler/lean_stdlib_bytes_copy_test.go",
+        "compiler/native_materialization_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "opt",
+      "Files": [
+        "compiler/canonical_integer_test.go",
+        "compiler/canonical_test.go",
+        "compiler/emission_artifacts_test.go",
+        "compiler/native_allocation_reuse_test.go",
+        "compiler/native_call_identity_test.go",
+        "compiler/native_fill_fallback_test.go",
+        "compiler/native_loop_result_homes_policy_test.go",
+        "compiler/native_materialization_test.go",
+        "compiler/native_search_target_test.go",
+        "compiler/native_unroll_small_policy_test.go",
+        "compiler/native_unroll_small_test.go",
+        "compiler/optimize_test.go",
+        "compiler/optir_artifacts_test.go",
+        "compiler/wasm_artifacts_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "optir",
+      "Files": [
+        "compiler/native_call_identity_test.go",
+        "compiler/native_materialization_test.go",
+        "compiler/optir_artifacts_test.go",
+        "compiler/optir_fact_transport_test.go",
+        "compiler/optir_identity_test.go",
+        "compiler/optir_memory_cleanup_dse_test.go",
+        "compiler/optir_memory_cleanup_licm_test.go",
+        "compiler/optir_memory_cleanup_test.go",
+        "compiler/optir_memory_test.go",
+        "compiler/optir_test.go",
+        "compiler/wasm_artifacts_test.go",
+        "compiler/wasm_module_test.go",
+        "compiler/wasm_nested_loop_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "packageapi",
+      "Files": [
+        "compiler/module_api_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "parser",
+      "Files": [
+        "compiler/differential_float_test.go",
+        "compiler/differential_sweep_test.go",
+        "compiler/differential_views_test.go",
+        "compiler/e2e_aggregate_index_lowering_test.go",
+        "compiler/e2e_blake3_update_test.go",
+        "compiler/e2e_ffi_const_test.go",
+        "compiler/e2e_ffi_objc_test.go",
+        "compiler/e2e_hash_test.go",
+        "compiler/e2e_io_port_test.go",
+        "compiler/e2e_math_test.go",
+        "compiler/e2e_protocol_lowering_test.go",
+        "compiler/e2e_stdlib_array_list_package_test.go",
+        "compiler/e2e_stdlib_bitset_package_test.go",
+        "compiler/e2e_stdlib_buffer_package_test.go",
+        "compiler/e2e_stdlib_bytes_package_test.go",
+        "compiler/e2e_stdlib_endian_package_test.go",
+        "compiler/e2e_stdlib_float_test.go",
+        "compiler/e2e_stdlib_time_test.go",
+        "compiler/e2e_time_interval_test.go",
+        "compiler/e2e_trapping_arithmetic_test.go",
+        "compiler/io_port_surface_test.go",
+        "compiler/lean_stdlib_bytes_copy_test.go",
+        "compiler/lean_stdlib_extract_test.go",
+        "compiler/native_allocation_reuse_test.go",
+        "compiler/syntax_walk_bench_test.go",
+        "compiler/syntax_walk_test.go",
+        "compiler/verdict_cache_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "scanner",
+      "Files": [
+        "compiler/differential_float_test.go",
+        "compiler/differential_sweep_test.go",
+        "compiler/differential_views_test.go",
+        "compiler/e2e_aggregate_index_lowering_test.go",
+        "compiler/e2e_blake3_update_test.go",
+        "compiler/e2e_ffi_const_test.go",
+        "compiler/e2e_ffi_objc_test.go",
+        "compiler/e2e_hash_test.go",
+        "compiler/e2e_io_port_test.go",
+        "compiler/e2e_math_test.go",
+        "compiler/e2e_protocol_lowering_test.go",
+        "compiler/e2e_stdlib_array_list_package_test.go",
+        "compiler/e2e_stdlib_bitset_package_test.go",
+        "compiler/e2e_stdlib_buffer_package_test.go",
+        "compiler/e2e_stdlib_bytes_package_test.go",
+        "compiler/e2e_stdlib_endian_package_test.go",
+        "compiler/e2e_stdlib_float_test.go",
+        "compiler/e2e_stdlib_time_test.go",
+        "compiler/e2e_time_interval_test.go",
+        "compiler/e2e_trapping_arithmetic_test.go",
+        "compiler/io_port_surface_test.go",
+        "compiler/lean_stdlib_bytes_copy_test.go",
+        "compiler/lean_stdlib_extract_test.go",
+        "compiler/native_allocation_reuse_test.go",
+        "compiler/syntax_walk_bench_test.go",
+        "compiler/syntax_walk_test.go",
+        "compiler/verdict_cache_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "semir",
+      "Files": [
+        "compiler/resource_function_type_contracts_test.go",
+        "compiler/resource_parameter_modes_test.go",
+        "compiler/resource_receiver_modes_test.go",
+        "compiler/resource_result_contracts_test.go",
+        "compiler/resource_semir_test.go",
+        "compiler/semantic_types_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "serialize",
+      "Files": [
+        "compiler/differential_corpus_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "spec/lean",
+      "Files": [
+        "compiler/selfhost_bitwise_image_bundle_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "stdlib",
+      "Files": [
+        "compiler/e2e_selfhost_bitwise_elf_test.go",
+        "compiler/e2e_selfhost_placement_test.go",
+        "compiler/io_port_surface_test.go",
+        "compiler/lean_native_bitwise_envelope_test.go",
+        "compiler/lean_selfhost_bitwise_wasm_module_test.go",
+        "compiler/lean_stdlib_extract_test.go",
+        "compiler/lean_wasm_assembler_test.go",
+        "compiler/syntax_walk_bench_test.go",
+        "compiler/syntax_walk_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "target",
+      "Files": [
+        "compiler/aarch64_condition_provenance_lean_test.go",
+        "compiler/aarch64_control_flow_lean_test.go",
+        "compiler/aarch64_minimal_startup_lean_test.go",
+        "compiler/arm_bti_execution_test.go",
+        "compiler/arm_decoder_classification_test.go",
+        "compiler/arm_decoder_partition_test.go",
+        "compiler/callable_initialization_test.go",
+        "compiler/checked_bitwise_image_proposal_test.go",
+        "compiler/e2e_asm_test.go",
+        "compiler/e2e_asm_verify_test.go",
+        "compiler/e2e_cross_test.go",
+        "compiler/e2e_dispatch_foreign_lane_test.go",
+        "compiler/e2e_dispatch_test.go",
+        "compiler/e2e_el0_entry_test.go",
+        "compiler/e2e_hash_dispatch_test.go",
+        "compiler/e2e_mcu_test.go",
+        "compiler/e2e_native_assert_callee_test.go",
+        "compiler/e2e_native_barrier_words_test.go",
+        "compiler/e2e_native_blake3_proven_test.go",
+        "compiler/e2e_native_bool_field_test.go",
+        "compiler/e2e_native_break_test.go",
+        "compiler/e2e_native_call_summary_test.go",
+        "compiler/e2e_native_constant_conversion_test.go",
+        "compiler/e2e_native_constant_fold_test.go",
+        "compiler/e2e_native_constant_shift_test.go",
+        "compiler/e2e_native_exec_test.go",
+        "compiler/e2e_native_instructions_test.go",
+        "compiler/e2e_native_loop_array_homes_test.go",
+        "compiler/e2e_native_loop_bool_test.go",
+        "compiler/e2e_native_loop_header_loads_test.go",
+        "compiler/e2e_native_loop_stores_test.go",
+        "compiler/e2e_native_macho_ordering_test.go",
+        "compiler/e2e_native_object_test.go",
+        "compiler/e2e_native_optir_calls_test.go",
+        "compiler/e2e_native_optir_identity_test.go",
+        "compiler/e2e_native_optir_memory_calls_test.go",
+        "compiler/e2e_native_optir_memory_cfg_test.go",
+        "compiler/e2e_native_optir_memory_cleanup_dse_test.go",
+        "compiler/e2e_native_optir_memory_cleanup_licm_test.go",
+        "compiler/e2e_native_optir_memory_cleanup_test.go",
+        "compiler/e2e_native_optir_memory_loop_test.go",
+        "compiler/e2e_native_optir_memory_test.go",
+        "compiler/e2e_native_optir_rv64_test.go",
+        "compiler/e2e_native_rv64_elision_test.go",
+        "compiler/e2e_native_rv64_rewrites_test.go",
+        "compiler/e2e_native_rv64_simd_test.go",
+        "compiler/e2e_native_rv64_span_locals_test.go",
+        "compiler/e2e_native_rv64_stack_args_test.go",
+        "compiler/e2e_native_rv64_strength_test.go",
+        "compiler/e2e_native_rv64_subslice_test.go",
+        "compiler/e2e_native_rv64_test.go",
+        "compiler/e2e_native_span_effects_test.go",
+        "compiler/e2e_native_statement_shapes_test.go",
+        "compiler/e2e_native_tables_test.go",
+        "compiler/e2e_native_verdict_aggregates_test.go",
+        "compiler/e2e_rings_targets_test.go",
+        "compiler/e2e_rv64_cpu_test.go",
+        "compiler/e2e_rv64_test.go",
+        "compiler/e2e_rvv_test.go",
+        "compiler/e2e_selfhost_bitwise_elf_test.go",
+        "compiler/e2e_selfhost_elf_data_test.go",
+        "compiler/e2e_selfhost_linker_test.go",
+        "compiler/e2e_sve_test.go",
+        "compiler/e2e_trap_domain_test.go",
+        "compiler/e2e_verified_profile_test.go",
+        "compiler/emission_artifacts_test.go",
+        "compiler/float_literal_rounding_test.go",
+        "compiler/inferred_primitive_verification_test.go",
+        "compiler/inferred_values_test.go",
+        "compiler/native_bitwise_object_lean_test.go",
+        "compiler/native_loop_result_homes_policy_test.go",
+        "compiler/native_shape_test.go",
+        "compiler/native_unroll_small_test.go",
+        "compiler/rv64_framed_bitwise_lean_test.go",
+        "compiler/rv64_image_bitwise_lean_test.go",
+        "compiler/rv64_strict_entry_bitwise_lean_test.go",
+        "compiler/selfhost_bitwise_image_bundle_test.go",
+        "compiler/source_bitwise_parity_test.go",
+        "compiler/wasm_artifacts_test.go",
+        "compiler/wasm_nested_loop_test.go",
+        "compiler/wasm_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "toolchain",
+      "Files": [
+        "compiler/e2e_cross_test.go",
+        "compiler/e2e_dispatch_test.go",
+        "compiler/e2e_mcu_test.go",
+        "compiler/e2e_native_exec_test.go",
+        "compiler/e2e_native_object_test.go",
+        "compiler/e2e_native_rv64_stack_args_test.go",
+        "compiler/e2e_native_rv64_test.go",
+        "compiler/e2e_rings_targets_test.go",
+        "compiler/e2e_rvv_test.go",
+        "compiler/e2e_selfhost_linker_test.go",
+        "compiler/e2e_sve_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "typechecker",
+      "Files": [
+        "compiler/array_initializer_contract_test.go",
+        "compiler/callable_initialization_test.go",
+        "compiler/canonical_test.go",
+        "compiler/diagnostic_corpus_test.go",
+        "compiler/diagnostic_error_test.go",
+        "compiler/e2e_adt_methods_test.go",
+        "compiler/e2e_guard_wrap_test.go",
+        "compiler/e2e_protocol_via_modes_test.go",
+        "compiler/e2e_protocol_via_results_test.go",
+        "compiler/native_materialization_test.go",
+        "compiler/protocol_sealed_constructor_test.go",
+        "compiler/resource_adt_payloads_test.go",
+        "compiler/resource_borrowed_aggregates_test.go",
+        "compiler/resource_borrowed_results_test.go",
+        "compiler/resource_call_exclusivity_test.go",
+        "compiler/resource_callable_boundaries_test.go",
+        "compiler/resource_callee_authority_test.go",
+        "compiler/resource_default_pipeline_test.go",
+        "compiler/resource_function_type_contracts_test.go",
+        "compiler/resource_loop_convergence_test.go",
+        "compiler/resource_multi_origin_results_test.go",
+        "compiler/resource_mutable_reborrows_test.go",
+        "compiler/resource_parameter_modes_test.go",
+        "compiler/resource_projections_test.go",
+        "compiler/resource_reassignment_test.go",
+        "compiler/resource_receiver_modes_test.go",
+        "compiler/resource_result_contracts_test.go",
+        "compiler/resource_semir_test.go",
+        "compiler/resource_terminal_obligations_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "wasm",
+      "Files": [
+        "compiler/wasm_artifacts_test.go",
+        "compiler/wasm_divrem_test.go",
+        "compiler/wasm_module_test.go",
+        "compiler/wasm_nested_loop_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "wasm/check",
+      "Files": [
+        "compiler/e2e_selfhost_bitwise_wasm_module_test.go",
+        "compiler/e2e_selfhost_wasm_assembler_test.go",
+        "compiler/wasm_call_composition_test.go",
+        "compiler/wasm_calls_test.go",
+        "compiler/wasm_conditional_source_test.go",
+        "compiler/wasm_divrem_test.go",
+        "compiler/wasm_execution_test.go",
+        "compiler/wasm_module_test.go",
+        "compiler/wasm_region_loop_test.go",
+        "compiler/wasm_size_test.go",
+        "compiler/wasm_stack_test.go",
+        "compiler/wasm_typing_test.go"
+      ]
+    },
+    {
+      "From": "compiler",
+      "To": "wasm/encoding",
+      "Files": [
+        "compiler/e2e_selfhost_wasm_assembler_test.go",
+        "compiler/lean_wasm_assembler_test.go",
+        "compiler/wasm_call_composition_test.go",
+        "compiler/wasm_calls_test.go",
+        "compiler/wasm_conditional_source_test.go",
+        "compiler/wasm_control_test.go",
+        "compiler/wasm_execution_test.go",
+        "compiler/wasm_module_test.go",
+        "compiler/wasm_typing_test.go"
+      ]
+    },
+    {
+      "From": "compiler_test",
+      "To": "asm",
+      "Files": [
+        "compiler/checked_bitwise_image_bundle_test.go"
+      ]
+    },
+    {
+      "From": "compiler_test",
+      "To": "bitwisecheck",
+      "Files": [
+        "compiler/checked_bitwise_bundle_test.go",
+        "compiler/checked_bitwise_image_bundle_test.go"
+      ]
+    },
+    {
+      "From": "compiler_test",
+      "To": "compiler",
+      "Files": [
+        "compiler/checked_bitwise_bundle_test.go",
+        "compiler/checked_bitwise_image_bundle_test.go"
+      ]
+    },
+    {
+      "From": "compiler_test",
+      "To": "spec/lean",
+      "Files": [
+        "compiler/checked_bitwise_image_bundle_test.go"
+      ]
+    },
+    {
+      "From": "compiler_test",
+      "To": "target",
+      "Files": [
+        "compiler/checked_bitwise_image_bundle_test.go"
+      ]
+    },
+    {
+      "From": "diagnostic",
+      "To": "lsp",
+      "Files": [
+        "diagnostic/diagnostic_test.go"
+      ]
+    },
+    {
+      "From": "discipline",
+      "To": "ast",
+      "Files": [
+        "discipline/discipline_test.go"
+      ]
+    },
+    {
+      "From": "discipline",
+      "To": "diagnostic",
+      "Files": [
+        "discipline/discipline_test.go"
+      ]
+    },
+    {
+      "From": "discipline",
+      "To": "parser",
+      "Files": [
+        "discipline/discipline_test.go"
+      ]
+    },
+    {
+      "From": "discipline",
+      "To": "scanner",
+      "Files": [
+        "discipline/discipline_test.go"
+      ]
+    },
+    {
+      "From": "evaluator",
+      "To": "object",
+      "Files": [
+        "evaluator/assert_values_test.go",
+        "evaluator/compare_exchange_test.go",
+        "evaluator/eret_test.go",
+        "evaluator/evaluator_test.go",
+        "evaluator/event_control_test.go",
+        "evaluator/ffi_test.go",
+        "evaluator/memory_test.go",
+        "evaluator/mmio_test.go",
+        "evaluator/simd_test.go",
+        "evaluator/sysreg_test.go",
+        "evaluator/views_test.go"
+      ]
+    },
+    {
+      "From": "evaluator",
+      "To": "parser",
+      "Files": [
+        "evaluator/compare_exchange_test.go",
+        "evaluator/eret_test.go",
+        "evaluator/evaluator_test.go",
+        "evaluator/event_control_test.go",
+        "evaluator/memory_test.go",
+        "evaluator/mmio_test.go",
+        "evaluator/sysreg_test.go"
+      ]
+    },
+    {
+      "From": "evaluator",
+      "To": "scanner",
+      "Files": [
+        "evaluator/compare_exchange_test.go",
+        "evaluator/eret_test.go",
+        "evaluator/evaluator_test.go",
+        "evaluator/event_control_test.go",
+        "evaluator/memory_test.go",
+        "evaluator/mmio_test.go",
+        "evaluator/sysreg_test.go"
+      ]
+    },
+    {
+      "From": "evaluator",
+      "To": "semir",
+      "Files": [
+        "evaluator/ffi_test.go"
+      ]
+    },
+    {
+      "From": "experiments/verification-poc",
+      "To": "compiler",
+      "Files": [
+        "experiments/verification-poc/lean_extraction_test.go",
+        "experiments/verification-poc/literal_casts_test.go",
+        "experiments/verification-poc/self_hosted_rup_test.go",
+        "experiments/verification-poc/self_hosted_stream_test.go"
+      ]
+    },
+    {
+      "From": "experiments/verification-poc",
+      "To": "experiments/verification-poc/frontend",
+      "Files": [
+        "experiments/verification-poc/verification_test.go"
+      ]
+    },
+    {
+      "From": "experiments/verification-poc",
+      "To": "experiments/verification-poc/internal/lrat",
+      "Files": [
+        "experiments/verification-poc/cnf_spec_test.go",
+        "experiments/verification-poc/self_hosted_chain_test.go",
+        "experiments/verification-poc/self_hosted_propagation_test.go",
+        "experiments/verification-poc/self_hosted_rup_test.go",
+        "experiments/verification-poc/self_hosted_stream_test.go",
+        "experiments/verification-poc/self_hosted_table_test.go",
+        "experiments/verification-poc/self_hosted_text_test.go",
+        "experiments/verification-poc/verification_test.go"
+      ]
+    },
+    {
+      "From": "experiments/verification-poc",
+      "To": "semir",
+      "Files": [
+        "experiments/verification-poc/publication_test.go"
+      ]
+    },
+    {
+      "From": "experiments/verification-poc/internal/lrat",
+      "To": "internal/lrat",
+      "Files": [
+        "experiments/verification-poc/internal/lrat/production_boundary_test.go"
+      ]
+    },
+    {
+      "From": "layout",
+      "To": "scanner",
+      "Files": [
+        "layout/invariants_test.go",
+        "layout/layout_test.go"
+      ]
+    },
+    {
+      "From": "layout",
+      "To": "token",
+      "Files": [
+        "layout/coherence_test.go",
+        "layout/invariants_test.go",
+        "layout/layout_test.go"
+      ]
+    },
+    {
+      "From": "layout_test",
+      "To": "ast",
+      "Files": [
+        "layout/type_context_pipeline_test.go"
+      ]
+    },
+    {
+      "From": "layout_test",
+      "To": "compiler",
+      "Files": [
+        "layout/type_context_pipeline_test.go"
+      ]
+    },
+    {
+      "From": "lowering",
+      "To": "ast",
+      "Files": [
+        "lowering/aggregate_test.go"
+      ]
+    },
+    {
+      "From": "lsp/server",
+      "To": "lsp",
+      "Files": [
+        "lsp/server/server_test.go"
+      ]
+    },
+    {
+      "From": "machine",
+      "To": "asm",
+      "Files": [
+        "machine/aarch64_condition_provenance_lean_test.go",
+        "machine/aarch64_control_flow_lean_test.go",
+        "machine/aarch64_edge_copies_lean_test.go",
+        "machine/aarch64_spill_memory_lean_test.go",
+        "machine/callee_saves_test.go",
+        "machine/empty_frame_test.go",
+        "machine/exact_trips_execution_test.go",
+        "machine/exact_trips_test.go",
+        "machine/frame_pair_init_test.go",
+        "machine/liveness_test.go",
+        "machine/machine_test.go",
+        "machine/optir_aarch64_load_test.go",
+        "machine/optir_aarch64_memory_cfg_test.go",
+        "machine/optir_aarch64_memory_loop_test.go",
+        "machine/optir_aarch64_memory_spill_test.go",
+        "machine/optir_aarch64_test.go",
+        "machine/optir_memory_calls_test.go",
+        "machine/optir_memory_shared_split_test.go",
+        "machine/optir_memory_test.go",
+        "machine/optir_rv64_memory_cfg_test.go",
+        "machine/optir_rv64_memory_load_test.go",
+        "machine/optir_rv64_memory_loop_test.go",
+        "machine/optir_rv64_memory_spill_test.go",
+        "machine/optir_rv64_test.go",
+        "machine/reallocation_cache_test.go",
+        "machine/rv64_comparison_lean_test.go",
+        "machine/rv64_control_flow_lean_test.go",
+        "machine/simplify_test.go",
+        "machine/webs_benchmark_test.go",
+        "machine/webs_test.go"
+      ]
+    },
+    {
+      "From": "machine",
+      "To": "ast",
+      "Files": [
+        "machine/optir_aarch64_test.go",
+        "machine/optir_memory_calls_test.go",
+        "machine/optir_rv64_test.go",
+        "machine/reallocation_cache_test.go"
+      ]
+    },
+    {
+      "From": "machine",
+      "To": "layout",
+      "Files": [
+        "machine/optir_aarch64_test.go",
+        "machine/optir_rv64_test.go"
+      ]
+    },
+    {
+      "From": "machine",
+      "To": "optir",
+      "Files": [
+        "machine/aarch64_condition_provenance_lean_test.go",
+        "machine/aarch64_control_flow_lean_test.go",
+        "machine/aarch64_edge_copies_lean_test.go",
+        "machine/aarch64_spill_memory_lean_test.go",
+        "machine/optir_aarch64_load_test.go",
+        "machine/optir_aarch64_memory_cfg_test.go",
+        "machine/optir_aarch64_memory_loop_test.go",
+        "machine/optir_aarch64_memory_spill_test.go",
+        "machine/optir_aarch64_test.go",
+        "machine/optir_memory_calls_test.go",
+        "machine/optir_memory_shared_split_test.go",
+        "machine/optir_memory_test.go",
+        "machine/optir_rv64_memory_cfg_test.go",
+        "machine/optir_rv64_memory_load_test.go",
+        "machine/optir_rv64_memory_loop_test.go",
+        "machine/optir_rv64_memory_spill_test.go",
+        "machine/optir_rv64_test.go",
+        "machine/optir_spills_test.go",
+        "machine/rv64_comparison_lean_test.go",
+        "machine/rv64_control_flow_lean_test.go"
+      ]
+    },
+    {
+      "From": "machine",
+      "To": "parser",
+      "Files": [
+        "machine/optir_aarch64_test.go",
+        "machine/optir_rv64_test.go"
+      ]
+    },
+    {
+      "From": "machine",
+      "To": "scanner",
+      "Files": [
+        "machine/optir_aarch64_test.go",
+        "machine/optir_rv64_test.go"
+      ]
+    },
+    {
+      "From": "modules",
+      "To": "packageapi",
+      "Files": [
+        "modules/fetch_test.go",
+        "modules/modules_test.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "asm",
+      "Files": [
+        "nativegen/affine_index_test.go",
+        "nativegen/array_permutation_proof_test.go",
+        "nativegen/callee_saves_test.go",
+        "nativegen/callgraph_test.go",
+        "nativegen/cleanup_test.go",
+        "nativegen/compile_session_test.go",
+        "nativegen/condition_test.go",
+        "nativegen/constant_operand_test.go",
+        "nativegen/exact_trips_test.go",
+        "nativegen/extent_fold_test.go",
+        "nativegen/fill_unroll_test.go",
+        "nativegen/global_address_cse_test.go",
+        "nativegen/global_load_forward_test.go",
+        "nativegen/global_load_mask_elide_test.go",
+        "nativegen/horizontal_reduction_test.go",
+        "nativegen/leaf_vector_homes_test.go",
+        "nativegen/licm_global_test.go",
+        "nativegen/licm_header_test.go",
+        "nativegen/licm_share_test.go",
+        "nativegen/loop_array_homes_test.go",
+        "nativegen/loop_result_home_budget_test.go",
+        "nativegen/loop_result_homes_test.go",
+        "nativegen/opt_test.go",
+        "nativegen/post_schedule_cleanup_test.go",
+        "nativegen/record_base_cse_test.go",
+        "nativegen/redundant_guards_test.go",
+        "nativegen/register_effects_test.go",
+        "nativegen/rotate_test.go",
+        "nativegen/tlbi_test.go",
+        "nativegen/unroll_stable_arrays_test.go",
+        "nativegen/vector_blocks_test.go",
+        "nativegen/verification_globals_test.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "ast",
+      "Files": [
+        "nativegen/array_permutation_proof_test.go",
+        "nativegen/array_permutation_test.go",
+        "nativegen/array_result_test.go",
+        "nativegen/callee_saves_test.go",
+        "nativegen/compile_session_test.go",
+        "nativegen/constant_operand_test.go",
+        "nativegen/extent_fold_test.go",
+        "nativegen/fill_unroll_test.go",
+        "nativegen/horizontal_reduction_test.go",
+        "nativegen/loop_array_homes_test.go",
+        "nativegen/loop_result_home_budget_test.go",
+        "nativegen/loop_result_homes_test.go",
+        "nativegen/scalar_array_liveness_test.go",
+        "nativegen/unroll_constant_names_test.go",
+        "nativegen/unroll_stable_arrays_test.go",
+        "nativegen/verification_globals_test.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "layout",
+      "Files": [
+        "nativegen/array_permutation_proof_test.go",
+        "nativegen/callee_saves_test.go",
+        "nativegen/compile_session_test.go",
+        "nativegen/loop_array_homes_test.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "machine",
+      "Files": [
+        "nativegen/exact_trips_test.go",
+        "nativegen/record_base_cse_test.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "object",
+      "Files": [
+        "nativegen/callee_saves_test.go",
+        "nativegen/compile_session_test.go",
+        "nativegen/fill_unroll_test.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "opt",
+      "Files": [
+        "nativegen/affine_index_test.go",
+        "nativegen/global_address_cse_test.go",
+        "nativegen/global_load_forward_test.go",
+        "nativegen/global_load_mask_elide_test.go",
+        "nativegen/opt_test.go",
+        "nativegen/post_schedule_cleanup_test.go",
+        "nativegen/record_base_cse_test.go",
+        "nativegen/redundant_guards_test.go",
+        "nativegen/unroll_stable_arrays_test.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "optir",
+      "Files": [
+        "nativegen/opt_test.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "parser",
+      "Files": [
+        "nativegen/array_permutation_proof_test.go",
+        "nativegen/callee_saves_test.go",
+        "nativegen/compile_session_test.go",
+        "nativegen/fill_unroll_test.go",
+        "nativegen/loop_array_homes_test.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "scanner",
+      "Files": [
+        "nativegen/array_permutation_proof_test.go",
+        "nativegen/callee_saves_test.go",
+        "nativegen/compile_session_test.go",
+        "nativegen/fill_unroll_test.go",
+        "nativegen/loop_array_homes_test.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "token",
+      "Files": [
+        "nativegen/horizontal_reduction_test.go"
+      ]
+    },
+    {
+      "From": "nativegen",
+      "To": "typechecker",
+      "Files": [
+        "nativegen/callee_saves_test.go",
+        "nativegen/compile_session_test.go",
+        "nativegen/fill_unroll_test.go"
+      ]
+    },
+    {
+      "From": "optir",
+      "To": "opt",
+      "Files": [
+        "optir/aspects_test.go"
+      ]
+    },
+    {
+      "From": "parser",
+      "To": "ast",
+      "Files": [
+        "parser/block_expression_test.go",
+        "parser/callable_coherence_test.go",
+        "parser/contextual_markers_test.go",
+        "parser/declaration_contract_test.go",
+        "parser/defer_test.go",
+        "parser/dispatch_test.go",
+        "parser/elm_ergonomics_test.go",
+        "parser/explicit_initializer_test.go",
+        "parser/gadt_test.go",
+        "parser/inferred_values_test.go",
+        "parser/interface_declaration_test.go",
+        "parser/kernel_clause_test.go",
+        "parser/layout_coherence_test.go",
+        "parser/list_contract_test.go",
+        "parser/memory_test.go",
+        "parser/modules_test.go",
+        "parser/operator_laws_test.go",
+        "parser/parser_test.go",
+        "parser/pipeless_adt_test.go",
+        "parser/protocol_via_test.go",
+        "parser/quantifier_test.go",
+        "parser/raw_nul_test.go",
+        "parser/receiver_test.go",
+        "parser/record_struct_test.go",
+        "parser/required_operand_test.go",
+        "parser/return_test.go",
+        "parser/string_join_test.go",
+        "parser/truncated_input_test.go",
+        "parser/type_print_test.go"
+      ]
+    },
+    {
+      "From": "parser",
+      "To": "diagnostic",
+      "Files": [
+        "parser/inferred_values_test.go"
+      ]
+    },
+    {
+      "From": "parser",
+      "To": "layout",
+      "Files": [
+        "parser/explicit_initializer_test.go",
+        "parser/layout_coherence_test.go",
+        "parser/list_contract_test.go",
+        "parser/location_test.go",
+        "parser/raw_nul_test.go",
+        "parser/required_operand_test.go",
+        "parser/truncated_input_test.go",
+        "parser/unbalanced_brace_test.go"
+      ]
+    },
+    {
+      "From": "parser",
+      "To": "scanner",
+      "Files": [
+        "parser/block_expression_test.go",
+        "parser/callable_coherence_test.go",
+        "parser/contextual_markers_test.go",
+        "parser/declaration_contract_test.go",
+        "parser/defer_test.go",
+        "parser/dispatch_test.go",
+        "parser/elm_ergonomics_test.go",
+        "parser/explicit_initializer_test.go",
+        "parser/gadt_test.go",
+        "parser/inferred_values_test.go",
+        "parser/interface_declaration_test.go",
+        "parser/kernel_clause_test.go",
+        "parser/layout_coherence_test.go",
+        "parser/list_contract_test.go",
+        "parser/location_test.go",
+        "parser/memory_test.go",
+        "parser/modules_test.go",
+        "parser/operator_laws_test.go",
+        "parser/parser_test.go",
+        "parser/pipeless_adt_test.go",
+        "parser/protocol_via_test.go",
+        "parser/quantifier_test.go",
+        "parser/raw_nul_test.go",
+        "parser/receiver_test.go",
+        "parser/record_duplicates_test.go",
+        "parser/record_struct_test.go",
+        "parser/required_operand_test.go",
+        "parser/return_test.go",
+        "parser/separated_test.go",
+        "parser/string_join_test.go",
+        "parser/truncated_input_test.go",
+        "parser/type_print_test.go",
+        "parser/unbalanced_brace_test.go"
+      ]
+    },
+    {
+      "From": "parser",
+      "To": "source",
+      "Files": [
+        "parser/location_test.go"
+      ]
+    },
+    {
+      "From": "parser",
+      "To": "token",
+      "Files": [
+        "parser/explicit_initializer_test.go",
+        "parser/list_contract_test.go",
+        "parser/location_test.go",
+        "parser/raw_nul_test.go",
+        "parser/record_struct_test.go",
+        "parser/required_operand_test.go",
+        "parser/separated_test.go",
+        "parser/source_test.go",
+        "parser/truncated_input_test.go"
+      ]
+    },
+    {
+      "From": "parser_test",
+      "To": "ast",
+      "Files": [
+        "parser/layout_pipeline_test.go"
+      ]
+    },
+    {
+      "From": "parser_test",
+      "To": "compiler",
+      "Files": [
+        "parser/layout_pipeline_test.go"
+      ]
+    },
+    {
+      "From": "playground",
+      "To": "diagnostic",
+      "Files": [
+        "playground/compile_test.go"
+      ]
+    },
+    {
+      "From": "playground",
+      "To": "lsp",
+      "Files": [
+        "playground/compile_test.go"
+      ]
+    },
+    {
+      "From": "playground",
+      "To": "wasm",
+      "Files": [
+        "playground/compile_test.go"
+      ]
+    },
+    {
+      "From": "playground",
+      "To": "wasm/check",
+      "Files": [
+        "playground/compile_test.go"
+      ]
+    },
+    {
+      "From": "prove",
+      "To": "asm",
+      "Files": [
+        "prove/lrat_test.go"
+      ]
+    },
+    {
+      "From": "prove",
+      "To": "ast",
+      "Files": [
+        "prove/witness_test.go"
+      ]
+    },
+    {
+      "From": "prove",
+      "To": "compiler",
+      "Files": [
+        "prove/bench_test.go",
+        "prove/prove_test.go",
+        "prove/synthesis_test.go",
+        "prove/theorem_constants_test.go",
+        "prove/witness_test.go"
+      ]
+    },
+    {
+      "From": "scanner",
+      "To": "source",
+      "Files": [
+        "scanner/location_test.go",
+        "scanner/raw_nul_test.go"
+      ]
+    },
+    {
+      "From": "scanner",
+      "To": "token",
+      "Files": [
+        "scanner/escapes_test.go",
+        "scanner/float_test.go",
+        "scanner/location_test.go",
+        "scanner/pipeline_test.go",
+        "scanner/raw_nul_test.go",
+        "scanner/scanner_test.go",
+        "scanner/unterminated_string_test.go"
+      ]
+    },
+    {
+      "From": "serialize",
+      "To": "object",
+      "Files": [
+        "serialize/generate_golden_test.go",
+        "serialize/golden_test.go",
+        "serialize/serialize_test.go"
+      ]
+    },
+    {
+      "From": "serialize",
+      "To": "typechecker",
+      "Files": [
+        "serialize/generate_golden_test.go",
+        "serialize/golden_test.go",
+        "serialize/serialize_test.go"
+      ]
+    },
+    {
+      "From": "testrunner",
+      "To": "codegen/metal/gpu",
+      "Files": [
+        "testrunner/launches_test.go"
+      ]
+    },
+    {
+      "From": "testrunner",
+      "To": "compiler",
+      "Files": [
+        "testrunner/adapter_test.go"
+      ]
+    },
+    {
+      "From": "testrunner",
+      "To": "target",
+      "Files": [
+        "testrunner/emulator_test.go",
+        "testrunner/target_test.go"
+      ]
+    },
+    {
+      "From": "testrunner",
+      "To": "toolchain",
+      "Files": [
+        "testrunner/emulator_test.go",
+        "testrunner/target_test.go"
+      ]
+    },
+    {
+      "From": "token_test",
+      "To": "scanner",
+      "Files": [
+        "token/cursor_test.go"
+      ]
+    },
+    {
+      "From": "token_test",
+      "To": "source",
+      "Files": [
+        "token/cursor_test.go"
+      ]
+    },
+    {
+      "From": "token_test",
+      "To": "token",
+      "Files": [
+        "token/cursor_test.go"
+      ]
+    },
+    {
+      "From": "toolchain",
+      "To": "target",
+      "Files": [
+        "toolchain/toolchain_test.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "ast",
+      "Files": [
+        "typechecker/affine_declaration_bound_test.go",
+        "typechecker/elm_records_test.go",
+        "typechecker/extents_refinement_test.go",
+        "typechecker/gadt_test.go",
+        "typechecker/generalization_test.go",
+        "typechecker/lattice_atom_identity_refinement_test.go",
+        "typechecker/literal_fit_refinement_test.go",
+        "typechecker/pattern_analysis_test.go",
+        "typechecker/pattern_empty_space_test.go",
+        "typechecker/pattern_generalization_test.go",
+        "typechecker/pattern_integration_test.go",
+        "typechecker/resource_callable_test.go",
+        "typechecker/resource_sealed_test.go",
+        "typechecker/scalar_global_writes_test.go",
+        "typechecker/source_type_fidelity_test.go",
+        "typechecker/spec_syntax_docs_test.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "diagnostic",
+      "Files": [
+        "typechecker/gadt_test.go",
+        "typechecker/generic_diagnostics_test.go",
+        "typechecker/pattern_analysis_test.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "object",
+      "Files": [
+        "typechecker/borrow_storage_test.go",
+        "typechecker/callable_initialization_test.go",
+        "typechecker/dispatch_test.go",
+        "typechecker/eret_test.go",
+        "typechecker/event_control_test.go",
+        "typechecker/gadt_test.go",
+        "typechecker/generalization_test.go",
+        "typechecker/literal_fit_refinement_test.go",
+        "typechecker/memory_surface_test.go",
+        "typechecker/mmio_test.go",
+        "typechecker/pattern_analysis_test.go",
+        "typechecker/pattern_generalization_test.go",
+        "typechecker/regions_test.go",
+        "typechecker/sysreg_test.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "parser",
+      "Files": [
+        "typechecker/callable_initialization_test.go",
+        "typechecker/dispatch_test.go",
+        "typechecker/eret_test.go",
+        "typechecker/event_control_test.go",
+        "typechecker/interface_contract_test.go",
+        "typechecker/memory_surface_test.go",
+        "typechecker/mmio_test.go",
+        "typechecker/regions_test.go",
+        "typechecker/source_type_fidelity_test.go",
+        "typechecker/spec_syntax_docs_test.go",
+        "typechecker/sysreg_test.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "resourceflow",
+      "Files": [
+        "typechecker/resource_callable_test.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "scanner",
+      "Files": [
+        "typechecker/callable_initialization_test.go",
+        "typechecker/dispatch_test.go",
+        "typechecker/eret_test.go",
+        "typechecker/event_control_test.go",
+        "typechecker/interface_contract_test.go",
+        "typechecker/memory_surface_test.go",
+        "typechecker/mmio_test.go",
+        "typechecker/regions_test.go",
+        "typechecker/source_type_fidelity_test.go",
+        "typechecker/spec_syntax_docs_test.go",
+        "typechecker/sysreg_test.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "semir",
+      "Files": [
+        "typechecker/barrier_test.go",
+        "typechecker/lattice_atom_identity_refinement_test.go",
+        "typechecker/lattice_identity_test.go",
+        "typechecker/resource_semir_modes_projection_test.go",
+        "typechecker/resource_semir_test.go"
+      ]
+    },
+    {
+      "From": "typechecker",
+      "To": "token",
+      "Files": [
+        "typechecker/expression_facts_test.go",
+        "typechecker/generalization_test.go",
+        "typechecker/native_fingerprint_test.go",
+        "typechecker/scalar_global_writes_test.go",
+        "typechecker/source_type_fidelity_test.go"
+      ]
+    },
+    {
+      "From": "wasm",
+      "To": "internal/wasmtest",
+      "Files": [
+        "wasm/diamond_test.go",
+        "wasm/forward_test.go",
+        "wasm/loop_test.go",
+        "wasm/region_loop_test.go"
+      ]
+    },
+    {
+      "From": "wasm",
+      "To": "optir",
+      "Files": [
+        "wasm/diamond_test.go",
+        "wasm/emit_test.go",
+        "wasm/forward_test.go",
+        "wasm/loop_test.go",
+        "wasm/region_loop_test.go",
+        "wasm/stack_test.go",
+        "wasm/structured_test.go"
+      ]
+    },
+    {
+      "From": "wasm/check",
+      "To": "internal/wasmtest",
+      "Files": [
+        "wasm/check/engine_test.go"
+      ]
+    },
+    {
+      "From": "wasm/encoding_test",
+      "To": "target",
+      "Files": [
+        "wasm/encoding/lean_test.go"
+      ]
+    },
+    {
+      "From": "wasm/encoding_test",
+      "To": "wasm/check",
+      "Files": [
+        "wasm/encoding/encode_test.go",
+        "wasm/encoding/lean_test.go"
+      ]
+    },
+    {
+      "From": "wasm/encoding_test",
+      "To": "wasm/encoding",
+      "Files": [
+        "wasm/encoding/encode_test.go",
+        "wasm/encoding/lean_test.go"
+      ]
+    }
+  ],
+  "ProductionClosure": [
+    "asm",
+    "asm/internal/armfeat",
+    "asm/internal/isagen",
+    "asm/internal/riscvgen",
+    "asm/internal/sysreggen",
+    "ast",
+    "bitwisecheck",
+    "borrowchecker",
+    "codegen",
+    "codegen/lean",
+    "codegen/metal",
+    "compiler",
+    "diagnostic",
+    "discipline",
+    "evaluator",
+    "hostform",
+    "layout",
+    "lowering",
+    "lsp",
+    "machine",
+    "modules",
+    "nativegen",
+    "object",
+    "opt",
+    "optir",
+    "packageapi",
+    "parser",
+    "resourceflow",
+    "scanner",
+    "semir",
+    "source",
+    "spec/lean",
+    "stdlib",
+    "target",
+    "token",
+    "typechecker",
+    "util",
+    "wasm",
+    "wasm/check",
+    "wasm/encoding"
+  ],
+  "DirectConsumers": [
+    ".",
+    "benchmarks/native/emit",
+    "benchmarks/native/exact_fma",
+    "codegen",
+    "experiments/verification-poc/frontend",
+    "lsp/server",
+    "playground",
+    "prove",
+    "repl",
+    "testrunner",
+    "tools/checked_bundle/emit",
+    "tools/native_image_fixtures",
+    "tools/native_object_fixtures",
+    "tools/source_image_parity",
+    "wasm"
+  ],
+  "Cycles": [],
+  "LargestFiles": [
+    {
+      "Path": "asm/verify.go",
+      "Lines": 12463
+    },
+    {
+      "Path": "nativegen/nativegen.go",
+      "Lines": 10417
+    },
+    {
+      "Path": "asm/loops.go",
+      "Lines": 9214
+    },
+    {
+      "Path": "nativegen/rv64.go",
+      "Lines": 4350
+    },
+    {
+      "Path": "asm/check.go",
+      "Lines": 4149
+    },
+    {
+      "Path": "asm/encodings_gen.go",
+      "Lines": 3118
+    },
+    {
+      "Path": "asm/encode.go",
+      "Lines": 2826
+    },
+    {
+      "Path": "compiler/modules.go",
+      "Lines": 2670
+    },
+    {
+      "Path": "asm/rv64_check.go",
+      "Lines": 2363
+    },
+    {
+      "Path": "compiler/protocols.go",
+      "Lines": 2284
+    },
+    {
+      "Path": "asm/internal/isagen/main.go",
+      "Lines": 1841
+    },
+    {
+      "Path": "asm/unit.go",
+      "Lines": 1498
+    },
+    {
+      "Path": "nativegen/opt.go",
+      "Lines": 1362
+    },
+    {
+      "Path": "machine/optir_rv64.go",
+      "Lines": 1357
+    },
+    {
+      "Path": "compiler/optir.go",
+      "Lines": 1259
+    },
+    {
+      "Path": "nativegen/licm.go",
+      "Lines": 1253
+    },
+    {
+      "Path": "asm/sysregs_gen.go",
+      "Lines": 1242
+    },
+    {
+      "Path": "asm/blast.go",
+      "Lines": 1206
+    },
+    {
+      "Path": "compiler/inline.go",
+      "Lines": 1191
+    },
+    {
+      "Path": "asm/syntax.go",
+      "Lines": 1164
+    }
+  ],
+  "ExactBodyCandidates": [
+    {
+      "SHA256": "46feaf429eac3b4b1c3a1ae6f2c2de87891689c30d553ab7f75427173f6b58b6",
+      "Sites": [
+        "nativegen/nativegen.go:10039:valueOnly",
+        "nativegen/rv64.go:2494:valueOnly"
+      ]
+    },
+    {
+      "SHA256": "c3610fff3c819597f86b85a492adae68efdebe7027a86b96617d9d571894aa2e",
+      "Sites": [
+        "asm/verify.go:8574:statementConditional",
+        "nativegen/nativegen.go:8839:statementConditional"
+      ]
+    },
+    {
+      "SHA256": "d21ec290031092e9a8a4a90d0f087637cc8dec755e0b1466bf9100e827c59355",
+      "Sites": [
+        "machine/optir_aarch64.go:1054:optIRArm64Type",
+        "machine/optir_rv64.go:1294:optIRRV64Type"
+      ]
+    }
+  ]
+}
