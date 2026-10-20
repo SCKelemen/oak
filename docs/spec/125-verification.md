@@ -509,6 +509,20 @@ scalar call-transfer contract; argument-producing loads, whole-caller control
 flow, and full architectural execution remain open. No additional native
 axiom allowances are introduced.
 
+`Oak.LRATARM64HeaderLoads` extends the three header allocation checks across
+the adjacent `LDR W0,[X19,Wm,UXTW #2]` and BL instructions. It reuses the total
+little-endian byte-memory model, admits only the emitted load form, and rejects
+address-space wrapping. Given a header representation, the live base register,
+an in-range index and a non-wrapping array extent, the composed execution
+returns the extracted allocation predicate of that header element, preserves
+SP, and returns eight bytes past the load. Linked ELF tests bind each load
+and call, pin the observed index constants 1/5/6, and exercise byte order,
+high-bit rejection, malformed load fields and wrapping addresses. These are
+conditional load/call proofs: establishing the memory representation, base and
+index through earlier instructions, branch decisions, permissions and faults
+remains open. The fits-guard argument loads and RV64 argument loads are not
+covered by this increment. No axiom allowlist additions are required.
+
 The native guard axiom audit now parses complete multiline reports. Lean's
 `bv_decide` in the pinned toolchain checks LRAT certificates through native
 evaluation; its generated axioms are explicitly enumerated alongside the
