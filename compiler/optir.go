@@ -340,11 +340,12 @@ func (ids *optIRIDs) value(typ optir.Type, name string, source optir.Source) opt
 }
 
 type optIRLowerer struct {
-	tc     *typechecker.TypeChecker
-	ids    *optIRIDs
-	env    map[string]optir.Value
-	facts  *optIRFactBuilder
-	memory *optIRMemoryBuilder
+	tc       *typechecker.TypeChecker
+	ids      *optIRIDs
+	env      map[string]optir.Value
+	facts    *optIRFactBuilder
+	memory   *optIRMemoryBuilder
+	stateful *optIRStatefulLowering
 }
 
 type optIRFactBuilder struct {
@@ -367,6 +368,12 @@ func lowerCheckedOptIRFunction(function *ast.FunctionStatement, tc *typechecker.
 }
 
 func lowerCheckedOptIRFunctionWithCalls(function *ast.FunctionStatement, tc *typechecker.TypeChecker, globals map[string]optir.Type, authorizeCall func(string) (optir.CheckedMemoryCallSummary, error)) (optir.Function, optir.CheckedFactAuthority, optir.CheckedMemoryAuthority, error) {
+	return lowerCheckedOptIRFunctionProfile(function, tc, globals, authorizeCall, nil)
+}
+
+// A nonnil stateful profile is reachable only through the explicit raw API.
+// Ordinary optimized OptIR and native candidate selection retain scalar admission.
+func lowerCheckedOptIRFunctionProfile(function *ast.FunctionStatement, tc *typechecker.TypeChecker, globals map[string]optir.Type, authorizeCall func(string) (optir.CheckedMemoryCallSummary, error), stateful *optIRStatefulLowering) (optir.Function, optir.CheckedFactAuthority, optir.CheckedMemoryAuthority, error) {
 	if function.Receiver != nil {
 		return optir.Function{}, optir.CheckedFactAuthority{}, optir.CheckedMemoryAuthority{}, refuseOptIR(function.Token, "methods are not in the first OptIR projection subset")
 	}
@@ -381,12 +388,16 @@ func lowerCheckedOptIRFunctionWithCalls(function *ast.FunctionStatement, tc *typ
 	if !exists || !isFunction || len(signature.Parameters) != len(function.Parameters) {
 		return optir.Function{}, optir.CheckedFactAuthority{}, optir.CheckedMemoryAuthority{}, fmt.Errorf("compiler: checked signature for OptIR function %s is unavailable", function.Name.Value)
 	}
-	resultType, supported := checkedOptIRType(tc, signature.ReturnType)
+	typeOf := func(typ typechecker.Type) (optir.Type, bool) { return checkedOptIRType(tc, typ) }
+	if stateful != nil {
+		typeOf = stateful.checkedType
+	}
+	resultType, supported := typeOf(signature.ReturnType)
 	if !supported {
 		return optir.Function{}, optir.CheckedFactAuthority{}, optir.CheckedMemoryAuthority{}, refuseOptIR(function.Token, "return type %s is outside the scalar OptIR subset", signature.ReturnType)
 	}
 	lowerer := &optIRLowerer{
-		tc: tc, ids: &optIRIDs{next: 1}, env: map[string]optir.Value{},
+		tc: tc, ids: &optIRIDs{next: 1}, env: map[string]optir.Value{}, stateful: stateful,
 		facts: &optIRFactBuilder{records: map[string]optir.CheckedFactRecord{}, values: map[string]optir.ValueID{}},
 		memory: &optIRMemoryBuilder{
 			globals: globals, records: map[string]optir.CheckedMemoryAccessRecord{},
@@ -398,7 +409,7 @@ func lowerCheckedOptIRFunctionWithCalls(function *ast.FunctionStatement, tc *typ
 		if parameter == nil || parameter.Name == nil || parameter.Variadic {
 			return optir.Function{}, optir.CheckedFactAuthority{}, optir.CheckedMemoryAuthority{}, refuseOptIR(function.Token, "variadic or unnamed parameters are outside the scalar OptIR subset")
 		}
-		typ, ok := checkedOptIRType(tc, signature.Parameters[index])
+		typ, ok := typeOf(signature.Parameters[index])
 		if !ok {
 			return optir.Function{}, optir.CheckedFactAuthority{}, optir.CheckedMemoryAuthority{}, refuseOptIR(parameter.Token, "parameter %s has unsupported type %s", parameter.Name.Value, signature.Parameters[index])
 		}
@@ -515,7 +526,7 @@ func (lowerer *optIRLowerer) clone() *optIRLowerer {
 	for name, value := range lowerer.env {
 		environment[name] = value
 	}
-	return &optIRLowerer{tc: lowerer.tc, ids: lowerer.ids, env: environment, facts: lowerer.facts, memory: lowerer.memory}
+	return &optIRLowerer{tc: lowerer.tc, ids: lowerer.ids, env: environment, facts: lowerer.facts, memory: lowerer.memory, stateful: lowerer.stateful}
 }
 
 func (lowerer *optIRLowerer) lowerBlock(block *ast.BlockStatement, region *optir.Region, wantResult, scoped bool) (optir.Value, error) {
@@ -608,6 +619,11 @@ func (lowerer *optIRLowerer) lowerStatement(statement ast.Statement, region *opt
 		return optir.Value{}, false, lowerer.lowerIfStatement(current, region)
 	case *ast.WhileStatement:
 		return optir.Value{}, false, lowerer.lowerWhile(current, region)
+	case *ast.IndexAssignmentStatement:
+		if lowerer.stateful != nil {
+			return optir.Value{}, false, lowerer.lowerStatefulStore(current, region)
+		}
+		return optir.Value{}, false, refuseOptIR(current.Token, "indexed store requires the raw byte profile")
 	case *ast.BreakStatement:
 		return optir.Value{}, false, refuseOptIR(current.Token, "break is not represented by the first structured loop subset")
 	default:
@@ -681,7 +697,20 @@ func (lowerer *optIRLowerer) lowerExpression(expression ast.Expression, region *
 	case *ast.BlockExpression:
 		return lowerer.lowerBlock(current.Block, region, true, true)
 	case *ast.MatchExpression:
+		if lowerer.stateful != nil {
+			return lowerer.lowerStatefulMatch(current, resultType, region)
+		}
 		return lowerer.lowerBooleanMatch(current, resultType, region)
+	case *ast.IndexExpression:
+		if lowerer.stateful != nil {
+			return lowerer.lowerStatefulLoad(current, resultType, region)
+		}
+		return optir.Value{}, refuseOptIR(current.Token, "indexed load requires the raw byte profile")
+	case *ast.VariantExpression:
+		if lowerer.stateful != nil {
+			return lowerer.lowerStatefulVariant(current, resultType, region)
+		}
+		return optir.Value{}, refuseOptIR(current.Token, "ADT construction requires the raw byte profile")
 	default:
 		return optir.Value{}, refuseOptIR(sourceToken, "expression %T is outside the first OptIR subset", expression)
 	}
@@ -696,7 +725,7 @@ func (lowerer *optIRLowerer) expressionType(expression ast.Expression) (optir.Ty
 	if !checked {
 		return "", refuseOptIR(tok, "expression %T has no checked type", expression)
 	}
-	result, supported := checkedOptIRType(lowerer.tc, typ)
+	result, supported := lowerer.checkedType(typ)
 	if !supported {
 		return "", refuseOptIR(tok, "expression type %s is outside the scalar OptIR subset", typ)
 	}
@@ -789,6 +818,9 @@ func (lowerer *optIRLowerer) lowerCall(call *ast.InvocationExpression, resultTyp
 			return optir.Value{}, refuseOptIR(call.Token, "integer constructor %s has non-integer operand %s", callee.Value, operand.Type)
 		}
 		return lowerer.emit(region, optir.OpCastInt, resultType, "cast", call.Token, []optir.ValueID{operand.ID}, nil, nil), nil
+	}
+	if lowerer.stateful != nil {
+		return lowerer.lowerStatefulCall(call, resultType, region)
 	}
 	operands := make([]optir.ValueID, 0, len(call.Arguments))
 	for _, argument := range call.Arguments {
@@ -1174,7 +1206,7 @@ func (lowerer *optIRLowerer) checkedTypeFact(tok token.Token, result optir.Value
 		lowerer.facts.err = fmt.Errorf("compiler: checked type proof %s has no expression type authority", proof.ID)
 		return nil
 	}
-	canonical, supported := checkedOptIRType(lowerer.tc, checked)
+	canonical, supported := lowerer.checkedType(checked)
 	if !supported || canonical != result.Type {
 		lowerer.facts.err = fmt.Errorf("compiler: checked type proof %s has type %s, OptIR value %d has type %s", proof.ID, checked, result.ID, result.Type)
 		return nil
