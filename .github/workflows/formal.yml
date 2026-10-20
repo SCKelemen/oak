@@ -83,6 +83,11 @@ jobs:
         working-directory: spec/lean
         run: lake build Oak.AssemblerEntryProvenance Oak.AssemblerCallState
 
+      - name: Check shared native target selection and relocation ownership
+        env:
+          OAK_REQUIRE_NATIVE_TARGET_LEAN: '1'
+        run: go test ./asm -run '^TestNativeTarget' -count=1 -timeout=10m -v
+
   lrat-kernel:
     name: LRAT kernel soundness
     runs-on: ubuntu-24.04

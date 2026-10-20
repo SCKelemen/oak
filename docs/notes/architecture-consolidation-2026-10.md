@@ -1,5 +1,8 @@
 # Architecture consolidation: native target boundary (October 2026)
 
+For the current package maps, ownership boundaries, duplication evidence and
+prioritized follow-ups, see the [A01 architecture inventory](../architecture/a01-inventory.md).
+
 ## Baseline and non-goals
 
 This audit is based on the `specification` branch as of October 19, 2026.
