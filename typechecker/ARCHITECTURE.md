@@ -28,18 +28,30 @@ explicit generalization barriers separately from their semantic type.
 3. Function, array, generic and structural-record equality shortcuts could
    bypass child admission. These composites now solve their children first;
    same resolved nominal structs retain name-based identity.
+4. Unit was an alternative route around row admission: `Equals` accepted an
+   empty open row against Unit, including repeated-binder equations. At record
+   equation dispatch only, Unit now has the view of a closed empty semantic
+   record. Both operand orders therefore pass through the same nominal/row
+   admission and field equations. This does not rewrite stored types, binder
+   solutions, `Type.Equals`, or directional constraint satisfaction.
 
 Regressions cover both argument orders, direct records, functions, arrays,
 generics, enclosing records, repeated binders, and positive structural cases.
-They fail on the baseline. Existing compatibility with Unit and nonempty
-semantic shapes remains intentional.
+They fail on the baseline. The Unit bypass additionally has parser-produced
+open-row regressions, Unit-first three-argument binder bridges, transaction
+rollback checks, and a directional constraint-satisfaction control. Existing
+compatibility of closed empty semantic records with Unit and of nonempty
+structs with semantic shapes remains intentional.
 
 `Oak.RecordUnificationBoundary` proves rejection of unequal rows, distinct
 nominal names, and empty nominal/shape crossings in both directions, plus
 positive nonempty structural admission. This is a metadata-projection theorem,
 not a mechanized refinement proof for Go, source-level preservation/progress,
-or the entire unifier. Existing `TypeVarIdentity`, `GeneralizationSafety`, and
-`TypeLatticeAtomIdentity` proofs remain unchanged.
+or the entire unifier. The bounded record/Unit operand view additionally proves
+open-row/Unit rejection in both directions and closed-empty-shape/Unit metadata
+admission. It does not model field equations, substitution, persistent binder
+transactions, or any other type constructor. Existing `TypeVarIdentity`,
+`GeneralizationSafety`, and `TypeLatticeAtomIdentity` proofs remain unchanged.
 
 ## Prioritized remaining gaps
 

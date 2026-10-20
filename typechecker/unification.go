@@ -41,9 +41,10 @@ func (u *Unifier) Unify(t1, t2 Type) Substitution {
 
 	// Record admission must precede compatibility's equality shortcut.
 	// Equals is intentionally broader than nominal identity, and its empty
-	// record cases do not enforce row openness.
-	if left, ok := t1.(*RecordType); ok {
-		if right, ok := t2.(*RecordType); ok {
+	// record cases do not enforce row openness. Unit must enter through its
+	// closed empty record view in either operand position, not that shortcut.
+	if left, ok := recordUnificationView(t1); ok {
+		if right, ok := recordUnificationView(t2); ok {
 			return u.unifyRecord(left, right)
 		}
 	}
@@ -80,8 +81,8 @@ func (u *Unifier) Unify(t1, t2 Type) Substitution {
 		}
 	}
 
-	// Leaf compatibility includes intentional cases such as Unit and an empty
-	// semantic record. Composite equations above must inspect their children.
+	// Remaining leaf compatibility is unchanged. Record/Unit admission and
+	// supported composite child equations have already been checked above.
 	if t1.Equals(t2) {
 		return make(Substitution)
 	}
