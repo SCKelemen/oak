@@ -28,12 +28,9 @@ type Relocation struct {
 	Symbol string
 }
 
-// EncodeFunction encodes every instruction of a checked function, resolving
+// encodeARM64Function encodes every instruction of a checked ARM64 function, resolving
 // labels within it; references to other symbols become relocations.
-func EncodeFunction(fn *Function) ([]byte, []Relocation, error) {
-	if fn.Arch == ArchRV64 {
-		return encodeRV64Function(fn)
-	}
+func encodeARM64Function(fn *Function) ([]byte, []Relocation, error) {
 	labels := map[string]int64{}
 	offset := int64(0)
 	for _, item := range fn.Items {
