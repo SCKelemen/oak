@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Fresh, isolated kernel build of the source-extracted complete Wasm module proof.
+
+Every local transitive import is rebuilt from the current source with trust zero.
+Only the pinned release's core/Std files are reused; candidate .olean caches are
+never on LEAN_PATH. This is an implementation-refinement proof gate, not a claim
+that extraction, the Go seed, the C compiler, or arbitrary bodies are verified.
+"""
+import argparse
+import hashlib
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[2]
+SOURCE = ROOT / 'spec' / 'lean'
+MODULE = 'Oak.WasmBitwiseModuleExact'
+PRODUCER = 'Oak.WasmAssembler.'
+SPEC = 'Oak.BitwiseModule.'
+THEOREMS = (
+    *(PRODUCER + name for name in (
+        'bitwise_uleb_size_exact', 'bitwise_write_uleb_exact',
+        'bitwise_module_exact', 'bitwise_module_contents', 'bitwise_module_output',
+        'bitwise_module_bytes', 'bitwise_module_admitted', 'bitwise_module_success',
+        'bitwise_module_fuel_independent', 'bitwise_module_insufficient_capacity')),
+    *(SPEC + name for name in (
+        'namedExportSize_le', 'namedModuleBytes_length', 'namedModuleBytes_length_le',
+        'named_loaded', 'named_admitted', 'named_success')),
+)
+CONTROLS = SOURCE / 'WasmBitwiseModuleExactControls.lean'
+ALLOWED = {'propext', 'Quot.sound', 'Classical.choice'}
+REPORT = re.compile(r"'([^'\n]+)' (?:depends on axioms:\s*\[([^]]*)\]|does not depend on any axioms)")
+
+
+def audit_reports(output, expected=THEOREMS):
+    if not expected or len(set(expected)) != len(expected):
+        raise ValueError('empty or duplicate expected theorem inventory')
+    seen, end = set(), 0
+    for match in REPORT.finditer(output):
+        if output[end:match.start()].strip():
+            raise ValueError('unexpected output in axiom audit')
+        name, axioms = match.groups()
+        if name not in expected or name in seen:
+            raise ValueError('unexpected or duplicate theorem report: ' + name)
+        for axiom in (x.strip() for x in (axioms or '').split(',')):
+            if axiom and axiom not in ALLOWED:
+                raise ValueError('forbidden axiom: ' + axiom)
+        seen.add(name)
+        end = match.end()
+    if output[end:].strip() or seen != set(expected):
+        raise ValueError('missing theorem report or unexpected trailing output')
+
+
+def dependency_order(module, source=SOURCE):
+    order, visiting, seen = [], set(), set()
+
+    def visit(name):
+        if name in seen:
+            return
+        if name in visiting:
+            raise ValueError('cyclic local import: ' + name)
+        if not re.fullmatch(r'Oak(?:\.[A-Za-z0-9_]+)+', name):
+            raise ValueError('unexpected local module name: ' + name)
+        path = source.joinpath(*name.split('.')).with_suffix('.lean')
+        if not path.is_file():
+            raise ValueError('missing local source: ' + name)
+        visiting.add(name)
+        for line in path.read_text().splitlines():
+            if line.startswith('import '):
+                for imported in line[7:].split():
+                    if imported.startswith('Oak.'):
+                        visit(imported)
+                    elif not re.fullmatch(r'(?:Lean|Std|Init)(?:\.[A-Za-z0-9_]+)*', imported):
+                        raise ValueError('unexpected nonlocal import: ' + imported)
+        visiting.remove(name)
+        seen.add(name)
+        order.append((name, path))
+
+    visit(module)
+    return order
+
+
+def run(command, **kwargs):
+    result = subprocess.run(command, text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, timeout=900, **kwargs)
+    if result.returncode:
+        raise RuntimeError(f'command failed ({result.returncode}): {command}\n{result.stdout}')
+    return result.stdout
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--lake', default='lake')
+    args = parser.parse_args()
+    prefix = run([args.lake, 'env', 'lean', '--print-prefix'], cwd=SOURCE).strip().splitlines()[-1]
+    if not Path(prefix).is_absolute():
+        raise RuntimeError('lake returned a nonabsolute Lean installation prefix')
+    lean = Path(prefix) / 'bin' / 'lean'
+    version = run([str(lean), '--version']).strip()
+    if not version.startswith('Lean (version 4.33.1,'):
+        raise RuntimeError('proof gate requires pinned Lean 4.33.1: ' + version)
+    audit_source = 'import ' + MODULE + '\nset_option format.width 100000\n' + ''.join(
+        '#print axioms ' + name + '\n' for name in THEOREMS)
+    committed_audit = SOURCE / 'Oak' / 'WasmBitwiseModuleExactAudit.lean'
+    if committed_audit.read_text() != audit_source:
+        raise RuntimeError('committed wasm-module audit inventory differs from the required roots')
+    order = dependency_order(MODULE)
+    paths = [p for _, p in order] + [committed_audit, CONTROLS]
+    identities = {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+    with tempfile.TemporaryDirectory(prefix='oak-wasm-module-proof-') as tmp:
+        build = Path(tmp)
+        env = dict(os.environ, LEAN_PATH=str(build), LEAN_NUM_THREADS='1')
+        for name, path in order:
+            output = build.joinpath(*name.split('.')).with_suffix('.olean')
+            output.parent.mkdir(parents=True, exist_ok=True)
+            log = run([str(lean), '-j1', '-t0', '-M2048', '-o', str(output), str(path)], cwd=SOURCE, env=env)
+            if log.strip():
+                print(log, end='', flush=True)
+            print('kernel checked ' + name, flush=True)
+        audit = build / 'WasmModuleAudit.lean'
+        audit.write_text(audit_source)
+        log = run([str(lean), '-j1', '-t0', '-M2048', str(audit)], cwd=SOURCE, env=env)
+        audit_reports(log)
+        print(log, end='', flush=True)
+        log = run([str(lean), '-j1', '-t0', '-M2048', str(CONTROLS)], cwd=SOURCE, env=env)
+        if log.strip():
+            print(log, end='', flush=True)
+        print('kernel checked WasmBitwiseModuleExactControls', flush=True)
+    for rel, digest in identities.items():
+        if hashlib.sha256((ROOT / rel).read_bytes()).hexdigest() != digest:
+            raise RuntimeError('source changed during proof build: ' + rel)
+    for rel, digest in identities.items():
+        print('source sha256 ' + digest + ' ' + rel, flush=True)
+    print(f'fresh source closure: {len(order)} local modules; exact axiom inventory: {len(THEOREMS)} theorems; trust-zero controls: 1', flush=True)
+
+
+if __name__ == '__main__':
+    main()

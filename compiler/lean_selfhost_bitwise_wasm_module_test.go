@@ -66,9 +66,9 @@ func TestLeanWasmBitwiseModuleExtract(t *testing.T) {
 	}
 }
 
-// Finite correspondence, not a universal module-writer refinement theorem.
-// The complete output array (including the untouched suffix) is kernel checked;
-// a changed helper or writer must first pass the mechanical extraction check.
+// Kernel-check the universal success-domain refinement and its controls, then
+// retain the separate finite source/compiler correspondence corpus unchanged.
+// A changed helper or writer must first pass mechanical extraction checking.
 func TestLeanWasmBitwiseModuleFaithful(t *testing.T) {
 	TestLeanWasmBitwiseModuleExtract(t)
 	lake := findLake()
@@ -94,6 +94,7 @@ func TestLeanWasmBitwiseModuleFaithful(t *testing.T) {
 	}
 	run("build", "Oak.WasmBitwiseModuleExtracted", "Oak.WasmBitwiseModuleGuards", "Oak.WasmBitwiseModuleValidation", "Oak.WasmBitwiseModuleCopy", "Oak.BitwiseModule")
 	run("env", "lean", "-j1", "-M2048", "WasmBitwiseModuleCopyControls.lean")
+	testLeanWasmBitwiseModuleProof(t, lake)
 	const preamble = "import Oak.WasmBitwiseModuleExtracted\nimport Oak.BitwiseModule\nopen Oak.WasmAssembler\nset_option maxRecDepth 65536\nset_option maxHeartbeats 4000000\n"
 	var claims []string
 	for _, name := range []string{"bitwise", "Mix9", "Z", strings.Repeat("A", 123), strings.Repeat("B", 124), strings.Repeat("C", 127), strings.Repeat("D", 128), strings.Repeat("E", 256)} {
