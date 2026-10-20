@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -107,6 +109,12 @@ func TestRepositoryDependencyBoundaries(t *testing.T) {
 	if len(inv.Cycles) != 0 {
 		t.Fatalf("production source-union cycles: %v", inv.Cycles)
 	}
+	for _, violation := range dependencyBoundaryViolations(inv) {
+		t.Error(violation)
+	}
+}
+
+func dependencyBoundaryViolations(inv Inventory) []string {
 	// These are directional architecture constraints, not a freeze of the
 	// dependency snapshot. Independent checker and IR layers must not acquire
 	// dependencies on their producers, even through a new intermediary package.
@@ -120,25 +128,77 @@ func TestRepositoryDependencyBoundaries(t *testing.T) {
 	for _, edge := range inv.ProductionEdges {
 		graph[edge.From] = append(graph[edge.From], edge.To)
 	}
-	for source, denied := range forbidden {
-		seen := map[string]bool{}
-		var visit func(string)
-		visit = func(node string) {
-			if seen[node] {
-				return
+	var violations []string
+	for _, pkg := range inv.Packages {
+		source := pkg.Path
+		for prefix, denied := range forbidden {
+			if source != prefix && !strings.HasPrefix(source, prefix+"/") {
+				continue
 			}
-			seen[node] = true
-			for _, next := range graph[node] {
-				visit(next)
+			seen := map[string]bool{}
+			var visit func(string)
+			visit = func(node string) {
+				if seen[node] {
+					return
+				}
+				seen[node] = true
+				for _, next := range graph[node] {
+					visit(next)
+				}
 			}
-		}
-		visit(source)
-		for node := range seen {
-			for _, boundary := range denied {
-				if node == boundary || strings.HasPrefix(node, boundary+"/") {
-					t.Errorf("%s transitively imports forbidden producer %s", source, node)
+			visit(source)
+			for node := range seen {
+				for _, boundary := range denied {
+					if node == boundary || strings.HasPrefix(node, boundary+"/") {
+						violations = append(violations, fmt.Sprintf("%s transitively imports forbidden producer %s", source, node))
+					}
 				}
 			}
 		}
+	}
+	sort.Strings(violations)
+	return violations
+}
+
+func TestDependencyBoundarySubpackages(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		source        string
+		target        string
+		indirect      bool
+		wantViolation bool
+	}{
+		{"unimported subpackage", "optir/analysis", "asm", false, true},
+		{"transitive unimported subpackage", "asm/checks", "compiler/lower", true, true},
+		{"root transitive", "machine", "nativegen", true, true},
+		{"allowed dependency", "machine/analysis", "optir", false, false},
+		{"similar source prefix", "optirhelper", "asm", false, false},
+		{"similar target prefix", "optir/analysis", "asmhelper", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{
+				"optir/a.go": "package optir\n",
+				"asm/a.go":   "package asm\n",
+			}
+			target := tc.target
+			if tc.indirect {
+				files["helper/a.go"] = "package helper\nimport _ \"example.org/oak/" + target + "\"\n"
+				target = "helper"
+			}
+			files[tc.source+"/boundary.go"] = "package boundary\nimport _ \"example.org/oak/" + target + "\"\n"
+			inv, err := scan(fixture(t, files))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := dependencyBoundaryViolations(inv)
+			if tc.wantViolation {
+				want := []string{tc.source + " transitively imports forbidden producer " + tc.target}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("violations = %v, want %v", got, want)
+				}
+			} else if len(got) != 0 {
+				t.Fatalf("unexpected violations: %v", got)
+			}
+		})
 	}
 }
