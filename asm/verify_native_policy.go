@@ -12,11 +12,12 @@ type verifierISA struct {
 	arch string
 	// Entry-readable differs from call-preserved: on RV64, ra (x1) is
 	// readable at function entry but is clobbered by an ordinary call.
-	entryReadableGPR func(int) bool
-	clobberedGPR     []int
-	preservedFPR     func(int) bool // nil: this policy does not model FPR clobbers
-	preservedVector  func(int) bool // nil: this policy does not model vector clobbers
-	invalidateFlags  bool
+	entryReadableGPR    func(int) bool
+	clobberedGPR        []int
+	preservedFPR        func(int) bool // nil: this policy does not model FPR clobbers
+	preservedVector     func(int) bool // nil: this policy does not model vector clobbers
+	invalidateAllVector bool          // RV64 psABI: all vector regs and vl/vtype are caller-clobbered
+	invalidateFlags     bool
 }
 
 var verifierArm64ISA = verifierISA{
@@ -28,10 +29,11 @@ var verifierArm64ISA = verifierISA{
 }
 
 var verifierRV64ISA = verifierISA{
-	arch:             ArchRV64,
-	entryReadableGPR: rv64Preserved,
-	clobberedGPR:     []int{1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31},
-	preservedFPR:     rv64FloatCalleeSaved,
+	arch:                 ArchRV64,
+	entryReadableGPR:     rv64Preserved,
+	clobberedGPR:         []int{1, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 28, 29, 30, 31},
+	preservedFPR:         rv64FloatCalleeSaved,
+	invalidateAllVector: true,
 }
 
 // verifierISAFor is the only native verifier policy dispatch. It must never
@@ -52,9 +54,10 @@ func verifierEntryReadableGPR(arch string, reg int) bool {
 	return ok && isa.entryReadableGPR(reg)
 }
 
-// forgetCallerSaved applies only the target's established call clobber rules.
-// RV64 vector and flags policy is unchanged here; completing RVV call-state
-// semantics requires a separate ABI review and differential proof gate.
+// forgetCallerSaved is the sole cross-register-class ABI transition used by
+// every native call result shape. RV64 invalidates the entire caller-owned
+// vector file and vl/vtype configuration, as its seam checker already does.
+// New vector calling conventions require their own reviewed ISA policy.
 func (isa *verifierISA) forgetCallerSaved(state *symbolicState) {
 	for _, reg := range isa.clobberedGPR {
 		state.clobberGPR(reg)
@@ -72,6 +75,10 @@ func (isa *verifierISA) forgetCallerSaved(state *symbolicState) {
 				delete(state.vregs, reg)
 			}
 		}
+	}
+	if isa.invalidateAllVector {
+		state.vregs = nil
+		state.rvcfg = nil
 	}
 	if isa.invalidateFlags {
 		state.flags = nil

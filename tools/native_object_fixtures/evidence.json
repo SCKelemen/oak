@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "scope": "Diagnostic evidence for the strict native-object/name/flat-load model. This file, digests, and successful tests do not grant production proof authority.",
+  "source_revision": "e7720aab24986c89b8d29b826e4f628665d50fd8",
+  "lean_toolchain": "leanprover/lean4:v4.33.1",
+  "model": "Oak.NativeBitwiseObject",
+  "central_theorem": "Oak.NativeBitwiseObject.accepted_named_body",
+  "expected_model_theorems": 15,
+  "expected_fixed_admissions": 12,
+  "expected_fixed_refusals": 535,
+  "allowed_axioms": [
+    "propext",
+    "Quot.sound",
+    "Classical.choice"
+  ],
+  "current_production_regression": {
+    "test": "TestNativeBitwiseObjectLean",
+    "objects": 12,
+    "refusals": 96,
+    "universal_execution_instances": 12,
+    "exact_axiom_reports": 24,
+    "required_runner_passed": true,
+    "skips": 0
+  },
+  "fixed_fixture_gate": {
+    "passed": true,
+    "admissions": 12,
+    "refusals": 535,
+    "exact_theorem_closure_reports": 562,
+    "batches": 35,
+    "maximum_concurrent_single_thread_processes": 2
+  },
+  "independent_gate_controls": "Missing, extra, duplicate, malformed, and forbidden-axiom reports refused; empty/deleted/duplicate theorem inventories refused.",
+  "non_claims": [
+    "Original-source parsing/composition is not supplied by this module.",
+    "The flat loader is an explicit model, not OS/system-linker or executable correctness.",
+    "ARM projection and RV frameSafe/instruction-data separation assumptions remain.",
+    "No production API, verdict, verified profile, or Wasm authority is promoted."
+  ],
+  "fixtures": [
+    {
+      "id": "arm64_bitwise_and",
+      "target": "linux/arm64",
+      "operation": "and",
+      "function": "bitwise",
+      "object_length": 688,
+      "text_size": 8,
+      "source_sha256": "8a30881158bde8e6fad9782b7a7668b9aacc34adcbe9b6c47906370c0187a926",
+      "object_sha256": "35dfebbc46fa9f9a288c071c8966355648b70eec34beaf73d648e9b9fd169907"
+    },
+    {
+      "id": "arm64_bitwise_or",
+      "target": "linux/arm64",
+      "operation": "or",
+      "function": "bitwise",
+      "object_length": 688,
+      "text_size": 8,
+      "source_sha256": "f3cebd55a0bad7c08ae04d05100e936001c3571cee23947d0435437668daf137",
+      "object_sha256": "e8f81f463fb4a2c14f31e2e1fe0abf1573695141b0a204dc857f721497fd7727"
+    },
+    {
+      "id": "arm64_bitwise_xor",
+      "target": "linux/arm64",
+      "operation": "xor",
+      "function": "bitwise",
+      "object_length": 688,
+      "text_size": 8,
+      "source_sha256": "81a9ce523d18bcc810593ba3b805f2c99e38cf2ec863d46cb1bc49002523e704",
+      "object_sha256": "ed443b018b1663813254dc74b0e1cfe5c70c052882f368a52e3700ebf463b0cf"
+    },
+    {
+      "id": "arm64_Mix9_and",
+      "target": "linux/arm64",
+      "operation": "and",
+      "function": "Mix9",
+      "object_length": 680,
+      "text_size": 8,
+      "source_sha256": "d4b25de57a6ee9d03c2be84edc8679d0083b56dedfe31a659d305e071b9cfe1a",
+      "object_sha256": "5a1e59ef45db8b906438f0a486e752f14f70ea6c30cc06341abfd4a58bca96ec"
+    },
+    {
+      "id": "arm64_Mix9_or",
+      "target": "linux/arm64",
+      "operation": "or",
+      "function": "Mix9",
+      "object_length": 680,
+      "text_size": 8,
+      "source_sha256": "d793d6fc2256ff3d4040a7e72f3c30b518593af1bce3dc9bb17b6b3534e954cc",
+      "object_sha256": "68efe98d2dc803e1ab1912e098e24b45ca93bd0e2ff836916946b8b4415b4a6c"
+    },
+    {
+      "id": "arm64_Mix9_xor",
+      "target": "linux/arm64",
+      "operation": "xor",
+      "function": "Mix9",
+      "object_length": 680,
+      "text_size": 8,
+      "source_sha256": "3b8516d98c845aa4dfcfa99007a9291d1137b4b85d8cfd9bd0ff3b10f0e77ee2",
+      "object_sha256": "4b18909cbf952391133c417978cea50b80b5f7322612f0154c422e56982852bf"
+    },
+    {
+      "id": "riscv64_bitwise_and",
+      "target": "linux/riscv64",
+      "operation": "and",
+      "function": "bitwise",
+      "object_length": 720,
+      "text_size": 36,
+      "source_sha256": "8a30881158bde8e6fad9782b7a7668b9aacc34adcbe9b6c47906370c0187a926",
+      "object_sha256": "d84a430ebe75f09fe976356ce38c0126d07685e7958a796f176afa3bb56a34ee"
+    },
+    {
+      "id": "riscv64_bitwise_or",
+      "target": "linux/riscv64",
+      "operation": "or",
+      "function": "bitwise",
+      "object_length": 720,
+      "text_size": 36,
+      "source_sha256": "f3cebd55a0bad7c08ae04d05100e936001c3571cee23947d0435437668daf137",
+      "object_sha256": "34550efd92f4c26f8f6eda41afa82faf20a567cb25f281fe35cf3b7dddc8303c"
+    },
+    {
+      "id": "riscv64_bitwise_xor",
+      "target": "linux/riscv64",
+      "operation": "xor",
+      "function": "bitwise",
+      "object_length": 720,
+      "text_size": 36,
+      "source_sha256": "81a9ce523d18bcc810593ba3b805f2c99e38cf2ec863d46cb1bc49002523e704",
+      "object_sha256": "497efe6306c4e0c28e4632c192cd72c4bee8372d95fda7372b7fa311eb71ab3b"
+    },
+    {
+      "id": "riscv64_Mix9_and",
+      "target": "linux/riscv64",
+      "operation": "and",
+      "function": "Mix9",
+      "object_length": 712,
+      "text_size": 36,
+      "source_sha256": "d4b25de57a6ee9d03c2be84edc8679d0083b56dedfe31a659d305e071b9cfe1a",
+      "object_sha256": "1f46d02655a66579ce552433f2706186173485adf3e2661209956156fbacd5df"
+    },
+    {
+      "id": "riscv64_Mix9_or",
+      "target": "linux/riscv64",
+      "operation": "or",
+      "function": "Mix9",
+      "object_length": 712,
+      "text_size": 36,
+      "source_sha256": "d793d6fc2256ff3d4040a7e72f3c30b518593af1bce3dc9bb17b6b3534e954cc",
+      "object_sha256": "c80661bc547d8dfe38b87ba60b4549a5d0878eea877381785e0b83917d37165d"
+    },
+    {
+      "id": "riscv64_Mix9_xor",
+      "target": "linux/riscv64",
+      "operation": "xor",
+      "function": "Mix9",
+      "object_length": 712,
+      "text_size": 36,
+      "source_sha256": "3b8516d98c845aa4dfcfa99007a9291d1137b4b85d8cfd9bd0ff3b10f0e77ee2",
+      "object_sha256": "ad1de82e27d00ad85ad5bfb96e8056671d3dd946c786740589f6c8b3f42326bf"
+    }
+  ],
+  "diagnostics_retained": [
+    "Initial Lean syntax/proof attempts, then clean core check.",
+    "Monolithic fixture attempt exited137 with cause unverified; no kernel proof diagnostic.",
+    "Two strict linewise-audit attempts refused wrapped axiom output; final grammar accepted actual wrapped output and rejected malformed controls."
+  ],
+  "source_composition_integration": {
+    "module": "Oak.BitwiseSourceObjectParity",
+    "source_sha256": "310abdb7df56d23f6724ac1d873ea613ceed28d6c6ab23ea33a9e048791a89c5",
+    "passed": true,
+    "model_theorems": 7,
+    "admissions": 4,
+    "refusals": 15,
+    "exact_closure_reports": 26
+  },
+  "combined_fixed_evidence": {
+    "fixture_facts": 566,
+    "exact_closure_reports": 588
+  }
+}

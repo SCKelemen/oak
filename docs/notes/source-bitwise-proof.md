@@ -89,7 +89,7 @@ refinement remain separate obligations, not consequences of this Wasm source
 binding. Existing native equality certificates consume abstract declarations
 and do not become source-authoritative merely because this module exists.
 
-## Unified three-target claim matrix
+## Unified three-target claim matrix (body-only native theorem)
 
 `Oak.BitwiseSourceParity.accepted_all_input_success` composes the shared source
 checker with all three admitted target profiles. There is one common input
@@ -157,3 +157,79 @@ admitted by this byte grammar, embedded into an arbitrary admissible Oak package
 context, is accepted and resolved identically by the whole-language grammar,
 name-resolution and elaboration semantics. Those complete semantics and their
 production implementation are not supplied by the small bridge.
+
+## Separate strict native-object binding
+
+`Oak.NativeBitwiseObject` adds an independent ELF64 ET_REL recognizer for the
+production one-function Linux AArch64/RV64 bitwise-object shape. This does not
+change `BitwiseSourceParity`'s existing body-only native inputs or turn its Go
+ELF extraction into a proof. The new `BitwiseSourceObjectParity` composition
+below separately connects original source to this full-object checker.
+
+`accepted_named_body` consumes the complete object and an explicit source-name
+byte list. It proves a separately defined `NamedFunction` relation by decoding
+the header's section-table pointer, the symbol table, its actual `sh_link`, and
+a bounded NUL-terminated symbol name. The named `oak_` function is unique among
+GLOBAL/FUNC entries and occupies the complete `.text` section at section-relative
+entry zero. The extracted whole extent equals the expected 8-byte ARM body or
+36-byte RV wrapper. The byte-type conversion is proved round-trip and injective.
+
+The profile requires exactly seven canonical sections, four canonical symbols,
+ELF64 little endian ET_REL, correct architecture and ABI flags (ARM 0, RV LP64D
+4 without RVC), empty data/relocations, exact section/string-table bytes,
+zero padding, bounded disjoint nonempty payloads and full-file exhaustion.
+Unsupported but otherwise valid ELF layouts intentionally refuse. Names here
+are explicit nonempty non-NUL ASCII bytes, not a proved source declaration.
+
+`named_load` and `named_fetch_byte` connect the resolved entry to every checked
+byte under an explicit flat section loader, for any 4-byte-aligned base whose
+entire extent fits strictly below 2^64. `accepted_arm_execution` and
+`accepted_rv_execution` set the initial PC to that base and compose the fetched
+whole-body bytes with the existing internal execution models. ARM retains its
+no-fault scalar projection and arbitrary incoming upper register halves. RV
+retains `frameSafe`: an aligned, nonwrapping 96-byte ordinary coherent RW stack
+frame with no interference; instruction/data separation is external. The RV
+corollary uses the actual framed wrapper, not the 8-byte leaf. These theorems do
+not prove OS/system-linker behavior, executable entry/startup, full instruction
+fetch/permission semantics, external Sail execution, or arbitrary compilation.
+
+`NativeBitwiseObjectFixtures.lean` pins twelve complete actual
+`EmitNativeObject(ELF)` outputs (three operations, two identifier families, both
+architectures), plus structural and replay refusal cases. The reproduction tools
+are in `tools/native_object_fixtures`. `TestNativeBitwiseObjectLean` regenerates
+fresh complete objects through the production API and checks them with the same
+Lean recognizer. The formal workflow runs both the fixed malformed-object suite
+and this fresh-emission test, with an exact exported-theorem axiom audit.
+
+This closes native object/name/entry-to-body identity in the stated model only.
+No compiler API, `asm.VerdictProven`, `WithVerifiedProfile`, `-verified`, or Wasm
+`TranslationVerified` authority is promoted. A production kernel-checked artifact
+API would still need request-specific proof checking, proof/import identity,
+byte custody and fail-closed integration.
+
+## Original source to complete artifacts
+
+`Oak.BitwiseSourceObjectParity.check` derives the declaration directly from the
+original source bytes, then uses its parsed name and operation to check one
+complete Wasm module and both complete native objects. No operation, name, body,
+or source-to-expression relation is accepted as a trusted caller argument.
+`accepted_source_object_binding` retains exact source reconstruction, grammar
+membership, and the actual uniquely decoded native symbols and whole bodies.
+
+`accepted_all_input_success` composes those bindings with the existing typed
+source-expression interpreter and modeled named-entry invocation. It proves
+the same full-u32 result for every input pair and compatible modeled caller
+state, retaining ARM argument assumptions, RV LP64D/frame requirements, and
+aligned nonwrapping code bases. `refuses_outside_grammar` rejects every source
+outside the declarative grammar; grammar membership alone is not a completeness
+or admission claim, since artifacts impose additional constraints.
+
+The mandatory formal step pins seven composition and nineteen fixture theorem
+names and requires all twenty-six exact allowed-axiom reports. Four admission
+and fifteen refusal fixtures cover operations, names, complete artifacts and
+unsupported source syntax. Native fixtures retain current-emitter provenance;
+the alternate-name positive fixture explicitly uses a hand-constructed valid
+Wasm module. External ISA/fetch/return-target execution, physical code/data
+coherence, OS loading/linking and universal production-compiler correctness
+remain separate. See `docs/notes/source-native-object-parity.md` for the exact
+contract and `tools/source_object_parity.py` for the fail-closed evidence gate.

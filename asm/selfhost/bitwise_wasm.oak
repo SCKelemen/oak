@@ -1,0 +1,79 @@
+// Complete one-function Wasm module for the strict bitwise image profile.
+// Requires wasm.oak. op: 1 AND, 2 OR, 3 XOR. name is an unprefixed export
+// proposal, not parsed Oak source: 1..256 non-NUL ASCII bytes. The independent
+// source/image checker still binds the original source, name and operation.
+// Inputs must be disjoint from dst. Refusal returns zero without mutation;
+// success returns the complete size and preserves every byte beyond it.
+
+wasm_bitwise_module: (dst: [*]u8, op: u32, name: []u8): u32 {
+  result: u32 = 0
+  n: u32 = len(name)
+  op >= u32(1) && op <= u32(3) && n >= u32(1) && n <= u32(256) ? {
+    ok: Bool = true
+    i: u32 = 0
+    while i < n {
+      name[i] == u8(0) || name[i] >= u8(128) ? { ok = false }
+      i = i + u32(1)
+    }
+    ok ? {
+      name_size: u32 = wasm_uleb_size(u64(n))
+      export_size: u32 = n + name_size + u32(3)
+      export_size_size: u32 = wasm_uleb_size(u64(export_size))
+      total: u32 = u32(36) + n + name_size + export_size_size
+      total <= len(dst) ? {
+        // Magic/version, one (i32,i32)->i32 type, one function at type zero.
+        dst[u32(0)] = u8(0)
+        dst[u32(1)] = u8(97)
+        dst[u32(2)] = u8(115)
+        dst[u32(3)] = u8(109)
+        dst[u32(4)] = u8(1)
+        dst[u32(5)] = u8(0)
+        dst[u32(6)] = u8(0)
+        dst[u32(7)] = u8(0)
+        dst[u32(8)] = u8(1)
+        dst[u32(9)] = u8(7)
+        dst[u32(10)] = u8(1)
+        dst[u32(11)] = u8(96)
+        dst[u32(12)] = u8(2)
+        dst[u32(13)] = u8(127)
+        dst[u32(14)] = u8(127)
+        dst[u32(15)] = u8(1)
+        dst[u32(16)] = u8(127)
+        dst[u32(17)] = u8(3)
+        dst[u32(18)] = u8(2)
+        dst[u32(19)] = u8(1)
+        dst[u32(20)] = u8(0)
+        dst[u32(21)] = u8(7)
+        wasm_write_uleb(dst, u32(22), u64(export_size))
+        pos: u32 = u32(22) + export_size_size
+        dst[pos] = u8(1)
+        pos = pos + u32(1)
+        wasm_write_uleb(dst, pos, u64(n))
+        pos = pos + name_size
+        i = u32(0)
+        while i < n {
+          dst[pos + i] = name[i]
+          i = i + u32(1)
+        }
+        pos = pos + n
+        dst[pos] = u8(0)
+        dst[pos + u32(1)] = u8(0)
+        // One code body, no locals. The instruction writer supplies final end.
+        dst[pos + u32(2)] = u8(10)
+        dst[pos + u32(3)] = u8(9)
+        dst[pos + u32(4)] = u8(1)
+        dst[pos + u32(5)] = u8(7)
+        dst[pos + u32(6)] = u8(0)
+        plan: [4]WasmInstruction = [
+          WasmInstruction { opcode: u32(32), immediate: i64(0) },
+          WasmInstruction { opcode: u32(32), immediate: i64(1) },
+          WasmInstruction { opcode: u32(112) + op, immediate: i64(0) },
+          WasmInstruction { opcode: u32(11), immediate: i64(0) }
+        ]
+        wasm_assemble(dst, pos + u32(7), view(&plan))
+        result = total
+      }
+    }
+  }
+  result
+}

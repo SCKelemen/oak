@@ -1,0 +1,60 @@
+name: Source to complete image parity
+
+on:
+  push:
+    branches:
+      - specification
+      - docs/spec-consolidation
+  pull_request:
+    branches:
+      - specification
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-image-parity:
+    name: Required source / Wasm / executable image parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install elan
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/leanprover/elan/releases/download/v4.2.2/elan-x86_64-unknown-linux-gnu.tar.gz -o /tmp/elan.tar.gz
+          tar -xzf /tmp/elan.tar.gz -C /tmp
+          /tmp/elan-init -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Require exact source-image inventories and fail-closed reports
+        run: python3 tools/source_image_parity/test_check.py
+
+      - name: Build only the source and native-image proof prerequisites
+        working-directory: spec/lean
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat lean-toolchain)" = 'leanprover/lean4:v4.33.1'
+          lake build Oak.BitwiseSourceLowering Oak.NativeBitwiseImage
+
+      # Independent of the full native-image fixed/production jobs. There is no
+      # missing-tool skip, reuse flag, optional test selection, or continue-on-error.
+      - name: Require original source to complete image parity and exact auditor controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          native=$(mktemp -d "$RUNNER_TEMP/source-image-native.XXXXXX")
+          evidence=$(mktemp -d "$RUNNER_TEMP/source-image-evidence.XXXXXX")
+          go run -p=2 ./tools/native_image_fixtures -out "$native" -verify-pins
+          python3 tools/source_image_parity/check.py "$native" --output "$evidence"
+          python3 tools/source_image_parity/verify_report.py "$evidence/report.json"

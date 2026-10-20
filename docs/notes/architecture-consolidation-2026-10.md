@@ -129,3 +129,91 @@ preserved registers, fork isolation, and conservative joins. These are
 executable correspondence tests, not a new Lean proof of the full path
 executor. Full `asm` regressions and source-to-machine proof composition
 remain release gates.
+
+## A2: parametric Lean provenance theorem and Go correspondence gate
+
+`spec/lean/Oak/AssemblerEntryProvenance.lean` defines a pure,
+architecture-indexed register-provenance state for ARM64 and RV64, with
+separate materialized values and invalidated entry authority. Theorems
+establish no resurrection after a call, safe explicit rewrites, immutable
+fork isolation, conservative join behavior (either branch clobbered), and
+continued availability when both branches explicitly write.
+
+The architecture-indexed type excludes cross-ISA joins by construction,
+whereas the Go executor rejects mismatched `state.arch` dynamically.
+`asm/verify_entry_provenance_refinement_test.go` independently sweeps
+the current per-ISA entry-register masks and observed call clobbers and
+ensures the theorem/example obligations are present. A dedicated
+`assembler-entry-provenance` formal CI job builds the Lean module and
+executes those Go checks independently of the full compiler suite.
+
+**Trust boundary:** The Lean proof covers the formal model, not an
+automatically extracted implementation; the bounded Go corpus tests
+the correspondence but does not universally prove it. Source-to-ISA
+refinement, complete call-result paths and whole `asm` tests remain
+required for full verified status.
+
+## A2: deterministic state-transition correspondence (October 2026)
+
+`asm/verify_entry_state_refinement_test.go` independently implements a
+two-bit reference state machine: whether a GPR has an actual materialized
+value, and whether it has lost authority to recreate its original entry
+value. The oracle has its own ARM64/RV64 entry masks and call-clobber masks
+and does not call the production target policy for expected outcomes.
+
+For each native GPR except architectural zero/SP registers, the test
+enumerates both sides of a two-transition fork, then applies production
+`mergeTwo` and another call. The return-address registers `x30` and
+`ra/x1` receive exhaustive three-transition traces. Reads are checked on
+clones to avoid observing state through a mutation that changes the next
+step. The test compares both the lazy-read result and the concrete
+`regs`/`invalidEntryGPR` representation at every step.
+
+This is an exhaustive bounded **implementation/model correspondence test**
+over the stated traces, not a universal refinement proof for unbounded
+instruction streams or the memory/vector state. The dedicated formal CI
+gate must execute it alongside the Lean module. A standalone Go 1.23
+harness checked the test's mechanics against a minimal API shim, but does
+not substitute for production `go test ./asm`.
+
+## A2: consolidate all call-result ABI invalidation (October 2026)
+
+The symbolic caller previously performed complete ABI clobber handling only
+for unit, memory-result and floating-point-result calls. Scalar, register-
+aggregate and vector-return paths manually cleared their integer registers,
+leaving caller-clobbered RV64 floating-point/vector state or AArch64 vector
+state available after the call. This disagreed with `rvChecker.call`, which
+already discards RVV registers/vl/vtype and non-preserved FPRs.
+
+Every successful call summary return shape now invokes exactly the same
+`forgetCallerSaved` transition **before** writing its output registers.
+The RV64 ISA policy also clears its vector register file and the vl/vtype
+configuration. The existing ARM64 v8-v15 and RV64 fs0-fs11 preserved
+registers retain their values. Dedicated tests check FPR/vector/global
+call-state invalidation and detect any reintroduction of handwritten GPR
+clobber branches in the call summarizer.
+
+This closes a concrete production-model gap; it is not a completed machine-
+checked Go, psABI or emitted-byte refinement. Full `asm`, RV64/RVV,
+source-to-machine execution and formal gates remain required.
+
+## A2: cross-class native call-state proof contract (October 2026)
+
+`spec/lean/Oak/AssemblerCallState.lean` builds on the GPR entry-provenance
+state but explicitly adds RV64 FPR availability, AArch64/RV64 vector
+availability, and abstract rvv configuration and flag state. A single
+`call` transition applies each architecture's caller-saved masks before
+separate register-result writes. Theorems state preserved vs clobbered
+register behavior, link-register invalidation, and necessary availability
+conditions for control-flow joins.
+
+The FPR abstraction only covers RV64 `fregs`; AArch64 FP views belong to
+the vector file. This model tracks boundness, not register values or vector
+lane widths. A dependent `State arch` excludes cross-architecture joins.
+The corresponding Go tests sweep register masks and real call-state
+invalidations against independently specified ABI rules.
+
+This is **not** a universal proof that the Go executor implements the Lean
+model. The proof is verified only after `lake build Oak.AssemblerCallState`
+succeeds; Go correspondence is checked only after the dedicated package
+tests run. End-to-end ISA proofs and verified RVV variants remain open.

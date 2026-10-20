@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
 
 jobs:
-  stdlib:
+  stdlib-content:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,11 +73,39 @@ jobs:
         run: go test ./compiler -run 'TestE2EStdlibUrl' -count=1
       - name: Test path
         run: go test ./compiler -run 'TestE2EStdlibPath' -count=1
-      # The whole compiler package runs under the race detector in ci.yml,
-      # exhaustively sharded; this job covers every other package.
-      - name: Test non-compiler packages under the race detector
-        run: python3 .github/scripts/noncompiler_race.py
       - name: Check formatting
         if: always()
         run: |
           gofmt -d codegen/byte_pack.go compiler/e2e_json_fast_test.go compiler/e2e_json_option_test.go codegen/mono.go compiler/e2e_json_array_test.go compiler/codec_decode.go compiler/e2e_json_decode_test.go compiler/e2e_codec_type_arguments_test.go parser/parser.go compiler/codecs.go compiler/e2e_derived_json_test.go compiler/e2e_json_codec_test.go borrowchecker/simd_effects_test.go typechecker/ffi.go borrowchecker/global_effects.go lsp/position_index.go lsp/position_index_test.go typechecker/string_views.go borrowchecker/string_views.go borrowchecker/string_views_test.go codegen/string_views.go compiler/e2e_string_views_test.go typechecker/borrow_storage.go typechecker/borrow_storage_test.go borrowchecker/borrowchecker.go borrowchecker/escape.go borrowchecker/aggregate_escape_test.go borrowchecker/aggregate_storage.go borrowchecker/aggregate_storage_test.go compiler/stdlib.go compiler/text_literals.go compiler/e2e_stdlib_text_test.go codegen/slices.go compiler/fluent.go compiler/syntax_walk.go compiler/e2e_stdlib_test.go compiler/e2e_stdlib_bits_endian_test.go compiler/e2e_stdlib_buffer_test.go compiler/e2e_stdlib_collections_test.go compiler/e2e_stdlib_splice_test.go compiler/e2e_stdlib_heap_test.go compiler/e2e_stdlib_deque_id_test.go compiler/e2e_stdlib_encoding_test.go compiler/compilation.go stdlib/source.go codegen/codegen.go typechecker/typechecker.go typechecker/mono.go token/token.go lowering/lowering.go
+
+  # Keep this workflow's existing non-compiler coverage, but give the costly
+  # root groups independent 45-minute budgets, just as in ci.yml.
+  race-tests:
+    name: Race tests (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [root-cnf-a-g, root-cnf-h-z, root-solver, root-rest, packages-rest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Check package shard runner
+        run: python3 -m unittest discover -s .github/scripts -p 'test_package_shards.py' -v
+      - name: Test non-compiler packages under the race detector
+        run: python3 .github/scripts/package_shards.py "${{ matrix.shard }}"
+
+  # Retain the original required check name; an always() aggregate must
+  # explicitly reject failed, cancelled, and skipped dependencies.
+  stdlib:
+    runs-on: ubuntu-latest
+    needs: [stdlib-content, race-tests]
+    if: always()
+    steps:
+      - name: Require standard-library checks and every race shard
+        env:
+          CONTENT_RESULT: ${{ needs.stdlib-content.result }}
+          RACE_RESULT: ${{ needs.race-tests.result }}
+        run: test "$CONTENT_RESULT" = success && test "$RACE_RESULT" = success

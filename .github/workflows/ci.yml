@@ -26,7 +26,10 @@ jobs:
         # cumulatively, retaining the same tests and 45-minute deadlines.
         # Split stdlib-rest after F: measured root-test loads were 40 / 37
         # minutes; both halves retain the former 90-minute deadline.
-        shard: [e2e-a-r, e2e-stdlib-text, e2e-stdlib-rest-a-f, e2e-stdlib-rest-g-z, e2e-s-z, compiler-rest-a-m, compiler-rest-n-z, packages]
+        # Split e2e A-R after J, retaining every test and 90-minute deadlines.
+        # Split the root package before its cumulative 45-minute race deadline.
+        # package_shards.py checks exact Test/Example/Fuzz coverage.
+        shard: [e2e-a-j, e2e-k-r, e2e-stdlib-text, e2e-stdlib-rest-a-f, e2e-stdlib-rest-g-z, e2e-s-z, compiler-rest-a-m, compiler-rest-n-z, root-cnf-a-g, root-cnf-h-z, root-solver, root-rest, packages-rest]
 
     steps:
     - name: Checkout code
@@ -53,10 +56,10 @@ jobs:
 
     # Translation validation of the trusted core on rv64
     # (codegen/translation_validation_test.go) compiles the prelude helpers
-    # with the RISC-V GNU toolchain and skips without it; the packages shard
+    # with the RISC-V GNU toolchain and skips without it; the packages-rest shard
     # is where that test runs, so give it the toolchain.
     - name: Install the RISC-V GNU toolchain (rv64 translation validation)
-      if: matrix.shard == 'packages'
+      if: matrix.shard == 'packages-rest'
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf
@@ -66,22 +69,48 @@ jobs:
       run: go test -v ./compiler -run '^TestE2ENestedArrayFieldStores$' -count=1
 
     - name: Check required backend test inventory and runner
-      if: matrix.shard == 'packages'
+      if: matrix.shard == 'packages-rest'
       run: |
-        python3 -m unittest discover -s .github/scripts -p 'test_required_backend_tests.py' -v
+        python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
         python3 .github/scripts/required_backend_tests.py --check
 
     - name: Run tests
       env:
         OAK_TLA2TOOLS_JAR: /tmp/tla2tools.jar
-        # The packages shard installed the RISC-V GNU toolchain above; the
+        # The packages-rest shard installed the RISC-V GNU toolchain above; the
         # rv64 translation validation must run there, not skip.
-        OAK_REQUIRE_RV64_GCC: ${{ matrix.shard == 'packages' && '1' || '' }}
+        OAK_REQUIRE_RV64_GCC: ${{ matrix.shard == 'packages-rest' && '1' || '' }}
       run: |
         case "${{ matrix.shard }}" in
-          packages) python3 .github/scripts/noncompiler_race.py ;;
+          root-*|packages-rest) python3 .github/scripts/package_shards.py "${{ matrix.shard }}" ;;
           *) python3 .github/scripts/compiler_shards.py "${{ matrix.shard }}" ;;
         esac
+
+  # Preserve the old e2e A-R check name for branch protection. Like the other
+  # compatibility gates, require success from the entire replacement matrix.
+  e2e-a-r:
+    name: Run Tests (1.27.1, e2e-a-r)
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+    steps:
+    - name: Require every test shard
+      env:
+        TEST_RESULT: ${{ needs.test.result }}
+      run: test "$TEST_RESULT" = success
+
+  # Preserve the old packages check: success requires all replacement root
+  # shards and remaining packages, including cancellation/skip/failure cases.
+  packages:
+    name: Run Tests (1.27.1, packages)
+    runs-on: ubuntu-latest
+    needs: test
+    if: always()
+    steps:
+    - name: Require every test shard
+      env:
+        TEST_RESULT: ${{ needs.test.result }}
+      run: test "$TEST_RESULT" = success
 
   # Preserve the old compiler-rest check name for branch protection. It can
   # pass only when both replacement shards (and the rest of the matrix) pass.

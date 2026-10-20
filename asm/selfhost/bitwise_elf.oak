@@ -1,0 +1,147 @@
+// Strict one-function ELF64 envelope, alongside (not replacing) elf.oak.
+// Fixed Linux base/entry 65536, arch 1 ARM64 or 2 RV64 LP64D without C.
+// linked_text and unprefixed name are proposals, not source or body authority.
+// The unchanged complete source/image checker must still admit the result.
+// Internal word helpers require an in-bounds four-byte footprint; the image
+// entrypoint establishes those bounds before using either helper.
+
+native_bitwise_elf_word: (dst: [*]u8, offset: u32, value: u32): () {
+  dst[offset] = u8_trunc_u32(value)
+  dst[offset + u32(1)] = u8_trunc_u32(value >> u32(8))
+  dst[offset + u32(2)] = u8_trunc_u32(value >> u32(16))
+  dst[offset + u32(3)] = u8_trunc_u32(value >> u32(24))
+}
+
+native_bitwise_elf_read: (src: []u8, offset: u32): u32 =
+  u32(src[offset]) | (u32(src[offset + u32(1)]) << u32(8)) |
+  (u32(src[offset + u32(2)]) << u32(16)) | (u32(src[offset + u32(3)]) << u32(24))
+
+// Returns complete image size, or zero with every destination byte unchanged.
+// Success preserves the suffix beyond that size. Oak enforces disjoint input
+// and destination borrows. Name bytes follow the IMAGE profile (1..127), not
+// the source identifier grammar: source names/reserved words need final checking.
+// Body bytes remain untrusted; only extent and exact linked startup are checked.
+native_bitwise_elf_image: (dst: [*]u8, linked_text: []u8, arch: u32, name: []u8): u32 {
+  result: u32 = 0
+  (arch == u32(1) || arch == u32(2)) && len(name) > u32(0) && len(name) <= u32(256) ? {
+    stub: u32 = arch == u32(1) ? u32(12) | u32(16)
+    body: u32 = arch == u32(1) ? u32(8) | u32(36)
+    load: u32 = arch == u32(1) ? u32(32) | u32(64)
+    sym: u32 = u32(4096) + load
+    str: u32 = sym + u32(72)
+    shstr: u32 = str + len(name) + u32(13)
+    sections: u32 = (shstr + u32(48)) / u32(8) * u32(8)
+    size: u32 = sections + u32(384)
+    ok: Bool = len(linked_text) == stub + body && len(dst) >= size
+    i: u32 = 0
+    while i < len(name) && ok {
+      ok = name[i] > u8(0) && name[i] < u8(128)
+      i = i + u32(1)
+    }
+    ok ? {
+      arch == u32(1) ? {
+        ok = native_bitwise_elf_read(linked_text, u32(0)) == u32(0x94000003) &&
+          native_bitwise_elf_read(linked_text, u32(4)) == u32(0x52800ba8) &&
+          native_bitwise_elf_read(linked_text, u32(8)) == u32(0xd4000001)
+      } | {
+        ok = native_bitwise_elf_read(linked_text, u32(0)) == u32(0x00000097) &&
+          native_bitwise_elf_read(linked_text, u32(4)) == u32(0x010080e7) &&
+          native_bitwise_elf_read(linked_text, u32(8)) == u32(0x05d00893) &&
+          native_bitwise_elf_read(linked_text, u32(12)) == u32(0x00000073)
+      }
+    }
+    // Every rejecting check precedes the first write. All layout arithmetic is
+    // bounded by name <= 256; the largest complete image is 4928 bytes.
+    ok ? {
+      i = u32(0)
+      while i < size { dst[i] = u8(0)
+        i = i + u32(1) }
+      // All ELF64 field values fit u32. The zero pass supplies high halves,
+      // reserved fields, null records, and the exact gap/alignment padding.
+      native_bitwise_elf_word(dst, u32(0), u32(0x464c457f))
+      native_bitwise_elf_word(dst, u32(4), u32(0x00010102))
+      machine: u32 = arch == u32(1) ? u32(0x00b70002) | u32(0x00f30002)
+      native_bitwise_elf_word(dst, u32(16), machine)
+      native_bitwise_elf_word(dst, u32(20), u32(1))
+      native_bitwise_elf_word(dst, u32(24), u32(65536))
+      native_bitwise_elf_word(dst, u32(32), u32(64))
+      native_bitwise_elf_word(dst, u32(40), sections)
+      flags: u32 = arch == u32(1) ? u32(0) | u32(4)
+      native_bitwise_elf_word(dst, u32(48), flags)
+      native_bitwise_elf_word(dst, u32(52), u32(0x00380040))
+      native_bitwise_elf_word(dst, u32(56), u32(0x00400001))
+      native_bitwise_elf_word(dst, u32(60), u32(0x00050006))
+      native_bitwise_elf_word(dst, u32(64), u32(1))
+      native_bitwise_elf_word(dst, u32(68), u32(5))
+      native_bitwise_elf_word(dst, u32(72), u32(4096))
+      native_bitwise_elf_word(dst, u32(80), u32(65536))
+      native_bitwise_elf_word(dst, u32(88), u32(65536))
+      native_bitwise_elf_word(dst, u32(96), load)
+      native_bitwise_elf_word(dst, u32(104), load)
+      native_bitwise_elf_word(dst, u32(112), u32(4096))
+      i = u32(0)
+      while i < len(linked_text) { dst[u32(4096) + i] = linked_text[i]
+        i = i + u32(1) }
+      // Three symbols: null, _start, oak_<name>.
+      native_bitwise_elf_word(dst, sym + u32(24), u32(1))
+      native_bitwise_elf_word(dst, sym + u32(28), u32(0x00010012))
+      native_bitwise_elf_word(dst, sym + u32(32), u32(65536))
+      native_bitwise_elf_word(dst, sym + u32(40), stub)
+      native_bitwise_elf_word(dst, sym + u32(48), u32(8))
+      native_bitwise_elf_word(dst, sym + u32(52), u32(0x00010012))
+      native_bitwise_elf_word(dst, sym + u32(56), u32(65536) + stub)
+      native_bitwise_elf_word(dst, sym + u32(64), body)
+      native_bitwise_elf_word(dst, str, u32(0x74735f00))
+      native_bitwise_elf_word(dst, str + u32(4), u32(0x00747261))
+      native_bitwise_elf_word(dst, str + u32(8), u32(0x5f6b616f))
+      i = u32(0)
+      while i < len(name) { dst[str + u32(12) + i] = name[i]
+        i = i + u32(1) }
+      // Exact 41-byte section-name table (last byte remains zero).
+      native_bitwise_elf_word(dst, shstr, u32(0x65742e00))
+      native_bitwise_elf_word(dst, shstr + u32(4), u32(0x2e007478))
+      native_bitwise_elf_word(dst, shstr + u32(8), u32(0x61646f72))
+      native_bitwise_elf_word(dst, shstr + u32(12), u32(0x2e006174))
+      native_bitwise_elf_word(dst, shstr + u32(16), u32(0x746d7973))
+      native_bitwise_elf_word(dst, shstr + u32(20), u32(0x2e006261))
+      native_bitwise_elf_word(dst, shstr + u32(24), u32(0x74727473))
+      native_bitwise_elf_word(dst, shstr + u32(28), u32(0x2e006261))
+      native_bitwise_elf_word(dst, shstr + u32(32), u32(0x74736873))
+      native_bitwise_elf_word(dst, shstr + u32(36), u32(0x62617472))
+      // Six sections: null, .text, empty .rodata, .symtab, .strtab, .shstrtab.
+      native_bitwise_elf_word(dst, sections + u32(64), u32(1))
+      native_bitwise_elf_word(dst, sections + u32(68), u32(1))
+      native_bitwise_elf_word(dst, sections + u32(72), u32(6))
+      native_bitwise_elf_word(dst, sections + u32(80), u32(65536))
+      native_bitwise_elf_word(dst, sections + u32(88), u32(4096))
+      native_bitwise_elf_word(dst, sections + u32(96), stub + body)
+      native_bitwise_elf_word(dst, sections + u32(112), u32(4))
+      native_bitwise_elf_word(dst, sections + u32(128), u32(7))
+      native_bitwise_elf_word(dst, sections + u32(132), u32(1))
+      native_bitwise_elf_word(dst, sections + u32(136), u32(2))
+      native_bitwise_elf_word(dst, sections + u32(144), u32(65536) + load)
+      native_bitwise_elf_word(dst, sections + u32(152), sym)
+      native_bitwise_elf_word(dst, sections + u32(176), u32(16))
+      native_bitwise_elf_word(dst, sections + u32(192), u32(15))
+      native_bitwise_elf_word(dst, sections + u32(196), u32(2))
+      native_bitwise_elf_word(dst, sections + u32(216), sym)
+      native_bitwise_elf_word(dst, sections + u32(224), u32(72))
+      native_bitwise_elf_word(dst, sections + u32(232), u32(4))
+      native_bitwise_elf_word(dst, sections + u32(236), u32(1))
+      native_bitwise_elf_word(dst, sections + u32(240), u32(8))
+      native_bitwise_elf_word(dst, sections + u32(248), u32(24))
+      native_bitwise_elf_word(dst, sections + u32(256), u32(23))
+      native_bitwise_elf_word(dst, sections + u32(260), u32(3))
+      native_bitwise_elf_word(dst, sections + u32(280), str)
+      native_bitwise_elf_word(dst, sections + u32(288), len(name) + u32(13))
+      native_bitwise_elf_word(dst, sections + u32(304), u32(1))
+      native_bitwise_elf_word(dst, sections + u32(320), u32(31))
+      native_bitwise_elf_word(dst, sections + u32(324), u32(3))
+      native_bitwise_elf_word(dst, sections + u32(344), shstr)
+      native_bitwise_elf_word(dst, sections + u32(352), u32(41))
+      native_bitwise_elf_word(dst, sections + u32(368), u32(1))
+      result = size
+    }
+  }
+  result
+}

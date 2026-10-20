@@ -479,6 +479,45 @@ bind both bodies to production encoder and ELF symbol bytes, check endpoint
 and threshold mutations, and refuse truncated/trailing bytes, altered returns,
 64-bit comparisons and shifted subtraction outside the proved subset.
 
+`Oak.LRATNativeRefinement` provides caller-facing contracts for ARM64 and both
+RV64 encodings. The returned register equals the extracted production guard's
+Boolean result encoded as zero or one, for every fuel and arbitrary upper
+input bits. Acceptance is equivalent in both directions, so rejection is
+preserved too. Native acceptance transfers the existing exact endpoint,
+interior-index, and positive, non-wrapping allocation arithmetic guarantees.
+The required native test builds and audits all eighteen refinement theorems.
+These contracts do not yet establish compiled call-site argument placement,
+linkage, memory operations, allocation success, or whole-checker soundness.
+
+`Oak.LRATRV64GuardCalls` composes decoded AUIPC/JALR calls with both RV64
+guard encodings. Calls preserve the incoming argument registers, return the
+extracted guard's Boolean result, and return to the call continuation (with
+JALR's low-bit clearing). The native test links the production preflight
+prefix and checks all five guard calls in its header/record functions for
+each encoding: instruction shape, link register, target address, and exact
+destination body bytes. Argument-producing loads, caller control flow and
+memory/fetch/trap semantics remain separate obligations.
+
+`Oak.LRATARM64GuardCalls` supplies the corresponding ordinary BL composition:
+argument registers retain their low-word inputs, X30 receives PC+4, the guard
+returns the extracted Boolean result to that continuation, and SP is
+preserved. The required test binds all five ARM64 preflight guard calls to
+linked instruction words, target addresses, and exact guard body bytes. B,
+BR and BLR are refused by this direct-call decoder. Both ISA tests share the
+same production-prefix extraction and ELF symbol reader. This is a no-fault
+scalar call-transfer contract; argument-producing loads, whole-caller control
+flow, and full architectural execution remain open. No additional native
+axiom allowances are introduced.
+
+The native guard axiom audit now parses complete multiline reports. Lean's
+`bv_decide` in the pinned toolchain checks LRAT certificates through native
+evaluation; its generated axioms are explicitly enumerated alongside the
+three standard Lean axioms. This trusts Lean's native evaluation/compiler
+path and is not kernel-only certificate reduction. Previously the audit
+missed wrapped entries; regression tests now reject hidden `sorryAx`, unknown
+native dependencies, and truncated reports. No wildcard native-axiom allowance
+is used.
+
 Both ARM64 and RV64 guard byte execution are now covered in their internal
 models. Instruction fetch, alignment, translation, traps, the full Sail
 execution bridge, and whole-checker machine soundness remain open. No runtime
@@ -1388,4 +1427,3 @@ In order of payoff, each reusing a surface that exists:
   and stated for TLC through the TLA+ module (`112-protocols.md` §4).
   Next: the every-line reading inside the compiler, and liveness over
   infinite data domains through Lean.
-

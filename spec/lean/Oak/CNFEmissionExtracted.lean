@@ -39,6 +39,16 @@ def OP_AND : UInt32 := (0 : UInt32)
 
 def OP_OR : UInt32 := (1 : UInt32)
 
+def HEADER_WORDS : UInt32 := (8 : UInt32)
+
+def LEAF_WORDS : UInt32 := (65 : UInt32)
+
+def TERM_WORDS : UInt32 := (8 : UInt32)
+
+def SELECT_SLOT_WORDS : UInt32 := (194 : UInt32)
+
+def FRAME_WORDS : UInt32 := (16 : UInt32)
+
 def STATE_COUNT : UInt32 := (0 : UInt32)
 
 def STATE_EXCEEDED : UInt32 := (1 : UInt32)
@@ -51,7 +61,47 @@ def STATE_CREATED : UInt32 := (6 : UInt32)
 
 def CNF_ITE_KEY : UInt32 := (2147483648 : UInt32)
 
+def CNF_CLAUSE : UInt32 := (0 : UInt32)
+
+def CNF_PROVEN : UInt32 := (1 : UInt32)
+
+def CNF_REFUTED : UInt32 := (2 : UInt32)
+
 def LRAT_HEADER_WORDS : UInt32 := (8 : UInt32)
+
+def next_pow2.loop1 (n : UInt32) (p : UInt32) : Nat → Option (UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if (decide (p < n)) then do
+      let p := (p * (2 : UInt32))
+      next_pow2.loop1 n p fuel
+    else pure p
+
+def next_pow2 (n : UInt32) (fuel : Nat) : Option (UInt32) := do
+  let p : UInt32 := (1 : UInt32)
+  let p ← next_pow2.loop1 n p fuel
+  pure p
+
+def layout_for (cap : UInt32) (terms : UInt32) (fuel : Nat) : Option (Layout) := do
+  let r1 ← next_pow2 (cap * (2 : UInt32)) fuel
+  let ucap : UInt32 := r1
+  let ccap : UInt32 := ucap
+  let scap : UInt32 := (if (decide (cap < (32768 : UInt32))) then (if (cap == (0 : UInt32)) then (1 : UInt32) else cap) else (32768 : UInt32))
+  let var_at : UInt32 := (0 : UInt32)
+  let low_at : UInt32 := cap
+  let high_at : UInt32 := (cap * (2 : UInt32))
+  let unique_at : UInt32 := (cap * (3 : UInt32))
+  let cache_at : UInt32 := (unique_at + ucap)
+  let stack_at : UInt32 := (cache_at + (ccap * (4 : UInt32)))
+  let bits_at : UInt32 := (stack_at + (scap * FRAME_WORDS))
+  let selects_at : UInt32 := (bits_at + (terms * (64 : UInt32)))
+  let state_at : UInt32 := (selects_at + ((16 : UInt32) * SELECT_SLOT_WORDS))
+  pure ({ cap := cap, var_at := var_at, low_at := low_at, high_at := high_at, unique_at := unique_at, umask := (ucap - (1 : UInt32)), cache_at := cache_at, cmask := (ccap - (1 : UInt32)), stack_at := stack_at, stack_cap := scap, bits_at := bits_at, selects_at := selects_at, select_cap := (16 : UInt32), state_at := state_at, clauses_at := (state_at + (16 : UInt32)), clauses_cap := (0 : UInt32), total := (state_at + (16 : UInt32)) } : Layout)
+
+def layout_for_clauses (cap : UInt32) (terms : UInt32) (clause_words : UInt32) (fuel : Nat) : Option (Layout) := do
+  let r1 ← layout_for cap terms fuel
+  let base : Layout := r1
+  pure ({ cap := base.cap, var_at := base.var_at, low_at := base.low_at, high_at := base.high_at, unique_at := base.unique_at, umask := base.umask, cache_at := base.cache_at, cmask := base.cmask, stack_at := base.stack_at, stack_cap := base.stack_cap, bits_at := base.bits_at, selects_at := base.selects_at, select_cap := base.select_cap, state_at := base.state_at, clauses_at := base.total, clauses_cap := clause_words, total := (base.total + clause_words) } : Layout)
 
 def lrat_fits (at_ : UInt32) (count : UInt32) (limit : UInt32) (fuel : Nat) : Option (Bool) := do
   pure ((decide (at_ <= limit)) && (decide (count <= (limit - at_))))
@@ -263,5 +313,90 @@ def cnf_ite (l : Layout) (mem : Array UInt32) (c : UInt32) (t : UInt32) (e : UIn
           pure (r3, mem)))
       pure (r2, mem)))
   pure (r1, mem)
+
+def cnf_obligation_finish (l : Layout) (mem : Array UInt32) (at_ : UInt32) (used : UInt32) (n : UInt32) (always : Bool) (fits : Bool) (fuel : Nat) : Option (UInt32 × Array UInt32) := do
+  let (r1, mem) ← (
+    if fits then (do
+      let (r2, mem) ← (
+        if always then (do
+          pure (CNF_REFUTED, mem))
+        else (do
+          let (r3, mem) ← (
+            if (n == (0 : UInt32)) then (do
+              pure (CNF_PROVEN, mem))
+            else (do
+              let mem := mem.setIfInBounds at_.toNat n
+              let mem := mem.setIfInBounds (l.state_at + STATE_CLAUSES_USED).toNat ((used + n) + (1 : UInt32))
+              let mem := mem.setIfInBounds (l.state_at + STATE_CLAUSE_COUNT).toNat ((mem.getD (l.state_at + STATE_CLAUSE_COUNT).toNat (0 : UInt32)) + (1 : UInt32))
+              pure (CNF_CLAUSE, mem)))
+          pure (r3, mem)))
+      pure (r2, mem))
+    else (do
+      let mem := mem.setIfInBounds (l.state_at + STATE_EXCEEDED).toNat (1 : UInt32)
+      pure (NONE, mem)))
+  pure (r1, mem)
+
+def cnf_obligation_fits (used : UInt32) (roots : UInt32) (capacity : UInt32) (fuel : Nat) : Option (Bool) := do
+  let r1 ← lrat_fits LRAT_HEADER_WORDS used capacity fuel
+  let r2 ← lrat_fits (LRAT_HEADER_WORDS + used) (1 : UInt32) capacity fuel
+  let r3 ← lrat_fits ((LRAT_HEADER_WORDS + used) + (1 : UInt32)) roots capacity fuel
+  pure ((r1 && r2) && r3)
+
+def problem_roots (p : Array UInt32) (fuel : Nat) : Option (UInt32) := do
+  pure (p.getD (2 : UInt32).toNat (0 : UInt32))
+
+def problem_terms (p : Array UInt32) (fuel : Nat) : Option (UInt32) := do
+  pure (p.getD (0 : UInt32).toNat (0 : UInt32))
+
+def problem_leaves (p : Array UInt32) (fuel : Nat) : Option (UInt32) := do
+  pure (p.getD (1 : UInt32).toNat (0 : UInt32))
+
+def terms_at (p : Array UInt32) (fuel : Nat) : Option (UInt32) := do
+  let r1 ← problem_leaves p fuel
+  pure (HEADER_WORDS + (r1 * LEAF_WORDS))
+
+def roots_at (p : Array UInt32) (fuel : Nat) : Option (UInt32) := do
+  let r1 ← terms_at p fuel
+  let r2 ← problem_terms p fuel
+  pure (r1 + (r2 * TERM_WORDS))
+
+def cnf_obligation.loop1 (l : Layout) (mem : Array UInt32) (p : Array UInt32) (roots : UInt32) (at_ : UInt32) (n : UInt32) (always : Bool) (fits : Bool) (r : UInt32) : Nat → Option (Array UInt32 × UInt32 × Bool × UInt32)
+  | 0 => none
+  | fuel + 1 => do
+    if ((decide (r < roots)) && fits) then do
+      let r3 ← roots_at p fuel
+      let root : UInt32 := (p.getD (r3 + r).toNat (0 : UInt32))
+      let bit : UInt32 := (mem.getD (l.bits_at + (root * (64 : UInt32))).toNat (0 : UInt32))
+      let claim : Bool := ((r + (1 : UInt32)) == roots)
+      let lit : UInt32 := (if claim then (bit ^^^ (1 : UInt32)) else bit)
+      let (mem, n, always) ← (if (lit == BDD_TRUE) then (do
+          let always := true
+          pure (mem, n, always))
+        else (do
+          let (mem, n) ← (if (lit == BDD_FALSE) then (do
+              pure (mem, n))
+            else (do
+              let r4 ← cnf_lit lit fuel
+              let mem := mem.setIfInBounds ((at_ + (1 : UInt32)) + n).toNat r4
+              let n := (n + (1 : UInt32))
+              pure (mem, n)))
+          pure (mem, n, always)))
+      let r := (r + (1 : UInt32))
+      cnf_obligation.loop1 l mem p roots at_ n always fits r fuel
+    else pure (mem, n, always, r)
+
+def cnf_obligation (l : Layout) (mem : Array UInt32) (p : Array UInt32) (fuel : Nat) : Option (UInt32 × Array UInt32) := do
+  let r1 ← problem_roots p fuel
+  let roots : UInt32 := r1
+  let used : UInt32 := (mem.getD (l.state_at + STATE_CLAUSES_USED).toNat (0 : UInt32))
+  let at_ : UInt32 := ((l.clauses_at + LRAT_HEADER_WORDS) + used)
+  let n : UInt32 := (0 : UInt32)
+  let always : Bool := false
+  let r2 ← cnf_obligation_fits used roots l.clauses_cap fuel
+  let fits : Bool := r2
+  let r : UInt32 := (0 : UInt32)
+  let (mem, n, always, r) ← cnf_obligation.loop1 l mem p roots at_ n always fits r fuel
+  let (r5, mem) ← cnf_obligation_finish l mem at_ used n always fits fuel
+  pure (r5, mem)
 
 end Oak.CNFEmission

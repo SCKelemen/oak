@@ -89,3 +89,26 @@ func TestParseDelimitedRejectsWrongOpeningToken(t *testing.T) {
 		t.Fatal("expected diagnostic for wrong opening token")
 	}
 }
+
+func TestParseDelimitedRequiresDiagnosticOnItemFailure(t *testing.T) {
+	for _, ownDiagnostic := range []bool{false, true} {
+		p := New(scanner.New("[bad]"))
+		items, ok := p.parseDelimited(token.LBRACK, token.RBRACK, token.COMMA, false, func() (string, bool) {
+			if ownDiagnostic {
+				p.addErrorAtCurrentToken("invalid test item")
+			}
+			return "", false
+		})
+		if ok || items != nil {
+			t.Fatalf("failed item became a successful sequence: %v, %v", items, ok)
+		}
+		want := "expected list item"
+		if ownDiagnostic {
+			want = "invalid test item"
+		}
+		errors := p.Diagnostics()
+		if len(errors) != 1 || errors[0].Message != want || errors[0].Range.Start.Line != 0 || errors[0].Range.Start.Character != 1 {
+			t.Fatalf("failed item diagnostic = %v, want %q at (0,1)", errors, want)
+		}
+	}
+}

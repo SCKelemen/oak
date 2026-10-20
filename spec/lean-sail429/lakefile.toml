@@ -1,5 +1,5 @@
 name = "oak-sail-fetch-429"
-defaultTargets = ["OakSailFetchedFrame", "OakSailSteppedFrame", "OakSailSteppedChecks", "OakSailClockedSource", "OakSailClockChecks", "OakSailImageLoad", "OakSailImageSource", "OakSailImageChecks", "OakSailEntryInstructions", "OakSailEntrySource", "OakSailEntryChecks", "OakSailBoundedAppend", "OakSailExitInstructions", "OakSailExitSource", "OakSailExitChecks"]
+defaultTargets = ["OakSailFetchedFrame", "OakSailSteppedFrame", "OakSailSteppedChecks", "OakSailClockedSource", "OakSailClockChecks", "OakSailImageLoad", "OakSailImageSource", "OakSailImageChecks", "OakSailEntryInstructions", "OakSailEntrySource", "OakSailEntryChecks", "OakSailBoundedAppend", "OakSailExitInstructions", "OakSailExitSource", "OakSailExitChecks", "OakSailStrictImageEntry", "OakSailStrictImageEntryExecution", "OakSailStrictImageEntryChecks"]
 
 # Compile the existing tracked source files directly into this project's cache.
 # No source copy or cross-version proof-object import is used.
@@ -92,3 +92,12 @@ name = "OakSailExitChecks"
 
 [[lean_lib]]
 name = "OakSailBoundedAppend"
+
+[[lean_lib]]
+name = "OakSailStrictImageEntry"
+
+[[lean_lib]]
+name = "OakSailStrictImageEntryExecution"
+
+[[lean_lib]]
+name = "OakSailStrictImageEntryChecks"
