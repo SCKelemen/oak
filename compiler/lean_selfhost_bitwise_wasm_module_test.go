@@ -92,7 +92,8 @@ func TestLeanWasmBitwiseModuleFaithful(t *testing.T) {
 			t.Fatalf("lake %v: %v\n%s", args, err, out)
 		}
 	}
-	run("build", "Oak.WasmBitwiseModuleExtracted", "Oak.WasmBitwiseModuleGuards", "Oak.WasmBitwiseModuleValidation", "Oak.BitwiseModule")
+	run("build", "Oak.WasmBitwiseModuleExtracted", "Oak.WasmBitwiseModuleGuards", "Oak.WasmBitwiseModuleValidation", "Oak.WasmBitwiseModuleCopy", "Oak.BitwiseModule")
+	run("env", "lean", "-j1", "-M2048", "WasmBitwiseModuleCopyControls.lean")
 	const preamble = "import Oak.WasmBitwiseModuleExtracted\nimport Oak.BitwiseModule\nopen Oak.WasmAssembler\nset_option maxRecDepth 65536\nset_option maxHeartbeats 4000000\n"
 	var claims []string
 	for _, name := range []string{"bitwise", "Mix9", "Z", strings.Repeat("A", 123), strings.Repeat("B", 124), strings.Repeat("C", 127), strings.Repeat("D", 128), strings.Repeat("E", 256)} {
