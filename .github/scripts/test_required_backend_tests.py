@@ -115,9 +115,9 @@ class RequiredBackendTests(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(required.main(["llvm"]), 1)
 
-    def test_image_runtime_only_uses_race_for_inventory_and_execution(self):
-        self.assertTrue(required.SUITES["checked-image-runtime"].race)
-        self.assertFalse(any(s.race for n,s in required.SUITES.items() if n != "checked-image-runtime"))
+    def test_equipped_race_suites_use_race_for_inventory_and_execution(self):
+        self.assertEqual({n for n, s in required.SUITES.items() if s.race},
+                         {"checked-image-runtime", "selfhost-image-producers", "selfhost-image-admission"})
         suite = required.Suite("./compiler", "10m", ("TestRequired",), race=True)
         with patch.object(required.subprocess, "check_output", return_value="TestRequired\n") as call:
             required.check_inventory(suite)
@@ -138,7 +138,7 @@ class RequiredBackendTests(unittest.TestCase):
             results.accept({"Action": "run", "Package": suite.import_path, "Test": "TestRequired/Unexpected"})
 
     def test_image_suites_require_every_named_check(self):
-        for key in ("checked-image-sources", "checked-image-runtime", "checked-image-bundle"):
+        for key in ("checked-image-sources", "checked-image-runtime", "checked-image-bundle", "selfhost-image-producers", "selfhost-image-admission"):
             suite = required.SUITES[key]
             self.assertTrue(suite.exact_children)
             for omitted in suite.tests:
@@ -182,6 +182,8 @@ class RequiredBackendTests(unittest.TestCase):
 
     def test_audited_suite_manifest(self):
         expected_roots = {
+            'selfhost-image-producers': {'TestE2ESelfHostedBitwiseELF', 'TestE2ESelfHostedBitwiseELFExtract', 'TestE2ESelfHostedWasmBitwiseModule', 'TestE2ESelfHostedWasmBitwiseModuleRefusal', 'TestLeanWasmBitwiseModuleExtract', 'TestLeanWasmBitwiseModuleFaithful', 'TestE2ESelfHostedBitwiseImageBytes'},
+            'selfhost-image-admission': {'TestSelfHostedBitwiseImageBundleReal'},
             'checked-image-sources': {'TestEmbeddedClosureCustody', 'TestImageEmbeddedClosureCustody'},
             'checked-image-runtime': {'TestImageClosedInstallationProfile', 'TestImagePinnedRuntime', 'TestProcessRefusal', 'TestExtractionBoundaries', 'TestInstallRefusesUntrustedArchive', 'TestArchiveDigestMismatch', 'TestImageProtocolFieldLimits', 'TestImageMaximumProtocolSize', 'TestArchiveFIFORefusesWithoutBlocking', 'TestImageZeroAuthority', 'TestImageSnapshotAndRenderer', 'TestImageStrictProtocol'},
             'checked-image-bundle': {'TestEmitKernelCheckedBitwiseImageBundleReal', 'TestEmitKernelCheckedBitwiseImageBundleRefusesInvalidInstallation', 'TestCheckedImageProposedSymbolBoundaries', 'TestCheckedImageProposalOwnsCopyWithoutClaimingBodyAuthority', 'TestCheckedImageProposalProduction', 'TestCheckedImageProposalRefusesMalformedObjects', 'TestEmitKernelCheckedBitwiseImageBundleRefusesCanceledContext', 'TestKernelCheckedBitwiseImageBundleDoesNotPromoteLegacyAuthority'},
@@ -253,6 +255,46 @@ class RequiredBackendTests(unittest.TestCase):
         self.assertTrue({"CopyCustody", "RenamedParametersFreshAdmission", "Canceled", "Closed",
                          "source_operation", "source_name", "wasm_trailing", "arm_body", "rv_abi"} <= children)
 
+    def test_raw_producer_gates_are_exact_and_fail_closed(self):
+        producers = required.SUITES["selfhost-image-producers"]
+        admissions = required.SUITES["selfhost-image-admission"]
+        self.assertEqual(len(producers.tests), 215)
+        self.assertEqual(len(admissions.tests), 35)
+        self.assertEqual(sum(n.startswith("TestE2ESelfHostedBitwiseELF/") for n in producers.tests), 145)
+        self.assertEqual(sum(n.startswith("TestE2ESelfHostedWasmBitwiseModule/") for n in producers.tests), 24)
+        self.assertEqual(sum(n.startswith("TestE2ESelfHostedWasmBitwiseModuleRefusal/") for n in producers.tests), 33)
+        self.assertEqual(sum(n.startswith("TestSelfHostedBitwiseImageBundleReal/Refusals/") for n in admissions.tests), 26)
+        self.assertTrue({"TestLeanWasmBitwiseModuleExtract", "TestLeanWasmBitwiseModuleFaithful"} <= set(producers.tests))
+        matrix = {"TestSelfHostedBitwiseImageBundleReal/Canonical/" + family + "/" + op
+                  for family in ("bitwise", "Mix9") for op in ("and", "or", "xor")}
+        self.assertEqual({n for n in admissions.tests if "/Canonical/" in n}, matrix)
+        for suite in (producers, admissions):
+            self.assertTrue(suite.exact_children)
+            self.assertTrue(suite.race)
+            for skipped in suite.tests:
+                results = required.RequiredResults(suite)
+                for name in suite.tests:
+                    results.accept({"Action": "run", "Package": suite.import_path, "Test": name})
+                    results.accept({"Action": "skip" if name == skipped else "pass",
+                                    "Package": suite.import_path, "Test": name})
+                results.accept({"Action": "pass", "Package": suite.import_path})
+                with self.subTest(skipped=skipped), self.assertRaisesRegex(ValueError, "skip"):
+                    results.finish(0)
+            with patch.object(required.subprocess, "check_output", return_value="ok package [no tests to run]\n"):
+                with self.assertRaises(ValueError):
+                    required.check_inventory(suite)
+        root = Path(__file__).resolve().parents[2]
+        for name in ("e2e_selfhost_bitwise_wasm_module_test.go", "lean_selfhost_bitwise_wasm_module_test.go"):
+            self.assertTrue((root / "compiler" / name).is_file())
+            self.assertFalse(name.endswith("_wasm_test.go"))
+        job = (root / ".github/workflows/checked-image-bundle.yml").read_text().split("  selfhost-complete-images:\n", 1)[1]
+        for flag in ("OAK_REQUIRE_SELFHOST_IMAGE_PRODUCERS", "OAK_REQUIRE_WASM_LEAN", "OAK_REQUIRE_BITWISE_IMAGECHECK"):
+            self.assertIn(flag + ": '1'", job)
+        self.assertNotIn("continue-on-error:", job)
+        self.assertIn("command -v cc", job)
+        self.assertIn("sha256sum --check --strict", job)
+        self.assertIn("lean-4.33.1-linux/bin", job)
+
     def test_native_image_gates_run_in_complete_isolated_matrix(self):
         source = (Path(__file__).resolve().parents[1] / "workflows" / "formal.yml").read_text()
         job = source.split("  native-bitwise-images:\n", 1)[1].split("  lean:\n", 1)[0]
@@ -278,7 +320,7 @@ class RequiredBackendTests(unittest.TestCase):
     def test_workflows_select_every_suite_in_equipped_lane(self):
         root = Path(__file__).resolve().parents[1]
         lanes = {
-            "checked-image-bundle.yml": ("checked-image-sources", "checked-image-runtime", "checked-image-bundle"),
+            "checked-image-bundle.yml": ("checked-image-sources", "checked-image-runtime", "checked-image-bundle", "selfhost-image-producers", "selfhost-image-admission"),
             "ci.yml": ("cross-compiler", "cross-testrunner"),
             "formal.yml": ("lean-compiler", "lean-cli", "native-object", "native-image"),
             "formal-sail.yml": ("sail-source", "llvm"),
