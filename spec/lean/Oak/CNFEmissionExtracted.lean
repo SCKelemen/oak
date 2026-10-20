@@ -103,6 +103,21 @@ def layout_for_clauses (cap : UInt32) (terms : UInt32) (clause_words : UInt32) (
   let base : Layout := r1
   pure ({ cap := base.cap, var_at := base.var_at, low_at := base.low_at, high_at := base.high_at, unique_at := base.unique_at, umask := base.umask, cache_at := base.cache_at, cmask := base.cmask, stack_at := base.stack_at, stack_cap := base.stack_cap, bits_at := base.bits_at, selects_at := base.selects_at, select_cap := base.select_cap, state_at := base.state_at, clauses_at := base.total, clauses_cap := clause_words, total := (base.total + clause_words) } : Layout)
 
+def cnf_allocation_words (cap : UInt32) (terms : UInt32) (ucap : UInt32) (fuel : Nat) : Option (UInt64) := do
+  let stack : UInt32 := (if (decide (cap < (32768 : UInt32))) then (if (cap == (0 : UInt32)) then (1 : UInt32) else cap) else (32768 : UInt32))
+  pure ((((((((cap.toUInt64) * (3 : UInt64)) + ((ucap.toUInt64) * (5 : UInt64))) + ((stack.toUInt64) * (16 : UInt64))) + (((terms.toUInt64) + (1 : UInt64)) * (64 : UInt64))) + (3120 : UInt64)) + ((terms.toUInt64) * (6144 : UInt64))) + (65536 : UInt64))
+
+def cnf_allocation_fits (cap : UInt32) (terms : UInt32) (fuel : Nat) : Option (Bool) := do
+  let r1 ← (
+    if (decide (cap > (1073741824 : UInt32))) then (do
+      pure false)
+    else (do
+      let r2 ← next_pow2 (cap * (2 : UInt32)) fuel
+      let ucap : UInt32 := r2
+      let r3 ← cnf_allocation_words cap terms ucap fuel
+      pure (decide (r3 <= (1073741823 : UInt64)))))
+  pure r1
+
 def lrat_fits (at_ : UInt32) (count : UInt32) (limit : UInt32) (fuel : Nat) : Option (Bool) := do
   pure ((decide (at_ <= limit)) && (decide (count <= (limit - at_))))
 
