@@ -169,7 +169,9 @@ import Oak.LRATARM64Bytes
 import Oak.LRATNativeRefinement
 import Oak.LRATRV64GuardCalls
 import Oak.LRATARM64GuardCalls
+import Oak.LRATARM64RecordLoads
 import Oak.LRATARM64HeaderLoads
+import Oak.LRATRV64HeaderLoads
 set_option pp.fullNames true
 open Oak.LRATNativeGuards
 example (a c l : UInt32) (fuel : Nat) :
@@ -204,7 +206,7 @@ example (a c l : BitVec 64) (h : rvFits a c l = true) :
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	for _, args := range [][]string{{"build", "Oak.LRATNativeGuards", "Oak.LRATRV64Bytes", "Oak.LRATRV64Compressed", "Oak.LRATARM64Bytes", "Oak.LRATNativeRefinement", "Oak.LRATRV64GuardCalls", "Oak.LRATARM64GuardCalls", "Oak.LRATARM64HeaderLoads"}, {"env", "lean", path}} {
+	for _, args := range [][]string{{"build", "Oak.LRATNativeGuards", "Oak.LRATRV64Bytes", "Oak.LRATRV64Compressed", "Oak.LRATARM64Bytes", "Oak.LRATNativeRefinement", "Oak.LRATRV64GuardCalls", "Oak.LRATARM64GuardCalls", "Oak.LRATARM64RecordLoads", "Oak.LRATARM64HeaderLoads", "Oak.LRATRV64HeaderLoads"}, {"env", "lean", path}} {
 		cmd := exec.CommandContext(ctx, lake, args...)
 		cmd.Dir = filepath.Join("spec", "lean")
 		out, err := cmd.CombinedOutput()

@@ -520,8 +520,33 @@ and call, pin the observed index constants 1/5/6, and exercise byte order,
 high-bit rejection, malformed load fields and wrapping addresses. These are
 conditional load/call proofs: establishing the memory representation, base and
 index through earlier instructions, branch decisions, permissions and faults
-remains open. The fits-guard argument loads and RV64 argument loads are not
-covered by this increment. No axiom allowlist additions are required.
+remains open. No axiom allowlist additions are required.
+
+`Oak.LRATRV64HeaderLoads` covers the corresponding three RV64 allocation
+argument loads for both guard encodings. It decodes the emitted zero-offset
+LW into a0, performs its 32-to-64-bit sign extension, and decodes the following
+ADDI s2,t0,0 through the existing ISA model. The composed guard computes the
+extracted predicate of the supplied header element and returns sixteen bytes
+past the load (with JALR low-bit clearing). `Oak.LRATHeaderMemory` now holds
+the shared little-endian representation used by both architectures. Linked
+ELF checks pin the adjacent LW, move, and call pair; tests cover sign extension,
+byte order, wrong width/displacement/destination and wrapping addresses. The
+source element's computed address, header representation and bounds are
+explicit premises: earlier address formation and branches are still unproved.
+No axiom allowlist additions are required.
+
+`Oak.LRATARM64RecordLoads` covers the record caller's fits argument
+sequence: LDR W1 from the represented record, MOV W0,#8, MOV W2,W20,
+then BL and the pinned guard. Under explicit live-base, index=3, length,
+in-range access and non-wrapping extent premises, it returns exactly the
+extracted `lrat_fits(8,record[3],len(record))` Boolean, preserves SP, and
+returns sixteen bytes past the load. Linked ELF tests pin all three argument
+instructions and instantiate the refinement with the actual call word.
+Boundary cases cover exact fit, excess count, short length and high-bit
+counts; mutations of the load fields and both moves, plus address wrapping,
+are rejected. Earlier index/length setup and branch decisions remain open,
+as do the ARM64 header fits arguments and RV64 fits arguments. This uses
+the same no-fault scalar projection and adds no axiom allowances.
 
 The native guard axiom audit now parses complete multiline reports. Lean's
 `bv_decide` in the pinned toolchain checks LRAT certificates through native
