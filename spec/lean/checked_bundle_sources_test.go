@@ -8,8 +8,11 @@ import (
 
 func TestEmbeddedClosureCustody(t *testing.T) {
 	before := Identity()
+	if before != expectedObjectIdentity {
+		t.Fatal("frozen object proof identity changed")
+	}
 	sources := Sources()
-	if len(sources) != 41 {
+	if len(sources) != 42 {
 		t.Fatalf("unexpected closure size: %d", len(sources))
 	}
 	known := map[string]bool{}
@@ -33,6 +36,7 @@ func TestEmbeddedClosureCustody(t *testing.T) {
 			}
 		}
 	}
+	checkClosureCustodyControls(t, sources, "oak.checked-bundle.proof-sources.v1\x00", expectedObjectIdentity)
 	original := append([]byte(nil), sources[0].Bytes...)
 	sources[0].Bytes[0] ^= 1
 	sources[0].Path = "attacker.lean"

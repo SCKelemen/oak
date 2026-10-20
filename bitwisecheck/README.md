@@ -35,7 +35,7 @@ symlink ancestors, hard links, duplicates and ownership/setuid restoration are
 refused. There is no caller-provided expected hash, runtime, runner, manifest,
 proof root, import path, plugin or options API.
 
-The authoritative 41-file Lean proof/auditor closure is embedded directly from
+The authoritative 42-file Lean proof/auditor closure is embedded directly from
 `spec/lean` and freshly compiled using the extracted runtime, absolute executable
 paths and a controlled environment. Caller `.olean` files, `.lake`, `LEAN_PATH`,
 `LEAN_SYSROOT`, `PATH` hooks and loader environment variables are not imported.
