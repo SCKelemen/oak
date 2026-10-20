@@ -216,6 +216,46 @@ decoding and byte correctness still do not imply module validity.
 for accepted straight-line sequences, including their assembled bytes; full
 control-polymorphic module validation remains open.
 
+## Complete bitwise module name validation
+
+`asm/selfhost/bitwise_wasm.oak` is a separate complete one-function module
+writer for the strict bitwise image profile. `TestLeanWasmBitwiseModuleExtract`
+mechanically extracts it with the existing assembler, requires the old helper
+extraction to be an exact byte-for-byte prefix, reconstructs the combined
+extraction before import factoring, and checks committed-source drift. The
+source compiler/extractor trust boundary above is unchanged.
+
+`Oak.WasmBitwiseModuleValidation` adds universal name-validation laws over those
+actual extracted definitions:
+
+- `bitwise_name_scan_index` proves that a true loop guard addresses the name
+  array and that the u32 increment cannot wrap.
+- `bitwise_name_scan_exact` validates any remaining suffix from any initial
+  Boolean flag. With a representable name length and at least the remaining
+  byte count plus one fuel, it returns the exact non-NUL ASCII predicate and
+  the represented final length. It requires no returning-run premise.
+- `bitwise_name_validation_exact` specializes that result to the whole name;
+  `bitwise_name_all_iff` identifies the byte domain as `b != 0` and `b < 128`.
+- `bitwise_module_invalid_name` and `bitwise_module_invalid_name_at` prove that
+  any malformed name byte, including a late in-bounds byte, makes the complete
+  writer return zero and the entire original destination. Operation tags and
+  destination contents are arbitrary; earlier operation/length refusals are
+  included. The fuel bound is `name.size + 1`, with `name.size < 2^32` explicit.
+  This path never reads or writes the destination, so it needs no destination
+  capacity or representability premise.
+
+The loop induction proves real source-index bounds; no out-of-bounds `getD`
+default supplies a malformed byte. This scan performs no shifts. Arrays still
+model disjoint spans. The domain is the writer's export-name proposal domain,
+not the source language's identifier grammar. The existing faithful-module
+gate builds this proof module alongside the extraction. Its finite complete
+module examples remain separate evidence from these universal laws.
+
+Successful module layout, arithmetic and write-index safety, success/failure
+composition with the LEB and instruction helpers, complete byte refinement,
+success framing and full module-writer totality remain open. These validation
+laws do not establish source compilation, module admission, or runtime behavior.
+
 ## Remaining parity obligations
 
 | Boundary | Required next work |
