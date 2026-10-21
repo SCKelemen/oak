@@ -347,6 +347,8 @@ race_views: (l: Layout, m0: [*]u32, w0: []u32, n0: u32, m1: [*]u32, w1: []u32, n
 }
 
 // race_in_oak owns the tables and built buffers around race_views.
+// Admit every table before creating owners; release successful allocations
+// even when another table failed, and discard any previous verdict/witness.
 race_in_oak: (l: Layout, lw: Lower, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, n0: u32, n1: u32, n2: u32, variants: u32, out: [*]u32): () {
   words0: u32 = l.total + (variants > u32(1) ? { REPLAY_WORDS } | { u32(0) })
   words1: u32 = variants > u32(1) ? { (l.total + REPLAY_WORDS) } | { u32(1) }
@@ -354,21 +356,31 @@ race_in_oak: (l: Layout, lw: Lower, b0: c.Ptr, b1: c.Ptr, b2: c.Ptr, n0: u32, n1
   t0: c.Ptr = malloc(c.Size(words0 * u32(4)))
   t1: c.Ptr = malloc(c.Size(words1 * u32(4)))
   t2: c.Ptr = malloc(c.Size(words2 * u32(4)))
-  unsafe {
-    tab0: Buffer[u32] = c.own[u32](t0, words0)
-    tab1: Buffer[u32] = c.own[u32](t1, words1)
-    tab2: Buffer[u32] = c.own[u32](t2, words2)
-    built0: Buffer[u32] = c.own[u32](b0, lw.built_total)
-    built1: Buffer[u32] = c.own[u32](b1, lw.built_total)
-    built2: Buffer[u32] = c.own[u32](b2, lw.built_total)
-    race_views(l, span(&tab0), view(&built0), n0, span(&tab1), view(&built1), n1, span(&tab2), view(&built2), n2, variants, out)
-    free(c.disown(tab0))
-    free(c.disown(tab1))
-    free(c.disown(tab2))
-    r3: c.Ptr = c.disown(built0)
-    r4: c.Ptr = c.disown(built1)
-    r5: c.Ptr = c.disown(built2)
+  t0 != c.null() && t1 != c.null() && t2 != c.null() ? {
+    unsafe {
+      tab0: Buffer[u32] = c.own[u32](t0, words0)
+      tab1: Buffer[u32] = c.own[u32](t1, words1)
+      tab2: Buffer[u32] = c.own[u32](t2, words2)
+      built0: Buffer[u32] = c.own[u32](b0, lw.built_total)
+      built1: Buffer[u32] = c.own[u32](b1, lw.built_total)
+      built2: Buffer[u32] = c.own[u32](b2, lw.built_total)
+      race_views(l, span(&tab0), view(&built0), n0, span(&tab1), view(&built1), n1, span(&tab2), view(&built2), n2, variants, out)
+      r0: c.Ptr = c.disown(tab0)
+      r1: c.Ptr = c.disown(tab1)
+      r2: c.Ptr = c.disown(tab2)
+      r3: c.Ptr = c.disown(built0)
+      r4: c.Ptr = c.disown(built1)
+      r5: c.Ptr = c.disown(built2)
+    }
+  } | {
+    out[u32(0)] = STATUS_EXCEEDED
+    out[u32(1)] = u32(0)
+    out[u32(2)] = u32(0)
+    out[u32(3)] = u32(0)
   }
+  free(t2)
+  free(t1)
+  free(t0)
 }
 
 // Counts of the rows: decided, refuted, open.
