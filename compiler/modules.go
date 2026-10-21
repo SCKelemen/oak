@@ -144,7 +144,16 @@ func nativeABISuffixDiagnostics(root *ast.Program) []*diagnostic.Diagnostic {
 }
 
 // ModuleInfo is what elaboration hands the later phases.
+// PackageSource retains the bytes the package loader actually parsed, before
+// elaboration. It is identity evidence, not a source-correctness theorem.
+type PackageSource struct {
+	Package string
+	Path    string
+	Text    string
+}
+
 type ModuleInfo struct {
+	Sources []PackageSource
 	// NestedModules lists the packages declared as `module name { ... }`
 	// blocks (section 3.5), in load order. API snapshots fail closed on them
 	// until nested packages are projected separately (82-package-semver.md
@@ -2225,8 +2234,14 @@ func (l *moduleLoader) merge(order []string, root *loadedPackage) *SyntaxTree {
 	for path, pkg := range l.packages {
 		exports[path] = pkg.Exports
 	}
+	var sources []PackageSource
+	for _, path := range order {
+		for _, file := range l.packages[path].Files {
+			sources = append(sources, PackageSource{Package: path, Path: file.Path, Text: file.Text})
+		}
+	}
 	links := l.collectLinks(moduleOf)
-	info := &ModuleInfo{Links: links, Public: public, OpaqueTypes: l.opaque, Exports: exports, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, AsmUnits: l.asmUnits, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, ModuleAdmits: moduleAdmits, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady, Imports: imports}
+	info := &ModuleInfo{Sources: sources, Links: links, Public: public, OpaqueTypes: l.opaque, Exports: exports, SealedOpaque: l.sealed, Abstract: l.abstract, Obligations: l.obligations, Parameters: l.parameters, Packages: order, PreludeCore: l.preludeCore, AsmUnits: l.asmUnits, LibraryNames: libraryNames, ModuleOf: moduleOf, ModuleProfiles: moduleProfiles, ModuleAdmits: moduleAdmits, RootModule: rootModule, RootPackage: root.Path, StandardLibrary: standardLibrary, Sealed: l.sealedList, NestedModules: l.nested, NestedDeclarations: nestedDeclarations, Steady: steady, Imports: imports}
 	return &SyntaxTree{
 		Source:  SourceText{Path: root.Dir},
 		File:    root.Files[0].File,

@@ -206,8 +206,35 @@ class RequiredBackendTests(unittest.TestCase):
         self.assertIn("OAK_REQUIRE_STATEFUL_COPY_LEAN: '1'", workflow)
         self.assertNotIn('continue-on-error:', workflow)
 
+    def test_stateful_copy_optir_gate_is_fail_closed(self):
+        suite = required.SUITES['stateful-copy-optir']
+        self.assertTrue(suite.exact_children)
+        self.assertEqual(len(suite.tests), 31)
+        for omitted in suite.tests:
+            results = required.RequiredResults(suite)
+            for name in suite.tests:
+                if name != omitted:
+                    for action in ('run', 'pass'):
+                        results.accept({'Action': action, 'Package': suite.import_path, 'Test': name})
+            results.accept({'Action': 'pass', 'Package': suite.import_path})
+            with self.subTest(omitted=omitted), self.assertRaisesRegex(ValueError, omitted):
+                results.finish(0)
+        for skipped in suite.tests:
+            results = required.RequiredResults(suite)
+            for name in suite.tests:
+                results.accept({'Action': 'run', 'Package': suite.import_path, 'Test': name})
+                results.accept({'Action': 'skip' if name == skipped else 'pass',
+                                'Package': suite.import_path, 'Test': name})
+            results.accept({'Action': 'pass', 'Package': suite.import_path})
+            with self.subTest(skipped=skipped), self.assertRaisesRegex(ValueError, 'skip'):
+                results.finish(0)
+        workflow = (Path(__file__).resolve().parents[1] / 'workflows/formal.yml').read_text()
+        self.assertIn("OAK_REQUIRE_STATEFUL_COPY_OPTIR_LEAN: '1'", workflow)
+        self.assertNotIn('continue-on-error:', workflow)
+
     def test_audited_suite_manifest(self):
         expected_roots = {
+            'stateful-copy-optir': {'TestLeanStatefulCopyRawProof','TestStatefulCopyRawProjection','TestStatefulCopyRawExportIdentity','TestStatefulCopyRawAdmissionRefusals','TestStatefulCopyRawExecutionCorpus','TestStatefulCopyRawProducedMutations','TestStatefulCopyCurrentOptIRAndWasmRefusals'},
             'stateful-copy': {'TestLeanStatefulCopyProof', 'TestStatefulCopySourceClosure',
                               'TestStatefulCopyConcreteLayoutAndNativeCall',
                               'TestStatefulCopyCurrentOptIRAndWasmRefusals',
@@ -253,6 +280,11 @@ class RequiredBackendTests(unittest.TestCase):
                 self.assertIsNone(re.search(suite.pattern, root + "Other"))
                 self.assertIsNone(re.search(suite.pattern, "Other" + root))
         expected_children = {
+            'stateful-copy-optir': {
+                *('TestStatefulCopyRawExportIdentity/'+x for x in ('profile','source_bytes','source_package','source_context','callee_operation','structured_alone','authority_operand','authority_extent','type_declaration','call_summary')),
+                *('TestStatefulCopyRawAdmissionRefusals/'+x for x in ('global_initializer','shadowed_payload','shadowed_builtin','shadowed_local_builtin','wider_source','different_root','missing_call','different_callee')),
+                *('TestStatefulCopyRawProducedMutations/'+x for x in ('unknown_opcode','wrong_call_target','swapped_call_operands','missing_store_effect','wrong_Result_payload','store_before_load')),
+            },
             'stateful-copy': {'TestStatefulCopyConcreteLayoutAndNativeCall/arm64',
                               'TestStatefulCopyConcreteLayoutAndNativeCall/rv64'},
             "strict-entry": {"TestRV64StrictEntryBitwiseCompilerMatchesLean/" + child
@@ -355,7 +387,7 @@ class RequiredBackendTests(unittest.TestCase):
         lanes = {
             "checked-image-bundle.yml": ("checked-image-sources", "checked-image-runtime", "checked-image-bundle", "selfhost-image-producers", "selfhost-image-admission"),
             "ci.yml": ("cross-compiler", "cross-testrunner"),
-            "formal.yml": ("lean-compiler", "lean-cli", "native-object", "native-image", "stateful-copy"),
+            "formal.yml": ("lean-compiler", "lean-cli", "native-object", "native-image", "stateful-copy", "stateful-copy-optir"),
             "formal-sail.yml": ("sail-source", "llvm"),
             "checked-bitwise-bundle.yml": ("checked-bitwise-sources", "checked-bitwise-runtime", "checked-bitwise-bundle"),
         }
