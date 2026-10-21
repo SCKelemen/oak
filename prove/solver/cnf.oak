@@ -19,10 +19,12 @@ CNF_ITE_KEY: u32 = 2147483648
 CNF_VAR_KEY: u32 = 1073741824
 
 // cnf_node finds or creates the node for a key; STATE_CREATED says which.
-// Past the node budget the exceeded flag is set and NONE returned.
+// Past the node budget, an invalid table entry, or a full probe cycle,
+// the exceeded flag is set and NONE returned. A full table must not spin.
 cnf_node: (l: Layout, mem: [*]u32, key: u32, a: u32, b: u32): u32 {
   h: u32 = hash3(key, a, b) & l.umask
   found: u32 = NONE
+  remaining: u32 = l.umask
   mem[l.state_at + STATE_CREATED] = u32(0)
   while found == NONE && mem[l.state_at + STATE_EXCEEDED] == u32(0) {
     e: u32 = mem[l.unique_at + h]
@@ -39,7 +41,14 @@ cnf_node: (l: Layout, mem: [*]u32, key: u32, a: u32, b: u32): u32 {
       }
     } | {
       n: u32 = e - u32(1)
-      (mem[l.var_at + n] == key && mem[l.low_at + n] == a && mem[l.high_at + n] == b) ? { found = n } | { h = (h + u32(1)) & l.umask }
+      n >= l.cap ? { mem[l.state_at + STATE_EXCEEDED] = u32(1) } | {
+        (mem[l.var_at + n] == key && mem[l.low_at + n] == a && mem[l.high_at + n] == b) ? { found = n } | {
+          remaining == u32(0) ? { mem[l.state_at + STATE_EXCEEDED] = u32(1) } | {
+            h = (h + u32(1)) & l.umask
+            remaining = remaining - u32(1)
+          }
+        }
+      }
     }
   }
   found
@@ -242,9 +251,9 @@ cnf_header: (l: Layout, mem: [*]u32): () {
 cnf_lower: (l: Layout, mem: [*]u32, p: []u32): u32 {
   solver_init(l, mem)
   mem[l.state_at + STATE_MODE] = u32(1)
-  n: u32 = problem_terms(p)
+  supported: Bool = problem_shape_valid(l, p)
+  n: u32 = supported ? { problem_terms(p) } | { u32(0) }
   t: u32 = 0
-  supported: Bool = true
   while t < n && supported && !exceeded(l, mem) {
     supported = blast_term(l, mem, p, t)
     t = t + u32(1)

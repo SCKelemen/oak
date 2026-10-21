@@ -1084,6 +1084,53 @@ term_vhi: (p: []u32, t: u32): u32 = term_word(p, t, u32(7))
 leaf_width: (p: []u32, leaf: u32): u32 = p[HEADER_WORDS + leaf * LEAF_WORDS]
 leaf_variable: (p: []u32, leaf: u32, bit: u32): u32 = p[HEADER_WORDS + leaf * LEAF_WORDS + u32(1) + bit]
 
+// Admit the table's shape before any count-derived offset or operand read.
+// This checks storage and dependency order, not source-language semantics or
+// the independence of variable maps. The supplied view and arena layout must
+// themselves describe live storage. Extra backing words are allowed.
+problem_shape_valid: (l: Layout, p: []u32): Bool {
+  ok: Bool = false
+  len(p) >= HEADER_WORDS ? {
+    n: u32 = problem_terms(p)
+    leaves: u32 = problem_leaves(p)
+    roots: u32 = problem_roots(p)
+    words: u64 = u64(HEADER_WORDS) + u64(leaves) * u64(LEAF_WORDS) + u64(n) * u64(TERM_WORDS) + u64(roots) + u64(problem_select_slots(p)) * u64(64)
+    ok = roots > u32(0) && words <= u64(len(p)) && l.selects_at >= l.bits_at && u64(n) * u64(64) <= u64(l.selects_at - l.bits_at)
+    leaf: u32 = 0
+    while leaf < leaves && ok {
+      width: u32 = leaf_width(p, leaf)
+      ok = width > u32(0) && width <= u32(64)
+      leaf = leaf + u32(1)
+    }
+    t: u32 = 0
+    while t < n && ok {
+      kind: u32 = term_kind(p, t)
+      width: u32 = term_width(p, t)
+      op: u32 = term_op(p, t)
+      a: u32 = term_a(p, t)
+      b: u32 = term_b(p, t)
+      c: u32 = term_c(p, t)
+      ok = width > u32(0) && width <= u32(64) && kind <= KIND_QUANT
+      kind == KIND_PARAM ? { ok = ok && a < leaves } | {
+      kind == KIND_CONST ? { } | {
+      kind == KIND_BINARY ? { ok = ok && a < t && op <= BOP_CLS && (op >= BOP_REV || b < t) } | {
+      kind == KIND_CMP ? { ok = ok && a < t && b < t && op / u32(16) <= u32(2) && op % u32(16) < u32(14) } | {
+      kind == KIND_ITE ? { ok = ok && a < t && b < t && c < t } | {
+      kind == KIND_SELECT ? { ok = ok && a < t } | {
+      kind == KIND_FLOAT ? { ok = ok && a < t && op <= FOP_RV_SDIV && (fop_arity(op) < u32(2) || b < t) && (fop_arity(op) < u32(3) || c < t) } | {
+      kind == KIND_QUANT ? { ok = ok && a < t && term_vlo(p, t) < leaves && op <= u32(1) } | { }
+      } } } } } } }
+      t = t + u32(1)
+    }
+    r: u32 = 0
+    while r < roots && ok {
+      ok = p[roots_at(p) + r] < n
+      r = r + u32(1)
+    }
+  } | { }
+  ok
+}
+
 // A constant shift count reduced modulo the width (the machine's rule).
 const_count: (p: []u32, t: u32, w: u32): u32 {
   value: u64 = (u64(term_vhi(p, t)) << u64(32)) | u64(term_vlo(p, t))
@@ -1279,9 +1326,9 @@ solve_roots: (l: Layout, mem: [*]u32, p: []u32): u32 {
 // solve blasts every term and reads the roots.
 solve: (l: Layout, mem: [*]u32, p: []u32): u32 {
   solver_init(l, mem)
-  n: u32 = problem_terms(p)
+  supported: Bool = problem_shape_valid(l, p)
+  n: u32 = supported ? { problem_terms(p) } | { u32(0) }
   t: u32 = 0
-  supported: Bool = true
   while t < n && supported && !exceeded(l, mem) && !stream_cancelled {
     ignored_cancel: Bool = cancel_tick()
     supported = blast_term(l, mem, p, t)
@@ -1294,7 +1341,8 @@ solve: (l: Layout, mem: [*]u32, p: []u32): u32 {
 // none did), and its node count.
 Race: type = struct { status: u32, winner: u32, nodes: u32 }
 
-// Scheduled callers own l.total + REPLAY_WORDS words.
+// Scheduled callers own l.total + REPLAY_WORDS words and keep the same
+// immutable problem view alive from solve_begin through the final resume.
 // Begin/resume never reallocates or clears a live attempt. Only completed
 // terms advance STATE_TERM. A zero quantum leaves the attempt untouched.
 solve_begin: (l: Layout, mem: [*]u32): () {
@@ -1305,6 +1353,12 @@ solve_begin: (l: Layout, mem: [*]u32): () {
 
 solve_resume: (l: Layout, mem: [*]u32, p: []u32, quantum: u32): u32 {
   status: u32 = mem[l.state_at + STATE_STATUS]
+  (status == STATUS_RUNNING && quantum > u32(0) && mem[l.state_at + STATE_TERM] == u32(0)) ? {
+    !problem_shape_valid(l, p) ? {
+      status = STATUS_UNSUPPORTED
+      mem[l.state_at + STATE_STATUS] = status
+    } | { }
+  } | { }
   (status == STATUS_RUNNING && quantum > u32(0)) ? {
     mem[l.state_at + STATE_FUEL] = quantum
     mem[l.state_at + STATE_PAUSED] = u32(0)

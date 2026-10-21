@@ -423,42 +423,9 @@ func selfProve(target string, cases, conflicts int, crossCheck bool, leanOut str
 		fmt.Fprintf(stderr, "oak prove: %v\n", err)
 		return 2
 	}
-	goStatus := map[string]prove.Status{}
-	for _, r := range results {
-		goStatus[r.Name] = r.Status
-	}
-	agreed, compared := 0, 0
-	for _, line := range strings.Split(rows, "\n") {
-		// A row is `status    name: detail`; an advisory row's name carries
-		// a colon of its own (`Quantum: guards of tick from Running`), so
-		// the name is the longest prefix before a `: ` the Go ladder knows.
-		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] == "oak" || len(line) < 10 {
-			continue
-		}
-		rest := line[10:]
-		name := ""
-		for cut := 0; cut < len(rest); cut++ {
-			if !strings.HasPrefix(rest[cut:], ": ") {
-				continue
-			}
-			if _, known := goStatus[rest[:cut]]; known {
-				name = rest[:cut]
-			}
-		}
-		if name == "" {
-			continue
-		}
-		status := goStatus[name]
-		compared++
-		if string(status) == fields[0] {
-			agreed++
-			continue
-		}
-		fmt.Fprintf(stdout, "oak prove: the Go ladder disagrees on %s: Go %s, Oak %s\n", name, status, fields[0])
+	if !compareSelfProveRows(rows, results, stdout) && code == 0 {
 		code = 1
 	}
-	fmt.Fprintf(stdout, "oak prove: the Go ladder agrees on %d of %d rows\n", agreed, compared)
 	if leanOut != "" {
 		// The projection written in Oak against the Go extractor's.
 		var roots []string
@@ -483,6 +450,71 @@ func selfProve(target string, cases, conflicts int, crossCheck bool, leanOut str
 		}
 	}
 	return code
+}
+
+// compareSelfProveRows requires one matching shell row for every Go result.
+// Comparing only recognizable rows would let truncated output, duplicate rows,
+// or rows for a different source pass a requested cross-check.
+func compareSelfProveRows(rows string, results []prove.Result, stdout io.Writer) bool {
+	goStatus := map[string]prove.Status{}
+	valid := true
+	for _, r := range results {
+		if _, exists := goStatus[r.Name]; exists {
+			fmt.Fprintf(stdout, "oak prove: duplicate Go result for %s\n", r.Name)
+			valid = false
+		}
+		goStatus[r.Name] = r.Status
+	}
+	seen := map[string]bool{}
+	agreed := 0
+	for _, line := range strings.Split(rows, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] == "oak" {
+			continue
+		}
+		// The shell uses a ten-byte status column. Advisory names can
+		// contain ': ', so match the longest known name before a delimiter.
+		name := ""
+		if len(line) >= 10 {
+			rest := line[10:]
+			for cut := 0; cut < len(rest); cut++ {
+				if strings.HasPrefix(rest[cut:], ": ") {
+					if _, known := goStatus[rest[:cut]]; known {
+						name = rest[:cut]
+					}
+				}
+			}
+		}
+		if name == "" {
+			switch prove.Status(fields[0]) {
+			case prove.Decided, prove.Refuted, prove.Open, prove.Pending, prove.Proved:
+				fmt.Fprintf(stdout, "oak prove: unrecognized Oak result row: %s\n", line)
+				valid = false
+			}
+			continue // Other shell diagnostics are not result rows.
+		}
+		if seen[name] {
+			fmt.Fprintf(stdout, "oak prove: duplicate Oak result for %s\n", name)
+			valid = false
+			continue
+		}
+		seen[name] = true
+		status := goStatus[name]
+		if string(status) == fields[0] && line[:10] == fmt.Sprintf("%-10s", fields[0]) {
+			agreed++
+		} else {
+			fmt.Fprintf(stdout, "oak prove: the Go ladder disagrees on %s: Go %s, Oak %s\n", name, status, fields[0])
+			valid = false
+		}
+	}
+	for _, r := range results {
+		if !seen[r.Name] {
+			fmt.Fprintf(stdout, "oak prove: missing Oak result for %s\n", r.Name)
+			valid = false
+		}
+	}
+	fmt.Fprintf(stdout, "oak prove: the Go ladder agrees on %d of %d rows\n", agreed, len(results))
+	return valid
 }
 
 // snapshotLawSource gives the self-hosted shell the exact bytes checked by
@@ -520,4 +552,3 @@ func leanDifference(got, want string) string {
 	}
 	return "oak prove: the Lean projection differs from the Go extractor\n"
 }
-

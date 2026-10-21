@@ -1,0 +1,307 @@
+{
+  "schema_version": 1,
+  "release": "self-hosted-solver-v1.0",
+  "reviewed_commit": "336cb0c01e817710ec2b33a229e90ffbf5a84dcf",
+  "reviewed_date": "2026-10-21",
+  "release_ready": false,
+  "status_meanings": {
+    "open": "Required exit criteria remain unmet; existing partial implementation may exist.",
+    "in_progress": "An assigned implementation slice is active; the full gate remains unmet.",
+    "complete": "All exit criteria have reviewed evidence tied to the release candidate; no gates currently have this status."
+  },
+  "evidence_policy": "evidence_paths are navigation to existing source and tests, not assertions that tests passed at reviewed_commit. Each completion requires commit-pinned validation and remaining-assumption review.",
+  "gates": [
+    {
+      "id": "S01",
+      "title": "Supported semantics and release contract",
+      "status": "in_progress",
+      "depends_on": [],
+      "evidence_paths": [
+        "docs/spec/125-verification.md",
+        "docs/spec/126-verification-chain.md"
+      ],
+      "exit_criteria": "Freeze input/source profile, trap and hypothesis semantics, outcome vocabulary, resource policy, runtime dependencies and target list; link positive and negative conformance cases.",
+      "current_assessment": "Planning contract added; source fragment is implemented but no versioned conformance profile is qualified.",
+      "completion_evidence": []
+    },
+    {
+      "id": "S02",
+      "title": "Checked serialized input",
+      "status": "in_progress",
+      "depends_on": [
+        "S01"
+      ],
+      "evidence_paths": [
+        "prove/solver/driver.oak",
+        "prove/solver/lower.oak",
+        "solver_input_admission_test.go"
+      ],
+      "exit_criteria": "Validate framing, dimensions, indices, operand references, graph order, widths and spans before consumers; malformed/truncated/adversarial inputs must fail closed.",
+      "current_assessment": "BDD/CNF input shape guards implemented with 179 truncation cases plus reference and width checks. Variable maps, outer framing and live storage validation remain unchecked parts of the admission boundary.",
+      "completion_evidence": [],
+      "implementation_slice": {
+        "wave": 1,
+        "state": "integrated_locally",
+        "evidence_path": "solver_input_admission_test.go",
+        "qualification": "Focused implementation and regression evidence; not a completed release gate or a claim of green hosted CI."
+      }
+    },
+    {
+      "id": "S03",
+      "title": "Allocation and ownership failures",
+      "status": "in_progress",
+      "depends_on": [],
+      "evidence_paths": [
+        "prove/solver/shell.oak",
+        "prove/solver/certify.oak",
+        "lrat_lifecycle_test.go",
+        "solver_allocation_test.go",
+        "cnf_allocation_test.go",
+        "solver_allocation_failure_test.go"
+      ],
+      "exit_criteria": "Every allocation failure schedule must return a non-authoritative failure, avoid null ownership/dereference, release each successful allocation once, and clear stale verdicts.",
+      "current_assessment": "Shell/certificate null-allocation guards and cleanup implemented; 28 failure masks pass focused tests. Upstream allocations and formal lifecycle composition remain open.",
+      "completion_evidence": [],
+      "implementation_slice": {
+        "wave": 1,
+        "state": "integrated_locally",
+        "evidence_path": "solver_allocation_failure_test.go",
+        "qualification": "Focused implementation and regression evidence; not a completed release gate or a claim of green hosted CI."
+      }
+    },
+    {
+      "id": "S04",
+      "title": "Source-to-term refinement",
+      "status": "open",
+      "depends_on": [
+        "S01"
+      ],
+      "evidence_paths": [
+        "prove/solver/tree.oak",
+        "prove/solver/syntax.oak",
+        "prove/solver/lower.oak"
+      ],
+      "exit_criteria": "Compose checked source semantics with generated terms, including path hypotheses, traps, widths, signedness, aggregates, calls and loop limits for the frozen profile.",
+      "current_assessment": "Differential corpora exist; whole source-to-term semantic refinement remains open.",
+      "completion_evidence": []
+    },
+    {
+      "id": "S05",
+      "title": "Global CNF state invariants",
+      "status": "in_progress",
+      "depends_on": [
+        "S02"
+      ],
+      "evidence_paths": [
+        "prove/solver/cnf.oak",
+        "spec/lean/Oak/CNFNodes.lean",
+        "cnf_nodes_test.go"
+      ],
+      "exit_criteria": "Establish initialization, freshness, memo/unique reuse, bounded probing and refusal invariants for the actual mutable state and all node constructors.",
+      "current_assessment": "Bounded CNF probing and invalid-entry guards implemented with a 264-case corpus and 16 audited proof closures, including extracted-loop termination. The global mutable-state invariant remains open.",
+      "completion_evidence": [],
+      "implementation_slice": {
+        "wave": 1,
+        "state": "implemented",
+        "evidence_path": "cnf_nodes_test.go",
+        "qualification": "Focused implementation and regression evidence; not a completed release gate or a claim of green hosted CI."
+      }
+    },
+    {
+      "id": "S06",
+      "title": "Whole term-to-CNF composition",
+      "status": "open",
+      "depends_on": [
+        "S04",
+        "S05"
+      ],
+      "evidence_paths": [
+        "prove/solver/cnf.oak",
+        "spec/lean/Oak/CNFObligation.lean"
+      ],
+      "exit_criteria": "Prove actual term traversal and root obligations preserve satisfiability and justified constant outcomes, including hypotheses, traps and resource refusal.",
+      "current_assessment": "Local gates, folds, obligations, layouts and buffer readback are proved; whole traversal composition remains open.",
+      "completion_evidence": []
+    },
+    {
+      "id": "S07",
+      "title": "Authority of every verdict path",
+      "status": "in_progress",
+      "depends_on": [
+        "S04",
+        "S06"
+      ],
+      "evidence_paths": [
+        "prove/solver/shell.oak",
+        "prove/solver/certify.oak",
+        "clause_agreement_test.go",
+        "spec/lean/Oak/LRATRecordSoundness.lean",
+        "spec/lean/Oak/SATModelSoundness.lean",
+        "prove_rows_test.go"
+      ],
+      "exit_criteria": "Account for constants, exhaustive evaluation, witnesses, BDDs and CNF certificates; only checked sound evidence may settle a row, and contradictory evidence must leave it open.",
+      "current_assessment": "Go cross-check response admission now requires complete, unique rows before evidence is accepted. This covers -cross go; -cross none and whole verdict-path semantic composition remain open.",
+      "completion_evidence": [],
+      "implementation_slice": {
+        "wave": 1,
+        "state": "integrated_locally",
+        "evidence_path": "prove_rows_test.go",
+        "qualification": "Focused implementation and regression evidence; not a completed release gate or a claim of green hosted CI."
+      }
+    },
+    {
+      "id": "S08",
+      "title": "Source counterexample reconstruction",
+      "status": "open",
+      "depends_on": [
+        "S04",
+        "S06",
+        "S07"
+      ],
+      "evidence_paths": [
+        "prove/solver/model.oak",
+        "prove/solver/lower.oak",
+        "docs/spec/125-verification.md"
+      ],
+      "exit_criteria": "Every reported refutation reconstructs typed source parameters and replays the original claim or a trap under its hypotheses; abstract-operation assignments alone cannot refute it.",
+      "current_assessment": "CNF models are checked; end-to-end source reconstruction and abstract-operation replay require qualification.",
+      "completion_evidence": []
+    },
+    {
+      "id": "S09",
+      "title": "Runtime failures and resource limits",
+      "status": "open",
+      "depends_on": [
+        "S02",
+        "S03",
+        "S07"
+      ],
+      "evidence_paths": [
+        "prove/solver/shell.oak",
+        "oaksolver.go"
+      ],
+      "exit_criteria": "Exercise budget exhaustion, timeout, cancellation, worker death, short or failed I/O and stale output; all outcomes are bounded, correctly classified and preserve evidence rules.",
+      "current_assessment": "Budgets and cancellation exist; systematic failure matrix remains open.",
+      "completion_evidence": []
+    },
+    {
+      "id": "S10",
+      "title": "Self-hosted admission boundary",
+      "status": "open",
+      "depends_on": [
+        "S01",
+        "S02",
+        "S04"
+      ],
+      "evidence_paths": [
+        "prove_cmd.go",
+        "docs/spec/125-verification.md"
+      ],
+      "exit_criteria": "Either qualify a Go-independent checked-source admission path or explicitly ship a checked-input engine with a versioned producer contract; never label Go frontend validation as fully self-hosted source admission.",
+      "current_assessment": "Self mode has no Go proof decisions with cross none, but Go syntax/type/borrow/discipline validation is mandatory.",
+      "completion_evidence": []
+    },
+    {
+      "id": "S11",
+      "title": "Checker executable refinement",
+      "status": "open",
+      "depends_on": [
+        "S07"
+      ],
+      "evidence_paths": [
+        "docs/spec/126-verification-chain.md",
+        "lrat_native_test.go"
+      ],
+      "exit_criteria": "Connect complete checker entry, control flow, loops, memory accesses, allocations and FFI assumptions to the actual artifact for each claimed target.",
+      "current_assessment": "Selected native bodies, guards, calls and loads are covered; the complete executable chain is open.",
+      "completion_evidence": []
+    },
+    {
+      "id": "S12",
+      "title": "Whole solver target qualification",
+      "status": "open",
+      "depends_on": [
+        "S09",
+        "S10",
+        "S11"
+      ],
+      "evidence_paths": [
+        "spec_solver_test.go",
+        ".github/workflows/ci.yml",
+        ".github/workflows/formal.yml"
+      ],
+      "exit_criteria": "Run required whole-solver acceptance on ARM64, RV64 and Wasm artifacts; fail on missing runners, skipped required cases or unintended C fallback; record target/toolchain identity.",
+      "current_assessment": "Existing native shell test is ARM64-host restricted; compiler fixtures are not whole-solver qualification.",
+      "completion_evidence": []
+    },
+    {
+      "id": "S13",
+      "title": "Reproducible bootstrap and artifacts",
+      "status": "in_progress",
+      "depends_on": [
+        "S01"
+      ],
+      "evidence_paths": [
+        "oaksolver.go",
+        "spec/lean/lean-toolchain",
+        "go.mod",
+        "oaksolver_cache_test.go"
+      ],
+      "exit_criteria": "Pin source, compiler, proof dependencies, flags, target and artifact hashes; reproduce from a clean checkout and reject corrupt/stale cache entries.",
+      "current_assessment": "Solver cache uses content digests and atomic publication. Separate generic buildcache size/mtime identity and unchecked binaries, nonhermetic headers/libraries, release bootstrap and artifact manifests remain open.",
+      "completion_evidence": [],
+      "implementation_slice": {
+        "wave": 1,
+        "state": "integrated_locally",
+        "evidence_path": "oaksolver_cache_test.go",
+        "qualification": "Focused implementation and regression evidence; not a completed release gate or a claim of green hosted CI."
+      }
+    },
+    {
+      "id": "S14",
+      "title": "Performance and search quality",
+      "status": "open",
+      "depends_on": [
+        "S09",
+        "S12",
+        "S13"
+      ],
+      "evidence_paths": [
+        "solver_bench_test.go",
+        "docs/notes/selfhost-performance-2026-10.md"
+      ],
+      "exit_criteria": "Define representative deterministic workloads, per-target memory/time budgets and regression thresholds; publish decided/open coverage and distributions at the release SHA.",
+      "current_assessment": "Existing measurements are useful host baselines, not qualified native release budgets.",
+      "completion_evidence": []
+    },
+    {
+      "id": "S15",
+      "title": "Acceptance composition and release ledger",
+      "status": "open",
+      "depends_on": [
+        "S01",
+        "S02",
+        "S03",
+        "S04",
+        "S05",
+        "S06",
+        "S07",
+        "S08",
+        "S09",
+        "S10",
+        "S11",
+        "S12",
+        "S13",
+        "S14"
+      ],
+      "evidence_paths": [
+        "docs/spec/126-verification-chain.md",
+        ".github/workflows/formal.yml"
+      ],
+      "exit_criteria": "Attach reviewed evidence and successful required runs to one release commit and artifact set; all mandatory gates close with declared assumptions and no unexplained skips.",
+      "current_assessment": "This ledger records requirements and gaps; it is not evidence of a release passing them.",
+      "completion_evidence": []
+    }
+  ],
+  "snapshot_note": "reviewed_commit anchors the original inventory. First-wave slice updates describe local integration after that commit; they do not attest a final integrated SHA, hosted CI result or release qualification."
+}

@@ -256,12 +256,12 @@ def hash3 (a : UInt32) (b : UInt32) (c : UInt32) (fuel : Nat) : Option (UInt32) 
   let h := (h * (668265263 : UInt32))
   pure (h ^^^ (h >>> (13 : UInt32)))
 
-def cnf_node.loop1 (l : Layout) (mem : Array UInt32) (key : UInt32) (a : UInt32) (b : UInt32) (h : UInt32) (found : UInt32) : Nat → Option (Array UInt32 × UInt32 × UInt32)
+def cnf_node.loop1 (l : Layout) (mem : Array UInt32) (key : UInt32) (a : UInt32) (b : UInt32) (h : UInt32) (found : UInt32) (remaining : UInt32) : Nat → Option (Array UInt32 × UInt32 × UInt32 × UInt32)
   | 0 => none
   | fuel + 1 => do
     if ((found == NONE) && ((mem.getD (l.state_at + STATE_EXCEEDED).toNat (0 : UInt32)) == (0 : UInt32))) then do
       let e : UInt32 := (mem.getD (l.unique_at + h).toNat (0 : UInt32))
-      let (mem, h, found) ← (if (e == (0 : UInt32)) then (do
+      let (mem, h, found, remaining) ← (if (e == (0 : UInt32)) then (do
           let count : UInt32 := (mem.getD (l.state_at + STATE_COUNT).toNat (0 : UInt32))
           let (mem, found) ← (if (decide (count >= l.cap)) then (do
               let mem := mem.setIfInBounds (l.state_at + STATE_EXCEEDED).toNat (1 : UInt32)
@@ -275,25 +275,37 @@ def cnf_node.loop1 (l : Layout) (mem : Array UInt32) (key : UInt32) (a : UInt32)
               let mem := mem.setIfInBounds (l.state_at + STATE_CREATED).toNat (1 : UInt32)
               let found := count
               pure (mem, found)))
-          pure (mem, h, found))
+          pure (mem, h, found, remaining))
         else (do
           let n : UInt32 := (e - (1 : UInt32))
-          let (h, found) ← (if ((((mem.getD (l.var_at + n).toNat (0 : UInt32)) == key) && ((mem.getD (l.low_at + n).toNat (0 : UInt32)) == a)) && ((mem.getD (l.high_at + n).toNat (0 : UInt32)) == b)) then (do
-              let found := n
-              pure (h, found))
+          let (mem, h, found, remaining) ← (if (decide (n >= l.cap)) then (do
+              let mem := mem.setIfInBounds (l.state_at + STATE_EXCEEDED).toNat (1 : UInt32)
+              pure (mem, h, found, remaining))
             else (do
-              let h := ((h + (1 : UInt32)) &&& l.umask)
-              pure (h, found)))
-          pure (mem, h, found)))
-      cnf_node.loop1 l mem key a b h found fuel
-    else pure (mem, h, found)
+              let (mem, h, found, remaining) ← (if ((((mem.getD (l.var_at + n).toNat (0 : UInt32)) == key) && ((mem.getD (l.low_at + n).toNat (0 : UInt32)) == a)) && ((mem.getD (l.high_at + n).toNat (0 : UInt32)) == b)) then (do
+                  let found := n
+                  pure (mem, h, found, remaining))
+                else (do
+                  let (mem, h, remaining) ← (if (remaining == (0 : UInt32)) then (do
+                      let mem := mem.setIfInBounds (l.state_at + STATE_EXCEEDED).toNat (1 : UInt32)
+                      pure (mem, h, remaining))
+                    else (do
+                      let h := ((h + (1 : UInt32)) &&& l.umask)
+                      let remaining := (remaining - (1 : UInt32))
+                      pure (mem, h, remaining)))
+                  pure (mem, h, found, remaining)))
+              pure (mem, h, found, remaining)))
+          pure (mem, h, found, remaining)))
+      cnf_node.loop1 l mem key a b h found remaining fuel
+    else pure (mem, h, found, remaining)
 
 def cnf_node (l : Layout) (mem : Array UInt32) (key : UInt32) (a : UInt32) (b : UInt32) (fuel : Nat) : Option (UInt32 × Array UInt32) := do
   let r1 ← hash3 key a b fuel
   let h : UInt32 := (r1 &&& l.umask)
   let found : UInt32 := NONE
+  let remaining : UInt32 := l.umask
   let mem := mem.setIfInBounds (l.state_at + STATE_CREATED).toNat (0 : UInt32)
-  let (mem, h, found) ← cnf_node.loop1 l mem key a b h found fuel
+  let (mem, h, found, remaining) ← cnf_node.loop1 l mem key a b h found remaining fuel
   pure (found, mem)
 
 def terminal_case (op : UInt32) (x : UInt32) (y : UInt32) (fuel : Nat) : Option (UInt32) := do
