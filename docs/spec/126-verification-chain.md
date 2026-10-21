@@ -480,14 +480,17 @@ theorem preserves every other word. With count in [1, cap) and cap at most
 2^31-1, the allocated index differs from all earlier indices, its table
 encoding increments without wrapping, and its shifted edge satisfies the
 gate proofs' regular-edge premise.
-`TestOakCNFNodes*` audits 12 foundational-only theorem closures and checks
-224 compiled allocator cases against all 96 memory words: all eight starting
+`TestOakCNFNodes*` audits 16 foundational-only theorem closures and checks
+264 compiled allocator cases against all 96 memory words: all eight starting
 slots, zero through six collisions, allocation, reuse even at full capacity,
-capacity rejection, and a preexisting exceeded flag.
-These results do not derive layout invariants, establish a globally unique
-table, or prove termination of probing a full table. The finite probe trace
-and enough extraction fuel remain explicit premises; full circuit semantics
-and final-obligation correspondence remain open.
+capacity rejection, a preexisting exceeded flag, saturated tables and invalid
+entries. Production probing now refuses an out-of-cap entry before reading a
+node and stops after at most `umask + 1` examined slots. The extracted-loop and
+production termination theorems require only an in-bounds writable exceeded
+flag and `umask.toNat + 2` fuel, not a supplied finite probe trace.
+These results do not derive layout invariants or establish a globally unique
+table. The finite trace still expresses successful lookup semantics; full
+circuit semantics and final-obligation correspondence remain open.
 
 `Oak.CNFObligation` now checks the extracted final-obligation producer.
 The old `used + roots + 1 + 8` admission expression could wrap. Production

@@ -126,7 +126,7 @@ jobs:
           OAK_REQUIRE_LRAT_BINDING_LEAN: '1'
         run: |
           command -v cc
-          go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean|TestOakLRATAllocatedEntry|TestOakLRATRawStreamEntry|TestLRATLifecycle.*|TestLRATNative.*|TestOakCNFLiteral.*|TestOakCNFEmission.*|TestOakCNFGates.*|TestOakCNFFolds.*|TestOakCNFNodes.*|TestOakCNFObligation.*|TestOakCNFObligationStore.*|TestOakCNFRoots.*|TestOakCNFLayout.*|TestOakCNFAllocation.*|TestOakSolverAllocation.*|TestCNFAxiomAudit|TestOakLRATAgrees)$' -count=1 -timeout=10m -v
+          go test . -run '^(TestLRATFormulaBinding|TestOakLRATFormulaBinding|TestLRATFormulaBindingMatchesLean|TestOakLRATAllocatedEntry|TestOakLRATRawStreamEntry|TestLRATLifecycle.*|TestLRATNative.*|TestOakCNFLiteral.*|TestOakCNFEmission.*|TestOakCNFGates.*|TestOakCNFFolds.*|TestOakCNFNodes.*|TestOakCNFObligation.*|TestOakCNFObligationStore.*|TestOakCNFRoots.*|TestOakCNFLayout.*|TestOakCNFAllocation.*|TestOakSolverAllocation.*|TestOakProblemInputAdmission|TestCNFAxiomAudit|TestOakLRATAgrees)$' -count=1 -timeout=10m -v
 
   native-bitwise-images:
     # Keep full-file fixed proofs and fresh compiler/writer correspondence

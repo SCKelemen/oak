@@ -21,44 +21,45 @@ def Matches (l : Layout) (mem : Array UInt32) (key a b n : UInt32) : Prop :=
   mem.getD (l.high_at + n).toNat 0 = b
 
 theorem stopped (l : Layout) (mem : Array UInt32) (key a b h found : UInt32)
-    (fuel : Nat) (stop : found ≠ NONE ∨ mem.getD (l.state_at + STATE_EXCEEDED).toNat 0 ≠ 0) :
-    cnf_node.loop1 l mem key a b h found (fuel + 1) = some (mem, h, found) := by
+    (remaining : UInt32) (fuel : Nat) (stop : found ≠ NONE ∨ mem.getD (l.state_at + STATE_EXCEEDED).toNat 0 ≠ 0) :
+    cnf_node.loop1 l mem key a b h found remaining (fuel + 1) = some (mem, h, found, remaining) := by
   rcases stop with stop | stop <;> simp only [cnf_node.loop1, beq_iff_eq, Bool.and_eq_true,
     Bool.true_and, Bool.and_true, Bool.false_and, Bool.and_false, beq_self_eq_true, if_true,
     if_false, Option.pure_def, Bind.bind, Option.bind, decide_eq_true_eq, and_true, true_and,
     and_false, false_and, not_false_eq_true, reduceCtorEq, Prod.fst, Prod.snd, stop]
 
-theorem reuse (l : Layout) (mem : Array UInt32) (key a b h e : UInt32) (fuel : Nat)
+theorem reuse (l : Layout) (mem : Array UInt32) (key a b h e : UInt32) (remaining : UInt32) (fuel : Nat)
     (running : mem.getD (l.state_at + STATE_EXCEEDED).toNat 0 = 0)
     (slot : mem.getD (l.unique_at + h).toNat 0 = e) (occupied : e ≠ 0)
-    (valid : e - 1 ≠ NONE) (hit : Matches l mem key a b (e - 1)) :
-    cnf_node.loop1 l mem key a b h NONE (fuel + 2) = some (mem, h, e - 1) := by
+    (inRange : ¬ e - 1 ≥ l.cap) (valid : e - 1 ≠ NONE) (hit : Matches l mem key a b (e - 1)) :
+    cnf_node.loop1 l mem key a b h NONE remaining (fuel + 2) = some (mem, h, e - 1, remaining) := by
   rcases hit with ⟨hk, ha, hb⟩
   simp only [cnf_node.loop1, beq_iff_eq, Bool.and_eq_true, Bool.true_and, Bool.and_true,
     Bool.false_and, Bool.and_false, beq_self_eq_true, if_true, if_false, Option.pure_def, Bind.bind,
     Option.bind, decide_eq_true_eq, and_true, true_and, and_false, false_and, not_false_eq_true,
-    reduceCtorEq, Prod.fst, Prod.snd, running, slot, occupied, hk, ha, hb, valid]
+    reduceCtorEq, Prod.fst, Prod.snd, running, slot, occupied, inRange, hk, ha, hb, valid]
 
-theorem collision (l : Layout) (mem : Array UInt32) (key a b h e : UInt32) (fuel : Nat)
+theorem collision (l : Layout) (mem : Array UInt32) (key a b h e : UInt32) (remaining : UInt32) (fuel : Nat)
     (running : mem.getD (l.state_at + STATE_EXCEEDED).toNat 0 = 0)
     (slot : mem.getD (l.unique_at + h).toNat 0 = e) (occupied : e ≠ 0)
+    (inRange : ¬ e - 1 ≥ l.cap) (budget : remaining ≠ 0)
     (miss : ¬ Matches l mem key a b (e - 1)) :
-    cnf_node.loop1 l mem key a b h NONE (fuel + 1) =
-      cnf_node.loop1 l mem key a b ((h + 1) &&& l.umask) NONE fuel := by
+    cnf_node.loop1 l mem key a b h NONE remaining (fuel + 1) =
+      cnf_node.loop1 l mem key a b ((h + 1) &&& l.umask) NONE (remaining - 1) fuel := by
   have miss' : ¬ ((mem.getD (l.var_at + (e - 1)).toNat 0 = key ∧ mem.getD (l.low_at + (e - 1)).toNat 0 = a) ∧ mem.getD (l.high_at + (e - 1)).toNat 0 = b) := by
     simpa only [Matches, and_assoc] using miss
   simp only [cnf_node.loop1, beq_iff_eq, Bool.and_eq_true, Bool.true_and, Bool.and_true,
     Bool.false_and, Bool.and_false, beq_self_eq_true, if_true, if_false, Option.pure_def, Bind.bind,
     Option.bind, decide_eq_true_eq, and_true, true_and, and_false, false_and, not_false_eq_true,
-    reduceCtorEq, Prod.fst, Prod.snd, running, slot, occupied, miss']
+    reduceCtorEq, Prod.fst, Prod.snd, running, slot, occupied, inRange, budget, miss']
 
-theorem fresh (l : Layout) (mem : Array UInt32) (key a b h n : UInt32) (fuel : Nat)
+theorem fresh (l : Layout) (mem : Array UInt32) (key a b h n : UInt32) (remaining : UInt32) (fuel : Nat)
     (running : mem.getD (l.state_at + STATE_EXCEEDED).toNat 0 = 0)
     (slot : mem.getD (l.unique_at + h).toNat 0 = 0)
     (count : mem.getD (l.state_at + STATE_COUNT).toNat 0 = n)
     (room : n < l.cap) (valid : n ≠ NONE) :
-    cnf_node.loop1 l mem key a b h NONE (fuel + 2) =
-      some (allocate l mem key a b h n, h, n) := by
+    cnf_node.loop1 l mem key a b h NONE remaining (fuel + 2) =
+      some (allocate l mem key a b h n, h, n, remaining) := by
   have hn : ¬ n ≥ l.cap := by
     simp only [UInt32.lt_iff_toNat_lt] at room
     simp only [UInt32.le_iff_toNat_le]; omega
@@ -67,13 +68,13 @@ theorem fresh (l : Layout) (mem : Array UInt32) (key a b h n : UInt32) (fuel : N
     Option.bind, decide_eq_true_eq, and_true, true_and, and_false, false_and, not_false_eq_true,
     reduceCtorEq, Prod.fst, Prod.snd, running, slot, count, hn, valid, allocate]
 
-theorem exhausted (l : Layout) (mem : Array UInt32) (key a b h : UInt32) (fuel : Nat)
+theorem exhausted (l : Layout) (mem : Array UInt32) (key a b h : UInt32) (remaining : UInt32) (fuel : Nat)
     (running : mem.getD (l.state_at + STATE_EXCEEDED).toNat 0 = 0)
     (slot : mem.getD (l.unique_at + h).toNat 0 = 0)
     (full : mem.getD (l.state_at + STATE_COUNT).toNat 0 ≥ l.cap)
     (bound : (l.state_at + STATE_EXCEEDED).toNat < mem.size) :
-    cnf_node.loop1 l mem key a b h NONE (fuel + 2) =
-      some (mem.setIfInBounds (l.state_at + STATE_EXCEEDED).toNat 1, h, NONE) := by
+    cnf_node.loop1 l mem key a b h NONE remaining (fuel + 2) =
+      some (mem.setIfInBounds (l.state_at + STATE_EXCEEDED).toNat 1, h, NONE, remaining) := by
   simp only [cnf_node.loop1, beq_iff_eq, Bool.and_eq_true, Bool.true_and, Bool.and_true,
     Bool.false_and, Bool.and_false, beq_self_eq_true, if_true, if_false, Option.pure_def, Bind.bind,
     Option.bind, decide_eq_true_eq, and_true, true_and, and_false, false_and, not_false_eq_true,
@@ -81,33 +82,140 @@ theorem exhausted (l : Layout) (mem : Array UInt32) (key a b h : UInt32) (fuel :
     Oak.LRATChecker.array_getD_set_self _ _ _ _ bound,
     show (1 : UInt32) ≠ 0 by decide]
 
--- A finite sequence of occupied, nonmatching probes. This does not assume
--- termination for a full table or global uniqueness of the hash table.
-inductive Probes (l : Layout) (mem : Array UInt32) (key a b : UInt32) : UInt32 → UInt32 → Nat → Prop
-  | done (h : UInt32) : Probes l mem key a b h h 0
-  | step (h finish e : UInt32) (n : Nat)
-      (slot : mem.getD (l.unique_at + h).toNat 0 = e) (occupied : e ≠ 0)
-      (miss : ¬ Matches l mem key a b (e - 1))
-      (tail : Probes l mem key a b ((h + 1) &&& l.umask) finish n) :
-      Probes l mem key a b h finish (n + 1)
+-- Refuse a corrupt table reference before reading any node field.
+theorem invalid_entry (l : Layout) (mem : Array UInt32) (key a b h e remaining : UInt32)
+    (fuel : Nat) (running : mem.getD (l.state_at + STATE_EXCEEDED).toNat 0 = 0)
+    (slot : mem.getD (l.unique_at + h).toNat 0 = e) (occupied : e ≠ 0)
+    (invalid : e - 1 ≥ l.cap)
+    (bound : (l.state_at + STATE_EXCEEDED).toNat < mem.size) :
+    cnf_node.loop1 l mem key a b h NONE remaining (fuel + 2) =
+      some (mem.setIfInBounds (l.state_at + STATE_EXCEEDED).toNat 1, h, NONE, remaining) := by
+  simp only [cnf_node.loop1, beq_iff_eq, Bool.and_eq_true, Bool.true_and, Bool.and_true,
+    Bool.false_and, Bool.and_false, beq_self_eq_true, if_true, if_false, Option.pure_def, Bind.bind,
+    Option.bind, decide_eq_true_eq, and_true, true_and, and_false, false_and, not_false_eq_true,
+    reduceCtorEq, Prod.fst, Prod.snd, running, slot, occupied, invalid,
+    Oak.LRATChecker.array_getD_set_self _ _ _ _ bound,
+    show (1 : UInt32) ≠ 0 by decide]
 
-theorem probes_execution (l : Layout) (mem : Array UInt32) (key a b start finish : UInt32)
+-- The final occupied nonmatching probe refuses instead of wrapping forever.
+theorem probe_exhausted (l : Layout) (mem : Array UInt32) (key a b h e : UInt32)
+    (fuel : Nat) (running : mem.getD (l.state_at + STATE_EXCEEDED).toNat 0 = 0)
+    (slot : mem.getD (l.unique_at + h).toNat 0 = e) (occupied : e ≠ 0)
+    (inRange : ¬ e - 1 ≥ l.cap) (miss : ¬ Matches l mem key a b (e - 1))
+    (bound : (l.state_at + STATE_EXCEEDED).toNat < mem.size) :
+    cnf_node.loop1 l mem key a b h NONE 0 (fuel + 2) =
+      some (mem.setIfInBounds (l.state_at + STATE_EXCEEDED).toNat 1, h, NONE, 0) := by
+  have miss' : ¬ ((mem.getD (l.var_at + (e - 1)).toNat 0 = key ∧ mem.getD (l.low_at + (e - 1)).toNat 0 = a) ∧ mem.getD (l.high_at + (e - 1)).toNat 0 = b) := by
+    simpa only [Matches, and_assoc] using miss
+  simp only [cnf_node.loop1, beq_iff_eq, Bool.and_eq_true, Bool.true_and, Bool.and_true,
+    Bool.false_and, Bool.and_false, beq_self_eq_true, if_true, if_false, Option.pure_def, Bind.bind,
+    Option.bind, decide_eq_true_eq, and_true, true_and, and_false, false_and, not_false_eq_true,
+    reduceCtorEq, Prod.fst, Prod.snd, running, slot, occupied, inRange, miss',
+    Oak.LRATChecker.array_getD_set_self _ _ _ _ bound,
+    show (1 : UInt32) ≠ 0 by decide]
+
+private theorem below_cap_ne_none (n cap : UInt32) (room : ¬ n ≥ cap) : n ≠ NONE := by
+  have limit := cap.toNat_lt
+  intro eq
+  subst n
+  simp [UInt32.le_iff_toNat_le, NONE] at room
+  omega
+
+-- Every probe loop returns with enough fuel, even for a saturated table.
+-- Only the exceeded flag must be writable; table contents need no invariant.
+theorem loop_terminates (l : Layout) (mem : Array UInt32) (key a b h remaining : UInt32)
+    (fuel : Nat) (bound : (l.state_at + STATE_EXCEEDED).toNat < mem.size) :
+    ∃ out, cnf_node.loop1 l mem key a b h NONE remaining
+      (fuel + remaining.toNat + 2) = some out := by
+  generalize hr : remaining.toNat = r
+  induction r using Nat.strongRecOn generalizing remaining h with
+  | ind r ih =>
+    by_cases running : mem.getD (l.state_at + STATE_EXCEEDED).toNat 0 = 0
+    · let e := mem.getD (l.unique_at + h).toNat 0
+      by_cases empty : e = 0
+      · have slot : mem.getD (l.unique_at + h).toNat 0 = 0 := empty
+        by_cases full : mem.getD (l.state_at + STATE_COUNT).toNat 0 ≥ l.cap
+        · exact ⟨_, exhausted l mem key a b h remaining (fuel + r) running slot full bound⟩
+        · have room : mem.getD (l.state_at + STATE_COUNT).toNat 0 < l.cap := by
+            simp only [UInt32.le_iff_toNat_le] at full
+            simp only [UInt32.lt_iff_toNat_lt]; omega
+          exact ⟨_, fresh l mem key a b h _ remaining (fuel + r) running slot rfl room
+            (below_cap_ne_none _ _ full)⟩
+      · by_cases invalid : e - 1 ≥ l.cap
+        · exact ⟨_, invalid_entry l mem key a b h e remaining (fuel + r) running rfl empty invalid bound⟩
+        · by_cases hit : Matches l mem key a b (e - 1)
+          · exact ⟨_, reuse l mem key a b h e remaining (fuel + r) running rfl empty invalid
+              (below_cap_ne_none _ _ invalid) hit⟩
+          · by_cases zero : remaining = 0
+            · subst remaining
+              have rz : r = 0 := by simpa using hr.symm
+              subst r
+              exact ⟨_, probe_exhausted l mem key a b h e fuel running rfl empty invalid hit bound⟩
+            · have positive : 1 ≤ remaining := by
+                simp only [UInt32.le_iff_toNat_le]
+                have nz : remaining.toNat ≠ 0 := by
+                  intro eq; apply zero; exact UInt32.toNat_inj.mp eq
+                change 1 ≤ remaining.toNat
+                omega
+              have dec : (remaining - 1).toNat + 1 = r := by
+                rw [UInt32.toNat_sub_of_le _ _ positive]
+                change remaining.toNat - 1 + 1 = r
+                simp only [UInt32.le_iff_toNat_le] at positive
+                change 1 ≤ remaining.toNat at positive
+                omega
+              obtain ⟨out, run⟩ := ih (remaining - 1).toNat (by omega)
+                ((h + 1) &&& l.umask) (remaining - 1) rfl
+              refine ⟨out, ?_⟩
+              rw [show fuel + r + 2 = (fuel + (remaining - 1).toNat + 2) + 1 by omega,
+                collision l mem key a b h e remaining _ running rfl empty invalid zero hit]
+              exact run
+    · refine ⟨(mem, h, NONE, remaining), ?_⟩
+      simpa [Nat.add_assoc] using
+        stopped l mem key a b h NONE remaining (fuel + r + 1) (Or.inr running)
+
+-- A finite sequence of occupied, in-range, nonmatching probes. The
+-- countdown makes the execution bound explicit; global table uniqueness is
+-- still a separate invariant.
+inductive Probes (l : Layout) (mem : Array UInt32) (key a b : UInt32) :
+    UInt32 → UInt32 → UInt32 → UInt32 → Nat → Prop
+  | done (h remaining : UInt32) : Probes l mem key a b h h remaining remaining 0
+  | step (h finish e remaining finalRemaining : UInt32) (n : Nat)
+      (slot : mem.getD (l.unique_at + h).toNat 0 = e) (occupied : e ≠ 0)
+      (inRange : ¬ e - 1 ≥ l.cap) (budget : remaining ≠ 0)
+      (miss : ¬ Matches l mem key a b (e - 1))
+      (tail : Probes l mem key a b ((h + 1) &&& l.umask) finish
+        (remaining - 1) finalRemaining n) :
+      Probes l mem key a b h finish remaining finalRemaining (n + 1)
+
+theorem probes_execution (l : Layout) (mem : Array UInt32)
+    (key a b start finish remaining finalRemaining : UInt32)
     (n fuel : Nat) (running : mem.getD (l.state_at + STATE_EXCEEDED).toNat 0 = 0)
-    (path : Probes l mem key a b start finish n) :
-    cnf_node.loop1 l mem key a b start NONE (fuel + n) =
-      cnf_node.loop1 l mem key a b finish NONE fuel := by
+    (path : Probes l mem key a b start finish remaining finalRemaining n) :
+    cnf_node.loop1 l mem key a b start NONE remaining (fuel + n) =
+      cnf_node.loop1 l mem key a b finish NONE finalRemaining fuel := by
   induction path with
   | done => rfl
-  | step h finish e n slot occupied miss tail ih =>
+  | step h finish e remaining finalRemaining n slot occupied inRange budget miss tail ih =>
     rw [show fuel + (n + 1) = (fuel + n) + 1 by omega,
-      collision l mem key a b h e (fuel + n) running slot occupied miss, ih]
+      collision l mem key a b h e remaining (fuel + n) running slot occupied inRange budget miss, ih]
 
-theorem production (l : Layout) (mem after : Array UInt32) (key a b hash finish result : UInt32)
+theorem production (l : Layout) (mem after : Array UInt32)
+    (key a b hash finish result remaining : UInt32)
     (fuel : Nat) (hashed : hash3 key a b fuel = some hash)
     (run : cnf_node.loop1 l (mem.setIfInBounds (l.state_at + STATE_CREATED).toNat 0)
-      key a b (hash &&& l.umask) NONE fuel = some (after, finish, result)) :
+      key a b (hash &&& l.umask) NONE l.umask fuel = some (after, finish, result, remaining)) :
     cnf_node l mem key a b fuel = some (result, after) := by
   simp only [cnf_node, hashed, Bind.bind, Option.bind, run, Option.pure_def]
+
+theorem production_terminates (l : Layout) (mem : Array UInt32) (key a b : UInt32)
+    (fuel : Nat) (bound : (l.state_at + STATE_EXCEEDED).toNat < mem.size) :
+    ∃ out, cnf_node l mem key a b (fuel + l.umask.toNat + 2) = some out := by
+  obtain ⟨hash, hashed⟩ : ∃ hash, hash3 key a b (fuel + l.umask.toNat + 2) = some hash := ⟨_, rfl⟩
+  obtain ⟨⟨after, finish, result, remaining⟩, run⟩ :=
+    loop_terminates l (mem.setIfInBounds (l.state_at + STATE_CREATED).toNat 0)
+      key a b (hash &&& l.umask) l.umask fuel (by simpa using bound)
+  exact ⟨(result, after), production l mem after key a b hash finish result remaining
+    (fuel + l.umask.toNat + 2) hashed run⟩
 
 theorem allocate_size (l : Layout) (mem : Array UInt32) (key a b h n : UInt32) :
     (allocate l mem key a b h n).size = mem.size := by simp [allocate]
