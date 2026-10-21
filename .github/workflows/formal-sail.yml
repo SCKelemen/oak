@@ -46,6 +46,7 @@ on:
       - specification
     paths:
       - 'asm/**'
+      - 'compiler/**'
       - 'spec/sail/**'
       - 'spec/lean/Oak/RiscV.lean'
       - 'spec/lean/Oak/ArmASL.lean'
