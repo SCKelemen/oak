@@ -62,6 +62,61 @@ theorem capacity_admitted (clauses literals : UInt32) (fuel : Nat)
   simp only [UInt32.toNat_ofNat, UInt64.toNat_ofNat, Nat.reducePow, Nat.reduceMod] at *
   omega
 
+-- These are properties of the extracted Array model. Applying them to an
+-- Oak [*]u32 requires the caller to supply live readable storage represented
+-- by `region` for both reads. Array size alone does not prove pointer lifetime,
+-- allocation identity, or agreement between native memory and this model.
+-- In particular, the production wrapper is not an address-validation API.
+theorem cnf_capacity_addresses (region : Array UInt32) (at_ : UInt32)
+    (noWrap : at_.toNat + 3 < 4294967296)
+    (readable : at_.toNat + 4 ≤ region.size) :
+    (at_ + 2).toNat = at_.toNat + 2 ∧
+      (at_ + 3).toNat = at_.toNat + 3 ∧
+      at_.toNat + 2 < region.size ∧ at_.toNat + 3 < region.size := by
+  have two : (at_ + 2).toNat = at_.toNat + 2 := by
+    change (at_.toNat + 2) % 4294967296 = _
+    exact Nat.mod_eq_of_lt (by omega)
+  have three : (at_ + 3).toNat = at_.toNat + 3 := by
+    change (at_.toNat + 3) % 4294967296 = _
+    exact Nat.mod_eq_of_lt noWrap
+  exact ⟨two, three, by omega, by omega⟩
+
+-- Both acceptance and refusal preserve the represented span. This delegates
+-- to the actual extracted wrapper, not a replacement mathematical guard.
+theorem cnf_capacity_delegates (region : Array UInt32) (at_ : UInt32) (fuel : Nat)
+    (noWrap : at_.toNat + 3 < 4294967296)
+    (readable : at_.toNat + 4 ≤ region.size) :
+    cnf_sat_capacity_fits region at_ fuel =
+      (sat_capacity_fits (region.getD (at_.toNat + 2) 0)
+        (region.getD (at_.toNat + 3) 0) fuel).map (fun b => (b, region)) := by
+  obtain ⟨two, three, _, _⟩ := cnf_capacity_addresses region at_ noWrap readable
+  simp only [cnf_sat_capacity_fits, sat_capacity_fits, Option.pure_def,
+    Bind.bind, Option.bind, Option.map, two, three]
+
+-- Admission of the actual header justifies the caller's three narrow
+-- capacity expressions. Readability/nonwrapping remain explicit premises;
+-- a true Boolean does not establish them, since extraction totalizes reads.
+theorem cnf_capacity_admitted (region out : Array UInt32) (at_ : UInt32) (fuel : Nat)
+    (noWrap : at_.toNat + 3 < 4294967296)
+    (readable : at_.toNat + 4 ≤ region.size)
+    (ok : cnf_sat_capacity_fits region at_ fuel = some (true, out)) :
+    out = region ∧
+      let clauses := region.getD (at_.toNat + 2) 0
+      let literals := region.getD (at_.toNat + 3) 0
+      (8*clauses+65536).toNat = 8*clauses.toNat+65536 ∧
+        (64*literals+1048576).toNat = 64*literals.toNat+1048576 ∧
+        (8+literals).toNat = 8+literals.toNat := by
+  rw [cnf_capacity_delegates region at_ fuel noWrap readable] at ok
+  cases guard : sat_capacity_fits (region.getD (at_.toNat + 2) 0)
+      (region.getD (at_.toNat + 3) 0) fuel with
+  | none =>
+    simp only [guard, Option.map_none] at ok
+    cases ok
+  | some b =>
+    simp only [guard, Option.map_some, Option.some.injEq, Prod.mk.injEq] at ok
+    obtain ⟨rfl, same⟩ := ok
+    exact ⟨same.symm, capacity_admitted _ _ fuel guard⟩
+
 theorem bdd_admitted (cap terms variants : UInt32) (fuel : Nat)
     (ok : bdd_allocation_fits cap terms variants fuel = some true) :
     cap.toNat ≤ 1073741824 ∧ 1 ≤ variants.toNat ∧ variants.toNat ≤ 3 ∧
