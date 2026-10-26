@@ -35,6 +35,43 @@ example (clauses literals : UInt32) (fuel : Nat)
       (8+literals).toNat = 8+literals.toNat :=
   capacity_admitted clauses literals fuel ok
 
+-- Live native storage and its agreement with region are external to this
+-- Array model; readable and noWrap are not consequences of a true result.
+example (region : Array UInt32) (at_ : UInt32) (fuel : Nat)
+    (noWrap : at_.toNat + 3 < 4294967296)
+    (readable : at_.toNat + 4 ≤ region.size) :
+    cnf_sat_capacity_fits region at_ fuel =
+      (sat_capacity_fits (region.getD (at_.toNat + 2) 0)
+        (region.getD (at_.toNat + 3) 0) fuel).map (fun b => (b, region)) :=
+  cnf_capacity_delegates region at_ fuel noWrap readable
+
+example (region out : Array UInt32) (at_ : UInt32) (fuel : Nat)
+    (noWrap : at_.toNat + 3 < 4294967296)
+    (readable : at_.toNat + 4 ≤ region.size)
+    (ok : cnf_sat_capacity_fits region at_ fuel = some (true, out)) :
+    out = region ∧
+      let clauses := region.getD (at_.toNat + 2) 0
+      let literals := region.getD (at_.toNat + 3) 0
+      (8*clauses+65536).toNat = 8*clauses.toNat+65536 ∧
+        (64*literals+1048576).toNat = 64*literals.toNat+1048576 ∧
+        (8+literals).toNat = 8+literals.toNat :=
+  cnf_capacity_admitted region out at_ fuel noWrap readable ok
+
+-- Exact maximum accepted counts, then independently overflowing each count,
+-- at a nonzero offset with a prefix and suffix that must remain unchanged.
+example : cnf_sat_capacity_fits #[91, 92, 93, 536862719, 67092479, 94] 1 0 =
+    some (true, #[91, 92, 93, 536862719, 67092479, 94]) := by decide +kernel
+example : cnf_sat_capacity_fits #[91, 92, 93, 536862720, 67092479, 94] 1 0 =
+    some (false, #[91, 92, 93, 536862720, 67092479, 94]) := by decide +kernel
+example : cnf_sat_capacity_fits #[91, 92, 93, 536862719, 67092480, 94] 1 0 =
+    some (false, #[91, 92, 93, 536862719, 67092480, 94]) := by decide +kernel
+-- Address boundary checks are mathematical only, never native pointer reads.
+example : (4294967292 : UInt32).toNat + 3 < 4294967296 := by decide +kernel
+example : ¬ (4294967293 : UInt32).toNat + 3 < 4294967296 := by decide +kernel
+-- A totalized out-of-bounds model read demonstrates why the live/readable
+-- precondition cannot be dropped or replaced by guard acceptance.
+example : cnf_sat_capacity_fits #[] 0 0 = some (true, #[]) := by decide +kernel
+
 example (vars clauses store record : UInt32) (fuel : Nat) (l : SatLayout)
     (ok : sat_allocation_fits vars clauses store record fuel = some true)
     (run : sat_layout vars clauses store record fuel = some l) :
@@ -67,7 +104,7 @@ example : bdd_allocation_fits 1 0 4 32 = some false := by decide +kernel
 example : sat_allocation_fits 4294967295 0 0 0 0 = some false := by decide +kernel
 example : sat_capacity_fits 536862720 0 0 = some false := by decide +kernel
 `)
-	names := []string{"bdd_words_exact", "sat_words_exact", "sat_admitted", "capacity_admitted", "bdd_admitted", "sat_layout_total", "sat_bytes_safe", "bdd_bytes_safe"}
+	names := []string{"bdd_words_exact", "sat_words_exact", "sat_admitted", "capacity_admitted", "cnf_capacity_addresses", "cnf_capacity_delegates", "cnf_capacity_admitted", "bdd_admitted", "sat_layout_total", "sat_bytes_safe", "bdd_bytes_safe"}
 	for _, name := range names {
 		fmt.Fprintf(&contract, "#print axioms Oak.SolverAllocation.%s\n", name)
 	}
@@ -134,11 +171,24 @@ bdd_refuse: (terms: u32, variants: u32): () {
  assert(out[519] == u32(0))
  free(raw)
 }
-capacity_case: (clauses: u32, literals: u32, expected: Bool): () {
- header: [8]u32
- header[2] = clauses
- header[3] = literals
- assert(cnf_sat_capacity_fits(span(&header),u32(0)) == expected)
+// Only valid, live offsets are executed. Near-u32 address limits are
+// mathematical proof cases, never fabricated native pointers.
+capacity_case: (clauses: u32, literals: u32, at: u32, expected: Bool): () {
+ header: [24]u32
+ i: u32 = 0
+ while i < len(header) { header[i] = u32(1000) + i; i = i + u32(1) }
+ header[at + u32(2)] = clauses
+ header[at + u32(3)] = literals
+ assert(cnf_sat_capacity_fits(span(&header),at) == expected)
+ // The mutable-span signature must not hide any writes, including refusal.
+ i = u32(0)
+ while i < len(header) {
+  want: u32 = i == at + u32(2) ? { clauses } | {
+   i == at + u32(3) ? { literals } | { u32(1000) + i }
+  }
+  assert(header[i] == want)
+  i = i + u32(1)
+ }
 }
 main: (): i32 {
 `)
@@ -194,8 +244,10 @@ main: (): i32 {
 	for _, c := range []uint32{0, 536862719, 536862720, 4294967295} {
 		for _, l := range []uint32{0, 67092479, 67092480, 4294967295} {
 			want := uint64(c)*8+65536 <= 4294967295 && uint64(l)*64+1048576 <= 4294967295
-			fmt.Fprintf(&source, "capacity_case(u32(%d),u32(%d),%t)\n", c, l, want)
-			cases++
+			for _, at := range []uint32{0, 1, 7, 20} {
+				fmt.Fprintf(&source, "capacity_case(u32(%d),u32(%d),u32(%d),%t)\n", c, l, at, want)
+				cases++
+			}
 		}
 	}
 	for _, record := range []uint32{1073741750, 1073741751} {

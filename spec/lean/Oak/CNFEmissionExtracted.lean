@@ -486,15 +486,19 @@ def cnf_obligation (l : Layout) (mem : Array UInt32) (p : Array UInt32) (fuel : 
   let (r5, mem) ← cnf_obligation_finish l mem at_ used n always fits fuel
   pure (r5, mem)
 
+def sat_capacity_fits (clauses : UInt32) (literals : UInt32) (fuel : Nat) : Option (Bool) := do
+  pure ((decide ((((clauses.toUInt64) * (8 : UInt64)) + (65536 : UInt64)) <= (4294967295 : UInt64))) && (decide ((((literals.toUInt64) * (64 : UInt64)) + (1048576 : UInt64)) <= (4294967295 : UInt64))))
+
+def cnf_sat_capacity_fits (region : Array UInt32) (at_ : UInt32) (fuel : Nat) : Option (Bool × Array UInt32) := do
+  let r1 ← sat_capacity_fits (region.getD (at_ + (2 : UInt32)).toNat (0 : UInt32)) (region.getD (at_ + (3 : UInt32)).toNat (0 : UInt32)) fuel
+  pure (r1, region)
+
 def sat_allocation_words (vars : UInt32) (clauses : UInt32) (store : UInt32) (record : UInt32) (fuel : Nat) : Option (UInt64) := do
   pure ((((((23 : UInt64) * ((vars.toUInt64) + (1 : UInt64))) + ((10 : UInt64) * (clauses.toUInt64))) + ((3 : UInt64) * (store.toUInt64))) + (record.toUInt64)) + (50 : UInt64))
 
 def sat_allocation_fits (vars : UInt32) (clauses : UInt32) (store : UInt32) (record : UInt32) (fuel : Nat) : Option (Bool) := do
   let r1 ← sat_allocation_words vars clauses store record fuel
   pure (decide (r1 <= (1073741823 : UInt64)))
-
-def sat_capacity_fits (clauses : UInt32) (literals : UInt32) (fuel : Nat) : Option (Bool) := do
-  pure ((decide ((((clauses.toUInt64) * (8 : UInt64)) + (65536 : UInt64)) <= (4294967295 : UInt64))) && (decide ((((literals.toUInt64) * (64 : UInt64)) + (1048576 : UInt64)) <= (4294967295 : UInt64))))
 
 def sat_layout (vars : UInt32) (clause_cap : UInt32) (store_cap : UInt32) (record_cap : UInt32) (fuel : Nat) : Option (SatLayout) := do
   let v : UInt32 := (vars + (1 : UInt32))
