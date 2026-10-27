@@ -354,6 +354,7 @@ import Oak.CNFEmission
 import Oak.CNFGates
 import Oak.CNFFolds
 import Oak.CNFNodes
+import Oak.CNFTable
 import Oak.CNFObligation
 import Oak.CNFObligationStore
 import Oak.CNFRoots

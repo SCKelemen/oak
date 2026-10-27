@@ -2,19 +2,19 @@
 // `oak install`, and `oak test` skip the C compiler when nothing that
 // determines the binary has changed (docs/spec/115-tooling.md section 3).
 //
-// The key is a SHA-256 over everything the binary depends on: the emitted C
-// (which already captures the compiler's version through its output), the
-// asm companion object, the C compiler's identity (resolved path, size, and
-// modification time), the exact flag list, and the host OS and
-// architecture. Entries live under $OAKCACHE (default: the user cache
-// directory, `oak/`), written through a temporary file and rename; every
-// cache failure is reported to the caller as a miss, never as a build
-// failure. OAKCACHE=off disables the cache.
+// Keys cover emitted C, asm objects, compiler executable contents, flags and
+// host identity. This is a development cache, not hermetic build provenance:
+// system headers, libraries and subordinate compiler tools remain external.
+// Entries live under $OAKCACHE (default: the user cache directory, `oak/`).
+// Digest-verified artifacts are published before an atomic manifest update;
+// invalid or legacy entries are misses. OAKCACHE=off disables the cache.
+// Storage is assumed not to change between Lookup and the caller's use.
 package buildcache
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -54,24 +54,28 @@ func Key(parts ...string) string {
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-// CompilerIdentity describes the C compiler cheaply and stably: its resolved
-// path, size, and modification time. A toolchain upgrade changes at least
-// one of them.
+// CompilerIdentity binds the resolved compiler path to its executable contents.
+// Replacements with unchanged size and timestamps still invalidate the cache.
 func CompilerIdentity(cc string) (string, error) {
 	resolved, err := filepath.EvalSymlinks(cc)
 	if err != nil {
-		resolved = cc
+		return "", err
 	}
-	info, err := os.Stat(resolved)
+	digest, err := fileDigest(resolved)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s|%d|%d", resolved, info.Size(), info.ModTime().UnixNano()), nil
+	return fmt.Sprintf("%s|sha256:%s", resolved, digest), nil
 }
 
-// entryPath is where a key's binary lives.
+func validDigest(value string) bool {
+	b, err := hex.DecodeString(value)
+	return err == nil && len(b) == sha256.Size && hex.EncodeToString(b) == value
+}
+
+// entryPath is the base path for a key's manifest and content-named binary.
 func entryPath(key string) (string, error) {
-	if len(key) < 4 {
+	if !validDigest(key) {
 		return "", errors.New("malformed cache key")
 	}
 	dir, err := Dir()
@@ -81,20 +85,65 @@ func entryPath(key string) (string, error) {
 	return filepath.Join(dir, "build", key[:2], key), nil
 }
 
-// Lookup returns the cached binary for key, if present.
+type manifest struct {
+	Key    string `json:"key"`
+	Digest string `json:"sha256"`
+}
+
+func fileDigest(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("not a regular file")
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// Lookup returns only an executable whose digest matches the key's manifest.
+// Content names avoid mixed binary/manifest pairs during concurrent Store calls.
 func Lookup(key string) (string, bool) {
 	path, err := entryPath(key)
 	if err != nil {
 		return "", false
 	}
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path + ".json")
 	if err != nil || !info.Mode().IsRegular() {
 		return "", false
 	}
-	return path, true
+	data, err := os.ReadFile(path + ".json")
+	if err != nil {
+		return "", false
+	}
+	var entry manifest
+	if json.Unmarshal(data, &entry) != nil || entry.Key != key || !validDigest(entry.Digest) {
+		return "", false
+	}
+	binary := path + "-" + entry.Digest
+	info, err = os.Lstat(binary)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return "", false
+	}
+	digest, err := fileDigest(binary)
+	if err != nil || digest != entry.Digest {
+		return "", false
+	}
+	return binary, true
 }
 
-// Store copies the binary at source into the cache under key.
+// Store publishes a complete binary before atomically publishing its manifest.
+// A failed or concurrent publication may cause a miss but cannot return a
+// partially copied binary. Old content objects are retained until Clean.
 func Store(key, source string) error {
 	path, err := entryPath(key)
 	if err != nil {
@@ -103,29 +152,32 @@ func Store(key, source string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".entry-")
+	work, err := os.MkdirTemp(filepath.Dir(path), ".entry-")
 	if err != nil {
 		return err
 	}
-	tempPath := temp.Name()
-	if err := copyInto(source, temp); err != nil {
-		temp.Close()
-		os.Remove(tempPath)
+	defer os.RemoveAll(work)
+	staging := filepath.Join(work, "binary")
+	if err := Copy(source, staging); err != nil {
 		return err
 	}
-	if err := temp.Close(); err != nil {
-		os.Remove(tempPath)
+	digest, err := fileDigest(staging)
+	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tempPath, 0o755); err != nil {
-		os.Remove(tempPath)
+	binary := path + "-" + digest
+	if err := os.Rename(staging, binary); err != nil {
 		return err
 	}
-	if err := os.Rename(tempPath, path); err != nil {
-		os.Remove(tempPath)
+	data, err := json.Marshal(manifest{Key: key, Digest: digest})
+	if err != nil {
 		return err
 	}
-	return nil
+	stagedManifest := filepath.Join(work, "manifest.json")
+	if err := os.WriteFile(stagedManifest, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(stagedManifest, path+".json")
 }
 
 // Copy copies an executable to destination (mode 0755), through a temporary

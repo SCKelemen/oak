@@ -676,6 +676,104 @@ lrat_main: (): i32 {
   0
 }
 
+// Validate framing before parse_files or solve_stream can form a view. The
+// source parser and problem validator retain their separate semantic duties.
+stream_frame_valid: (data: []u32, count: u32, max_terms: u32): Bool {
+  ok: Bool = len(data) >= u32(2)
+  off: u32 = 2
+  files: u32 = ok ? { data[u32(1)] } | { u32(0) }
+  arena: u64 = u64(1) + u64(files) * u64(3)
+  f: u32 = 0
+  while f < files && ok {
+    ok = off < len(data)
+    ok ? {
+      nbytes: u32 = data[off]
+      off = off + u32(1)
+      nwords: u64 = (u64(nbytes) + u64(3)) / u64(4)
+      arena = arena + u64(nbytes) * u64(16) + u64(16384)
+      ok = nwords <= u64(len(data) - off) && arena <= u64(1073741823)
+      ok ? { off = off + u32_trunc_u64(nwords) } | { }
+    } | { }
+    f = f + u32(1)
+  }
+  i: u32 = 0
+  while i < count && ok {
+    ok = off < len(data)
+    ok ? {
+      variants: u32 = data[off]
+      off = off + u32(1)
+      v: u32 = 0
+      while v < variants && ok {
+        ok = off < len(data)
+        ok ? {
+          words: u32 = data[off]
+          off = off + u32(1)
+          ok = words >= HEADER_WORDS && words <= len(data) - off
+          ok ? {
+            ok = data[off] <= max_terms
+            off = off + words
+          } | { }
+        } | { }
+        v = v + u32(1)
+      }
+      ok = ok && off < len(data)
+      ok ? {
+        nbytes: u32 = data[off]
+        off = off + u32(1)
+        nwords: u64 = (u64(nbytes) + u64(3)) / u64(4)
+        ok = nwords <= u64(len(data) - off)
+        ok ? { off = off + u32_trunc_u64(nwords) } | { }
+      } | { }
+    } | { }
+    i = i + u32(1)
+  }
+  ok && off == len(data)
+}
+
+// Header admission precedes every data-dependent allocation and layout.
+// The private caller supplies a fully read four-word header.
+stream_header_valid: (h: []u32): Bool {
+  terms: u32 = h[u32(1)] > u32(131072) ? { h[u32(1)] } | { u32(131072) }
+  h[u32(3)] >= u32(2) && h[u32(3)] <= u32(1073741823) && h[u32(0)] <= h[u32(3)] && bdd_allocation_fits(h[u32(2)], terms, u32(1))
+}
+
+// Called only after both framing checks; all raw allocations are admitted
+// together before creating owners, and every successful allocation is freed.
+stream_solve_admitted: (data: []u32, count: u32, max_terms: u32, budget: u32, slot: u32): i32 {
+  lowered_terms: u32 = 131072
+  terms_cap: u32 = max_terms > lowered_terms ? { max_terms } | { lowered_terms }
+  l: Layout = layout_for(budget, terms_cap)
+  lw: Lower = lower_layout(lowered_terms, u32(64))
+  ser: Ser = ser_layout(u32(65536), u32(131072))
+  par: Par = par_layout()
+  arena_words: u32 = files_arena_words(data)
+  table_raw: c.Ptr = malloc(c.Size(l.total * u32(4)))
+  work_raw: c.Ptr = malloc(c.Size(lw.total * u32(4)))
+  built_raw: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
+  ser_raw: c.Ptr = malloc(c.Size(ser.total * u32(4)))
+  out_raw: c.Ptr = malloc(c.Size(ser.out_total * u32(4)))
+  par_raw: c.Ptr = malloc(c.Size(par.total * u32(4)))
+  arena_raw: c.Ptr = malloc(c.Size(arena_words * u32(4)))
+  code: i32 = 3
+  table_raw != c.null() && work_raw != c.null() && built_raw != c.null() && ser_raw != c.null() && out_raw != c.null() && par_raw != c.null() && arena_raw != c.null() ? {
+    unsafe {
+      tables: Buffer[u32] = c.own[u32](arena_raw, arena_words)
+      theorems_at: u32 = parse_files(par, par_raw, data, span(&tables))
+      solve_stream(l, lw, ser, ser_raw, out_raw, data, view(&tables), theorems_at, table_raw, work_raw, built_raw, count, slot, budget)
+      released: c.Ptr = c.disown(tables)
+      code = i32(0)
+    }
+  } | { }
+  free(arena_raw)
+  free(par_raw)
+  free(out_raw)
+  free(ser_raw)
+  free(built_raw)
+  free(work_raw)
+  free(table_raw)
+  code
+}
+
 stream_main: (): i32 {
   flag: c.Ptr = c_getenv(c.cstr("OAK_SOLVER_CANCEL_FD\0"))
   unsafe {
@@ -683,62 +781,44 @@ stream_main: (): i32 {
     stream_cancel_enabled = len(value) == u32(1) && value[u32(0)] == u8(51)
   }
   slot: u32 = variant_slot()
+  code: i32 = 3
   chunk_raw: c.Ptr = malloc(c.Size(CHUNK))
-  header_bytes_raw: c.Ptr = malloc(c.Size(u32(16)))
-  header_words_raw: c.Ptr = malloc(c.Size(u32(16)))
-  count: u32 = 0
-  max_terms: u32 = 1
-  budget: u32 = 0
-  total: u32 = 0
-  unsafe {
-    header_bytes: Buffer[u8] = c.own[u8](header_bytes_raw, u32(16))
+  chunk_raw != c.null() ? {
+    header_bytes: [16]u8
+    h: [4]u32
     header_ok: Bool = read_fully(chunk_raw, span(&header_bytes), u32(16))
-    header_words: Buffer[u32] = c.own[u32](header_words_raw, u32(4))
-    words_of(view(&header_bytes), span(&header_words), u32(4))
-    h: [4]u32 = copy_header(view(&header_words))
-    count = header_ok ? { h[u32(0)] } | { u32(0) }
-    max_terms = h[u32(1)]
-    budget = h[u32(2)]
-    total = h[u32(3)]
-    free(c.disown(header_words))
-    free(c.disown(header_bytes))
-  }
-  bytes_raw: c.Ptr = malloc(c.Size(total * u32(4)))
-  words_raw: c.Ptr = malloc(c.Size(total * u32(4)))
-  lowered_terms: u32 = 131072
-  terms_cap: u32 = max_terms > lowered_terms ? { max_terms } | { lowered_terms }
-  l: Layout = layout_for(budget, terms_cap)
-  lw: Lower = lower_layout(lowered_terms, u32(64))
-  table_raw: c.Ptr = malloc(c.Size(l.total * u32(4)))
-  work_raw: c.Ptr = malloc(c.Size(lw.total * u32(4)))
-  built_raw: c.Ptr = malloc(c.Size(lw.built_total * u32(4)))
-  ser: Ser = ser_layout(u32(65536), u32(131072))
-  ser_raw: c.Ptr = malloc(c.Size(ser.total * u32(4)))
-  out_raw: c.Ptr = malloc(c.Size(ser.out_total * u32(4)))
-  par: Par = par_layout()
-  par_raw: c.Ptr = malloc(c.Size(par.total * u32(4)))
-  unsafe {
-    problem_bytes: Buffer[u8] = c.own[u8](bytes_raw, total * u32(4))
-    words_ok: Bool = read_fully(chunk_raw, span(&problem_bytes), total * u32(4))
-    stream: Buffer[u32] = c.own[u32](words_raw, total)
-    words_of(view(&problem_bytes), span(&stream), total)
-    arena_words: u32 = words_ok ? { files_arena_words(view(&stream)) } | { u32(1) }
-    arena_raw: c.Ptr = malloc(c.Size(arena_words * u32(4)))
-    tables: Buffer[u32] = c.own[u32](arena_raw, arena_words)
-    theorems_at: u32 = words_ok ? { parse_files(par, par_raw, view(&stream), span(&tables)) } | { u32(0) }
-    words_ok ? { solve_stream(l, lw, ser, ser_raw, out_raw, view(&stream), view(&tables), theorems_at, table_raw, work_raw, built_raw, count, slot, budget) } | { }
-    free(c.disown(tables))
-    free(c.disown(stream))
-    free(c.disown(problem_bytes))
-  }
-  free(table_raw)
-  free(work_raw)
-  free(built_raw)
-  free(ser_raw)
-  free(out_raw)
-  free(par_raw)
-  free(chunk_raw)
-  i32_bits_u32(u32(0))
+    code = i32(2)
+    header_ok ? {
+      words_of(view(&header_bytes), span(&h), u32(4))
+      stream_header_valid(view(&h)) ? {
+        total: u32 = h[u32(3)]
+        bytes_raw: c.Ptr = malloc(c.Size(total * u32(4)))
+        words_raw: c.Ptr = malloc(c.Size(total * u32(4)))
+        code = i32(3)
+        bytes_raw != c.null() && words_raw != c.null() ? {
+          unsafe {
+            problem_bytes: Buffer[u8] = c.own[u8](bytes_raw, total * u32(4))
+            stream: Buffer[u32] = c.own[u32](words_raw, total)
+            words_ok: Bool = read_fully(chunk_raw, span(&problem_bytes), total * u32(4))
+            words_ok = words_ok && u64(c_read(c.Int(0), chunk_raw, c.Size(1))) == u64(0)
+            code = i32(2)
+            words_ok ? {
+              words_of(view(&problem_bytes), span(&stream), total)
+              stream_frame_valid(view(&stream), h[u32(0)], h[u32(1)]) ? {
+                code = stream_solve_admitted(view(&stream), h[u32(0)], h[u32(1)], h[u32(2)], slot)
+              } | { }
+            } | { }
+            released_words: c.Ptr = c.disown(stream)
+            released_bytes: c.Ptr = c.disown(problem_bytes)
+          }
+        } | { }
+        free(words_raw)
+        free(bytes_raw)
+      } | { }
+    } | { }
+    free(chunk_raw)
+  } | { }
+  code
 }
 
 // solve_stream walks the theorems of the stream (from theorems_at, after

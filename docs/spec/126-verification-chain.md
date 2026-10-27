@@ -492,6 +492,16 @@ These results do not derive layout invariants or establish a globally unique
 table. The finite trace still expresses successful lookup semantics; full
 circuit semantics and final-obligation correspondence remain open.
 
+`Oak.CNFTable` adds a global table/frontier invariant: every occupied slot
+references a live nonzero node, occupied references are unique, and every
+allocated nonzero node is represented. Six foundational-only audited closures
+prove preservation by the actual six-write allocator and extracted fresh/reuse
+branches, deriving reuse index bounds from the invariant. Physical address
+bounds and separation remain explicit `Footprint` premises. The empty-table
+lemma characterizes initialization; it does not prove extracted `solver_init`.
+Semantic key uniqueness, probe reachability, concrete layout-to-footprint
+composition and whole traversal remain open.
+
 `Oak.CNFObligation` now checks the extracted final-obligation producer.
 The old `used + roots + 1 + 8` admission expression could wrap. Production
 now admits the header/existing words, the clause-length word, and the roots

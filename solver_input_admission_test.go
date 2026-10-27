@@ -59,6 +59,85 @@ main: (): i32 {
   assert(solve(l, span(&mem), view(&good)) == STATUS_PROVEN)
   bad: [192]u32 = xor_problem(false)
   assert(solve(l, span(&mem), view(&bad)) == STATUS_REFUTED)
+  // Active variables are independent inputs, even when the declared
+  // source expression would become a tautology after aliasing two maps.
+  bad = good
+  bad[HEADER_WORDS + LEAF_WORDS + u32(1)] = bad[HEADER_WORDS + u32(1)]
+  refuse(l, span(&mem), view(&bad))
+  bad = good
+  bad[HEADER_WORDS + u32(2)] = bad[HEADER_WORDS + u32(1)]
+  refuse(l, span(&mem), view(&bad))
+  bad = good
+  bad[HEADER_WORDS + u32(1)] = CNF_VAR_KEY
+  refuse(l, span(&mem), view(&bad))
+  bad = good
+  bad[HEADER_WORDS + u32(1)] = NONE
+  refuse(l, span(&mem), view(&bad))
+  // Arbitrary sparse/permuted IDs remain valid; no dense producer order
+  // is assumed. Inactive leaf bits are ignored, including repeated zeros.
+  leaf: u32 = 0
+  while leaf < u32(2) {
+   bit: u32 = 0
+   while bit < u32(64) {
+    bad[HEADER_WORDS + leaf * LEAF_WORDS + u32(1) + bit] = bit < u32(8) ? { u32(1000000000) - bit * u32(31) - leaf } | { u32(0) }
+    bit = bit + u32(1)
+   }
+   leaf = leaf + u32(1)
+  }
+  assert(problem_shape_valid(l, view(&bad)))
+  assert(solve(l, span(&mem), view(&bad)) == STATUS_PROVEN)
+  // 1152 distinct IDs exercise the saturated-table radix fallback.
+  large: [1280]u32
+  i: u32 = 0
+  while i < u32(192) { large[i] = good[i]; i = i + u32(1) }
+  large[u32(4)] = u32(16)
+  leaf = u32(0)
+  while leaf < u32(2) {
+   large[HEADER_WORDS + leaf * LEAF_WORDS] = u32(64)
+   bit: u32 = 0
+   while bit < u32(64) {
+    large[HEADER_WORDS + leaf * LEAF_WORDS + u32(1) + bit] = bit * u32(2) + leaf
+    bit = bit + u32(1)
+   }
+   leaf = leaf + u32(1)
+  }
+  i = u32(0)
+  while i < u32(1024) {
+   large[u32(179) + i] = u32(1000000000) - i * u32(17)
+   i = i + u32(1)
+  }
+  assert(problem_shape_valid(l, view(&large)))
+  // A duplicate beyond the first saturated scan must be found after split.
+  saved: u32 = large[u32(1202)]
+  large[u32(1202)] = large[u32(1100)]
+  refuse(l, span(&mem), view(&large))
+  large[u32(1202)] = CNF_VAR_KEY - u32(1)
+  assert(problem_shape_valid(l, view(&large)))
+  large[u32(1202)] = saved
+  large[u32(179)] = u32(0)
+  refuse(l, span(&mem), view(&large))
+  large[u32(179)] = large[u32(180)]
+  refuse(l, span(&mem), view(&large))
+  large[u32(179)] = CNF_VAR_KEY
+  refuse(l, span(&mem), view(&large))
+  // A large dense select map checks that fixed scratch does not impose a
+  // 1024-variable admission limit; the final duplicate requires full scans.
+  dense: [65715]u32
+  i = u32(0)
+  while i < u32(192) { dense[i] = good[i]; i = i + u32(1) }
+  dense[u32(4)] = u32(1024)
+  i = u32(0)
+  while i < u32(65536) { dense[u32(179) + i] = u32(1000) + i; i = i + u32(1) }
+  assert(problem_shape_valid(l, view(&dense)))
+  dense[u32(65714)] = dense[u32(65713)]
+  refuse(l, span(&mem), view(&dense))
+  stream_cancelled = true
+  assert(!problem_shape_valid(l, view(&good)))
+  assert(solve(l, span(&mem), view(&good)) == STATUS_CANCELLED)
+  solve_begin(l, span(&mem))
+  assert(solve_resume(l, span(&mem), view(&good), u32(1)) == STATUS_CANCELLED)
+  assert(solve_resume(l, span(&mem), view(&good), u32(4096)) == STATUS_CANCELLED)
+  stream_cancelled = false
   // Every truncation of the required 179-word fixture is refused.
   n: u32 = 0
   while n < u32(179) {
@@ -129,7 +208,9 @@ main: (): i32 {
 	if out, err := exec.CommandContext(ctx, cc, "-std=c99", "-O1", "-o", bin, path, "-lm").CombinedOutput(); err != nil {
 		t.Fatalf("cc: %v\n%s", err, out)
 	}
+	started := time.Now()
 	if out, err := exec.CommandContext(ctx, bin).CombinedOutput(); err != nil {
 		t.Fatalf("problem admission: %v\n%s", err, out)
 	}
+	t.Logf("compiled admission corpus (including 65536 select IDs): %s", time.Since(started))
 }

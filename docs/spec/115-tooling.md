@@ -92,15 +92,18 @@ native backend's differential test on the host, the OS pilot's N5
 already produce an object; `-o name.c` still emits the C.
 
 `oak build`, `oak run`, `oak install`, and `oak test` keep the executables
-they compile under `$OAKCACHE/build/`, keyed by a SHA-256 over everything
-that determines the binary: the target (`os/arch`), the emitted C (which
+they compile under `$OAKCACHE/build/`, keyed by a SHA-256 over the declared build inputs: the target (`os/arch`), the emitted C (which
 already captures the Oak compiler's lowering), the asm companion object,
-the resolved C compiler driver's identity (path, size, modification time)
+the resolved C compiler driver's identity (path and executable-content SHA-256)
 and its target-selecting arguments, and the exact flag list; the test runner additionally keys on its engine version
 and adapter identity. A hit copies the cached binary to the requested
 output (`oak build` reports `(cached)`), a miss compiles and stores. Entries
-are written through a temporary file and rename; any cache failure is a
-miss, never a failed build. `oak clean -cache` removes the entries;
+use content-named executables and atomically published digest manifests.
+Lookup verifies the executable digest and rejects corrupt, legacy, symlinked
+or non-executable entries as misses. Any cache failure is a miss, never a
+failed build. This development cache does not authenticate artifacts or make
+system headers, libraries and compiler subtools hermetic; storage must remain
+stable between lookup and use. `oak clean -cache` removes the entries;
 `OAKCACHE=off` bypasses the cache entirely.
 
 ## 4. Not provided, and why
