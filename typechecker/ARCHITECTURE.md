@@ -80,3 +80,33 @@ transactions, or any other type constructor. Existing `TypeVarIdentity`,
 No ARM64/RV64 implementation, proof statement, verification gate, or trust
 assumption is weakened by this change. Native integration validation remains
 necessary because checker admission affects which programs reach backends.
+
+## Exact signature identity follow-up
+
+`CheckSignatureObligations` and `checkSharedTypeMember` now use
+`signatureTypesIdentical`, which delegates to the existing closed lattice atom
+identity policy. The module specification requires exact monomorphic types:
+struct/shape compatibility, ADT narrowing, and row-openness erasure are not
+substitutes for that judgment. Primitive spelling aliases and semantic record
+name aliases still match. This policy is representation-sensitive where the
+identity key is (for example span authority and array alignment), without
+claiming that identity itself proves ABI correctness.
+
+Caller audit and migration order:
+
+| Remaining Equals callers | Judgment | Next action |
+| --- | --- | --- |
+| `modules.go` abstract/concrete coercions | Value admission to a compiler-generated boundary | Audit contextual ADT narrowing before changing; a source variant may legitimately inhabit its parent. |
+| `genericfn.go` repeated type parameter bindings | Consistency of inferred instantiation arguments | Separate binder solving from shape compatibility; preserve inference and explicit-argument behavior with source regressions. |
+| `unification.go` leaf fallback | Compatibility equations | Decompose remaining constructors explicitly before removing the fallback. |
+| `areCompatibleTypes`, return/argument and literal checks | Directional or expression compatibility | Keep separate from exact identity; do not globally replace Equals. |
+| Compound `Equals` implementations and `typeListsEqual` | Legacy recursive compatibility | Retain until all callers state their judgment explicitly. |
+| `ffi.go`, `ffi_fnptr.go`, atomic/buffer element checks | Foreign ABI or authority-bearing admission | Audit with their restricted carrier sets; semantic equality alone is not an ABI or ownership proof. |
+| Boolean/string sentinel checks | Primitive classification | No identified nominal/structural collision; lower priority. |
+
+Regressions cover both exact module-obligation paths through direct, function,
+array and generic types, plus real sealed-import rejection and a compiled
+primitive-alias control. `TypeLatticeAtomIdentity` proves nominal/shape and
+variant/parent separation for arbitrary model names and payload keys. As with
+its existing identity lemmas, this is not a refinement proof of the complete
+Go checker. Other items in the prioritized gaps remain open.

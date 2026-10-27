@@ -210,7 +210,7 @@ func TestOakLRATRawStreamEntry(t *testing.T) {
 		lratSourceRegion(t, oakCertifySource, "lrat_check_record:", "// write_words_file") +
 		lratSourceRegion(t, oakDriverHelpersSource, "copy_chunk:", "solve_one:") +
 		lratSourceRegion(t, oakSolverDriverSource, "lrat_fill:", "// lrat_main reads") +
-		lratSourceRegion(t, oakSolverDriverSource, "lrat_main:", "stream_main:") + `
+		lratSourceRegion(t, oakSolverDriverSource, "lrat_main:", "// Validate framing before parse_files") + `
 CHUNK: u32 = 16384
 c_read: (fd: c.Int, buf: c.Ptr, n: c.Size): c.UInt64 = c.extern("read")
 putchar: (ch: c.Int): c.Int = c.extern("putchar")

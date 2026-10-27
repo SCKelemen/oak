@@ -286,4 +286,20 @@ example : atomIdentical (.cFn [] (identityKey (.primitive "u8" "")) 0) (.cFn [] 
 example : atomIdentical (.constInt (4 : Int)) (.constInt (4 : Int)) = true := by decide
 example : atomIdentical (.constInt (4 : Int)) (.constInt (5 : Int)) = false := by decide
 
+/-- Exact sealed signatures cannot substitute a structural shape for a named
+    struct, even when all fields agree. This is an identity-policy theorem;
+    the Go obligation dispatcher is covered separately by regressions. -/
+theorem signature_nominal_not_shape
+    (fields : List (String × AtomKey)) (name : String)
+    (named : name.isEmpty = false) :
+    atomIdentical (.record fields name [] true false "")
+      (.record fields "" [] false false "") = false := by
+  simp [atomIdentical, identityKey, named]
+
+/-- Narrowing is compatibility, not exact signature identity. -/
+theorem signature_variant_not_parent (parent variant : String)
+    (arguments : List AtomKey) :
+    atomIdentical (.narrowedADT parent variant arguments) (.adt parent) = false := by
+  simp [atomIdentical, identityKey, orderedKeyList]
+
 end Oak.TypeLatticeAtomIdentity
