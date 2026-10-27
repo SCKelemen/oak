@@ -260,7 +260,7 @@ func (tc *TypeChecker) CheckSignatureObligations(obligations []SignatureObligati
 			continue
 		}
 		got := Instantiate(scheme, NewUnifier())
-		if got == nil || !got.Equals(want) {
+		if got == nil || !signatureTypesIdentical(got, want) {
 			d := tc.addTypeDiagnostic(obligation.Node, CodeSignatureType,
 				fmt.Sprintf("signature member %s has type %s, but the signature requires %s", obligation.Member, modules.DemangleText(fmt.Sprint(got)), modules.DemangleText(fmt.Sprint(want))))
 			d.AddNote("a sealed import checks the package against the signature exactly; the declaration must have the promised type")
@@ -282,7 +282,7 @@ func (tc *TypeChecker) checkSharedTypeMember(obligation SignatureObligation) {
 	} else {
 		got = &ADTType{Name: obligation.Internal}
 	}
-	if !got.Equals(want) {
+	if !signatureTypesIdentical(got, want) {
 		d := tc.addTypeDiagnostic(obligation.Node, CodeSignatureType,
 			fmt.Sprintf("signature type member %s is %s, but the signature shares it as %s", obligation.Member, modules.DemangleText(fmt.Sprint(got)), modules.DemangleText(fmt.Sprint(want))))
 		d.AddNote("`Name: type = T` requires the package's type to be exactly T")
