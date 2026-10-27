@@ -1,6 +1,6 @@
 # Self-hosted solver v1.0: release contract and roadmap
 
-Reviewed against `336cb0c01e817710ec2b33a229e90ffbf5a84dcf` on 2026-10-21.
+Reviewed against `23709cd87381bb2fe03d979a67964ef83c0649c2` on 2026-10-27; second-wave changes are described below.
 The commit above anchors the original inventory. The first-wave update below
 records subsequent local implementation; it does not attest a final integration
 SHA or green hosted CI.
@@ -104,7 +104,7 @@ no claim about fresh CI execution.
 
 **Exit:** Validate framing, dimensions, indices, operand references, graph order, widths and spans before consumers; malformed/truncated/adversarial inputs must fail closed.
 
-**Current:** BDD/CNF input shape guards implemented with 179 truncation cases plus reference and width checks. Variable maps, outer framing and live storage validation remain unchecked parts of the admission boundary.
+**Current:** BDD/CNF shape and independent variable-map admission now reject duplicate active leaf/select IDs and CNF tag-bit IDs. The normal solver stream validates headers, exact EOF and file/theorem/variant/name framing before dispatch. Live storage/layout, source correspondence and dedicated SAT/CNF input modes remain open.
 
 **Starting evidence:** [`prove/solver/driver.oak`](../../prove/solver/driver.oak), [`prove/solver/lower.oak`](../../prove/solver/lower.oak), [`solver_input_admission_test.go`](../../solver_input_admission_test.go).
 
@@ -112,7 +112,7 @@ no claim about fresh CI execution.
 
 **Exit:** Every allocation failure schedule must return a non-authoritative failure, avoid null ownership/dereference, release each successful allocation once, and clear stale verdicts.
 
-**Current:** Shell/certificate null-allocation guards and cleanup implemented; 28 failure masks pass focused tests. Upstream allocations and formal lifecycle composition remain open.
+**Current:** Shell/certificate and normal stream allocations are guarded with cleanup; stream coverage includes 1024 failure masks. Cancellation polling skips null ownership and retries unavailable advisory polls. Parser/serializer internal allocations and formal lifecycle composition remain open.
 
 **Starting evidence:** [`prove/solver/shell.oak`](../../prove/solver/shell.oak), [`prove/solver/certify.oak`](../../prove/solver/certify.oak), [`lrat_lifecycle_test.go`](../../lrat_lifecycle_test.go), [`solver_allocation_test.go`](../../solver_allocation_test.go), [`cnf_allocation_test.go`](../../cnf_allocation_test.go), [`solver_allocation_failure_test.go`](../../solver_allocation_failure_test.go).
 
@@ -128,7 +128,7 @@ no claim about fresh CI execution.
 
 **Exit:** Establish initialization, freshness, memo/unique reuse, bounded probing and refusal invariants for the actual mutable state and all node constructors.
 
-**Current:** Bounded CNF probing and invalid-entry guards implemented with a 264-case corpus and 16 audited proof closures, including extracted-loop termination. The global mutable-state invariant remains open.
+**Current:** Bounded probing has 16 audited closures. CNFTable adds six audited closures preserving the table/live-node bijection and count frontier across actual fresh allocation and reuse. Semantic key uniqueness, extracted initialization, concrete layout separation and whole traversal remain open.
 
 **Starting evidence:** [`prove/solver/cnf.oak`](../../prove/solver/cnf.oak), [`spec/lean/Oak/CNFNodes.lean`](../../spec/lean/Oak/CNFNodes.lean), [`cnf_nodes_test.go`](../../cnf_nodes_test.go).
 
@@ -192,7 +192,7 @@ no claim about fresh CI execution.
 
 **Exit:** Pin source, compiler, proof dependencies, flags, target and artifact hashes; reproduce from a clean checkout and reject corrupt/stale cache entries.
 
-**Current:** Solver cache uses content digests and atomic publication. Separate generic buildcache size/mtime identity and unchecked binaries, nonhermetic headers/libraries, release bootstrap and artifact manifests remain open.
+**Current:** Solver and generic build caches now use compiler content identity, digest-verified artifacts and atomic publication. Stable storage between lookup and use remains assumed; nonhermetic headers/libraries/subtools, authenticated artifacts and reproducible release bootstrap remain open.
 
 **Starting evidence:** [`oaksolver.go`](../../oaksolver.go), [`spec/lean/lean-toolchain`](../../spec/lean/lean-toolchain), [`go.mod`](../../go.mod), [`oaksolver_cache_test.go`](../../oaksolver_cache_test.go).
 
@@ -225,22 +225,32 @@ no claim about fresh CI execution.
 | Integrator | Cross-lane | Extraction, combined regression runs and PRs | Review, reconcile shared changes, normal merge, record exact SHA |
 
 
-### First-wave implementation update
+### Implementation waves
 
-Allocation, input admission, verdict admission and cache changes have been
-integrated locally. CNF guards and their proof work are integrated locally. The following focused results are not full gate-completion evidence.
+Wave one merged as [PR #798](https://github.com/SCKelemen/oak/pull/798),
+commit `f48c27623857e5355ce864149af199fb35ec80d8`. On 2026-10-27, its 13
+non-opt-in workflows had succeeded, including [CI](https://github.com/SCKelemen/oak/actions/runs/39620406293)
+and [Formal Verification](https://github.com/SCKelemen/oak/actions/runs/39620406206).
+The opt-in verification experiment was skipped.
 
-| Gate | Implemented slice and focused evidence | Remaining boundary |
+Wave two adds the following locally integrated slices. These are not completed
+release gates or a claim of hosted-CI success for the new candidate.
+
+| Gate | Second-wave implementation and evidence | Remaining boundary |
 | --- | --- | --- |
-| S02 | BDD/CNF shape guards; 179 truncations plus malformed references and widths in `solver_input_admission_test.go` | Variable maps, outer framing and live storage |
-| S03 | Shell/certificate null guards and cleanup; 28 failure masks in `solver_allocation_failure_test.go` | Upstream allocations and formal lifecycle composition |
-| S05 | Bounded probing and invalid-entry guards; 264 cases and 16 audited proof closures in `cnf_nodes_test.go` | Global CNF mutable-state invariant |
-| S07 | Complete, unique response rows required for Go cross-check admission; `prove_rows_test.go` | `-cross none` and complete verdict semantic authority |
-| S13 | Solver cache content digests and atomic publication; `oaksolver_cache_test.go` | Generic `buildcache` size/mtime identity and unchecked binaries; nonhermetic headers/libraries; release bootstrap |
+| S02 | Normal stream header/body/EOF framing; exact variable-map duplicate and tag-bit rejection; `solver_stream_admission_test.go`, `solver_input_admission_test.go` | Live storage/layout, source correspondence, dedicated SAT/CNF modes |
+| S03 | Ten normal-stream allocations checked across 1024 failure masks; null cancellation poll safely skipped and retried | Parser/serializer internals and formal lifecycle composition |
+| S05 | Six audited CNFTable closures preserve table/live-node bijection and count frontier across extracted fresh/reuse branches | Semantic key uniqueness, extracted initialization, concrete layout separation, traversal |
+| S13 | Generic buildcache compiler content identity, digest manifests and atomic publication; corruption/concurrency and actual CLI tests | Nonhermetic headers/libraries/subtools, lookup/use storage assumption, release bootstrap and authenticated artifacts |
+
+Variable-map validation uses constant scratch space and bounded radix partitions.
+It can rescan the input quadratically in large cases and repeats while a scheduled
+first term remains paused. Cancellation polling bounds responsiveness; the observed
+65,536-ID test is regression evidence, not a general performance qualification.
+No formal semantic theorem is claimed for the new input validators.
 
 The parent gate statuses remain `in_progress`, and `completion_evidence` stays
-empty. Final integration must record the actual commit and validation results;
-no hosted-CI success or target qualification is implied by this update.
+empty. Final PR metadata records the candidate tree and exact validation results.
 
 These are bounded increments, not six promises to finish the entire corresponding
 gates. Each lane owns separate files and a worktree. Shared workflow, extraction,

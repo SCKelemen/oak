@@ -28,12 +28,14 @@ cancel_byte_set: (bytes: []u8, got: c.Int64): Bool = got == c.Int64(1) && bytes[
 cancel_poll: (): Bool {
   (stream_cancel_enabled && !stream_cancelled) ? {
     raw: c.Ptr = malloc(c.Size(1))
-    got: c.Int64 = c_pread(c.Int(3), raw, c.Size(1), c.Int64(i64(stream_cancel_index)))
-    unsafe {
-      cancel_byte: Buffer[u8] = c.own[u8](raw, u32(1))
-      stream_cancelled = cancel_byte_set(view(&cancel_byte), got)
-      free(c.disown(cancel_byte))
-    }
+    raw != c.null() ? {
+      got: c.Int64 = c_pread(c.Int(3), raw, c.Size(1), c.Int64(i64(stream_cancel_index)))
+      unsafe {
+        cancel_byte: Buffer[u8] = c.own[u8](raw, u32(1))
+        stream_cancelled = cancel_byte_set(view(&cancel_byte), got)
+        free(c.disown(cancel_byte))
+      }
+    } | { }
   } | { }
   stream_cancelled
 }

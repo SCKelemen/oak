@@ -1084,9 +1084,78 @@ term_vhi: (p: []u32, t: u32): u32 = term_word(p, t, u32(7))
 leaf_width: (p: []u32, leaf: u32): u32 = p[HEADER_WORDS + leaf * LEAF_WORDS]
 leaf_variable: (p: []u32, leaf: u32, bit: u32): u32 = p[HEADER_WORDS + leaf * LEAF_WORDS + u32(1) + bit]
 
+// Variable maps are renamings of independent inputs, including every select
+// slot's bits. IDs must not overlap CNF's tag bits. Inactive leaf bits are
+// ignored (producers normally fill them with NONE). Shape admission precedes
+// this helper, so all flattened map offsets have already been bounded.
+// A fixed table handles the usual case in one scan. Saturated tables split
+// the 30-bit ID range and retry, using at most 30 pending ranges: no heap
+// allocation, sparse-ID restriction, or limit on the number of input bits.
+problem_variables_valid: (p: []u32): Bool {
+  seen: [1024]u32
+  pending_start: [30]u32
+  pending_width: [30]u32
+  leaf_words: u32 = problem_leaves(p) * u32(64)
+  entries: u32 = leaf_words + problem_select_slots(p) * u32(64)
+  start: u32 = 0
+  width: u32 = CNF_VAR_KEY
+  depth: u32 = 0
+  done: Bool = false
+  ok: Bool = true
+  while !done && ok && !stream_cancelled {
+    k: u32 = 0
+    while k < u32(1024) { seen[k] = u32(0); k = k + u32(1) }
+    used: u32 = 0
+    split: Bool = false
+    i: u32 = 0
+    while i < entries && ok && !split && !stream_cancelled {
+      ignored_cancel: Bool = cancel_tick()
+      active: Bool = i >= leaf_words || i % u32(64) < leaf_width(p, i / u32(64))
+      active ? {
+        v: u32 = i < leaf_words ? { leaf_variable(p, i / u32(64), i % u32(64)) } | { p[select_vars_at(p) + i - leaf_words] }
+        v >= CNF_VAR_KEY ? { ok = false } | {
+          (v >= start && v - start < width) ? {
+            key: u32 = v + u32(1)
+            slot: u32 = hash3(v, u32(0), u32(0)) & u32(1023)
+            probes: u32 = 0
+            while probes < u32(1024) && seen[slot] != u32(0) && seen[slot] != key {
+              slot = (slot + u32(1)) & u32(1023)
+              probes = probes + u32(1)
+            }
+            seen[slot] == key ? { ok = false } | {
+              used == u32(1024) ? { split = true } | {
+                seen[slot] = key
+                used = used + u32(1)
+              }
+            }
+          } | { }
+        }
+      } | { }
+      i = i + u32(1)
+    }
+    split ? {
+      // A one-ID range cannot contain 1025 distinct IDs. Keep refusal
+      // explicit even if this helper is changed independently later.
+      (width <= u32(1) || depth >= u32(30)) ? { ok = false } | {
+        width = width / u32(2)
+        pending_start[depth] = start + width
+        pending_width[depth] = width
+        depth = depth + u32(1)
+      }
+    } | {
+      depth == u32(0) ? { done = true } | {
+        depth = depth - u32(1)
+        start = pending_start[depth]
+        width = pending_width[depth]
+      }
+    }
+  }
+  ok && !stream_cancelled
+}
+
 // Admit the table's shape before any count-derived offset or operand read.
-// This checks storage and dependency order, not source-language semantics or
-// the independence of variable maps. The supplied view and arena layout must
+// This checks storage, dependency order and independent variable maps, not
+// source-language semantics. The supplied view and arena layout must
 // themselves describe live storage. Extra backing words are allowed.
 problem_shape_valid: (l: Layout, p: []u32): Bool {
   ok: Bool = false
@@ -1127,6 +1196,7 @@ problem_shape_valid: (l: Layout, p: []u32): Bool {
       ok = p[roots_at(p) + r] < n
       r = r + u32(1)
     }
+    ok ? { ok = problem_variables_valid(p) } | { }
   } | { }
   ok
 }
@@ -1355,7 +1425,7 @@ solve_resume: (l: Layout, mem: [*]u32, p: []u32, quantum: u32): u32 {
   status: u32 = mem[l.state_at + STATE_STATUS]
   (status == STATUS_RUNNING && quantum > u32(0) && mem[l.state_at + STATE_TERM] == u32(0)) ? {
     !problem_shape_valid(l, p) ? {
-      status = STATUS_UNSUPPORTED
+      status = stream_cancelled ? { STATUS_CANCELLED } | { STATUS_UNSUPPORTED }
       mem[l.state_at + STATE_STATUS] = status
     } | { }
   } | { }

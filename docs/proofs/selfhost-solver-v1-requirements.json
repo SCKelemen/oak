@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "release": "self-hosted-solver-v1.0",
-  "reviewed_commit": "336cb0c01e817710ec2b33a229e90ffbf5a84dcf",
-  "reviewed_date": "2026-10-21",
+  "reviewed_commit": "23709cd87381bb2fe03d979a67964ef83c0649c2",
+  "reviewed_date": "2026-10-27",
   "release_ready": false,
   "status_meanings": {
     "open": "Required exit criteria remain unmet; existing partial implementation may exist.",
@@ -34,16 +34,26 @@
       "evidence_paths": [
         "prove/solver/driver.oak",
         "prove/solver/lower.oak",
-        "solver_input_admission_test.go"
+        "solver_input_admission_test.go",
+        "solver_stream_admission_test.go"
       ],
       "exit_criteria": "Validate framing, dimensions, indices, operand references, graph order, widths and spans before consumers; malformed/truncated/adversarial inputs must fail closed.",
-      "current_assessment": "BDD/CNF input shape guards implemented with 179 truncation cases plus reference and width checks. Variable maps, outer framing and live storage validation remain unchecked parts of the admission boundary.",
+      "current_assessment": "BDD/CNF shape and independent variable-map admission now reject duplicate active leaf/select IDs and CNF tag-bit IDs. The normal solver stream validates headers, exact EOF and file/theorem/variant/name framing before dispatch. Live storage/layout, source correspondence and dedicated SAT/CNF input modes remain open.",
       "completion_evidence": [],
       "implementation_slice": {
         "wave": 1,
-        "state": "integrated_locally",
+        "state": "merged",
         "evidence_path": "solver_input_admission_test.go",
-        "qualification": "Focused implementation and regression evidence; not a completed release gate or a claim of green hosted CI."
+        "qualification": "Merged focused slice; prior-wave CI passed. Not full release-gate completion.",
+        "commit": "f48c27623857e5355ce864149af199fb35ec80d8"
+      },
+      "second_wave_slice": {
+        "state": "integrated_locally",
+        "evidence_paths": [
+          "solver_stream_admission_test.go",
+          "solver_input_admission_test.go"
+        ],
+        "qualification": "Focused implementation and local validation; no whole-gate completion or hosted-CI result claimed for this candidate."
       }
     },
     {
@@ -57,16 +67,27 @@
         "lrat_lifecycle_test.go",
         "solver_allocation_test.go",
         "cnf_allocation_test.go",
-        "solver_allocation_failure_test.go"
+        "solver_allocation_failure_test.go",
+        "solver_stream_admission_test.go",
+        "solver_cancel_failure_test.go"
       ],
       "exit_criteria": "Every allocation failure schedule must return a non-authoritative failure, avoid null ownership/dereference, release each successful allocation once, and clear stale verdicts.",
-      "current_assessment": "Shell/certificate null-allocation guards and cleanup implemented; 28 failure masks pass focused tests. Upstream allocations and formal lifecycle composition remain open.",
+      "current_assessment": "Shell/certificate and normal stream allocations are guarded with cleanup; stream coverage includes 1024 failure masks. Cancellation polling skips null ownership and retries unavailable advisory polls. Parser/serializer internal allocations and formal lifecycle composition remain open.",
       "completion_evidence": [],
       "implementation_slice": {
         "wave": 1,
-        "state": "integrated_locally",
+        "state": "merged",
         "evidence_path": "solver_allocation_failure_test.go",
-        "qualification": "Focused implementation and regression evidence; not a completed release gate or a claim of green hosted CI."
+        "qualification": "Merged focused slice; prior-wave CI passed. Not full release-gate completion.",
+        "commit": "f48c27623857e5355ce864149af199fb35ec80d8"
+      },
+      "second_wave_slice": {
+        "state": "integrated_locally",
+        "evidence_paths": [
+          "solver_stream_admission_test.go",
+          "solver_cancel_failure_test.go"
+        ],
+        "qualification": "Focused implementation and local validation; no whole-gate completion or hosted-CI result claimed for this candidate."
       }
     },
     {
@@ -95,16 +116,27 @@
       "evidence_paths": [
         "prove/solver/cnf.oak",
         "spec/lean/Oak/CNFNodes.lean",
-        "cnf_nodes_test.go"
+        "cnf_nodes_test.go",
+        "spec/lean/Oak/CNFTable.lean",
+        "cnf_table_test.go"
       ],
       "exit_criteria": "Establish initialization, freshness, memo/unique reuse, bounded probing and refusal invariants for the actual mutable state and all node constructors.",
-      "current_assessment": "Bounded CNF probing and invalid-entry guards implemented with a 264-case corpus and 16 audited proof closures, including extracted-loop termination. The global mutable-state invariant remains open.",
+      "current_assessment": "Bounded probing has 16 audited closures. CNFTable adds six audited closures preserving the table/live-node bijection and count frontier across actual fresh allocation and reuse. Semantic key uniqueness, extracted initialization, concrete layout separation and whole traversal remain open.",
       "completion_evidence": [],
       "implementation_slice": {
         "wave": 1,
-        "state": "implemented",
+        "state": "merged",
         "evidence_path": "cnf_nodes_test.go",
-        "qualification": "Focused implementation and regression evidence; not a completed release gate or a claim of green hosted CI."
+        "qualification": "Merged focused slice; prior-wave CI passed. Not full release-gate completion.",
+        "commit": "f48c27623857e5355ce864149af199fb35ec80d8"
+      },
+      "second_wave_slice": {
+        "state": "integrated_locally",
+        "evidence_paths": [
+          "spec/lean/Oak/CNFTable.lean",
+          "cnf_table_test.go"
+        ],
+        "qualification": "Focused implementation and local validation; no whole-gate completion or hosted-CI result claimed for this candidate."
       }
     },
     {
@@ -144,9 +176,10 @@
       "completion_evidence": [],
       "implementation_slice": {
         "wave": 1,
-        "state": "integrated_locally",
+        "state": "merged",
         "evidence_path": "prove_rows_test.go",
-        "qualification": "Focused implementation and regression evidence; not a completed release gate or a claim of green hosted CI."
+        "qualification": "Merged focused slice; prior-wave CI passed. Not full release-gate completion.",
+        "commit": "f48c27623857e5355ce864149af199fb35ec80d8"
       }
     },
     {
@@ -245,16 +278,27 @@
         "oaksolver.go",
         "spec/lean/lean-toolchain",
         "go.mod",
-        "oaksolver_cache_test.go"
+        "oaksolver_cache_test.go",
+        "buildcache/buildcache.go",
+        "buildcache/integrity_test.go"
       ],
       "exit_criteria": "Pin source, compiler, proof dependencies, flags, target and artifact hashes; reproduce from a clean checkout and reject corrupt/stale cache entries.",
-      "current_assessment": "Solver cache uses content digests and atomic publication. Separate generic buildcache size/mtime identity and unchecked binaries, nonhermetic headers/libraries, release bootstrap and artifact manifests remain open.",
+      "current_assessment": "Solver and generic build caches now use compiler content identity, digest-verified artifacts and atomic publication. Stable storage between lookup and use remains assumed; nonhermetic headers/libraries/subtools, authenticated artifacts and reproducible release bootstrap remain open.",
       "completion_evidence": [],
       "implementation_slice": {
         "wave": 1,
-        "state": "integrated_locally",
+        "state": "merged",
         "evidence_path": "oaksolver_cache_test.go",
-        "qualification": "Focused implementation and regression evidence; not a completed release gate or a claim of green hosted CI."
+        "qualification": "Merged focused slice; prior-wave CI passed. Not full release-gate completion.",
+        "commit": "f48c27623857e5355ce864149af199fb35ec80d8"
+      },
+      "second_wave_slice": {
+        "state": "integrated_locally",
+        "evidence_paths": [
+          "buildcache/buildcache.go",
+          "buildcache/integrity_test.go"
+        ],
+        "qualification": "Focused implementation and local validation; no whole-gate completion or hosted-CI result claimed for this candidate."
       }
     },
     {
@@ -303,5 +347,15 @@
       "completion_evidence": []
     }
   ],
-  "snapshot_note": "reviewed_commit anchors the original inventory. First-wave slice updates describe local integration after that commit; they do not attest a final integrated SHA, hosted CI result or release qualification."
+  "snapshot_note": "reviewed_commit anchors the original inventory. First-wave slice updates describe local integration after that commit; they do not attest a final integrated SHA, hosted CI result or release qualification.",
+  "previous_wave": {
+    "pr": 798,
+    "commit": "f48c27623857e5355ce864149af199fb35ec80d8",
+    "ci_reviewed_date": "2026-10-27",
+    "ci_result": "All 13 non-opt-in workflows returned success; opt-in verification experiment skipped.",
+    "ci_run_urls": [
+      "https://github.com/SCKelemen/oak/actions/runs/39620406293",
+      "https://github.com/SCKelemen/oak/actions/runs/39620406206"
+    ]
+  }
 }
