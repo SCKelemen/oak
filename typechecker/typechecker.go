@@ -4154,6 +4154,13 @@ func (tc *TypeChecker) checkPattern(pattern ast.Pattern, expectedType Type) Type
 				tc.addError(p, "variant %s not found in ADT %s", p.Variant.Value, adtName)
 				return nil
 			}
+			// Pattern analysis treats exhausted expansion as unknown. Ordinary
+			// pattern checking must still fail closed rather than expanding an
+			// exponentially growing generic argument tree without a bound.
+			if _, bounded := coverageTypeSize(expectedType); !bounded {
+				tc.addError(p, "constructor pattern type expansion exceeds the supported complexity limit")
+				return nil
+			}
 			bindings, _, reachable := tc.variantIndexBindings(adtDef, variant, typeArgs)
 			if !reachable {
 				bindings = map[string]Type{}
