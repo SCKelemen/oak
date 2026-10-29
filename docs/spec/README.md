@@ -47,6 +47,8 @@ Use these terms precisely:
 
 ## Authoritative documents
 
+- `127-architecture-evidence.md` — reproducible CI build measurements and proof-obligation inventory
+
 - `00-constitution.md` — values, design constraints, semantic axes
 - `05-ergonomics-and-cost.md` — functional ergonomics and systems cost transparency
 - `10-syntax.md` — lexical/layout/block rules and canonical punctuation

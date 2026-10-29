@@ -1,0 +1,42 @@
+name: Architecture evidence
+on:
+  pull_request:
+    branches: [specification]
+  push:
+    branches: [specification]
+permissions:
+  contents: read
+jobs:
+  ledger:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install PyYAML==6.0.3
+      - run: python3 -m unittest discover -s benchmarks/architecture -p 'test_*.py'
+      - run: python3 benchmarks/architecture/ledger.py
+  build-baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - run: go mod download
+      - name: Measure isolated cold and warm Go builds
+        env:
+          GOCACHE: ${{ runner.temp }}/oak-baseline-cache
+        run: |
+          python3 benchmarks/architecture/measure.py --output evidence/go-cold.json --cache-state cold-build -- go build -o /tmp/oak-baseline .
+          python3 benchmarks/architecture/measure.py --output evidence/go-warm.json --cache-state warm-build -- go build -o /tmp/oak-baseline .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: architecture-go-build
+          path: evidence/*.json
+          if-no-files-found: error

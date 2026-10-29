@@ -191,11 +191,19 @@ jobs:
 
       - name: Check RV64 encoding, layout, and execution proofs
         working-directory: spec/lean
-        run: lake build Oak.RiscVBranchEncoding Oak.RiscVCompressedBranchEncoding Oak.RiscVRelaxation Oak.RiscVMaterialization Oak.RiscVCallExecution Oak.RiscVDirectControl Oak.RiscVControlFlow Oak.RiscVComparison
+        run: python3 ../../benchmarks/architecture/measure.py --output ../../evidence/rv64-proofs.json --cache-state unspecified -- lake build Oak.RiscVBranchEncoding Oak.RiscVCompressedBranchEncoding Oak.RiscVRelaxation Oak.RiscVMaterialization Oak.RiscVCallExecution Oak.RiscVDirectControl Oak.RiscVControlFlow Oak.RiscVComparison
 
       - name: Build formal specification
         working-directory: spec/lean
-        run: lake build
+        run: python3 ../../benchmarks/architecture/measure.py --output ../../evidence/lean-build.json --cache-state unspecified -- lake build
+
+      - name: Upload proof build measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-lean-build
+          path: evidence/*.json
+          if-no-files-found: error
 
       - name: Audit session obligations and aggregate admissions
         working-directory: spec/lean
