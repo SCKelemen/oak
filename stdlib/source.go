@@ -193,6 +193,9 @@ var cryptoHMACSource string
 //go:embed crypto/hkdf.oak
 var cryptoHKDFSource string
 
+//go:embed crypto/x25519.oak
+var cryptoX25519Source string
+
 // mx is a library package only (import("mx")): the OCP Microscaling MXFP4
 // block format — E2M1 elements under an E8M0 block scale — in Oak
 // (docs/spec/20-types.md section 11.3.1a).
@@ -543,6 +546,7 @@ var Packages = map[string]string{
 	"crypto/subtle":   cryptoSubtleSource,
 	"crypto/hmac":     cryptoHMACSource,
 	"crypto/hkdf":     cryptoHKDFSource,
+	"crypto/x25519":   cryptoX25519Source,
 	"mx":              mxSource,
 	"time":            timeSource,
 	"timesim":         timesimSource,
